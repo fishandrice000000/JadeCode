@@ -1,0 +1,23 @@
+# 构建产物
+target/
+
+# 密钥(绝不入库)
+.env
+
+# 运行时数据目录(agent 工作区产物)
+.tasks/
+.memory/
+.mailboxes/
+.transcripts/
+.task_outputs/
+.worktrees/
+.runtime/
+.scheduled_tasks.json
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.classpath
+.project
+.settings/
