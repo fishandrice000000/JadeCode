@@ -1,0 +1,14 @@
+#!/usr/bin/env sh
+# JadeCode 启动脚本:运行时只为本项目使用 JDK 21,不改系统默认(Java 8)。
+# 用法: ./jade repl   |   ./jade run "任务"   |   ./jade --version
+
+DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+JAVA_HOME="${JAVA21_HOME:-/usr/lib/jvm/java-21-openjdk-amd64}"
+export JAVA_HOME
+
+JAR="$DIR/target/jadecode.jar"
+if [ ! -f "$JAR" ]; then
+  echo "找不到 $JAR — 先构建: mvn -q package" >&2
+  exit 1
+fi
+exec "$JAVA_HOME/bin/java" -jar "$JAR" "$@"
