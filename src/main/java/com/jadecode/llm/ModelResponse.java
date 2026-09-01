@@ -9,6 +9,6 @@ import com.jadecode.messages.Message;
  * @param usage   调用响应的 Token 用量
  */
 public record ModelResponse(Message message, Usage usage) {
-    public record Usage(int inputTokens, int outputTokens) {
+    public record Usage(long inputTokens, long outputTokens) {
     }
 }
