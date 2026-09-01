@@ -23,6 +23,10 @@ public class LlmException extends Exception {
         this.statusCode = statusCode;
     }
 
+    public LlmException(String message, Throwable cause) {
+        this(message, DEFAULT_STATUS_CODE, cause);
+    }
+
     public int statusCode() {
         return statusCode;
     }
