@@ -34,8 +34,13 @@ public class BashTool implements Tool {
     }
 
     @Override
-    public ObjectNode inputSchema() {
-        return ToolSchema.objectSchema(Map.of("command", "string"), List.of("command"));
+    public Map<String, String> properties() {
+        return Map.of("command", "string");
+    }
+
+    @Override
+    public List<String> required() {
+        return List.of("command");
     }
 
     @Override
