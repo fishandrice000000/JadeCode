@@ -6,6 +6,9 @@
 
 A: ToolSchema 是**静态工厂类, 没有实例**. `objectSchema(...)` 返回一个 `ObjectNode`——它本身就是 JSON 树, 天然可序列化. 名字读作"给工具用的 schema 工厂".
 
+它的作用分两层看:**接口统一在 `Tool`, 构造统一在 `ToolSchema`**. `Tool` 接口(name/description/inputSchema/execute)是工具们共同遵守的契约, 分发表 `Map<String, Tool>` 也基于它; 其中 `inputSchema()` 返回 `ObjectNode` 是"统一入口", 让 s01-7 适配层可以无差别地拆解任何工具的三段声明(type/properties/required).
+ToolSchema 是**为了替每个不同的工具构造 tool_schema 而引入的抽象**. 没有它, 每个工具都要手抄 JSON 组装代码, 且校验逻辑散落到各工具里, `comand` 这种拼写错误就没人拦了——校验和构造必须住在同一个地方, 才能每个工具免费共享.
+
 **Q: 一个 tool_schema 长什么样?**
 
 A: bash 的例子:
