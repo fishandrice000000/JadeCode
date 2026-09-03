@@ -79,6 +79,7 @@ class FileToolsTest {
     void globListsSortedMatchesAndPlaceholder() throws IOException {
         Files.writeString(ws.resolve("b.txt"), "");
         Files.writeString(ws.resolve("a.txt"), "");
+        Files.createDirectory(ws.resolve("sub"));
         Files.writeString(ws.resolve("sub/c.md"), "");
         GlobTool glob = new GlobTool(guard);
 
