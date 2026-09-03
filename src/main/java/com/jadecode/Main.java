@@ -10,7 +10,12 @@ import com.jadecode.cli.RunCommand;
 import com.jadecode.config.AppConfig;
 import com.jadecode.config.Env;
 import com.jadecode.llm.AnthropicSdkLlmClient;
+import com.jadecode.safety.PathGuard;
 import com.jadecode.tools.BashTool;
+import com.jadecode.tools.EditFileTool;
+import com.jadecode.tools.GlobTool;
+import com.jadecode.tools.ReadFileTool;
+import com.jadecode.tools.WriteFileTool;
 
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
@@ -32,9 +37,15 @@ public class Main implements Callable<Integer> {
     /** 装配:唯一一处把全部零件接起来的地方 */
     public static AgentLoop buildLoop() {
         AppConfig config = AppConfig.fromEnv(Env.loadDotEnv());
+        Path cwd = Path.of("").toAbsolutePath();
+        PathGuard guard = new PathGuard(cwd); // 四个文件工具共享同一围栏
         return new AgentLoop(new AnthropicSdkLlmClient(config),
-                Map.of("bash", new BashTool()),
-                systemPrompt(Path.of("").toAbsolutePath()), // 启动时取一次 cwd
+                Map.of("bash", new BashTool(),
+                        "read_file", new ReadFileTool(guard),
+                        "write_file", new WriteFileTool(guard),
+                        "edit_file", new EditFileTool(guard),
+                        "glob", new GlobTool(guard)),
+                systemPrompt(cwd), // 启动时取一次 cwd
                 config.maxTokens());
     }
 
