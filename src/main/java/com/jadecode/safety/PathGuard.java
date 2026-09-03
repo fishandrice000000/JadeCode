@@ -13,11 +13,11 @@ import java.nio.file.Path;
  * 三层防线(对应课程 safe_path 的 .resolve() + is_relative_to):
  * 1. 词法归一化:挡绝对路径与 .. 穿透
  * 2. 逐段解析符号链接(词法展开链接目标,悬空链接同样被防)——Java 没有
- *    Python resolve() 的等价物,这一层是它的手工移植
+ * Python resolve() 的等价物,这一层是它的手工移植
  * 3. 与工作区真实路径比对
  */
 public class PathGuard {
-    private final Path workspace;     // 词法工作区(启动时绝对路径,归一化后)
+    private final Path workspace; // 词法工作区(启动时绝对路径,归一化后)
     private final Path workspaceReal; // 真实工作区(符号链接已解析)
 
     public PathGuard(Path workspace) {
@@ -28,6 +28,11 @@ public class PathGuard {
             // 工作区都解析不了,程序没必要继续跑
             throw new IllegalStateException("工作区不存在或不可访问: " + workspace, e);
         }
+    }
+
+    /** 工作区词法路径(GlobTool 这类需要遍历工作区的工具用) */
+    public Path workspace() {
+        return workspace;
     }
 
     /**
