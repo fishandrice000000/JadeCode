@@ -1,5 +1,6 @@
 package com.jadecode.agent;
 
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -16,6 +17,8 @@ import com.jadecode.messages.TextBlock;
 import com.jadecode.messages.ToolResultBlock;
 import com.jadecode.messages.ToolUseBlock;
 import com.jadecode.safety.CommandPolicy;
+import com.jadecode.safety.PathGuard;
+import com.jadecode.safety.PathResolver;
 import com.jadecode.safety.PermissionGate;
 import com.jadecode.tools.BashTool;
 import com.jadecode.util.Json;
@@ -27,7 +30,8 @@ class AgentLoopTest {
 
     /** 恒放行闸门:既有用例的命令都不触发规则,审批永不真正询问 */
     private static PermissionGate permissiveGate() {
-        return new PermissionGate(new CommandPolicy(), (n, i, r) -> true);
+        PathGuard guard = new PathGuard(new PathResolver(Path.of("").toAbsolutePath()));
+        return new PermissionGate(new CommandPolicy(), guard, (n, i, r) -> true);
     }
 
     /** 预置脚本并立即跑循环。脚本耗尽时假客户端会抛异常——无限循环的保护伞 */
@@ -141,7 +145,8 @@ class AgentLoopTest {
     /** ⑦ 闸门拒绝:回灌 "Permission denied.",工具不执行,循环继续直到文本收尾 */
     @Test
     void deniedToolReturnsPermissionDeniedAndLoopContinues() throws Exception {
-        PermissionGate strict = new PermissionGate(new CommandPolicy(), (n, i, r) -> false);
+        PathGuard guard = new PathGuard(new PathResolver(Path.of("").toAbsolutePath()));
+        PermissionGate strict = new PermissionGate(new CommandPolicy(), guard, (n, i, r) -> false);
         AgentLoop loop = new AgentLoop(new ScriptedLlmClient(
                 assistant(toolUse("toolu_1", "bash", "rm foo.txt")),
                 assistant(new TextBlock("done"))),
@@ -153,7 +158,7 @@ class AgentLoopTest {
         assertEquals(4, messages.size());
         ToolResultBlock r = (ToolResultBlock) messages.get(2).content().get(0);
         assertEquals("toolu_1", r.toolUseId());
-        assertEquals("Permission denied.", r.content());
+        assertEquals("Permission denied: Potentially destructive command", r.content());
         assertEquals("done", messages.get(3).extractText());
     }
 }

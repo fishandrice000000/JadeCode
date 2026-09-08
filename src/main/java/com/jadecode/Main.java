@@ -12,6 +12,7 @@ import com.jadecode.config.Env;
 import com.jadecode.llm.AnthropicSdkLlmClient;
 import com.jadecode.safety.CommandPolicy;
 import com.jadecode.safety.PathGuard;
+import com.jadecode.safety.PathResolver;
 import com.jadecode.safety.PermissionGate;
 import com.jadecode.tools.BashTool;
 import com.jadecode.tools.EditFileTool;
@@ -40,15 +41,16 @@ public class Main implements Callable<Integer> {
     public static AgentLoop buildLoop() {
         AppConfig config = AppConfig.fromEnv(Env.loadDotEnv());
         Path cwd = Path.of("").toAbsolutePath();
-        PathGuard guard = new PathGuard(cwd); // 四个文件工具共享同一围栏
+        PathResolver resolver = new PathResolver(cwd); // 四个文件工具共享同一解析器
+        PathGuard guard = new PathGuard(resolver); // 分类器:高危硬拒 + 越界询问,给闸门
         CommandPolicy policy = new CommandPolicy();
-        PermissionGate gate = new PermissionGate(policy); // 装配路径:默认审批(控制台 y/N)
+        PermissionGate gate = new PermissionGate(policy, guard); // 装配路径:默认审批(控制台 y/N)
         return new AgentLoop(new AnthropicSdkLlmClient(config),
                 Map.of("bash", new BashTool(),
-                        "read_file", new ReadFileTool(guard),
-                        "write_file", new WriteFileTool(guard),
-                        "edit_file", new EditFileTool(guard),
-                        "glob", new GlobTool(guard)),
+                        "read_file", new ReadFileTool(resolver),
+                        "write_file", new WriteFileTool(resolver),
+                        "edit_file", new EditFileTool(resolver),
+                        "glob", new GlobTool(resolver)),
                 systemPrompt(cwd), // 启动时取一次 cwd
                 config.maxTokens(),
                 gate);

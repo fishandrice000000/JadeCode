@@ -11,15 +11,15 @@ import java.util.Map;
 import java.util.stream.Stream;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.jadecode.safety.PathGuard;
+import com.jadecode.safety.PathResolver;
 
 public class GlobTool implements Tool {
     private static final int MAX_MATCHES = 200;
 
-    private final PathGuard guard;
+    private final PathResolver resolver;
 
-    public GlobTool(PathGuard guard) {
-        this.guard = guard;
+    public GlobTool(PathResolver resolver) {
+        this.resolver = resolver;
     }
 
     @Override
@@ -59,19 +59,14 @@ public class GlobTool implements Tool {
 
         PathMatcher matcher = FileSystems.getDefault().getPathMatcher("glob:" + pattern);
         List<String> matches = new ArrayList<>();
-        try (Stream<Path> paths = Files.walk(guard.workspace())) {
+        // Files.walk 默认不跟随符号链接目录;列举本身无副作用,路径安全由闸门在真正读写时裁决
+        try (Stream<Path> paths = Files.walk(resolver.workspace())) {
             paths.forEach(p -> {
-                if (p.equals(guard.workspace())) {
+                if (p.equals(resolver.workspace())) {
                     return; // 工作区本身不是匹配对象
                 }
-                String rel = guard.workspace().relativize(p).toString();
+                String rel = resolver.workspace().relativize(p).toString();
                 if (matcher.matches(Path.of(rel))) {
-                    // 符号链接穿透过滤(课程同款):越界项静默跳过,不是报错
-                    try {
-                        guard.check(rel);
-                    } catch (IllegalArgumentException e) {
-                        return;
-                    }
                     matches.add(rel);
                 }
             });

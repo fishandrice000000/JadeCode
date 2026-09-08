@@ -5,7 +5,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.jadecode.safety.PathGuard;
+import com.jadecode.safety.PathResolver;
 import com.jadecode.util.Json;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -19,11 +19,11 @@ class FileToolsTest {
     @TempDir
     Path ws;
 
-    private PathGuard guard;
+    private PathResolver resolver;
 
     @BeforeEach
     void setUp() {
-        guard = new PathGuard(ws);
+        resolver = new PathResolver(ws);
     }
 
     private static ObjectNode input(String key, String value) {
@@ -37,7 +37,7 @@ class FileToolsTest {
     void readFileReturnsContentAndTruncatesWithLimit() throws IOException {
         Files.writeString(ws.resolve("f.txt"), "a\nb\nc");
 
-        ReadFileTool read = new ReadFileTool(guard);
+        ReadFileTool read = new ReadFileTool(resolver);
         assertEquals("a\nb\nc", read.execute(input("path", "f.txt")));
 
         ObjectNode limited = input("path", "f.txt");
@@ -48,7 +48,7 @@ class FileToolsTest {
     /** ② write:父目录不存在时一并创建,返回消息带 UTF-8 字节数 */
     @Test
     void writeFileCreatesParentsAndReportsBytes() throws IOException {
-        WriteFileTool write = new WriteFileTool(guard);
+        WriteFileTool write = new WriteFileTool(resolver);
 
         String out = write.execute(input("path", "nested/dir/f.txt").put("content", "hello"));
 
@@ -60,7 +60,7 @@ class FileToolsTest {
     @Test
     void editFileReplacesFirstOccurrenceOnly() throws IOException {
         Files.writeString(ws.resolve("f.txt"), "hello world hello");
-        EditFileTool edit = new EditFileTool(guard);
+        EditFileTool edit = new EditFileTool(resolver);
 
         ObjectNode in = input("path", "f.txt");
         in.put("old_text", "hello");
@@ -81,7 +81,7 @@ class FileToolsTest {
         Files.writeString(ws.resolve("a.txt"), "");
         Files.createDirectory(ws.resolve("sub"));
         Files.writeString(ws.resolve("sub/c.md"), "");
-        GlobTool glob = new GlobTool(guard);
+        GlobTool glob = new GlobTool(resolver);
 
         assertEquals("a.txt\nb.txt", glob.execute(input("pattern", "*.txt")));
         assertEquals("(no matches)", glob.execute(input("pattern", "*.java")));

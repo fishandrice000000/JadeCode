@@ -10,6 +10,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+/** PathGuard v2:分类器矩阵——工作区内 / 高危区 / 工作区外 */
 class PathGuardTest {
 
     @TempDir
@@ -19,61 +20,56 @@ class PathGuardTest {
 
     @BeforeEach
     void setUp() {
-        guard = new PathGuard(ws);
+        guard = new PathGuard(new PathResolver(ws));
     }
 
-    /** ① 工作区内合法路径:通过并返回工作区内的词法路径 */
+    /** ① 工作区内:硬拒与问询都不命中 */
     @Test
     void insidePathPasses() {
-        Path p = guard.check("a/b.txt");
-        assertEquals(ws.resolve("a/b.txt"), p);
+        assertNull(guard.highRiskReason("a/b.txt"));
+        assertNull(guard.outsideReason("a/b.txt"));
     }
 
-    /** ② 绝对路径:拒绝 */
+    /** ② 绝对高危路径(/etc):硬拒命中 */
     @Test
-    void absolutePathIsRejected() {
-        assertThrows(IllegalArgumentException.class, () -> guard.check("/etc/passwd"));
+    void highRiskPathIsDenied() {
+        assertNotNull(guard.highRiskReason("/etc/passwd"));
     }
 
-    /** ③ ../ 穿透:拒绝 */
+    /** ③ ../ 越界:硬拒不命中,问询命中 */
     @Test
-    void dotDotEscapeIsRejected() {
-        assertThrows(IllegalArgumentException.class, () -> guard.check("../outside.txt"));
+    void dotDotEscapeAsks() {
+        assertNull(guard.highRiskReason("../x.txt"));
+        assertEquals("Access outside workspace", guard.outsideReason("../x.txt"));
     }
 
-    /** ④ 归一化后越界(a/../../b):拒绝 */
+    /** ④ symlink 指向 /etc:硬拒命中 */
     @Test
-    void normalizedEscapeIsRejected() {
-        assertThrows(IllegalArgumentException.class, () -> guard.check("a/../../b.txt"));
+    void symlinkToHighRiskIsDenied() throws IOException {
+        Files.createSymbolicLink(ws.resolve("link.txt"), Path.of("/etc/hostname"));
+
+        assertNotNull(guard.highRiskReason("link.txt"));
     }
 
-    /** ⑤ 符号链接指向工作区外:拒绝 */
+    /** ⑤ symlink 指向工作区外普通目录:问询命中 */
     @Test
-    void symlinkPointingOutsideIsRejected() throws IOException {
+    void symlinkToOutsideAsks() throws IOException {
         Path outside = Files.createTempFile("jadecode-outside", ".txt");
         try {
             Files.createSymbolicLink(ws.resolve("link.txt"), outside);
 
-            assertThrows(IllegalArgumentException.class, () -> guard.check("link.txt"));
+            assertNull(guard.highRiskReason("link.txt"));
+            assertEquals("Access outside workspace", guard.outsideReason("link.txt"));
         } finally {
             Files.deleteIfExists(outside);
         }
     }
 
-    /** ⑥ 符号链接指向工作区内:通过 */
+    /** ⑥ 悬空 symlink 指向 /etc:仍命中硬拒 */
     @Test
-    void symlinkPointingInsidePasses() throws IOException {
-        Files.writeString(ws.resolve("target.txt"), "hi");
-        Files.createSymbolicLink(ws.resolve("link.txt"), ws.resolve("target.txt"));
+    void danglingSymlinkToHighRiskIsDenied() throws IOException {
+        Files.createSymbolicLink(ws.resolve("dead.txt"), Path.of("/etc/nonexistent-jadecode"));
 
-        assertEquals(ws.resolve("link.txt"), guard.check("link.txt"));
-    }
-
-    /** ⑦ 悬空符号链接指向工作区外:拒绝 */
-    @Test
-    void danglingSymlinkPointingOutsideIsRejected() throws IOException {
-        Files.createSymbolicLink(ws.resolve("dead.txt"), Path.of("/nonexistent-outside/x.txt"));
-
-        assertThrows(IllegalArgumentException.class, () -> guard.check("dead.txt"));
+        assertNotNull(guard.highRiskReason("dead.txt"));
     }
 }
