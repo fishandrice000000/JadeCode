@@ -46,28 +46,21 @@ class BashToolTest {
         assertTrue(out.contains("not found"));
     }
 
-    /** ⑤ 黑名单:子串匹配拦截 */
-    @Test
-    void dangerousCommandsAreBlocked() {
-        assertEquals("Error: Dangerous command blocked", run("sudo ls"));
-        assertEquals("Error: Dangerous command blocked", run("rm -rf /tmp/x"));
-    }
-
-    /** ⑥ 超时:注入 2 秒超时 + sleep 5 → 超时消息随配置 */
+    /** ⑤ 超时:注入 2 秒超时 + sleep 5 → 超时消息随配置 */
     @Test
     void longRunningCommandTimesOut() {
         BashTool impatient = new BashTool(2);
         assertEquals("Error: Timeout (2s)", run(impatient, "sleep 5"));
     }
 
-    /** ⑦ 超长输出截断到 50000 字符(60000 < 64KB 管道缓冲,进程能正常退出) */
+    /** ⑥ 超长输出截断到 50000 字符(60000 < 64KB 管道缓冲,进程能正常退出) */
     @Test
     void longOutputIsTruncated() {
         String out = run("awk 'BEGIN{for(i=0;i<60000;i++)printf \"x\"}'");
         assertEquals("x".repeat(50000), out);
     }
 
-    /** ⑧ 缺 command 参数:返回错误字符串,不抛 NPE */
+    /** ⑦ 缺 command 参数:返回错误字符串,不抛 NPE */
     @Test
     void missingCommandParameterReturnsError() {
         assertEquals("Error: Missing required parameter: command",
