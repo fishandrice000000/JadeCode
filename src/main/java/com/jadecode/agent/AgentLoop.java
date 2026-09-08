@@ -71,8 +71,10 @@ public class AgentLoop {
                 // 5.2 使用的工具在分发表中, 先过权限闸门, 再执行
                 // 需检查 input 是否为 ObjectNode
                 ObjectNode node = u.input() instanceof ObjectNode o ? o : Json.mapper().createObjectNode();
-                if (!gate.check(u.name(), node)) {
-                    results.add(new ToolResultBlock(u.id(), "Permission denied."));
+                String denied = gate.check(u.name(), node);
+                if (denied != null) {
+                    // 带原因回灌:模型知道边界,不再盲目试探(课程原文只有短句,此处增强)
+                    results.add(new ToolResultBlock(u.id(), "Permission denied: " + denied));
                     continue;
                 }
                 results.add(new ToolResultBlock(u.id(), tool.execute(node)));

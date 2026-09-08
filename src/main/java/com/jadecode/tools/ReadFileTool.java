@@ -1,24 +1,20 @@
 package com.jadecode.tools;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
 import java.io.IOException;
-import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
+import java.util.Map;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.jadecode.safety.PathGuard;
+import com.jadecode.safety.PathResolver;
 
 public class ReadFileTool implements Tool {
-    private PathGuard guard;
+    private final PathResolver resolver;
 
-    public ReadFileTool(PathGuard guard) {
-        this.guard = guard;
+    public ReadFileTool(PathResolver resolver) {
+        this.resolver = resolver;
     }
 
     @Override
@@ -54,19 +50,13 @@ public class ReadFileTool implements Tool {
 
     private String run(String path, Integer limit) {
         List<String> lines;
-        Path p;
-
         // 1.1 检查路径是否为空
         if (path == null || path.isBlank()) {
             return "Error: Path is empty or missing";
         }
 
-        // 1.2 检查路径是否安全
-        try {
-            p = guard.check(path);
-        } catch (IllegalArgumentException e) {
-            return "Error: " + e.getMessage();
-        }
+        // 1.2 解析路径(词法 + 逐段符号链接);是否越界由闸门裁决
+        Path p = resolver.resolve(path);
 
         // 2. 读全部行
         try {

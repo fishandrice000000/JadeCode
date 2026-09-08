@@ -8,13 +8,13 @@ import java.util.List;
 import java.util.Map;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.jadecode.safety.PathGuard;
+import com.jadecode.safety.PathResolver;
 
 public class EditFileTool implements Tool {
-    private final PathGuard guard;
+    private final PathResolver resolver;
 
-    public EditFileTool(PathGuard guard) {
-        this.guard = guard;
+    public EditFileTool(PathResolver resolver) {
+        this.resolver = resolver;
     }
 
     @Override
@@ -54,13 +54,8 @@ public class EditFileTool implements Tool {
             return "Error: Path is empty or missing";
         }
 
-        // 1.2 检查路径是否安全
-        Path p;
-        try {
-            p = guard.check(path);
-        } catch (IllegalArgumentException e) {
-            return "Error: " + e.getMessage();
-        }
+        // 1.2 解析路径(词法 + 逐段符号链接);是否越界由闸门裁决
+        Path p = resolver.resolve(path);
 
         // 2. 读文件, 找 oldText
         String text;

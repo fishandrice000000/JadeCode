@@ -1,70 +1,69 @@
 package com.jadecode.safety;
 
-import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 
 /**
- * PathGuard 路径围栏
+ * PathGuard 路径分类器(v2)
  *
- * 所有文件工具的统一入口校验:来自模型的任何路径,解析后都必须仍在工作区内,
- * 否则抛 IllegalArgumentException(工具层负责转成错误字符串)。
+ * 从 s02 的"硬拦器"转型为"分类器":解析路径后分三类——
+ * 工作区内(放行)/ 高危区(闸门 1 硬拒)/ 工作区外(闸门 2 询问)。
+ * 只做判断,不抛异常;拒绝与否由 PermissionGate 决定。
  *
- * 三层防线(对应课程 safe_path 的 .resolve() + is_relative_to):
- * 1. 词法归一化:挡绝对路径与 .. 穿透
- * 2. 逐段解析符号链接(词法展开链接目标,悬空链接同样被防)——Java 没有
- * Python resolve() 的等价物,这一层是它的手工移植
- * 3. 与工作区真实路径比对
+ * 注意:裸工具路线下,工具本身不再调用本类——分类结果经闸门生效,
+ * 单点执法是已接受的取舍(见 docs/jobs/v2/path-fence.md)。
  */
 public class PathGuard {
-    private final Path workspace; // 词法工作区(启动时绝对路径,归一化后)
-    private final Path workspaceReal; // 真实工作区(符号链接已解析)
+    // 学习项目清单:不完整,不是完整安全边界(课程对 deny list 同定位)
+    private static final List<String> HIGH_RISK = List.of(
+            "/etc", "/boot", "/dev", "/sys", "/proc", "/bin", "/sbin", "/lib", "/lib64", "/usr", "/var");
 
-    public PathGuard(Path workspace) {
-        this.workspace = workspace.toAbsolutePath().normalize();
-        try {
-            this.workspaceReal = this.workspace.toRealPath();
-        } catch (IOException e) {
-            // 工作区都解析不了,程序没必要继续跑
-            throw new IllegalStateException("工作区不存在或不可访问: " + workspace, e);
-        }
+    private final PathResolver resolver;
+
+    public PathGuard(PathResolver resolver) {
+        this.resolver = resolver;
     }
 
-    /** 工作区词法路径(GlobTool 这类需要遍历工作区的工具用) */
-    public Path workspace() {
-        return workspace;
+    /** 闸门 1 用:解析后路径落在高危区内 → 命中理由,否则 null */
+    public String highRiskReason(String raw) {
+        Path p = resolver.resolve(raw);
+        return isHighRisk(p) ? "Access to protected directory: " + p : null;
     }
 
-    /**
-     * 校验路径,返回可在工作区内安全使用的词法路径。
-     * 越界抛 IllegalArgumentException,消息可直接展示给模型看。
-     */
-    public Path check(String path) {
-        Path p = workspace.resolve(path).normalize();
-        if (!p.startsWith(workspace)) {
-            throw new IllegalArgumentException("路径越出工作区: " + path);
+    /** 闸门 2 用:解析后路径在工作区外且非高危 → 命中理由,否则 null */
+    public String outsideReason(String raw) {
+        Path p = resolver.resolve(raw);
+        if (isHighRisk(p) || p.startsWith(resolver.workspaceReal())) {
+            return null;
         }
+        return "Access outside workspace";
+    }
 
-        // 从工作区真实路径出发,逐段下探;每段若是符号链接,词法展开其目标再继续。
-        // 悬空链接也能展开:isSymbolicLink 只看链接本身,不看目标是否存在。
-        Path real = workspaceReal;
-        for (Path seg : workspace.relativize(p)) {
-            real = real.resolve(seg);
-            if (Files.isSymbolicLink(real)) {
-                real = real.getParent().resolve(readLink(real)).normalize();
+    /** 高危目录清单(CommandPolicy 构造 bash 路径片段规则用,单一真相源) */
+    static List<String> highRiskDirs() {
+        return HIGH_RISK;
+    }
+
+    /** 词法前缀比对;目录本身是符号链接时再比对其真实路径(如 macOS 的 /tmp) */
+    private static boolean isHighRisk(Path p) {
+        for (String dir : HIGH_RISK) {
+            Path d = Path.of(dir);
+            if (p.startsWith(d)) {
+                return true;
+            }
+            if (Files.isDirectory(d) && p.startsWith(realOf(d))) {
+                return true;
             }
         }
-        if (!real.startsWith(workspaceReal)) {
-            throw new IllegalArgumentException("路径越出工作区: " + path);
-        }
-        return p;
+        return false;
     }
 
-    private static Path readLink(Path link) {
+    private static Path realOf(Path p) {
         try {
-            return Files.readSymbolicLink(link);
-        } catch (IOException e) {
-            throw new IllegalStateException("符号链接不可读: " + link, e);
+            return p.toRealPath();
+        } catch (Exception e) {
+            return p; // 不存在/不可读:保持词法,词法比对已在上一步做过
         }
     }
 }

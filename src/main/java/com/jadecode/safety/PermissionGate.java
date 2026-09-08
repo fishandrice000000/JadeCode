@@ -11,6 +11,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 
 public class PermissionGate {
     private final CommandPolicy policy;
+    private final PathGuard guard;
     private final Approval approval;
     private final Thread mainThread;
     private final List<Rule> hardRules; // 闸门 1:命中即拒,不询问
@@ -20,17 +21,19 @@ public class PermissionGate {
             new InputStreamReader(System.in, StandardCharsets.UTF_8));
 
     // 装配用:审批 = 真实控制台交互
-    public PermissionGate(CommandPolicy policy) {
+    public PermissionGate(CommandPolicy policy, PathGuard guard) {
         this.policy = policy;
+        this.guard = guard;
         this.mainThread = Thread.currentThread();
         this.approval = this::consoleApproval;
-        this.hardRules = buildHardRules(); // 在构造器里建表:字段初始化器拿不到 policy
+        this.hardRules = buildHardRules(); // 在构造器里建表:字段初始化器拿不到 policy/guard
         this.askRules = buildAskRules();
     }
 
     // 测试用:审批 = 注入的假货
-    public PermissionGate(CommandPolicy policy, Approval approval) {
+    public PermissionGate(CommandPolicy policy, PathGuard guard, Approval approval) {
         this.policy = policy;
+        this.guard = guard;
         this.approval = approval;
         this.mainThread = Thread.currentThread();
         this.hardRules = buildHardRules();
@@ -41,14 +44,20 @@ public class PermissionGate {
     private List<Rule> buildHardRules() {
         return List.of(
                 new Rule(List.of("bash"),
-                        input -> policy.checkDenyList(input.path("command").asText(""))));
+                        input -> policy.checkDenyList(input.path("command").asText(""))),
+                new Rule(List.of("read_file", "write_file", "edit_file"),
+                        input -> guard.highRiskReason(input.path("path").asText(""))));
     }
 
     // 闸门 2 问询表:命中 → 交给闸门 3 审批
     private List<Rule> buildAskRules() {
         return List.of(
                 new Rule(List.of("bash"),
-                        input -> policy.checkRules(input.path("command").asText(""))));
+                        input -> policy.checkRules(input.path("command").asText(""))),
+                new Rule(List.of("bash"),
+                        input -> policy.checkProtectedDirs(input.path("command").asText(""))),
+                new Rule(List.of("read_file", "write_file", "edit_file"),
+                        input -> guard.outsideReason(input.path("path").asText(""))));
     }
 
     // 默认审批的实现,方法引用指向它
@@ -75,23 +84,23 @@ public class PermissionGate {
         }
     }
 
-    // 三道闸门串联;false = 拒绝(loop 回灌 "Permission denied."),true = 放行
-    public boolean check(String toolName, ObjectNode input) {
+    // 三道闸门串联;返回 null = 放行,非 null = 拒绝理由(loop 据此回灌带原因的消息)
+    public String check(String toolName, ObjectNode input) {
         // 闸门 1:查硬拒表;命中 → 打印 + 拒绝(不询问)
         String denied = findReason(hardRules, toolName, input);
         if (denied != null) {
             System.out.println("[blocked] " + denied);
-            return false;
+            return denied;
         }
 
         // 闸门 2:查询问表;没命中 → 放行
         String reason = findReason(askRules, toolName, input);
         if (reason == null) {
-            return true;
+            return null;
         }
 
-        // 闸门 3:审批
-        return approval.ask(toolName, input, reason);
+        // 闸门 3:审批;拒绝时把命中理由带回去,让模型知道边界
+        return approval.ask(toolName, input, reason) ? null : reason;
     }
 
     /** 遍历规则表:返回适用该工具且命中的第一条规则的理由;无命中返回 null */

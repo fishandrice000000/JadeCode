@@ -34,4 +34,13 @@ class CommandPolicyTest {
         assertEquals("Potentially destructive command", policy.checkRules("> /etc/x"));
         assertNull(policy.checkRules("echo hi"));
     }
+
+    /** ④ 高危目录片段:cat /etc/hostname 命中;普通命令不命中 */
+    @Test
+    void protectedDirFragmentsHit() {
+        assertEquals("Potentially touches protected directory",
+                policy.checkProtectedDirs("cat /etc/hostname"));
+        assertNull(policy.checkProtectedDirs("ls /tmp"));
+        assertNull(policy.checkProtectedDirs("echo hi"));
+    }
 }

@@ -37,4 +37,16 @@ public class CommandPolicy {
 
         return null;
     }
+
+    // 闸门 2 的 bash 部分追加:命令中出现高危目录路径片段 → 询问。
+    // 堵 bash 旁路文件高危防线的洞(cat /etc/hostname 之类);
+    // 片段由 PathGuard 高危清单派生(目录 + "/"),单一真相源。
+    public String checkProtectedDirs(String command) {
+        for (String dir : PathGuard.highRiskDirs()) {
+            if (command.contains(dir + "/")) {
+                return "Potentially touches protected directory";
+            }
+        }
+        return null;
+    }
 }
