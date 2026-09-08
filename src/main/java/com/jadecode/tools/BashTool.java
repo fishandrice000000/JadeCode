@@ -10,7 +10,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 public class BashTool implements Tool {
-    private static final List<String> DANGEROUS = List.of("rm -rf /", "sudo", "shutdown", "reboot", "> /dev/");
     private static final int MAX_OUTPUT = 50000;
 
     private final long timeoutSeconds;
@@ -53,14 +52,7 @@ public class BashTool implements Tool {
     }
 
     private String run(String command) {
-        // 1. 确认 command 无害
-        for (String d : DANGEROUS) {
-            if (command.contains(d)) {
-                return "Error: Dangerous command blocked";
-            }
-        }
-
-        // 2. 启动进程:sh -c 执行,stderr 并流进 stdout
+        // 1. 启动进程:sh -c 执行,stderr 并流进 stdout
         ProcessBuilder pb = new ProcessBuilder("/bin/sh", "-c", command);
         pb.redirectErrorStream(true);
         Process process;
@@ -70,7 +62,7 @@ public class BashTool implements Tool {
             return "Error: " + e.getMessage(); // 进程起不来(比如 sh 不存在)
         }
 
-        // 3. 等待结束,带超时——先等后读(坑 3 的顺序)
+        // 2. 等待结束,带超时——先等后读(坑 3 的顺序)
         boolean finished;
         try {
             finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
@@ -85,7 +77,7 @@ public class BashTool implements Tool {
             return "Error: Timeout (" + timeoutSeconds + "s)";
         }
 
-        // 4. 进程已结束,读输出(UTF-8,坏字节自动替换成 U+FFFD)
+        // 3. 进程已结束,读输出(UTF-8,坏字节自动替换成 U+FFFD)
         String out;
         try {
             byte[] bytes = process.getInputStream().readAllBytes();
@@ -94,7 +86,7 @@ public class BashTool implements Tool {
             return "Error: " + e.getMessage();
         }
 
-        // 5. 空输出与截断
+        // 4. 空输出与截断
         if (out.isEmpty()) {
             return "(no output)";
         }
