@@ -13,7 +13,8 @@ public class PermissionGate {
     private final CommandPolicy policy;
     private final Approval approval;
     private final Thread mainThread;
-    private final List<Rule> rules;
+    private final List<Rule> hardRules; // 闸门 1:命中即拒,不询问
+    private final List<Rule> askRules; // 闸门 2:命中 → 交给闸门 3 审批
     // 控制台输入只建一个,与 ReplCommand 同款(坑 6)
     private final BufferedReader console = new BufferedReader(
             new InputStreamReader(System.in, StandardCharsets.UTF_8));
@@ -23,7 +24,8 @@ public class PermissionGate {
         this.policy = policy;
         this.mainThread = Thread.currentThread();
         this.approval = this::consoleApproval;
-        this.rules = buildRules(); // 在构造器里建表:字段初始化器拿不到 policy
+        this.hardRules = buildHardRules(); // 在构造器里建表:字段初始化器拿不到 policy
+        this.askRules = buildAskRules();
     }
 
     // 测试用:审批 = 注入的假货
@@ -31,11 +33,19 @@ public class PermissionGate {
         this.policy = policy;
         this.approval = approval;
         this.mainThread = Thread.currentThread();
-        this.rules = buildRules();
+        this.hardRules = buildHardRules();
+        this.askRules = buildAskRules();
     }
 
-    // 规则表(课程 PERMISSION_RULES 的 Java 形状):检查函数返回命中理由,null = 不命中
-    private List<Rule> buildRules() {
+    // 闸门 1 硬拒表:命中即拒,不询问
+    private List<Rule> buildHardRules() {
+        return List.of(
+                new Rule(List.of("bash"),
+                        input -> policy.checkDenyList(input.path("command").asText(""))));
+    }
+
+    // 闸门 2 问询表:命中 → 交给闸门 3 审批
+    private List<Rule> buildAskRules() {
         return List.of(
                 new Rule(List.of("bash"),
                         input -> policy.checkRules(input.path("command").asText(""))));
@@ -67,31 +77,34 @@ public class PermissionGate {
 
     // 三道闸门串联;false = 拒绝(loop 回灌 "Permission denied."),true = 放行
     public boolean check(String toolName, ObjectNode input) {
-        // 闸门 1:硬拒绝列表(仅 bash,课程同款);命中 → 打印 + 拒绝(不询问)
-        if (toolName.equals("bash")) {
-            String denied = policy.checkDenyList(input.path("command").asText(""));
-            if (denied != null) {
-                System.out.println("[blocked] " + denied);
-                return false;
-            }
+        // 闸门 1:查硬拒表;命中 → 打印 + 拒绝(不询问)
+        String denied = findReason(hardRules, toolName, input);
+        if (denied != null) {
+            System.out.println("[blocked] " + denied);
+            return false;
         }
 
-        // 闸门 2:按顺序遍历规则表,第一条命中即止(课程 check_rules 同款短路)
-        String reason = null;
-        for (Rule rule : rules) {
-            if (rule.tools().contains(toolName)) {
-                reason = rule.reason(input);
-                if (reason != null) {
-                    break;
-                }
-            }
-        }
+        // 闸门 2:查询问表;没命中 → 放行
+        String reason = findReason(askRules, toolName, input);
         if (reason == null) {
-            return true; // 没有规则命中 → 放行(非 bash 工具自然走到这里)
+            return true;
         }
 
         // 闸门 3:审批
         return approval.ask(toolName, input, reason);
+    }
+
+    /** 遍历规则表:返回适用该工具且命中的第一条规则的理由;无命中返回 null */
+    private static String findReason(List<Rule> rules, String toolName, ObjectNode input) {
+        for (Rule rule : rules) {
+            if (rule.tools().contains(toolName)) {
+                String reason = rule.reason(input);
+                if (reason != null) {
+                    return reason;
+                }
+            }
+        }
+        return null;
     }
 
     /** 一条权限规则:适用哪些工具 + 检查函数(返回命中理由,null = 放行) */
