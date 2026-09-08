@@ -13,6 +13,7 @@ import com.jadecode.messages.ContentBlock;
 import com.jadecode.messages.Message;
 import com.jadecode.messages.ToolResultBlock;
 import com.jadecode.messages.ToolUseBlock;
+import com.jadecode.safety.PermissionGate;
 import com.jadecode.tools.Tool;
 import com.jadecode.util.Json;
 
@@ -21,12 +22,14 @@ public class AgentLoop {
     private final Map<String, Tool> tools; // 分发表:tool_use 的 name → 工具实例
     private final String system;
     private final int maxTokens;
+    private final PermissionGate gate; // 工具执行前的权限闸门
 
-    public AgentLoop(LlmClient client, Map<String, Tool> tools, String system, int maxTokens) {
+    public AgentLoop(LlmClient client, Map<String, Tool> tools, String system, int maxTokens, PermissionGate gate) {
         this.client = client;
         this.tools = tools;
         this.system = system;
         this.maxTokens = maxTokens;
+        this.gate = gate;
     }
 
     /** 在传入的 messages 上原地续跑,直到模型不再调工具为止 */
@@ -65,11 +68,14 @@ public class AgentLoop {
                     continue;
                 }
 
-                // 5.2 使用的工具在分发表中, 执行工具并收集结果
+                // 5.2 使用的工具在分发表中, 先过权限闸门, 再执行
                 // 需检查 input 是否为 ObjectNode
-                results.add(new ToolResultBlock(
-                        u.id(),
-                        tool.execute(u.input() instanceof ObjectNode node ? node : Json.mapper().createObjectNode())));
+                ObjectNode node = u.input() instanceof ObjectNode o ? o : Json.mapper().createObjectNode();
+                if (!gate.check(u.name(), node)) {
+                    results.add(new ToolResultBlock(u.id(), "Permission denied."));
+                    continue;
+                }
+                results.add(new ToolResultBlock(u.id(), tool.execute(node)));
             }
 
             // 6. 全部结果合成一条 user 消息:messages.add(Message.userBlocks(results))

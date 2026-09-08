@@ -15,6 +15,8 @@ import com.jadecode.messages.Role;
 import com.jadecode.messages.TextBlock;
 import com.jadecode.messages.ToolResultBlock;
 import com.jadecode.messages.ToolUseBlock;
+import com.jadecode.safety.CommandPolicy;
+import com.jadecode.safety.PermissionGate;
 import com.jadecode.tools.BashTool;
 import com.jadecode.util.Json;
 import org.junit.jupiter.api.Test;
@@ -23,10 +25,15 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class AgentLoopTest {
 
+    /** 恒放行闸门:既有用例的命令都不触发规则,审批永不真正询问 */
+    private static PermissionGate permissiveGate() {
+        return new PermissionGate(new CommandPolicy(), (n, i, r) -> true);
+    }
+
     /** 预置脚本并立即跑循环。脚本耗尽时假客户端会抛异常——无限循环的保护伞 */
     private List<Message> runWith(String userText, ModelResponse... script) throws Exception {
         AgentLoop loop = new AgentLoop(new ScriptedLlmClient(script),
-                Map.of("bash", new BashTool()), "test-system", 8000);
+                Map.of("bash", new BashTool()), "test-system", 8000, permissiveGate());
         List<Message> messages = new ArrayList<>();
         messages.add(Message.userText(userText));
         loop.run(messages);
@@ -118,7 +125,7 @@ class AgentLoopTest {
     void requestCarriesInjectedConfig() throws Exception {
         ScriptedLlmClient scripted = new ScriptedLlmClient(assistant(new TextBlock("done")));
         RecordingLlmClient recording = new RecordingLlmClient(scripted);
-        AgentLoop loop = new AgentLoop(recording, Map.of("bash", new BashTool()), "test-system", 8000);
+        AgentLoop loop = new AgentLoop(recording, Map.of("bash", new BashTool()), "test-system", 8000, permissiveGate());
 
         loop.run(new ArrayList<>(List.of(Message.userText("hi"))));
 
@@ -129,5 +136,24 @@ class AgentLoopTest {
         assertEquals(8000, req.maxTokens());
         assertEquals(1, req.tools().size());
         assertEquals("bash", req.tools().get(0).name());
+    }
+
+    /** ⑦ 闸门拒绝:回灌 "Permission denied.",工具不执行,循环继续直到文本收尾 */
+    @Test
+    void deniedToolReturnsPermissionDeniedAndLoopContinues() throws Exception {
+        PermissionGate strict = new PermissionGate(new CommandPolicy(), (n, i, r) -> false);
+        AgentLoop loop = new AgentLoop(new ScriptedLlmClient(
+                assistant(toolUse("toolu_1", "bash", "rm foo.txt")),
+                assistant(new TextBlock("done"))),
+                Map.of("bash", new BashTool()), "test-system", 8000, strict);
+        List<Message> messages = new ArrayList<>();
+        messages.add(Message.userText("delete a file"));
+        loop.run(messages);
+
+        assertEquals(4, messages.size());
+        ToolResultBlock r = (ToolResultBlock) messages.get(2).content().get(0);
+        assertEquals("toolu_1", r.toolUseId());
+        assertEquals("Permission denied.", r.content());
+        assertEquals("done", messages.get(3).extractText());
     }
 }
