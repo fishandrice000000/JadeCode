@@ -36,11 +36,12 @@ class MainTest {
         assertEquals("hello world", sub.matchedPositional(0).getValue());
     }
 
-    /** ④ systemPrompt:课程原文 + cwd 拼接 */
+    /** ④ systemPrompt:课程原文 + cwd 拼接(s03 起追加权限提示句) */
     @Test
     void systemPromptIncludesCwd() {
         assertEquals(
-                "You are a coding agent at /home/fishandrice. Use bash to solve tasks. Act, don't explain.",
+                "You are a coding agent at /home/fishandrice. Use bash to solve tasks. Act, don't explain."
+                        + " All destructive operations require user approval.",
                 Main.systemPrompt(Path.of("/home/fishandrice")));
     }
 

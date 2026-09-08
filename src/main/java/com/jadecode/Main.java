@@ -10,7 +10,9 @@ import com.jadecode.cli.RunCommand;
 import com.jadecode.config.AppConfig;
 import com.jadecode.config.Env;
 import com.jadecode.llm.AnthropicSdkLlmClient;
+import com.jadecode.safety.CommandPolicy;
 import com.jadecode.safety.PathGuard;
+import com.jadecode.safety.PermissionGate;
 import com.jadecode.tools.BashTool;
 import com.jadecode.tools.EditFileTool;
 import com.jadecode.tools.GlobTool;
@@ -39,6 +41,8 @@ public class Main implements Callable<Integer> {
         AppConfig config = AppConfig.fromEnv(Env.loadDotEnv());
         Path cwd = Path.of("").toAbsolutePath();
         PathGuard guard = new PathGuard(cwd); // 四个文件工具共享同一围栏
+        CommandPolicy policy = new CommandPolicy();
+        PermissionGate gate = new PermissionGate(policy); // 装配路径:默认审批(控制台 y/N)
         return new AgentLoop(new AnthropicSdkLlmClient(config),
                 Map.of("bash", new BashTool(),
                         "read_file", new ReadFileTool(guard),
@@ -46,11 +50,13 @@ public class Main implements Callable<Integer> {
                         "edit_file", new EditFileTool(guard),
                         "glob", new GlobTool(guard)),
                 systemPrompt(cwd), // 启动时取一次 cwd
-                config.maxTokens());
+                config.maxTokens(),
+                gate);
     }
 
     /** 纯函数:拼出课程原文的 system prompt(参数化 cwd 是为了可测试) */
     static String systemPrompt(Path cwd) {
-        return "You are a coding agent at " + cwd + ". Use bash to solve tasks. Act, don't explain.";
+        return "You are a coding agent at " + cwd + ". Use bash to solve tasks. Act, don't explain."
+                + " All destructive operations require user approval.";
     }
 }
