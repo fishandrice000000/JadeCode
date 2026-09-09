@@ -11,4 +11,9 @@ if [ ! -f "$JAR" ]; then
   echo "找不到 $JAR — 先构建: mvn -q package" >&2
   exit 1
 fi
+
+# repl 交互才套 rlwrap(方向键/历史/行内编辑);未安装或非交互时自动降级
+if [ "$1" = "repl" ] && command -v rlwrap >/dev/null 2>&1; then
+  exec rlwrap "$JAVA_HOME/bin/java" -jar "$JAR" repl
+fi
 exec "$JAVA_HOME/bin/java" -jar "$JAR" "$@"
