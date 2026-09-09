@@ -26,6 +26,7 @@ import com.jadecode.tools.GlobTool;
 import com.jadecode.tools.ReadFileTool;
 import com.jadecode.tools.Tool;
 import com.jadecode.tools.WriteFileTool;
+import com.jadecode.util.Ansi;
 import com.jadecode.util.Json;
 
 import picocli.CommandLine;
@@ -80,7 +81,7 @@ public class Main implements Callable<Integer> {
     // UserPromptSubmit:记录当前工作目录。返回值调用方忽略
     private static Hooks.Hook promptContextHook(Path cwd) {
         return params -> {
-            System.out.println("[HOOK] UserPromptSubmit: working in " + cwd);
+            System.out.println(Ansi.gray("[HOOK] UserPromptSubmit: working in " + cwd));
             return null;
         };
     }
@@ -107,7 +108,7 @@ public class Main implements Callable<Integer> {
     private static Hooks.Hook logCallHook() {
         return params -> {
             ToolUseBlock block = (ToolUseBlock) params.get(Hooks.PARAM_BLOCK);
-            System.out.println("[HOOK] " + block.name());
+            System.out.println(Ansi.gray("[HOOK] " + block.name()));
             return null;
         };
     }
@@ -118,7 +119,7 @@ public class Main implements Callable<Integer> {
             ToolUseBlock block = (ToolUseBlock) params.get(Hooks.PARAM_BLOCK);
             String output = (String) params.get(Hooks.PARAM_OUTPUT);
             if (output.length() > 100000) {
-                System.out.println("[HOOK] WARNING: Large output from " + block.name());
+                System.out.println(Ansi.yellow("[HOOK] WARNING: Large output from " + block.name()));
             }
             return null;
         };
@@ -131,7 +132,7 @@ public class Main implements Callable<Integer> {
             List<Message> messages = (List<Message>) params.get(Hooks.PARAM_MESSAGES);
             long n = messages.stream().flatMap(m -> m.content().stream())
                     .filter(b -> b instanceof ToolResultBlock).count();
-            System.out.println("[HOOK] Stop: session used " + n + " tool calls");
+            System.out.println(Ansi.gray("[HOOK] Stop: session used " + n + " tool calls"));
             return null;
         };
     }
