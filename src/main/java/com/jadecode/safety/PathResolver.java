@@ -15,9 +15,15 @@ import java.util.Iterator;
  * 只提供机制,不做政策:越界、高危的判断由 PathGuard 负责。
  */
 public class PathResolver {
-    private final Path workspace; // 词法工作区(绝对路径,归一化后)
-    private final Path workspaceReal; // 真实工作区(符号链接已解析)
+    /** 词法工作区(绝对路径,归一化后) */
+    private final Path workspace;
+    /** 真实工作区(符号链接已解析) */
+    private final Path workspaceReal;
 
+    /**
+     * @param workspace 工作区根目录;须存在且可访问
+     * @throws IllegalStateException 工作区解析不出真实路径
+     */
     public PathResolver(Path workspace) {
         this.workspace = workspace.toAbsolutePath().normalize();
         try {
@@ -64,6 +70,7 @@ public class PathResolver {
         return walkSegments(base, segments.iterator());
     }
 
+    /** walk 的递归体:逐段消费迭代器,符号链接读目标后从目标继续 */
     private static Path walkSegments(Path base, Iterator<Path> segments) {
         if (!segments.hasNext()) {
             return base;

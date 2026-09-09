@@ -4,9 +4,11 @@ import com.fasterxml.jackson.annotation.JsonSubTypes;
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
 
 /**
- * ContentBlock 接口
- * 
- * 注册 JSON 反序列化时, 根据 type 字段应该转换成什么对象
+ * ContentBlock -- 消息内容块(sealed)。
+ *
+ * <p>三个实现:TextBlock("text")/ ToolUseBlock("tool_use")/ ToolResultBlock("tool_result")。
+ * 下面两个注解让 Jackson 按 "type" 字段决定反序列化成哪个实现——线上 JSON 与内部模型的
+ * 往返全靠它,新增块类型必须同步这里。</p>
  */
 @JsonTypeInfo(use = JsonTypeInfo.Id.NAME, include = JsonTypeInfo.As.PROPERTY, property = "type")
 @JsonSubTypes({

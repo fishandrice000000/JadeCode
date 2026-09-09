@@ -19,8 +19,12 @@ public class PathGuard {
     private static final List<String> HIGH_RISK = List.of(
             "/etc", "/boot", "/dev", "/sys", "/proc", "/bin", "/sbin", "/lib", "/lib64", "/usr", "/var");
 
+    /** 路径解析器:所有判定都基于它解析后的路径 */
     private final PathResolver resolver;
 
+    /**
+     * @param resolver 路径解析器
+     */
     public PathGuard(PathResolver resolver) {
         this.resolver = resolver;
     }
@@ -59,6 +63,7 @@ public class PathGuard {
         return false;
     }
 
+    /** toRealPath 的容错版:不存在/不可读时退回词法路径 */
     private static Path realOf(Path p) {
         try {
             return p.toRealPath();

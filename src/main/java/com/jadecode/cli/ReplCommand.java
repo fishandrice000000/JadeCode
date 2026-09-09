@@ -18,8 +18,22 @@ import com.jadecode.util.Ansi;
 
 import picocli.CommandLine.Command;
 
+/**
+ * repl 子命令:交互式多轮对话。
+ *
+ * <p>
+ * 循环:收一条 query → 触发 UserPromptSubmit → 追加 user 消息 → 跑 AgentLoop →
+ * 打印最终回复。history 跨迭代存活,是多轮对话的全部状态。
+ * 调用模型失败只报错不退出循环——交互会话要韧,一次失败不杀整个会话。
+ * </p>
+ */
 @Command(name = "repl", description = "进入交互循环:多轮对话,行尾 \\ 续行,q/exit 或 Ctrl+D 退出")
 public class ReplCommand implements Callable<Integer> {
+    /**
+     * REPL 主循环:每轮收一条任务、跑一次 agent、打印回复,直到退出词或 EOF。
+     *
+     * @return 退出码:0 正常退出;1 读取输入失败(输入流异常)
+     */
     @Override
     public Integer call() {
         // 1. 装配
