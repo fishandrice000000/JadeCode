@@ -18,7 +18,7 @@ import com.jadecode.util.Ansi;
 
 import picocli.CommandLine.Command;
 
-@Command(name = "repl", description = "进入交互循环:多轮对话,输入 q 或 Ctrl+D 退出")
+@Command(name = "repl", description = "进入交互循环:多轮对话,行尾 \\ 续行,q/exit 或 Ctrl+D 退出")
 public class ReplCommand implements Callable<Integer> {
     @Override
     public Integer call() {
@@ -32,25 +32,18 @@ public class ReplCommand implements Callable<Integer> {
         // 3. history 必须在循环外——多轮对话的连续性全靠它跨迭代存活
         List<Message> history = new ArrayList<>();
 
-        System.out.println("JadeCode REPL — 输入任务回车发送,q/exit 或 Ctrl+D 退出");
+        System.out.println("JadeCode REPL — 输入任务回车发送;行尾 \\ 可跨行续写;q/exit 或 Ctrl+D 退出");
         while (true) {
-            System.out.print(Ansi.cyan("JadeCode >> "));
-            System.out.flush();
-
-            String line;
+            String query;
             try {
-                line = reader.readLine();
+                query = collectQuery(reader); // null = 退出(EOF 或退出词)
             } catch (IOException e) {
                 // 输入流坏了:打印后退出,返回 1
                 System.err.println("读取输入失败: " + e.getMessage());
                 return 1;
             }
-            if (line == null) {
-                break; // EOF(Ctrl+D)
-            }
-            String query = line.strip();
-            if (query.isEmpty() || query.equalsIgnoreCase("q") || query.equalsIgnoreCase("exit")) {
-                break;
+            if (query == null) {
+                break; // EOF(Ctrl+D)或退出词
             }
 
             loop.hooks().trigger(Hooks.USER_PROMPT_SUBMIT, Map.of(Hooks.PARAM_QUERY, query));
@@ -65,5 +58,35 @@ public class ReplCommand implements Callable<Integer> {
             }
         }
         return 0;
+    }
+
+    /** 收集一条 query:行尾恰好一个反斜杠 → 剥掉它、软换行继续收(Claude Code 同款交互);
+     * 两个反斜杠结尾是字面量,不续行。续行中途 EOF 时把已收集的按现状提交 */
+    private static String collectQuery(BufferedReader reader) throws IOException {
+        StringBuilder sb = new StringBuilder();
+        System.out.print(Ansi.cyan("JadeCode >> "));
+        System.out.flush();
+        String line = reader.readLine();
+        while (line != null && endsWithSoftBreak(line)) {
+            sb.append(line, 0, line.length() - 1).append('\n'); // 续行符本身不进任务文本
+            System.out.print(Ansi.gray("> ")); // rlwrap 会把无换行的输出识别为新提示符
+            System.out.flush();
+            line = reader.readLine();
+        }
+        if (line != null) {
+            sb.append(line);
+        }
+        return normalize(sb);
+    }
+
+    /** 行尾恰好一个反斜杠才续行(源码里 \\ 即字面双反斜杠,不续) */
+    private static boolean endsWithSoftBreak(String line) {
+        return line.endsWith("\\") && !line.endsWith("\\\\");
+    }
+
+    /** strip 后判退出词:空行/q/exit → null(退出);否则返回整条任务文本(可含软换行) */
+    private static String normalize(StringBuilder sb) {
+        String query = sb.toString().strip();
+        return query.isEmpty() || query.equalsIgnoreCase("q") || query.equalsIgnoreCase("exit") ? null : query;
     }
 }
