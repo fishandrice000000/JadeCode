@@ -8,16 +8,32 @@ import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
 
+/**
+ * .env 文件解析器 + 配置查询入口。
+ *
+ * <p>
+ * 解析规则:逐行 trim;空行与 # 注释跳过;无 '=' 或 key 为空跳过;重复 key 后者胜。
+ * 查询时先查 .env 解析结果,再回退 {@link System#getenv(String)}——.env 覆盖系统环境,
+ * 与课程 override=True 语义一致。
+ * </p>
+ */
 public final class Env {
-    // .env 文件的解析结果
+    /** .env 文件的解析结果(key → value,已 trim) */
     private final Map<String, String> vars;
 
+    /** 私有构造:统一从 load / loadDotEnv / of 进入 */
     private Env(Map<String, String> map) {
         this.vars = new HashMap<String, String>();
         vars.putAll(map);
     }
 
-    // 指定目录解析 env 文件, 内容存储到 vars 中
+    /**
+     * 解析指定 .env 文件。
+     *
+     * @param file .env 文件路径
+     * @return 解析出的配置集
+     * @throws IOException 文件读取失败
+     */
     public static Env load(Path file) throws IOException {
         Map<String, String> map = new HashMap<>();
         for (String line : Files.readAllLines(file, StandardCharsets.UTF_8)) {
@@ -34,11 +50,18 @@ public final class Env {
         return new Env(map);
     }
 
-    // 尝试在默认目录解析 env 文件, 内容存储到 vars 中
+    /** 从当前目录加载 .env;文件不存在时返回空配置(不报错——缺项由 AppConfig 判) */
     public static Env loadDotEnv() {
         return loadDotEnv(Path.of("")); // 空路径即当前目录,行为与原来一致
     }
 
+    /**
+     * 从指定目录加载 .env。
+     *
+     * @param dir 目录;其中不存在 .env 时返回空配置
+     * @return 解析出的配置集
+     * @throws UncheckedIOException 文件存在但读取失败
+     */
     public static Env loadDotEnv(Path dir) {
         Path dotenv = dir.resolve(".env");
         if (!Files.exists(dotenv)) {
@@ -51,18 +74,29 @@ public final class Env {
         }
     }
 
-    // 测试用, 直接从内存中的 Map 中加载到 vars 中
+    /** 测试用:直接从内存 Map 构造,绕开文件系统 */
     static Env of(Map<String, String> map) {
         return new Env(map);
     }
 
-    // 查询一个可选配置是否在 vars 中, 没有就查 System.getenv(), 再没有返回 null
+    /**
+     * 查询可选配置:.env 优先,回退系统环境变量。
+     *
+     * @param key 配置名
+     * @return 配置值;两处都没有则 null
+     */
     public String get(String key) {
         String value = vars.get(key);
         return value != null ? value : System.getenv(key);
     }
 
-    // 查询一个必填配置是否在 vars 或者在系统变量中, 没有就抛异常
+    /**
+     * 查询必填配置:.env 优先,回退系统环境变量。
+     *
+     * @param key 配置名
+     * @return 配置值(非 null)
+     * @throws IllegalStateException 两处都没有该配置
+     */
     public String required(String key) throws IllegalStateException {
         String result = get(key);
         if (result != null)

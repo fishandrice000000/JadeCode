@@ -10,33 +10,61 @@ import java.util.Map;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jadecode.safety.PathResolver;
 
+/**
+ * read_file:按 UTF-8 读文本文件,返回内容(逐行 join);可选 limit 截断行数。
+ *
+ * <p>路径解析与越界裁决交给 PathResolver,本工具只按解析结果读文件;
+ * 读不到(不存在/无权限)回 "Error: ..." 文案。</p>
+ */
 public class ReadFileTool implements Tool {
+    /** 路径解析器:解析目标路径;越界与否由闸门裁决 */
     private final PathResolver resolver;
 
+    /**
+     * @param resolver 路径解析器;Main 装配时注入
+     */
     public ReadFileTool(PathResolver resolver) {
         this.resolver = resolver;
     }
 
+    /**
+     * @return 工具名 "read_file"
+     */
     @Override
     public String name() {
         return "read_file";
     }
 
+    /**
+     * @return 给模型的说明:读文件内容
+     */
     @Override
     public String description() {
         return "Read file contents.";
     }
 
+    /**
+     * @return 参数表:path(string,必填)、limit(integer,可选,只读前 N 行)
+     */
     @Override
     public Map<String, String> properties() {
         return Map.of("path", "string", "limit", "integer");
     }
 
+    /**
+     * @return 必填 [path];limit 缺省读全文
+     */
     @Override
     public List<String> required() {
         return List.of("path");
     }
 
+    /**
+     * 按 required() 检查缺失参数,然后透传 {@link #run(String, Integer)}。
+     *
+     * @param input 模型参数,须含 path;limit 可选
+     * @return 文件文本;错误 "Error: ..." 文案
+     */
     @Override
     public String execute(ObjectNode input) {
         for (String key : required()) {
@@ -48,6 +76,10 @@ public class ReadFileTool implements Tool {
         return run(input.get("path").asText(), input.get("limit") == null ? null : input.get("limit").asInt());
     }
 
+    /**
+     * 读文件并应用截断:仅当 limit 非 null 且大于 0、行数确实超出时才截,
+     * 尾部补一行说明省略了多少行;空路径或 IO 失败走 "Error: ..."。
+     */
     private String run(String path, Integer limit) {
         List<String> lines;
         // 1.1 检查路径是否为空

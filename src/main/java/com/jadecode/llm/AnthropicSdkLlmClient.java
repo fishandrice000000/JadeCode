@@ -29,9 +29,16 @@ import com.jadecode.tools.Tool;
  * 项目其余部分不认识 SDK 类型。SDK 类型全部用全限定名,隔离边界在代码里可见。
  */
 public class AnthropicSdkLlmClient implements LlmClient {
+    /** SDK 客户端:本类之外不出现(隔离边界) */
     private final AnthropicClient client;
+    /** 模型 id,每次请求都带上 */
     private final String model;
 
+    /**
+     * 用配置里的 apiKey / baseUrl / model 建客户端;SDK 自动在 baseUrl 后拼 /v1/messages。
+     *
+     * @param config 运行期配置(见 {@link AppConfig})
+     */
     public AnthropicSdkLlmClient(AppConfig config) {
         this.client = AnthropicOkHttpClient.builder()
                 .apiKey(config.apiKey())
@@ -40,6 +47,13 @@ public class AnthropicSdkLlmClient implements LlmClient {
         this.model = config.model();
     }
 
+    /**
+     * 同步调一次模型:内部请求 → SDK 参数 → 发送 → 响应归一化为内部类型。
+     *
+     * @param request 内部请求(system / messages / maxTokens / tools)
+     * @return 归一化后的响应(assistant 消息 + token 用量)
+     * @throws LlmException 服务端错误(带 HTTP 状态码)或网络类异常(状态码 0)
+     */
     @Override
     public ModelResponse complete(CompleteRequest request) throws LlmException {
         com.anthropic.models.messages.MessageCreateParams params = toParams(request);
@@ -58,6 +72,7 @@ public class AnthropicSdkLlmClient implements LlmClient {
 
     // ===== 出方向:内部类型 → SDK 类型 =====
 
+    /** 出方向:请求 → SDK 参数;system 与 tools 都按"有才注入"处理(空 tools 不占 schema 位) */
     private com.anthropic.models.messages.MessageCreateParams toParams(CompleteRequest request) {
         com.anthropic.models.messages.MessageCreateParams.Builder builder =
                 com.anthropic.models.messages.MessageCreateParams.builder()
@@ -76,6 +91,7 @@ public class AnthropicSdkLlmClient implements LlmClient {
         return builder.build();
     }
 
+    /** 单条消息 → SDK 类型:内部 Role 枚举映射到 SDK 的角色枚举 */
     private com.anthropic.models.messages.MessageParam toMessageParam(Message msg) {
         return com.anthropic.models.messages.MessageParam.builder()
                 .role(msg.role() == Role.USER
@@ -85,6 +101,7 @@ public class AnthropicSdkLlmClient implements LlmClient {
                 .build();
     }
 
+    /** 内容块 → SDK 类型;sealed switch 穷尽三种块——新增块类型时编译器会在此报错 */
     private com.anthropic.models.messages.ContentBlockParam toContentBlockParam(ContentBlock block) {
         return switch (block) {
             case TextBlock t -> com.anthropic.models.messages.ContentBlockParam.ofText(t.text());
@@ -112,6 +129,7 @@ public class AnthropicSdkLlmClient implements LlmClient {
         return builder.build();
     }
 
+    /** 工具定义 → SDK 类型:inputSchema 拆成 type / properties / required 三段注入 */
     private com.anthropic.models.messages.Tool toSdkTool(Tool tool) {
         ObjectNode schema = tool.inputSchema();
         // 把 inputSchema 拆成三段:type / properties / required
@@ -143,6 +161,7 @@ public class AnthropicSdkLlmClient implements LlmClient {
 
     // ===== 入方向:SDK 类型 → 内部类型 =====
 
+    /** 入方向:SDK 响应 → 内部类型;未知块(如 thinking)跳过单块,不整轮失败 */
     private ModelResponse toResponse(com.anthropic.models.messages.Message message) {
         List<ContentBlock> blocks = new ArrayList<>();
         for (com.anthropic.models.messages.ContentBlock b : message.content()) {

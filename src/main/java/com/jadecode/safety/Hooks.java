@@ -5,7 +5,14 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-/** 事件表:s04 起,循环不再直接调用任何检查函数,只触发事件 */
+/**
+ * 事件表:harness 的可扩展点。s04 起循环不再直接调用任何检查函数,只触发事件;
+ * 内置四个事件(常量见下),新事件直接 register 新名字即可。
+ *
+ * <p>注册顺序 = 触发顺序,首个非 null 短路。返回值语义随事件而异:
+ * PreToolUse 非 null = 拦截,Stop 非 null = 强制续跑,
+ * UserPromptSubmit / PostToolUse 的返回值调用方忽略。</p>
+ */
 public class Hooks {
     // 事件名常量(防手滑);事件集合本身是开放的——新事件直接 register 新名字即可
     public static final String USER_PROMPT_SUBMIT = "UserPromptSubmit";
@@ -22,15 +29,21 @@ public class Hooks {
     // 课程同款注册表:事件名 → 回调列表。同名事件按注册顺序追加
     private final Map<String, List<Hook>> registry = new HashMap<>();
 
+    /** 一个事件回调。参数按名取(各事件的键见上方 PARAM_* 常量) */
     @FunctionalInterface
     public interface Hook {
-        // 参数按名取(各事件的键见上方常量):
-        // UserPromptSubmit: query:String
-        // PreToolUse: block:ToolUseBlock
-        // PostToolUse: block:ToolUseBlock, output:String
-        // Stop: messages:List<Message>
-        // 返回非 null = 拦截(PreToolUse)/ 强制续跑(Stop);UserPromptSubmit / PostToolUse
-        // 的返回值调用方忽略
+        /**
+         * 处理一次事件。各事件的参数与返回值语义:
+         * <ul>
+         *   <li>UserPromptSubmit:参数 query:String;返回值忽略</li>
+         *   <li>PreToolUse:参数 block:ToolUseBlock;返回非 null = 拦截(作为 tool_result 回灌)</li>
+         *   <li>PostToolUse:参数 block:ToolUseBlock、output:String;返回值忽略</li>
+         *   <li>Stop:参数 messages:List&lt;Message&gt;;返回非 null = 强制续跑(作为 user 消息注入)</li>
+         * </ul>
+         *
+         * @param params 事件参数
+         * @return 拦截 / 强制续跑的文案;放行或无关事件返回 null
+         */
         String run(Map<String, ?> params);
     }
 

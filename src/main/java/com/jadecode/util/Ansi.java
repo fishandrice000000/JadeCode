@@ -8,6 +8,7 @@ package com.jadecode.util;
 public final class Ansi {
     private static final boolean ENABLED = System.console() != null;
 
+    /** 纯静态工具类,禁止实例化 */
     private Ansi() {
     }
 
@@ -31,6 +32,7 @@ public final class Ansi {
         return color("90", s);
     }
 
+    /** 包一层 ANSI 色码;非交互终端(重定向)直接返回原文 */
     private static String color(String code, String s) {
         return ENABLED ? "\033[" + code + "m" + s + "\033[0m" : s;
     }
