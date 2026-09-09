@@ -13,7 +13,7 @@ import com.jadecode.messages.ContentBlock;
 import com.jadecode.messages.Message;
 import com.jadecode.messages.ToolResultBlock;
 import com.jadecode.messages.ToolUseBlock;
-import com.jadecode.safety.PermissionGate;
+import com.jadecode.safety.Hooks;
 import com.jadecode.tools.Tool;
 import com.jadecode.util.Json;
 
@@ -22,14 +22,18 @@ public class AgentLoop {
     private final Map<String, Tool> tools; // 分发表:tool_use 的 name → 工具实例
     private final String system;
     private final int maxTokens;
-    private final PermissionGate gate; // 工具执行前的权限闸门
+    private final Hooks hooks;
 
-    public AgentLoop(LlmClient client, Map<String, Tool> tools, String system, int maxTokens, PermissionGate gate) {
+    public AgentLoop(LlmClient client, Map<String, Tool> tools, String system, int maxTokens, Hooks hooks) {
         this.client = client;
         this.tools = tools;
         this.system = system;
         this.maxTokens = maxTokens;
-        this.gate = gate;
+        this.hooks = hooks;
+    }
+
+    public Hooks hooks() {
+        return hooks;
     }
 
     /** 在传入的 messages 上原地续跑,直到模型不再调工具为止 */
@@ -53,31 +57,35 @@ public class AgentLoop {
 
             // 4. 没有 tool_use, 此轮结束
             if (toolCalls.isEmpty()) {
+                String force = hooks.trigger(Hooks.STOP, Map.of(Hooks.PARAM_MESSAGES, messages));
+                if (force != null) {
+                    messages.add(Message.userText(force));
+                    continue;
+                }
                 return;
             }
 
-            // 5. 从 toolCalls 中逐个检查工具是否存在于分发表中
+            // 5. 调用 tool
             List<ContentBlock> results = new ArrayList<>();
 
             for (ToolUseBlock u : toolCalls) {
+                // 5.1 查表与权限闸门都在 PRE_TOOL_USE 的 hook 里,首个非 null 即拦截
+                String blocked = hooks.trigger(Hooks.PRE_TOOL_USE, Map.of(Hooks.PARAM_BLOCK, u));
+                if (blocked != null) {
+                    results.add(new ToolResultBlock(u.id(), blocked));
+                    continue;
+                }
+
+                // 5.2 调用工具获取输出
                 Tool tool = tools.get(u.name());
-
-                // 5.1 使用的工具不在分发表中, 构造异常结果
-                if (tool == null) {
-                    results.add(new ToolResultBlock(u.id(), "Error: Unknown tool: " + u.name()));
-                    continue;
-                }
-
-                // 5.2 使用的工具在分发表中, 先过权限闸门, 再执行
-                // 需检查 input 是否为 ObjectNode
                 ObjectNode node = u.input() instanceof ObjectNode o ? o : Json.mapper().createObjectNode();
-                String denied = gate.check(u.name(), node);
-                if (denied != null) {
-                    // 带原因回灌:模型知道边界,不再盲目试探(课程原文只有短句,此处增强)
-                    results.add(new ToolResultBlock(u.id(), "Permission denied: " + denied));
-                    continue;
-                }
-                results.add(new ToolResultBlock(u.id(), tool.execute(node)));
+                String output = tool.execute(node);
+
+                // 5.3 触发事件 POST_TOOL_USE
+                hooks.trigger(Hooks.POST_TOOL_USE, Map.of(Hooks.PARAM_BLOCK, u, Hooks.PARAM_OUTPUT, output));
+
+                // 5.4 回灌结果
+                results.add(new ToolResultBlock(u.id(), output));
             }
 
             // 6. 全部结果合成一条 user 消息:messages.add(Message.userBlocks(results))

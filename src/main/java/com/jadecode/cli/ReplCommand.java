@@ -6,12 +6,14 @@ import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.Callable;
 
 import com.jadecode.Main;
 import com.jadecode.agent.AgentLoop;
 import com.jadecode.llm.LlmException;
 import com.jadecode.messages.Message;
+import com.jadecode.safety.Hooks;
 
 import picocli.CommandLine.Command;
 
@@ -31,7 +33,7 @@ public class ReplCommand implements Callable<Integer> {
 
         System.out.println("JadeCode REPL — 输入任务回车发送,q/exit 或 Ctrl+D 退出");
         while (true) {
-            System.out.print("s01 >> ");
+            System.out.print("JadeCode >> ");
             System.out.flush();
 
             String line;
@@ -49,6 +51,8 @@ public class ReplCommand implements Callable<Integer> {
             if (query.isEmpty() || query.equalsIgnoreCase("q") || query.equalsIgnoreCase("exit")) {
                 break;
             }
+
+            loop.hooks().trigger(Hooks.USER_PROMPT_SUBMIT, Map.of(Hooks.PARAM_QUERY, query));
 
             history.add(Message.userText(query));
             try {
