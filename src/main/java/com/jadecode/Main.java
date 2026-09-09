@@ -139,7 +139,7 @@ public class Main implements Callable<Integer> {
 
     /** 纯函数:拼出课程原文的 system prompt(参数化 cwd 是为了可测试) */
     static String systemPrompt(Path cwd) {
-        return "You are a coding agent at " + cwd + ". Use bash to solve tasks. Act, don't explain."
+        return "You are Jade Code, a coding agent at " + cwd + ". Use bash to solve tasks. Act, don't explain."
                 + " All destructive operations require user approval.";
     }
 }
