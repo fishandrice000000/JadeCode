@@ -16,28 +16,20 @@
 
 ## 目录结构
 
+已实现(s01–s05);s06 起的包随章节逐个新建,见下方映射表。
+
 ```
 src/main/java/com/jadecode/
-├── Main              # picocli 入口:run / repl
-├── cli/              # RunCommand, ReplCommand
-├── config/           # Env(.env 解析), AppConfig, Workspace
-├── util/             # Json, Ids, AtomicFile, ConsoleIO
+├── Main              # picocli 入口:run / repl,装配全部组件
+├── cli/              # RunCommand(一次性任务), ReplCommand(交互循环)
+├── config/           # Env(.env 解析), AppConfig(缺省值与校验)
+├── util/             # Json(共享 ObjectMapper), Ansi(终端色码)
 ├── messages/         # Message + sealed ContentBlock(text/tool_use/tool_result)
-├── llm/              # LlmClient 接口 + SDK/HTTP 两实现 + RetryPolicy
-├── tools/            # Tool 接口, ToolSchema, 各章工具类
-├── safety/           # PathGuard, CommandPolicy, PermissionGate, Hooks
-├── todo/             # TodoManager
-├── subagent/         # SubagentRuntime
-├── skills/           # SkillLoader
-├── context/          # Compactor, TranscriptWriter, ToolResultArchive, SystemPromptBuilder
-├── memory/           # MemoryManager
-├── tasks/            # TaskStore
-├── cron/             # CronParser, ScheduledTaskStore, CronScheduler
-├── team/             # Mailbox, TeamProtocol, TeammateRuntime, ClaimLock, WorktreeManager
-├── mcp/              # McpClient, McpToolPool, McpConfig
-├── agent/            # AgentLoop, AgentRuntime, AsyncEventLoop
-├── workflow/         # WorkflowRunner
-└── goal/             # GoalController, PromptGoalEvaluator
+├── llm/              # LlmClient 接口 + AnthropicSdkLlmClient(SDK 隔离层)
+├── tools/            # Tool, ToolSchema + bash / read_file / write_file / edit_file / glob / todo_write
+├── safety/           # PathResolver, PathGuard, CommandPolicy, PermissionGate, Hooks
+├── todo/             # TodoManager(计划表校验与渲染)
+└── agent/            # AgentLoop(主循环 + todo reminder)
 ```
 
 ## 章节 ↔ 包映射
@@ -74,6 +66,7 @@ cp .env.example .env   # 填入 ANTHROPIC_API_KEY(DeepSeek key)
 
 ```sh
 mvn -q package                              # 构建(直接跑即可,无需设 JAVA_HOME)
+mvn -q test                                 # 单元测试
 ./jade repl                                 # 交互
 ./jade run "任务"                            # 一次性
 ```
@@ -83,5 +76,9 @@ mvn -q package                              # 构建(直接跑即可,无需设 J
 ## 进度
 
 - [x] M0:项目骨架(pom / 目录 / 配置 / README)
-- [ ] s01:Agent Loop + 真实 API 冒烟
-- [ ] s02–s17:逐章实现(见映射表)
+- [x] s01:Agent Loop + 真实 API 冒烟
+- [x] s02:文件工具四件套 + 路径围栏
+- [x] s03:权限三道闸门
+- [x] s04:Hooks 事件表
+- [x] s05:TodoWrite + reminder 注入
+- [ ] s06–s17:逐章实现(见映射表)
