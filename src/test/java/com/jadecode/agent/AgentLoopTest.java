@@ -17,7 +17,9 @@ import com.jadecode.messages.TextBlock;
 import com.jadecode.messages.ToolResultBlock;
 import com.jadecode.messages.ToolUseBlock;
 import com.jadecode.safety.Hooks;
+import com.jadecode.todo.TodoManager;
 import com.jadecode.tools.BashTool;
+import com.jadecode.tools.TodoWriteTool;
 import com.jadecode.tools.Tool;
 import com.jadecode.util.Json;
 import org.junit.jupiter.api.Test;
@@ -33,8 +35,13 @@ class AgentLoopTest {
 
     /** 带自定义 hook 注册表的跑法:模拟 Main 接线(查表/权限等 hook 由用例自己注册) */
     private List<Message> runWithHooks(String userText, Hooks hooks, ModelResponse... script) throws Exception {
-        AgentLoop loop = new AgentLoop(new ScriptedLlmClient(script),
-                Map.of("bash", new BashTool()), "test-system", 8000, hooks);
+        return runWithTools(userText, hooks, Map.of("bash", new BashTool()), script);
+    }
+
+    /** 自定义工具表的跑法:reminder 用例需要 bash 与 todo_write 同时在场 */
+    private List<Message> runWithTools(String userText, Hooks hooks, Map<String, Tool> tools,
+            ModelResponse... script) throws Exception {
+        AgentLoop loop = new AgentLoop(new ScriptedLlmClient(script), tools, "test-system", 8000, hooks);
         List<Message> messages = new ArrayList<>();
         messages.add(Message.userText(userText));
         loop.run(messages);
@@ -48,6 +55,13 @@ class AgentLoopTest {
     private static ToolUseBlock toolUse(String id, String name, String command) {
         ObjectNode input = Json.mapper().createObjectNode().put("command", command);
         return new ToolUseBlock(id, name, input);
+    }
+
+    /** todo_write 的参数:空 todos 数组(合法:清空计划,工具输出 "No todos.") */
+    private static ToolUseBlock todoUse(String id) {
+        ObjectNode input = Json.mapper().createObjectNode();
+        input.putArray("todos");
+        return new ToolUseBlock(id, "todo_write", input);
     }
 
     /** ① 纯文本回复:历史恰 2 条,无工具执行 */
@@ -229,5 +243,73 @@ class AgentLoopTest {
         // 已知工具:② 照常执行
         assertEquals("ok", ((ToolResultBlock) messages.get(2).content().get(1)).content());
         assertEquals(List.of("bash"), calls); // 记录型 hook 只见过 bash,没见过 no_such_tool
+    }
+
+    /** ⑪ 连续三轮纯 bash(未用 todo_write):前两轮回灌只有 tool_result,第三轮尾部追加 reminder */
+    @Test
+    void reminderAppearsAfterThreeBashOnlyRounds() throws Exception {
+        List<Message> messages = runWith("do it",
+                assistant(toolUse("toolu_1", "bash", "echo one")),
+                assistant(toolUse("toolu_2", "bash", "echo two")),
+                assistant(toolUse("toolu_3", "bash", "echo three")),
+                assistant(new TextBlock("done")));
+
+        // 第一、二轮:只有 tool_result,无 reminder
+        assertEquals(1, messages.get(2).content().size());
+        assertEquals(1, messages.get(4).content().size());
+        // 第三轮:tool_result 仍在原位,尾部多一条 reminder(不顶掉结果)
+        List<ContentBlock> third = messages.get(6).content();
+        assertEquals(2, third.size());
+        assertEquals("toolu_3", ((ToolResultBlock) third.get(0)).toolUseId());
+        assertInstanceOf(TextBlock.class, third.get(1));
+        assertEquals("<reminder>Update your todos.</reminder>", ((TextBlock) third.get(1)).text());
+        // 提醒后模型正常收尾
+        assertEquals("done", messages.get(7).extractText());
+    }
+
+    /** ⑫ 第三轮成功执行 todo_write:该轮不提醒且计数归零——之后还要再连三轮 bash 才再见 reminder */
+    @Test
+    void todoWriteResetsCounter() throws Exception {
+        List<Message> messages = runWithTools("multi-step", new Hooks(),
+                Map.of("bash", new BashTool(), "todo_write", new TodoWriteTool(new TodoManager())),
+                assistant(toolUse("t1", "bash", "echo 1")), // 轮1:bash → 1
+                assistant(toolUse("t2", "bash", "echo 2")), // 轮2:bash → 2
+                assistant(todoUse("t3")), // 轮3:todo_write → 清零(若没清零,本轮就该提醒)
+                assistant(toolUse("t4", "bash", "echo 4")), // 轮4:→ 1
+                assistant(toolUse("t5", "bash", "echo 5")), // 轮5:→ 2
+                assistant(toolUse("t6", "bash", "echo 6")), // 轮6:→ 3 → reminder
+                assistant(new TextBlock("done")));
+
+        // 轮3(todo_write):只有 tool_result;轮4、5 也都没有 reminder
+        assertEquals(1, messages.get(6).content().size());
+        assertEquals(1, messages.get(8).content().size());
+        assertEquals(1, messages.get(10).content().size());
+        // 轮6:reminder 终于出现
+        List<ContentBlock> sixth = messages.get(12).content();
+        assertEquals(2, sixth.size());
+        assertInstanceOf(ToolResultBlock.class, sixth.get(0));
+        assertInstanceOf(TextBlock.class, sixth.get(1));
+        assertEquals("done", messages.get(13).extractText());
+    }
+
+    /** ⑬ 同轮多条工具调用只推进一轮计数:第 3 轮的 3 条 bash 在轮末触发一次 reminder;
+     *  tool_result 与 tool_use 逐条对应,reminder 排全部结果之后 */
+    @Test
+    void sameRoundMultipleCallsCountAsOneRound() throws Exception {
+        List<Message> messages = runWith("batch",
+                assistant(toolUse("t1", "bash", "echo 1")), // 轮1 → 1
+                assistant(toolUse("t2", "bash", "echo 2")), // 轮2 → 2
+                assistant(toolUse("t3a", "bash", "echo 3a"), // 轮3:三条调用只计一轮 → 3 → reminder
+                        toolUse("t3b", "bash", "echo 3b"),
+                        toolUse("t3c", "bash", "echo 3c")),
+                assistant(new TextBlock("done")));
+
+        List<ContentBlock> third = messages.get(6).content();
+        assertEquals(4, third.size()); // 3 条 tool_result + 1 条 reminder
+        assertEquals("t3a", ((ToolResultBlock) third.get(0)).toolUseId());
+        assertEquals("t3b", ((ToolResultBlock) third.get(1)).toolUseId());
+        assertEquals("t3c", ((ToolResultBlock) third.get(2)).toolUseId());
+        assertInstanceOf(TextBlock.class, third.get(3)); // reminder 在最后,顺序不被顶掉
+        assertEquals("done", messages.get(7).extractText());
     }
 }
