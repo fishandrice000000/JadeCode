@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.function.Function;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.jadecode.util.Ansi;
 
 public class PermissionGate {
     private final CommandPolicy policy;
@@ -62,7 +63,7 @@ public class PermissionGate {
 
     // 默认审批的实现,方法引用指向它
     private boolean consoleApproval(String toolName, ObjectNode input, String reason) {
-        System.out.println("\n[permission] " + reason);
+        System.out.println("\n" + Ansi.yellow("[permission] " + reason));
         System.out.println("   Tool: " + toolName + "(" + input + ")");
 
         // 非主线程:不等输入,直接拒绝(总计划要求,后台任务用)
@@ -89,7 +90,7 @@ public class PermissionGate {
         // 闸门 1:查硬拒表;命中 → 打印 + 拒绝(不询问)
         String denied = findReason(hardRules, toolName, input);
         if (denied != null) {
-            System.out.println("[blocked] " + denied);
+            System.out.println(Ansi.red("[blocked] " + denied));
             return denied;
         }
 

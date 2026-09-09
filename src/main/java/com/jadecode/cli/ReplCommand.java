@@ -14,6 +14,7 @@ import com.jadecode.agent.AgentLoop;
 import com.jadecode.llm.LlmException;
 import com.jadecode.messages.Message;
 import com.jadecode.safety.Hooks;
+import com.jadecode.util.Ansi;
 
 import picocli.CommandLine.Command;
 
@@ -33,7 +34,7 @@ public class ReplCommand implements Callable<Integer> {
 
         System.out.println("JadeCode REPL — 输入任务回车发送,q/exit 或 Ctrl+D 退出");
         while (true) {
-            System.out.print("JadeCode >> ");
+            System.out.print(Ansi.cyan("JadeCode >> "));
             System.out.flush();
 
             String line;
