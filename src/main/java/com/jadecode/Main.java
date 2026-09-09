@@ -20,10 +20,12 @@ import com.jadecode.safety.Hooks;
 import com.jadecode.safety.PathGuard;
 import com.jadecode.safety.PathResolver;
 import com.jadecode.safety.PermissionGate;
+import com.jadecode.todo.TodoManager;
 import com.jadecode.tools.BashTool;
 import com.jadecode.tools.EditFileTool;
 import com.jadecode.tools.GlobTool;
 import com.jadecode.tools.ReadFileTool;
+import com.jadecode.tools.TodoWriteTool;
 import com.jadecode.tools.Tool;
 import com.jadecode.tools.WriteFileTool;
 import com.jadecode.util.Ansi;
@@ -32,34 +34,65 @@ import com.jadecode.util.Json;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 
+/**
+ * JadeCode 的 CLI 入口(picocli):顶层命令不带参数只打印用法,
+ * 实际动作在 run / repl 两个子命令里。
+ *
+ * <p>buildLoop() 是全项目唯一的装配点:配置、安全闸门、六把工具、hook 事件表、
+ * TodoManager 都在这里接线——之后加工具或加 hook,先来这看注册顺序。</p>
+ */
 @Command(name = "jadecode", version = "jadecode 0.1.0-SNAPSHOT", mixinStandardHelpOptions = true,
 
         subcommands = { RunCommand.class, ReplCommand.class }, description = "JadeCode:学习用 CLI coding agent")
 public class Main implements Callable<Integer> {
+    private static final String BASH_TOOL = "bash";
+    private static final String READ_FILE_TOOL = "read_file";
+    private static final String WRITE_FILE_TOOL = "write_file";
+    private static final String EDIT_FILE_TOOL = "edit_file";
+    private static final String GLOB_TOOL = "glob";
+    private static final String TODO_WRITE_TOOL = "todo_write";
+
+    /** 进程入口:picocli 解析参数并执行,退出码透传给操作系统 */
     public static void main(String[] args) {
         System.exit(new CommandLine(new Main()).execute(args));
     }
 
+    /**
+     * 顶层命令(不带子命令)的默认行为:打印用法,提示用户用 run / repl。
+     *
+     * @return 退出码 0
+     */
     @Override
     public Integer call() {
-        CommandLine.usage(new Main(), System.out); // 无子命令:打印用法,返回 0
+        CommandLine.usage(new Main(), System.out);
         return 0;
     }
 
-    /** 装配:唯一一处把全部零件接起来的地方 */
+    /**
+     * 装配完整的 agent:环境配置 → 安全组件(路径围栏/命令策略/审批闸门)→
+     * TodoManager 与六把工具 → hook 事件表(注册顺序即触发顺序)→ AgentLoop。
+     *
+     * <p>run 与 repl 两个子命令共用这份装配,保证任何入口行为一致。</p>
+     *
+     * @return 组装好的 AgentLoop,调用方拿它 run(messages)
+     */
     public static AgentLoop buildLoop() {
         AppConfig config = AppConfig.fromEnv(Env.loadDotEnv());
         Path cwd = Path.of("").toAbsolutePath();
-        PathResolver resolver = new PathResolver(cwd); // 四个文件工具共享同一解析器
-        PathGuard guard = new PathGuard(resolver); // 分类器:高危硬拒 + 越界询问,给闸门
+        PathResolver resolver = new PathResolver(cwd);
+        PathGuard guard = new PathGuard(resolver);
         CommandPolicy policy = new CommandPolicy();
         PermissionGate gate = new PermissionGate(policy, guard);
+        TodoManager manager = new TodoManager();
+
         Map<String, Tool> tools = Map.of(
-                "bash", new BashTool(),
-                "read_file", new ReadFileTool(resolver),
-                "write_file", new WriteFileTool(resolver),
-                "edit_file", new EditFileTool(resolver),
-                "glob", new GlobTool(resolver));
+                BASH_TOOL, new BashTool(),
+                READ_FILE_TOOL, new ReadFileTool(resolver),
+                WRITE_FILE_TOOL, new WriteFileTool(resolver),
+                EDIT_FILE_TOOL, new EditFileTool(resolver),
+                GLOB_TOOL, new GlobTool(resolver),
+                TODO_WRITE_TOOL, new TodoWriteTool(manager));
+
         Hooks hooks = new Hooks();
 
         hooks.register(Hooks.USER_PROMPT_SUBMIT, promptContextHook(cwd));
@@ -67,18 +100,19 @@ public class Main implements Callable<Integer> {
         hooks.register(Hooks.PRE_TOOL_USE, permissionHook(gate));
         hooks.register(Hooks.PRE_TOOL_USE, logCallHook());
         hooks.register(Hooks.POST_TOOL_USE, largeOutputHook());
+        hooks.register(Hooks.POST_TOOL_USE, todoStatusHook());
         hooks.register(Hooks.STOP, summaryHook());
 
         return new AgentLoop(new AnthropicSdkLlmClient(config),
                 tools,
-                systemPrompt(cwd), // 启动时取一次 cwd
+                systemPrompt(cwd),
                 config.maxTokens(),
                 hooks);
     }
 
     /* ----- 内置 hook 的实现 ----- */
 
-    // UserPromptSubmit:记录当前工作目录。返回值调用方忽略
+    /** UserPromptSubmit:记录当前工作目录。返回值调用方忽略 */
     private static Hooks.Hook promptContextHook(Path cwd) {
         return params -> {
             System.out.println(Ansi.gray("[HOOK] UserPromptSubmit: working in " + cwd));
@@ -125,6 +159,23 @@ public class Main implements Callable<Integer> {
         };
     }
 
+    /**
+     * PostToolUse 状态展示(s05 D2):todo_write 的输出就是渲染好的任务列表
+     * (TodoManager.render 的文本),用黄色 "## Current Tasks" 标题打在终端上,
+     * 让用户随时看得到模型的计划。工具本身保持纯净(execute 只返回字符串),
+     * 终端展示全归 hook。
+     */
+    private static Hooks.Hook todoStatusHook() {
+        return params -> {
+            ToolUseBlock block = (ToolUseBlock) params.get(Hooks.PARAM_BLOCK);
+            String output = (String) params.get(Hooks.PARAM_OUTPUT);
+            if (block.name().equals(TODO_WRITE_TOOL)) {
+                System.out.println("\n" + Ansi.yellow("## Current Tasks\n" + output));
+            }
+            return null;
+        };
+    }
+
     /** Stop:收尾统计(tool_result 计数),恒返回 null = 允许退出 */
     private static Hooks.Hook summaryHook() {
         return params -> {
@@ -140,6 +191,8 @@ public class Main implements Callable<Integer> {
     /** 纯函数:拼出课程原文的 system prompt(参数化 cwd 是为了可测试) */
     static String systemPrompt(Path cwd) {
         return "You are Jade Code, a coding agent at " + cwd + ". Use bash to solve tasks. Act, don't explain."
+                + " Before starting any multi-step task, use todo_write to plan your steps. Update status as you go."
                 + " All destructive operations require user approval.";
+
     }
 }
