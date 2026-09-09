@@ -36,11 +36,12 @@ class MainTest {
         assertEquals("hello world", sub.matchedPositional(0).getValue());
     }
 
-    /** ④ systemPrompt:自称 Jade Code + 课程原文 + cwd 拼接(s03 起追加权限提示句) */
+    /** ④ systemPrompt:自称 Jade Code + 课程原文 + cwd(s03 权限句、s05 规划引导句已拼入) */
     @Test
     void systemPromptIncludesCwd() {
         assertEquals(
                 "You are Jade Code, a coding agent at /home/fishandrice. Use bash to solve tasks. Act, don't explain."
+                        + " Before starting any multi-step task, use todo_write to plan your steps. Update status as you go."
                         + " All destructive operations require user approval.",
                 Main.systemPrompt(Path.of("/home/fishandrice")));
     }
