@@ -15,6 +15,9 @@ dependency-reduced-pom.xml
 .runtime/
 .scheduled_tasks.json
 
+# 工作用文档, 与学习内容无关
+docs/SOPs
+
 # IDE
 .idea/
 *.iml
