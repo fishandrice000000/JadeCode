@@ -18,6 +18,10 @@ dependency-reduced-pom.xml
 # 工作用文档, 与学习内容无关
 docs/SOPs
 
+# 临时文件
+tmp.*
+tmp/
+
 # IDE
 .idea/
 *.iml
