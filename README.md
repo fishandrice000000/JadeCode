@@ -16,7 +16,7 @@
 
 ## 目录结构
 
-已实现(s01–s06);s07 起的包随章节逐个新建,见下方映射表。
+已实现(s01–s07);s08 起的包随章节逐个新建,见下方映射表。
 
 ```
 src/main/java/com/jadecode/
@@ -26,12 +26,15 @@ src/main/java/com/jadecode/
 ├── util/             # Json(共享 ObjectMapper), Ansi(终端色码)
 ├── messages/         # Message + sealed ContentBlock(text/tool_use/tool_result)
 ├── llm/              # LlmClient 接口 + AnthropicSdkLlmClient(SDK 隔离层)
-├── tools/            # Tool, ToolSchema + bash / read_file / write_file / edit_file / glob / todo_write / task
+├── tools/            # Tool, ToolSchema + bash / read_file / write_file / edit_file / glob / todo_write / task / load_skill
 ├── safety/           # PathResolver, PathGuard, CommandPolicy, PermissionGate, Hooks
 ├── todo/             # TodoManager(计划表校验与渲染)
 ├── subagent/         # SubagentRuntime(嵌套循环 + 消息隔离 + 三终态)
+├── skills/           # SkillDefinition, SkillLoader(catalog 常驻 / 全文按需)
 └── agent/            # AgentLoop(主循环 + todo reminder)
 ```
+
+仓库根 `skills/<name>/SKILL.md` 存放可被 `load_skill` 加载的真实技能:system prompt 只带 name + description 的目录,完整正文仅在模型调用 `load_skill` 后作为 tool_result 进入消息。
 
 ## 章节 ↔ 包映射
 
@@ -83,4 +86,5 @@ mvn -q test                                 # 单元测试
 - [x] s04:Hooks 事件表
 - [x] s05:TodoWrite + reminder 注入
 - [x] s06:Subagent + task 工具(独立上下文、30 轮上限、三终态)
-- [ ] s07–s17:逐章实现(见映射表)
+- [x] s07:Skill Loading(两层知识注入:catalog 常驻,SKILL.md 全文按需)
+- [ ] s08–s17:逐章实现(见映射表)
