@@ -1,10 +1,15 @@
 package com.jadecode;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 
 import com.jadecode.cli.RunCommand;
+import com.jadecode.skills.SkillLoader;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import picocli.CommandLine;
 import picocli.CommandLine.ParseResult;
@@ -36,15 +41,43 @@ class MainTest {
         assertEquals("hello world", sub.matchedPositional(0).getValue());
     }
 
-    /** ④ systemPrompt:自称 Jade Code + 课程原文 + cwd(s03 权限句、s05 规划引导句、s06 task 句已拼入) */
+    /** ④ systemPrompt:自称 Jade Code + 课程原文 + cwd + 技能目录块(s03/s05/s06 句已拼入,s07 加技能块) */
     @Test
-    void systemPromptIncludesCwd() {
+    void systemPromptIncludesCwdAndCatalog() {
         assertEquals(
                 "You are Jade Code, a coding agent at /home/fishandrice. Use bash to solve tasks. Act, don't explain."
                         + " Use task for focused exploration or a self-contained subtask."
                         + " Before starting any multi-step task, use todo_write to plan your steps. Update status as you go."
-                        + " All destructive operations require user approval.",
-                Main.systemPrompt(Path.of("/home/fishandrice")));
+                        + " All destructive operations require user approval."
+                        + "\n\nSkills available:\n- pdf: 处理 PDF\n\n"
+                        + "Use load_skill to read the full instructions when a skill applies.",
+                Main.systemPrompt(Path.of("/home/fishandrice"), "- pdf: 处理 PDF"));
+    }
+
+    /** ④b 空技能目录:技能块照常拼出,catalog 位置是 (no skills found) */
+    @Test
+    void systemPromptIncludesEmptyCatalog() {
+        String prompt = Main.systemPrompt(Path.of("/tmp"), "(no skills found)");
+
+        assertTrue(prompt.contains("Skills available:\n(no skills found)\n\n"));
+        assertTrue(prompt.endsWith("Use load_skill to read the full instructions when a skill applies."));
+    }
+
+    /**
+     * ④c 二层注入的边界:system prompt 只带 catalog,<b>完整 SKILL.md 一个字都不能进</b>。
+     * 用真实 SkillLoader 产出的 catalog 走一遍,证明"目录进提示词、正文只走 tool_result"。
+     */
+    @Test
+    void systemPromptCarriesCatalogButNeverSkillBody(@TempDir Path ws) throws IOException {
+        String body = "这里是完整指令,绝不该出现在 system prompt 里";
+        Path dir = Files.createDirectories(ws.resolve("skills").resolve("pdf"));
+        Files.writeString(dir.resolve("SKILL.md"),
+                "---\ndescription: 处理 PDF\n---\n" + body, StandardCharsets.UTF_8);
+
+        String prompt = Main.systemPrompt(ws, new SkillLoader(ws.resolve("skills")).catalog());
+
+        assertTrue(prompt.contains("Skills available:\n- pdf: 处理 PDF\n\n"), "目录必须在");
+        assertFalse(prompt.contains(body), "完整正文不得进入 system prompt");
     }
 
     /** ⑤ 空参数:只有 Main 自己,无子命令 */
