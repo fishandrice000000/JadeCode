@@ -16,7 +16,7 @@
 
 ## 目录结构
 
-已实现(s01–s05);s06 起的包随章节逐个新建,见下方映射表。
+已实现(s01–s06);s07 起的包随章节逐个新建,见下方映射表。
 
 ```
 src/main/java/com/jadecode/
@@ -26,9 +26,10 @@ src/main/java/com/jadecode/
 ├── util/             # Json(共享 ObjectMapper), Ansi(终端色码)
 ├── messages/         # Message + sealed ContentBlock(text/tool_use/tool_result)
 ├── llm/              # LlmClient 接口 + AnthropicSdkLlmClient(SDK 隔离层)
-├── tools/            # Tool, ToolSchema + bash / read_file / write_file / edit_file / glob / todo_write
+├── tools/            # Tool, ToolSchema + bash / read_file / write_file / edit_file / glob / todo_write / task
 ├── safety/           # PathResolver, PathGuard, CommandPolicy, PermissionGate, Hooks
 ├── todo/             # TodoManager(计划表校验与渲染)
+├── subagent/         # SubagentRuntime(嵌套循环 + 消息隔离 + 三终态)
 └── agent/            # AgentLoop(主循环 + todo reminder)
 ```
 
@@ -81,4 +82,5 @@ mvn -q test                                 # 单元测试
 - [x] s03:权限三道闸门
 - [x] s04:Hooks 事件表
 - [x] s05:TodoWrite + reminder 注入
-- [ ] s06–s17:逐章实现(见映射表)
+- [x] s06:Subagent + task 工具(独立上下文、30 轮上限、三终态)
+- [ ] s07–s17:逐章实现(见映射表)
