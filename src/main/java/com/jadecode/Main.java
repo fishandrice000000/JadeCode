@@ -20,12 +20,14 @@ import com.jadecode.safety.Hooks;
 import com.jadecode.safety.PathGuard;
 import com.jadecode.safety.PathResolver;
 import com.jadecode.safety.PermissionGate;
+import com.jadecode.skills.SkillLoader;
 import com.jadecode.subagent.SubagentOutcome;
 import com.jadecode.subagent.SubagentRuntime;
 import com.jadecode.todo.TodoManager;
 import com.jadecode.tools.BashTool;
 import com.jadecode.tools.EditFileTool;
 import com.jadecode.tools.GlobTool;
+import com.jadecode.tools.LoadSkillTool;
 import com.jadecode.tools.ReadFileTool;
 import com.jadecode.tools.SubagentTool;
 import com.jadecode.tools.TodoWriteTool;
@@ -41,7 +43,7 @@ import picocli.CommandLine.Command;
  * JadeCode 的 CLI 入口(picocli):顶层命令不带参数只打印用法,
  * 实际动作在 run / repl 两个子命令里。
  *
- * <p>buildLoop() 是全项目唯一的装配点:配置、安全闸门、七把工具、hook 事件表、
+ * <p>buildLoop() 是全项目唯一的装配点:配置、安全闸门、八把工具、hook 事件表、
  * TodoManager 都在这里接线——之后加工具或加 hook,先来这看注册顺序。</p>
  */
 @Command(name = "jadecode", version = "jadecode 0.1.0-SNAPSHOT", mixinStandardHelpOptions = true,
@@ -55,6 +57,7 @@ public class Main implements Callable<Integer> {
     private static final String GLOB_TOOL = "glob";
     private static final String TODO_WRITE_TOOL = "todo_write";
     private static final String TASK_TOOL = "task";
+    private static final String LOAD_SKILL_TOOL = "load_skill";
 
     /** 进程入口:picocli 解析参数并执行,退出码透传给操作系统 */
     public static void main(String[] args) {
@@ -74,7 +77,7 @@ public class Main implements Callable<Integer> {
 
     /**
      * 装配完整的 agent:环境配置 → 安全组件(路径围栏/命令策略/审批闸门)→
-     * TodoManager 与七把工具 → hook 事件表(注册顺序即触发顺序)→ AgentLoop。
+     * TodoManager 与八把工具 → hook 事件表(注册顺序即触发顺序)→ AgentLoop。
      *
      * <p>run 与 repl 两个子命令共用这份装配,保证任何入口行为一致。</p>
      *
@@ -88,6 +91,9 @@ public class Main implements Callable<Integer> {
         CommandPolicy policy = new CommandPolicy();
         PermissionGate gate = new PermissionGate(policy, guard);
         TodoManager manager = new TodoManager();
+
+        // 技能根目录由这里注入,Loader 不读全局 cwd;构造即扫描一次(skills 目录不存在 = 合法空 registry)
+        SkillLoader skillLoader = new SkillLoader(cwd.resolve("skills"));
 
         Hooks hooks = new Hooks();
 
@@ -103,7 +109,7 @@ public class Main implements Callable<Integer> {
         SubagentRuntime subagentRuntime = new SubagentRuntime(llm, subTools, subSystemPrompt(cwd),
                 config.maxTokens(), hooks);
 
-        // 父工具表 = 子代理五把 + todo_write + task(超集;membershipHook 校验的是这张表)
+        // 父工具表 = 子代理五把 + todo_write + task + load_skill(超集;membershipHook 校验的是这张表)
         Map<String, Tool> tools = Map.of(
                 BASH_TOOL, new BashTool(),
                 READ_FILE_TOOL, new ReadFileTool(resolver),
@@ -111,7 +117,8 @@ public class Main implements Callable<Integer> {
                 EDIT_FILE_TOOL, new EditFileTool(resolver),
                 GLOB_TOOL, new GlobTool(resolver),
                 TODO_WRITE_TOOL, new TodoWriteTool(manager),
-                TASK_TOOL, new SubagentTool(subagentRuntime));
+                TASK_TOOL, new SubagentTool(subagentRuntime),
+                LOAD_SKILL_TOOL, new LoadSkillTool(skillLoader));
 
         hooks.register(Hooks.USER_PROMPT_SUBMIT, promptContextHook(cwd));
         hooks.register(Hooks.PRE_TOOL_USE, membershipHook(tools));
@@ -126,7 +133,7 @@ public class Main implements Callable<Integer> {
 
         return new AgentLoop(llm,
                 tools,
-                systemPrompt(cwd),
+                systemPrompt(cwd, skillLoader.catalog()),
                 config.maxTokens(),
                 hooks);
     }
@@ -247,11 +254,14 @@ public class Main implements Callable<Integer> {
     }
 
     /** 纯函数:拼出课程原文的 system prompt(参数化 cwd 是为了可测试) */
-    static String systemPrompt(Path cwd) {
+    static String systemPrompt(Path cwd, String catalog) {
         return "You are Jade Code, a coding agent at " + cwd + ". Use bash to solve tasks. Act, don't explain."
                 + " Use task for focused exploration or a self-contained subtask."
                 + " Before starting any multi-step task, use todo_write to plan your steps. Update status as you go."
-                + " All destructive operations require user approval.";
+                + " All destructive operations require user approval."
+                // 二层知识注入的第一层:只放目录(常驻成本小),完整 SKILL.md 走 load_skill 的 tool_result
+                + "\n\nSkills available:\n" + catalog + "\n\n"
+                + "Use load_skill to read the full instructions when a skill applies.";
 
     }
 
