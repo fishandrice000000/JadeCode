@@ -20,11 +20,14 @@ import com.jadecode.safety.Hooks;
 import com.jadecode.safety.PathGuard;
 import com.jadecode.safety.PathResolver;
 import com.jadecode.safety.PermissionGate;
+import com.jadecode.subagent.SubagentOutcome;
+import com.jadecode.subagent.SubagentRuntime;
 import com.jadecode.todo.TodoManager;
 import com.jadecode.tools.BashTool;
 import com.jadecode.tools.EditFileTool;
 import com.jadecode.tools.GlobTool;
 import com.jadecode.tools.ReadFileTool;
+import com.jadecode.tools.SubagentTool;
 import com.jadecode.tools.TodoWriteTool;
 import com.jadecode.tools.Tool;
 import com.jadecode.tools.WriteFileTool;
@@ -38,7 +41,7 @@ import picocli.CommandLine.Command;
  * JadeCode 的 CLI 入口(picocli):顶层命令不带参数只打印用法,
  * 实际动作在 run / repl 两个子命令里。
  *
- * <p>buildLoop() 是全项目唯一的装配点:配置、安全闸门、六把工具、hook 事件表、
+ * <p>buildLoop() 是全项目唯一的装配点:配置、安全闸门、七把工具、hook 事件表、
  * TodoManager 都在这里接线——之后加工具或加 hook,先来这看注册顺序。</p>
  */
 @Command(name = "jadecode", version = "jadecode 0.1.0-SNAPSHOT", mixinStandardHelpOptions = true,
@@ -51,6 +54,7 @@ public class Main implements Callable<Integer> {
     private static final String EDIT_FILE_TOOL = "edit_file";
     private static final String GLOB_TOOL = "glob";
     private static final String TODO_WRITE_TOOL = "todo_write";
+    private static final String TASK_TOOL = "task";
 
     /** 进程入口:picocli 解析参数并执行,退出码透传给操作系统 */
     public static void main(String[] args) {
@@ -70,7 +74,7 @@ public class Main implements Callable<Integer> {
 
     /**
      * 装配完整的 agent:环境配置 → 安全组件(路径围栏/命令策略/审批闸门)→
-     * TodoManager 与六把工具 → hook 事件表(注册顺序即触发顺序)→ AgentLoop。
+     * TodoManager 与七把工具 → hook 事件表(注册顺序即触发顺序)→ AgentLoop。
      *
      * <p>run 与 repl 两个子命令共用这份装配,保证任何入口行为一致。</p>
      *
@@ -85,15 +89,29 @@ public class Main implements Callable<Integer> {
         PermissionGate gate = new PermissionGate(policy, guard);
         TodoManager manager = new TodoManager();
 
+        Hooks hooks = new Hooks();
+
+        // 子代理工具表(D1):五把基础工具——不含 task(只有一层委派)、不含 todo_write(聚焦子任务无需计划表)
+        Map<String, Tool> subTools = Map.of(
+                BASH_TOOL, new BashTool(),
+                READ_FILE_TOOL, new ReadFileTool(resolver),
+                WRITE_FILE_TOOL, new WriteFileTool(resolver),
+                EDIT_FILE_TOOL, new EditFileTool(resolver),
+                GLOB_TOOL, new GlobTool(resolver));
+
+        AnthropicSdkLlmClient llm = new AnthropicSdkLlmClient(config); // 父子共用同一客户端实例
+        SubagentRuntime subagentRuntime = new SubagentRuntime(llm, subTools, subSystemPrompt(cwd),
+                config.maxTokens(), hooks);
+
+        // 父工具表 = 子代理五把 + todo_write + task(超集;membershipHook 校验的是这张表)
         Map<String, Tool> tools = Map.of(
                 BASH_TOOL, new BashTool(),
                 READ_FILE_TOOL, new ReadFileTool(resolver),
                 WRITE_FILE_TOOL, new WriteFileTool(resolver),
                 EDIT_FILE_TOOL, new EditFileTool(resolver),
                 GLOB_TOOL, new GlobTool(resolver),
-                TODO_WRITE_TOOL, new TodoWriteTool(manager));
-
-        Hooks hooks = new Hooks();
+                TODO_WRITE_TOOL, new TodoWriteTool(manager),
+                TASK_TOOL, new SubagentTool(subagentRuntime));
 
         hooks.register(Hooks.USER_PROMPT_SUBMIT, promptContextHook(cwd));
         hooks.register(Hooks.PRE_TOOL_USE, membershipHook(tools));
@@ -101,9 +119,12 @@ public class Main implements Callable<Integer> {
         hooks.register(Hooks.PRE_TOOL_USE, logCallHook());
         hooks.register(Hooks.POST_TOOL_USE, largeOutputHook());
         hooks.register(Hooks.POST_TOOL_USE, todoStatusHook());
+        hooks.register(Hooks.SUBAGENT_START, subagentStartHook());
+        hooks.register(Hooks.SUBAGENT_TOOL, subagentToolHook());
+        hooks.register(Hooks.SUBAGENT_END, subagentEndHook());
         hooks.register(Hooks.STOP, summaryHook());
 
-        return new AgentLoop(new AnthropicSdkLlmClient(config),
+        return new AgentLoop(llm,
                 tools,
                 systemPrompt(cwd),
                 config.maxTokens(),
@@ -176,6 +197,43 @@ public class Main implements Callable<Integer> {
         };
     }
 
+    /** SubagentStart:委派开始,洋红横幅(D2) */
+    private static Hooks.Hook subagentStartHook() {
+        return params -> {
+            System.out.println(Ansi.magenta("[Subagent started]"));
+            return null;
+        };
+    }
+
+    /** SubagentTool:每条子工具调用后一行灰色摘要(D2);输出取前 100 字符 */
+    private static Hooks.Hook subagentToolHook() {
+        return params -> {
+            ToolUseBlock block = (ToolUseBlock) params.get(Hooks.PARAM_BLOCK);
+            String output = (String) params.get(Hooks.PARAM_OUTPUT);
+            System.out.println(Ansi.gray("  [sub] " + block.name() + ": " + truncate(output, 100)));
+            return null;
+        };
+    }
+
+    /** SubagentEnd:委派结束,终态决定横幅文案(D2) */
+    private static Hooks.Hook subagentEndHook() {
+        return params -> {
+            SubagentOutcome outcome = (SubagentOutcome) params.get(Hooks.PARAM_OUTCOME);
+            String banner = switch (outcome) {
+                case DONE -> "[Subagent done]";
+                case STOPPED -> "[Subagent stopped]";
+                case FAILED -> "[Subagent failed]";
+            };
+            System.out.println(Ansi.magenta(banner));
+            return null;
+        };
+    }
+
+    /** 取字符串前 max 个字符(子代理工具调用摘要用,课程同款 output[:100]) */
+    private static String truncate(String s, int max) {
+        return s.length() <= max ? s : s.substring(0, max);
+    }
+
     /** Stop:收尾统计(tool_result 计数),恒返回 null = 允许退出 */
     private static Hooks.Hook summaryHook() {
         return params -> {
@@ -191,8 +249,15 @@ public class Main implements Callable<Integer> {
     /** 纯函数:拼出课程原文的 system prompt(参数化 cwd 是为了可测试) */
     static String systemPrompt(Path cwd) {
         return "You are Jade Code, a coding agent at " + cwd + ". Use bash to solve tasks. Act, don't explain."
+                + " Use task for focused exploration or a self-contained subtask."
                 + " Before starting any multi-step task, use todo_write to plan your steps. Update status as you go."
                 + " All destructive operations require user approval.";
 
+    }
+
+    /** 纯函数:子代理的 system prompt(D3 课程原文,保留 s01 起的自称;参数化 cwd 是为了可测试) */
+    static String subSystemPrompt(Path cwd) {
+        return "You are Jade Code, a coding agent at " + cwd
+                + ". Complete the given task, then return a concise final answer.";
     }
 }
