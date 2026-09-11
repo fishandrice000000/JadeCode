@@ -17,8 +17,10 @@ import com.jadecode.messages.TextBlock;
 import com.jadecode.messages.ToolResultBlock;
 import com.jadecode.messages.ToolUseBlock;
 import com.jadecode.safety.Hooks;
+import com.jadecode.subagent.SubagentRuntime;
 import com.jadecode.todo.TodoManager;
 import com.jadecode.tools.BashTool;
+import com.jadecode.tools.SubagentTool;
 import com.jadecode.tools.TodoWriteTool;
 import com.jadecode.tools.Tool;
 import com.jadecode.util.Json;
@@ -62,6 +64,12 @@ class AgentLoopTest {
         ObjectNode input = Json.mapper().createObjectNode();
         input.putArray("todos");
         return new ToolUseBlock(id, "todo_write", input);
+    }
+
+    /** task 的参数是 prompt(不是 command),故不能复用 toolUse 助手 */
+    private static ToolUseBlock taskUse(String id, String prompt) {
+        ObjectNode input = Json.mapper().createObjectNode().put("prompt", prompt);
+        return new ToolUseBlock(id, "task", input);
     }
 
     /** ① 纯文本回复:历史恰 2 条,无工具执行 */
@@ -311,5 +319,43 @@ class AgentLoopTest {
         assertEquals("t3c", ((ToolResultBlock) third.get(2)).toolUseId());
         assertInstanceOf(TextBlock.class, third.get(3)); // reminder 在最后,顺序不被顶掉
         assertEquals("done", messages.get(7).extractText());
+    }
+
+    /** ⑭ 父循环委派 task:子代理独立消费一轮请求,父只收最终文本;父子消息完全隔离 */
+    @Test
+    void taskDelegationKeepsChildMessagesIsolated() throws Exception {
+        // 父子共用同一客户端:脚本顺序 = 父委派 → 子收尾 → 父收尾
+        RecordingLlmClient recording = new RecordingLlmClient(new ScriptedLlmClient(
+                assistant(taskUse("toolu_1", "调研这个项目")),
+                assistant(new TextBlock("子代理结论")),
+                assistant(new TextBlock("父最终回答"))));
+
+        SubagentRuntime subagent = new SubagentRuntime(recording,
+                Map.of("bash", new BashTool()), "sub-system", 8000, new Hooks());
+        AgentLoop loop = new AgentLoop(recording, Map.of("task", new SubagentTool(subagent)),
+                "test-system", 8000, new Hooks());
+
+        List<Message> messages = new ArrayList<>();
+        messages.add(Message.userText("帮我调研"));
+        loop.run(messages);
+
+        // 父历史恰 4 条:user → assistant(task) → user(task_result) → assistant(text)
+        assertEquals(4, messages.size());
+        assertEquals(Role.USER, messages.get(0).role());
+        assertEquals(Role.ASSISTANT, messages.get(1).role());
+        assertEquals(Role.USER, messages.get(2).role());
+        assertEquals(Role.ASSISTANT, messages.get(3).role());
+        assertEquals("父最终回答", messages.get(3).extractText());
+
+        // task 的 tool_result:ID 对应,内容恰为子代理最终文本
+        ToolResultBlock r = (ToolResultBlock) messages.get(2).content().get(0);
+        assertEquals("toolu_1", r.toolUseId());
+        assertEquals("子代理结论", r.content());
+
+        // 第二次请求由子代理发出:只有子 prompt,父问题一个字都没带进去
+        List<Message> second = recording.requests().get(1).messages();
+        assertEquals(1, second.size());
+        assertEquals(Role.USER, second.get(0).role());
+        assertEquals("调研这个项目", second.get(0).extractText());
     }
 }
