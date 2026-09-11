@@ -36,11 +36,12 @@ class MainTest {
         assertEquals("hello world", sub.matchedPositional(0).getValue());
     }
 
-    /** ④ systemPrompt:自称 Jade Code + 课程原文 + cwd(s03 权限句、s05 规划引导句已拼入) */
+    /** ④ systemPrompt:自称 Jade Code + 课程原文 + cwd(s03 权限句、s05 规划引导句、s06 task 句已拼入) */
     @Test
     void systemPromptIncludesCwd() {
         assertEquals(
                 "You are Jade Code, a coding agent at /home/fishandrice. Use bash to solve tasks. Act, don't explain."
+                        + " Use task for focused exploration or a self-contained subtask."
                         + " Before starting any multi-step task, use todo_write to plan your steps. Update status as you go."
                         + " All destructive operations require user approval.",
                 Main.systemPrompt(Path.of("/home/fishandrice")));
@@ -53,5 +54,14 @@ class MainTest {
 
         assertFalse(result.hasSubcommand());
         assertInstanceOf(Main.class, result.commandSpec().userObject());
+    }
+
+    /** ⑥ subSystemPrompt:自称 Jade Code + cwd + 子代理任务文案(s06 D3,与父提示词分开) */
+    @Test
+    void subSystemPromptIncludesCwd() {
+        assertEquals(
+                "You are Jade Code, a coding agent at /home/fishandrice."
+                        + " Complete the given task, then return a concise final answer.",
+                Main.subSystemPrompt(Path.of("/home/fishandrice")));
     }
 }
