@@ -1,5 +1,8 @@
 package com.jadecode.agent;
 
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -17,14 +20,17 @@ import com.jadecode.messages.TextBlock;
 import com.jadecode.messages.ToolResultBlock;
 import com.jadecode.messages.ToolUseBlock;
 import com.jadecode.safety.Hooks;
+import com.jadecode.skills.SkillLoader;
 import com.jadecode.subagent.SubagentRuntime;
 import com.jadecode.todo.TodoManager;
 import com.jadecode.tools.BashTool;
+import com.jadecode.tools.LoadSkillTool;
 import com.jadecode.tools.SubagentTool;
 import com.jadecode.tools.TodoWriteTool;
 import com.jadecode.tools.Tool;
 import com.jadecode.util.Json;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -70,6 +76,12 @@ class AgentLoopTest {
     private static ToolUseBlock taskUse(String id, String prompt) {
         ObjectNode input = Json.mapper().createObjectNode().put("prompt", prompt);
         return new ToolUseBlock(id, "task", input);
+    }
+
+    /** load_skill 的参数是 name(不是 command),同样不能复用 toolUse 助手 */
+    private static ToolUseBlock skillUse(String id, String name) {
+        ObjectNode input = Json.mapper().createObjectNode().put("name", name);
+        return new ToolUseBlock(id, "load_skill", input);
     }
 
     /** ① 纯文本回复:历史恰 2 条,无工具执行 */
@@ -357,5 +369,39 @@ class AgentLoopTest {
         assertEquals(1, second.size());
         assertEquals(Role.USER, second.get(0).role());
         assertEquals("调研这个项目", second.get(0).extractText());
+    }
+
+    /** ⑮ 二层知识注入的边界:完整 SKILL.md 只作为 tool_result 进 messages,system prompt 全程只有目录 */
+    @Test
+    void skillBodyEntersOnlyAsToolResult(@TempDir Path ws) throws Exception {
+        String body = "这里是完整技能指令,含关键步骤 A/B/C";
+        Path dir = Files.createDirectories(ws.resolve("skills").resolve("pdf"));
+        Files.writeString(dir.resolve("SKILL.md"),
+                "---\ndescription: 处理 PDF\n---\n" + body, StandardCharsets.UTF_8);
+
+        SkillLoader loader = new SkillLoader(ws.resolve("skills"));
+        String system = "test-system\nSkills available:\n" + loader.catalog();
+
+        RecordingLlmClient recording = new RecordingLlmClient(new ScriptedLlmClient(
+                assistant(skillUse("toolu_1", "pdf")),
+                assistant(new TextBlock("done"))));
+        AgentLoop loop = new AgentLoop(recording, Map.of("load_skill", new LoadSkillTool(loader)),
+                system, 8000, new Hooks());
+
+        List<Message> messages = new ArrayList<>(List.of(Message.userText("按 pdf 技能做")));
+        loop.run(messages);
+
+        // 完整原文(含 frontmatter)作为 tool_result 回灌进 messages
+        ToolResultBlock r = (ToolResultBlock) messages.get(2).content().get(0);
+        assertEquals("toolu_1", r.toolUseId());
+        assertTrue(r.content().contains(body), "tool_result 应带完整正文");
+        assertTrue(r.content().contains("description: 处理 PDF"), "tool_result 是逐字原文,含 frontmatter");
+
+        // 每一次请求的 system prompt 都只有目录,正文一个字都不进去
+        assertEquals(2, recording.requests().size());
+        for (CompleteRequest req : recording.requests()) {
+            assertTrue(req.system().contains("- pdf: 处理 PDF"), "system 应含目录");
+            assertFalse(req.system().contains(body), "system 不得含完整正文");
+        }
     }
 }
