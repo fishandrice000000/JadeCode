@@ -370,6 +370,30 @@ CompactTool                                                                   �
 - 用户已明确批准一个本地小提交：`下沉批次压缩策略并内联历史回填`，仅 AgentLoop.java、ContextCompactor.java、ContextCompactorApiTest.java、ContextCompactorBatchCompactionTest.java、本任务单与 parent-manual-compaction-review.md 六文件；先提交本轮已验收单元，再开展下一轮同文件修改。授权不含 push 或历史改写，也不包含下一能力完成后的再次提交。实际 hash 待 worker 执行后 GPT 核验。
 - 下一能力为父循环每次正式请求前调用 prepare，单独交接、不同时接 Main / 子循环 / 响应式恢复，不因本轮 Pass 宣告 s08 完成。
 
+### 里程碑 7B — 父循环请求前的自动整理（GPT 工程复审 Pass，待用户学习 / 获批提交执行）
+
+- **任务与依赖**：`GPT-20261012-S08-PARENT-AUTO-001`，依赖 7A 职责整理与注释复审 Pass；完整工程契约见
+  [parent-auto-prepare.md](parent-auto-prepare.md)。
+- **当前能力**：worker 已实施 `DS-20261012-S08-PARENT-AUTO-001-R1`——`AgentLoop.run` **每次正式请求之前**（首次、
+  普通工具结果之后、Stop hook 续跑之后）都会先调用 `ContextCompactor.prepare(messages, activeRequest)`，并带引用保护地
+  原位采用候选；工具执行过程中不整理，五参 / null compactor 路径仍不自动整理。新增
+  `AgentLoopAutomaticPreparationTest` 7 条；定向 66 条、全量 `mvn package` **257 条**全绿。
+  尚未接入 Main / 子循环，未做响应式恢复，未宣告整章完成。
+- **前一单元提交**：阶段 0 已按用户单独批准创建 B13 `0274083`「下沉批次压缩策略并内联历史回填」（六文件：AgentLoop、
+  ContextCompactor、ContextCompactorApiTest、ContextCompactorBatchCompactionTest、context-compact.md、
+  parent-manual-compaction-review.md），本地领先缓存 origin/main **13**，未 push；本轮 7B 实现与测试**未提交**
+  （Authorization: NONE）。
+- **返工修正（2026-10-13，`DS-20261013-S08-PARENT-AUTO-002-R1`）**：`PARENT-AUTO-002` 判定 Blocking 的两点已改——
+  ① 重写 Stop 场景为“短入口 → Stop 注入大文本 → **第二次**正式请求之前才摘要”（顺序 `[normal, summary, normal]`，
+  入口请求保真、摘要输入与归档逐条核对角色与正文），并在仓库外一次性变异检查中确认它能识别“只在第一次迭代整理”的错误实现；
+  ② prepare 采用处的行间注释分成“prepare 自身失败不采用候选”与“采用成功后的正式请求失败不回滚”两个边界，
+  并同步六参构造器“自动整理与主动压缩共用依赖 / 未注册 compact 也可注入”、`run` 中“两条整理路径前提一致”的措辞。
+  只改注释与测试，运行语句 / 签名 / import 未变；定向 66 条、全量 257 条全绿。详见
+  [parent-auto-prepare.md](parent-auto-prepare.md) §9–§10。
+- **GPT Review（2026-10-13）**：独立定向 **66 条**与全量 **257 条**全绿，空白检查通过；已核验 B13 六文件提交内容与批准快照一致。运行接入未发现阻塞缺陷，但 Stop 用例未实际触发续跑后的整理，无法识别该边界漏调用；prepare 注释也需区分“候选生成失败不采用”与“采用后正式请求失败不回滚”。**Blocking，暂不放行学习**，限定任务 `GPT-20261013-S08-PARENT-AUTO-002`；细节见 [parent-auto-prepare.md](parent-auto-prepare.md) §9。无 Git 写授权，用户笔记不改。
+
+**GPT 最终复审（2026-10-13，PARENT-AUTO-003）**：R1 的 Stop 大文本在第二次正式请求前触发摘要，输入 / 归档角色与完整正文核对落实；R2 的失败采用边界、共用依赖说明与历史前提标题校正落实。独立自动整理 7 条、定向 66 条、全量 257 条通过，失败 / 错误 / 跳过均 0，空白检查通过，**Pass**。测试候选体量不能证明摘要输入未截断的非阻塞说明已在指南澄清；worker 变异检查未由 GPT 重跑。已提供[自动整理阅读指南](../../notes/s08/parent-auto-prepare-review.md)，用户待作答；B14 精确六文件提交方案见 [parent-auto-prepare.md](parent-auto-prepare.md) §12，PLAN_ONLY，待批准。Main / 子循环 / 响应式恢复及整章验收未完成。
+
 ---
 
 ## 五、契约附录(按需查阅,不是学习顺序)
@@ -603,6 +627,7 @@ Full transcript: <可信路径>
 | `reactiveCompact()` | `ContextCompactor` | 6 | **工程 Review Pass(REACTIVE-002)**:候选起点 `max(0, size - keepRecentMessages)` 经 `safeTailStart` 保护工具交换;先归档整段、再只摘要前缀,返回 `[Reactive compact]` 摘要 + 原引用尾部;空前缀返回入参(零 IO/零调用);9 条测试，Agent 题单已提供;响应式失败恢复链路未接入 |
 | `CompactTool` 五个方法 | `CompactTool` | 6 | **工程 Review Pass(COMPACT-002)**:`name` = `compact`、`description` 课程原文、空 `properties`/`required`,复用默认空 object schema;`execute` 忽略入参恒定返回 `OUTPUT`;无依赖、无状态、无 IO;3 条薄壳测试;Agent 题单已提供，父循环显式注入路径已识别该信号，Main 未注册、子循环未接 |
 | 父循环主动压缩接入(六参构造器 / 批次标志 / 纯混合策略 / 原地回填) | `AgentLoop` | 7A | **工程 Review Pass(PARENT-MANUAL-003)，待用户学习**:运行控制流暂未发现阻塞缺陷；已校正历史三阶段注释、摘要输入改为结构相等、确认尾部原引用与 hooks/reminder/被拦工具分类，并补“预算候选已生成后摘要失败不半提交”用例；12 条定向测试、GPT 独立全量 247 条通过，阅读题单已提供；Main 未注册、子循环未接 |
+| 父循环正式请求前的自动整理(prepare 接入 / 候选采用) | `AgentLoop` | 7B | **GPT 工程复审 Pass(PARENT-AUTO-003)，待用户学习**：每次正式请求前调用 `prepare` 并按引用保护原位采用候选；Stop 场景已重写为“续跑注入大文本 → 第二次请求前才摘要”（顺序断言与完整输入核对；变异为 worker 报告），失败边界注释与构造器措辞已澄清；定向 66 条、全量 257 条通过；Main / 子循环未接 |
 
 ### 尚待实现(worker 按邮件分批实现，用户 Review 学习)
 
@@ -769,7 +794,7 @@ Full transcript: <可信路径>
 | `messages/ToolUseBlock.java` / `ToolResultBlock.java` | 构造阶段拒绝 null / 空白 ID(线上 JSON 走同一构造器);JSON 字段与合法输入行为不变 |
 | `messages/Message.java` | 新增 `blocksOfType(Class<T>)` 泛型筛选;其余行为不变 |
 | `tools/CompactTool.java` | **工程 Review Pass(COMPACT-002)，3 条薄壳测试通过**:`name`/`description`/空 `properties`/空 `required` + 默认空 object schema;`execute` 忽略入参恒定返回 `OUTPUT`,无依赖、无状态、无 IO;父循环显式注入路径已接入，Main 尚未注册、子循环未接；Agent 阅读题单已提供 |
-| `agent/AgentLoop.java` | **里程碑 7A 工程 Review Pass(PARENT-MANUAL-003)，12 条定向与 GPT 全量 247 条通过**:六参构造器注入 `ContextCompactor`(null = 旧路径;注册了 compact 却没注入则在构造时拒绝)；入口捕获一次 activeRequest；批次局部 `compactRequested` 只在"未被拦截 + 输出精确等于 `CompactTool.OUTPUT`"时置位；闭合后按全批名字分纯/混合并压缩；`clear()`+`addAll()` 原地回填并保护列表身份。注释已按“历史三阶段”改述。Main 未注册、子代理循环未接 |
+| `agent/AgentLoop.java` | **7A + 7B 工程 Review Pass，7B 待用户学习 / 获批提交执行**:六参构造器注入 `ContextCompactor`(null = 旧路径:既不自动整理,也不捕获请求、不处理 compact;注册了 compact 却没注入则在构造时拒绝)；入口捕获一次 activeRequest；**每次正式请求前**调用 `prepare` 并按引用保护原位采用候选;批次局部 `compactRequested` 只在"未被拦截 + 输出精确等于 `CompactTool.OUTPUT`"时置位；闭合后按全批名字分纯/混合并压缩；两种采用都用 `clear()`+`addAll()` 并保护列表身份。注释含“历史三阶段”与两条整理路径的失败边界。Main 未注册、子代理循环未接。7A 验收 commit `2c048e3`、职责整理 commit `0274083`;7B 尚未提交 |
 
 **已保留的规格常量**(不需改动):`MAX_REACTIVE_RETRIES`、`CompactTool.OUTPUT`、纯 getter `limits()`。
 

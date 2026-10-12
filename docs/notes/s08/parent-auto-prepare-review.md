@@ -1,0 +1,142 @@
+# s08：父循环请求前自动整理——源码阅读与架构思考
+
+工程状态：**GPT Review Pass（2026-10-13，PARENT-AUTO-003）**。用户学习：**待阅读 / 作答**。
+独立验证：自动整理 7 条、相关回归 66 条、全量 `mvn package` 257 条；失败 / 错误 / 跳过均 0。
+本单元六文件本地提交已获批，待 DeepSeek 执行；当前比较基点是前一单元 `0274083`。
+工程契约与提交方案见 [parent-auto-prepare.md](../../jobs/s08/parent-auto-prepare.md)。
+
+## 1. 这次解决什么需求
+
+想象 Agent 为修复测试连续读取源码、运行构建。用户没有发新的消息，模型也没有调用 compact，
+但每次工具返回都会增加历史。只在 run 入口整理，保护不了这个长任务后续的请求；
+只响应 compact 工具，则把基础预算管理依赖于模型是否记得提出请求。
+
+本次接入的能力是：**harness 在每次正式请求前审视将要发出的历史**。
+这包括第一次请求、工具结果回灌后的请求，以及 Stop hook 强制续跑后的请求。
+触发检查不等于触发摘要：大多数小历史不变，满足预算或条数条件才有相应动作。
+
+这里的职责分工没有改变：AgentLoop 拥有会话、决定请求时机并采用候选；
+ContextCompactor 决定怎样整理，不执行工具、不原地修改输入。
+摘要是管线内部的辅助模型调用，不是主任务 Agent 多走了一轮。
+
+## 2. 设计位置与取舍
+
+- 原课程本机 `s08_context_compact/code.py` 在 while 内正式请求前调用 prepare，本次沿用这个入口安排。
+- 各层门槛和保留规则是当前课程 / JadeCode 的策略选择，不是协议要求的唯一算法。
+  工具交换不能被切成半对是协议约束；“何时归档多少历史、保留多少旧结果”是策略。
+- 在每次请求边界检查，不表示模型准确知道 token 数，也不表示 harness 必须每轮生成摘要。
+  最新结果预算和消息条数检查总会进入；后续 micro / fit / 摘要受整体字符估算约束。
+- 先尝试确定性整理，再考虑摘要，权衡额外模型调用、信息损失与常驻上下文空间。
+  路径能恢复原文，不代表模型当前仍看得到完整原文，也不保证回查没有成本。
+- 主动 compact 仍是另一条可选入口，不是自动整理的前置条件。
+- 本次只在显式注入 compactor 的父循环生效。Main 与子循环未接，CLI 默认尚未启用；
+  响应式超限恢复、恢复产品流程、整章真机验收也还没有完成。
+
+## 3. 推荐阅读顺序
+
+### 第一部分：先看循环在哪个边界作决策
+
+阅读 [AgentLoop.java](../../../src/main/java/com/jadecode/agent/AgentLoop.java)：
+六参构造器说明 → `run` 入口捕获 activeRequest → while 内步骤 1–2 →
+无工具回复的 Stop / continue → 工具批次结果回灌 → 下一次 while。
+
+不必重新逐行研究所有 hooks。先确认三条路径如何汇合到同一个请求边界，
+以及会话采用完成后才组装正式请求。下面的 A01 对应这一部分。
+
+### 第二部分：看“检查每轮执行”如何不等于“每轮摘要”
+
+阅读 [ContextCompactor.java](../../../src/main/java/com/jadecode/context/ContextCompactor.java) 的
+`prepare` 与 `smallEnough`，先看编排和提前返回，不重刷各层已经学习过的实现。
+需要确认摘要范围时再看 [HistoryCompactor.java](../../../src/main/java/com/jadecode/context/HistoryCompactor.java)
+的 `compactHistory` → `summarizeHistory` → `compactedText`。
+
+下面的 A02 对应策略取舍，A03 对应辅助摘要与主任务决策的区别。
+注意：这些文件有已留档的旧 TODO / 注释维护项，不据 TODO 字样判断算法是否实现。
+History 旧注释中的“subList 自动只读”“归档失败原文没了”不准确，原维护项仍在 jobs 中，
+本轮没有扩大范围去修改它们。
+
+### 第三部分：用具体 Agent 场景核对理解
+
+选择性阅读 [AgentLoopAutomaticPreparationTest.java](../../../src/test/java/com/jadecode/agent/AgentLoopAutomaticPreparationTest.java)：
+
+1. `oversizedToolResultIsPersistedBeforeTheNextRequestWithoutAnyCompactCall`：
+   不调用 compact，普通工具结果仍在下一次请求前按预算转存。
+2. `stopContinuationIsPreparedBeforeTheSecondFormalRequest`：
+   短入口 → 正式回复 → Stop 注入大文本 → 摘要 → 第二次正式请求。
+3. `smallHistoryIsLeftUntouchedBeforeTheFirstRequest` /
+   `firstRequestSeesSummaryBuiltBeforeItAndKeepsTheCapturedRequest`：分别观察 no-op 与首次摘要。
+4. 两条 failure 用例按需看：只验证本次 prepare 失败前的会话保持，不代表整个 run 有回滚事务。
+
+测试辅助方法不是本轮必读内容，也不单独出 Java / 集合 / 断言题。
+Stop 测试中“压缩后小于窗口”的断言只证明输出候选体量；
+**摘要输入没有截断的证据来自后面的完整角色与原文核对**，两件事不要混淆。
+假摘要返回固定文本，所以这些测试验证调度、输入范围、采用与失败边界，不评价真实模型的摘要质量。
+
+## 4. 核心问题
+
+可以分批回答，每题用自己的 Agent 场景说明即可，不要求逐行复述代码或罗列测试断言。
+
+### A01：为什么把自动整理放在“下一次正式请求前”
+
+场景：用户让 Agent 修复测试。模型多次调用普通工具，没有调用 compact；
+后来模型尝试结束，Stop hook 又要求补做验证。
+
+- 比较“只在 run 入口整理”“只响应 compact”“统一在正式请求前检查”：
+  前两种分别漏掉什么上下文增长来源？这种遗漏会影响 Agent 的哪次决策？
+- 如果改成“每批工具执行完就整理”，它并非在所有设计中都不行。
+  在当前循环中，它还需要覆盖哪些非工具路径？为何现在选择请求边界作为统一入口？
+
+回答：
+
+
+### A02：为什么不是每次都直接生成摘要
+
+比较两个工作场景：一条测试工具返回超大日志；许多旧的纯文本讨论让历史总体变大。
+
+- 在这两个场景中，分层整理想分别保留什么、减少什么？
+  为什么“完整落盘 + 路径 / 预览”与“用事实摘要替换历史”不是相同的信息处理？
+- 若为了简单，每次正式请求前都把整段历史摘要一次，会改变哪些成本和信息风险？
+  请讨论对后续定位失败原因 / 回查证据的影响，不只回答“token 变少”。
+
+回答：
+
+
+### A03：为什么摘要调用不属于主任务 Agent 的一轮
+
+场景：Stop 要求补做验证，注入的大文本触发 prepare 的摘要。
+摘要客户端返回文本，随后主任务模型才收到整理后的历史并决定下一步。
+
+- 这两次模型调用分别承担什么职责？如果把摘要也当成主任务回复交给工具分发或 Stop，
+  会产生什么职责混淆或重复行为？
+- 原用户目标与 Stop 注入要求在这条链路里分别如何进入下一次主任务决策？
+  当前测试能证明哪些传递行为，不能证明真实摘要一定保留哪些语义？
+  不需要重新推导 extractActiveRequest 的所有校验。
+
+回答：
+
+
+## 5. 可后补拓展
+
+### A04：自动整理与超限后的补救是不是重复机制
+
+假设 prepare 正常返回，但服务端仍拒绝正式请求，理由是 context window exceeded。
+从“本地估算依据”与“服务端真实限制”两方面解释，为什么这一结果不必说明 prepare 接入有 bug；
+再说明响应式恢复应处理哪种剩余风险，以及为何不能把所有请求失败都当成需要再压缩。
+只谈职责和场景，本轮不用设计 catch、重试次数或异常类清单。
+
+回答：
+
+
+## 6. 学习与 Git 状态分开记录
+
+本轮可以开始源码 Review；A01–A03 是当前重点，A04 可后补。
+工程 Pass 不代表你已理解，也不代表 s08 全章完成。
+新的小提交已获用户具体批准，待 DeepSeek 执行；提交检查点不阻塞当前阅读，也不代表学习已通过。
+
+查看当前实现差异：
+
+```sh
+git diff 0274083 -- src/main/java/com/jadecode/agent/AgentLoop.java src/main/java/com/jadecode/context/ContextCompactor.java
+```
+
+新测试和本题单尚未跟踪，普通 git diff 不会显示它们，直接阅读对应文件即可。
