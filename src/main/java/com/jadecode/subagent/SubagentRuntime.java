@@ -12,6 +12,7 @@ import com.jadecode.llm.ModelResponse;
 import com.jadecode.messages.ContentBlock;
 import com.jadecode.messages.Message;
 import com.jadecode.messages.ToolResultBlock;
+import com.jadecode.messages.ToolExchangeProtocol;
 import com.jadecode.messages.ToolUseBlock;
 import com.jadecode.safety.Hooks;
 import com.jadecode.tools.Tool;
@@ -80,7 +81,7 @@ public class SubagentRuntime {
      *
      * <p>
      * 生命周期:入口恰好一次 SUBAGENT_START,出口恰好一次 SUBAGENT_END——正常收尾 DONE、
-     * 轮数耗尽 STOPPED、LLM 异常 FAILED。END 只由本类触发。
+     * 轮数耗尽 STOPPED、LLM 异常与模型回复内重复调用 ID FAILED。END 只由本类触发。
      * </p>
      *
      * @param prompt 父代理给的子任务描述
@@ -110,10 +111,8 @@ public class SubagentRuntime {
                 throw e;
             }
 
-            // 2. 追加 assistant 消息
-            messages.add(response.message());
-
-            // 3. 从 response.message().content() 收集 ToolUseBlock
+            // 2. 从 response.message().content() 收集 ToolUseBlock,并在追加 assistant 消息
+            //    与执行任何工具之前拒绝重复调用 ID;失败走 END(FAILED) 恰好一次后原样抛出
             List<ToolUseBlock> toolCalls = new ArrayList<>();
 
             for (ContentBlock c : response.message().content()) {
@@ -121,6 +120,17 @@ public class SubagentRuntime {
                     toolCalls.add(u);
                 }
             }
+            try {
+                ToolExchangeProtocol.requireDistinctCallIds(toolCalls);
+            } catch (IllegalArgumentException e) {
+                hooks.trigger(Hooks.SUBAGENT_END,
+                        Map.of(Hooks.PARAM_OUTPUT, "Error: " + e.getMessage(),
+                                Hooks.PARAM_OUTCOME, SubagentOutcome.FAILED));
+                throw e;
+            }
+
+            // 3. 追加 assistant 消息
+            messages.add(response.message());
 
             // 4. 没有 tool_use, 此轮结束
             if (toolCalls.isEmpty()) {
