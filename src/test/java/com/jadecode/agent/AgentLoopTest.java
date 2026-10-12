@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jadecode.llm.CompleteRequest;
@@ -403,5 +404,78 @@ class AgentLoopTest {
             assertTrue(req.system().contains("- pdf: 处理 PDF"), "system 应含目录");
             assertFalse(req.system().contains(body), "system 不得含完整正文");
         }
+    }
+
+    /** ⑯ 入口历史校验:孤立 tool_result 在第一次 LLM 调用前被拒绝,且不改动历史 */
+    @Test
+    void invalidExistingHistoryIsRejectedBeforeFirstLlmCall() {
+        RecordingLlmClient recording = new RecordingLlmClient(
+                new ScriptedLlmClient(assistant(new TextBlock("never"))));
+        AgentLoop loop = new AgentLoop(recording, Map.of("bash", new BashTool()), "test-system", 8000,
+                new Hooks());
+
+        List<Message> messages = new ArrayList<>();
+        messages.add(Message.userText("hi"));
+        messages.add(Message.userBlocks(List.of(new ToolResultBlock("toolu_stray", "stray"))));
+
+        assertThrows(IllegalArgumentException.class, () -> loop.run(messages));
+        assertTrue(recording.requests().isEmpty(), "非法历史必须在第一次 LLM 调用前被拒绝");
+        assertEquals(2, messages.size(), "入口拒绝不得改动历史");
+    }
+
+    /** ⑰ 入口历史校验:既有闭合交换、普通文本与 archive marker 形状的 user 文本允许通过 */
+    @Test
+    void validExistingHistoryPassesEntryValidation() throws Exception {
+        List<Message> messages = new ArrayList<>();
+        messages.add(Message.userText("first"));
+        messages.add(Message.assistant(List.of(toolUse("toolu_old", "bash", "true"))));
+        messages.add(Message.userBlocks(List.of(new ToolResultBlock("toolu_old", "(no output)"))));
+        messages.add(Message.userText("[2 messages archived at /tmp/transcript.jsonl]"));
+        messages.add(Message.userText("继续"));
+
+        AgentLoop loop = new AgentLoop(
+                new ScriptedLlmClient(assistant(toolUse("toolu_new", "bash", "echo hi")),
+                        assistant(new TextBlock("done"))),
+                Map.of("bash", new BashTool()), "test-system", 8000, new Hooks());
+
+        loop.run(messages);
+
+        assertEquals("done", messages.getLast().extractText());
+        ToolResultBlock r = (ToolResultBlock) messages.get(messages.size() - 2).content().get(0);
+        assertEquals("toolu_new", r.toolUseId());
+        assertEquals("hi", r.content());
+    }
+
+    /** ⑱ 模型回复内重复 tool_use ID:追加 assistant 与执行工具之前拒绝,无任何副作用 */
+    @Test
+    void duplicateToolUseIdsAreRejectedWithoutSideEffects() {
+        Hooks hooks = new Hooks();
+        AtomicBoolean preFired = new AtomicBoolean();
+        hooks.register(Hooks.PRE_TOOL_USE, params -> {
+            preFired.set(true);
+            return null;
+        });
+        AtomicInteger executions = new AtomicInteger();
+        Tool countingBash = new BashTool() {
+            @Override
+            public String execute(ObjectNode input) {
+                executions.incrementAndGet();
+                return "should not run";
+            }
+        };
+        AgentLoop loop = new AgentLoop(
+                new ScriptedLlmClient(assistant(toolUse("dup", "bash", "echo one"),
+                        toolUse("dup", "bash", "echo two"))),
+                Map.of("bash", countingBash), "test-system", 8000, hooks);
+        List<Message> messages = new ArrayList<>();
+        messages.add(Message.userText("hi"));
+
+        IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
+                () -> loop.run(messages));
+
+        assertTrue(thrown.getMessage().contains("dup"));
+        assertEquals(1, messages.size(), "不得留下半截 assistant 消息");
+        assertEquals(0, executions.get(), "重复 ID 批次不得执行任何工具");
+        assertFalse(preFired.get(), "PreToolUse 不得触发");
     }
 }
