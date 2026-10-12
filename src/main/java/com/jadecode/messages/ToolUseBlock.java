@@ -21,4 +21,12 @@ import com.fasterxml.jackson.databind.JsonNode;
 @JsonTypeName("tool_use")
 public record ToolUseBlock(String id, String name, JsonNode input) implements ContentBlock {
 
+    /**
+     * 前置不变量:工具调用 ID 不能为 null / 空白。
+     *
+     * <p>校验实现集中于 {@link ToolExchangeProtocol},合法输入的 JSON 形态与行为不变。</p>
+     */
+    public ToolUseBlock {
+        ToolExchangeProtocol.requireValidToolId(id, "tool_use id");
+    }
 }
