@@ -330,6 +330,48 @@ CompactTool                                                                   �
 
 ---
 
+### 里程碑 7A 后续 — 主动压缩的职责整理与架构学习（工程 Review Pass / 核心学习收尾）
+
+- **用户授权与任务**：2026-10-12 用户要求重写当前学习问题，将 `compactAfterBatch` 移入 compactor，并将历史回填 helper 内联回循环。执行任务 `GPT-20261012-S08-MANUAL-BOUNDARY-001` 已由 worker 交付；GPT 已检查实际源码与验证，注释校正任务见下方。
+- **需求与设计意图**：主动压缩为模型提供阶段性收束历史的能力；纯/混合策略权衡释放空间与保留尚未进入主任务模型决策的新证据。原课程本机 s08 手动压缩统一摘要整段历史，JadeCode 的纯/混合分支是额外策略，不是协议硬约束，也不证明任务已结束。
+- **职责划分**：CompactTool 表达请求；AgentLoop 确认真实执行、等待整批回灌闭合、选择调用时机并采用新历史；ContextCompactor 决定纯/混合压缩范围与预算/摘要组合，仍无可变会话状态、不执行工具、不改输入。
+- **精确重构**：新增 `ContextCompactor.compactAfterBatch(List<ToolUseBlock>, List<Message>, String)` public 入口，保持现有分类与算法；AgentLoop 移除同名私有方法，闭合后委托此入口。移除 `replaceHistoryInPlace`，在调用处内联带列表身份保护的 clear/addAll；不额外抽 helper 或引入 enum/策略接口。
+- **不变量与验证**：成功信号与权限、工具/hook/reminder 顺序、入口请求生命周期、纯/混合摘要范围、最新交换保留、预算候选最终成功才回填、原异常传播与不重跑工具均不改变。既有 12 条主动压缩测试继续运行；补新 public 入口直接用例与 API 可见性断言，再定向回归与 `mvn package`，不 clean、不调用真实模型。
+- **学习材料**：[当前题单](../../notes/s08/parent-manual-compaction-review.md)已按需求/场景/架构取舍改写为 A01–A04；原 Q01 回答与其它旧题放折叠区备存，不再要求续答。用户已回答新版题单；批阅只在对话进行，不代改答案。工程验证与学习理解分开记录，代码注释校正后再正式放行。
+- **范围与暂停点**：只改父循环、compactor 总入口、必要测试和本节任务状态；不接 Main/子循环/prepare/响应式重试，不动其它算法或既有非阻塞维护项，不编辑 notes。交付后等待 GPT 复审，不自行推进下一能力。
+- **Git Authorization**：NONE。前轮 Git 授权已完成，不延续到本次重构；Pass 后 GPT 及时提出本小单元提交方案，另获用户批准再执行。
+
+**实施与验证结果（worker，`DS-20261012-S08-MANUAL-BOUNDARY-001-R1`，2026-10-12）**：按 Scope 完成，行为保持。
+
+- **代码**：`ContextCompactor` 新增 public `compactAfterBatch(List<ToolUseBlock>, List<Message>, String)`（纯 compact → `compactAll`；混合 → `toolResultBudget` 后 `compactHistory`），分类只按本批全部调用名，保留不可变返回与异常原样传播；新增 `COMPACT_TOOL = "compact"` 私有常量与 API 导航、需求/场景/取舍/失败语义说明。
+  `AgentLoop` 删除私有 `compactAfterBatch` 与 `replaceHistoryInPlace`，第 7 步改为调用 compactor 入口并在返回后内联 `if (compacted != messages) { clear(); addAll(); }`；类注释补“策略在 compactor、时机与会话在循环”。未改成功信号、权限/Pre/Post、工具顺序、入口 activeRequest、todo/reminder、Stop、五/六参构造与未启用路径。
+- **测试**：`ContextCompactorApiTest` 增加 `compactAfterBatch` public 可达断言（该文件仍 2 条）；新增 `ContextCompactorBatchCompactionTest` 3 条直接契约用例——纯批次整段摘要并归档、混合只摘要旧前缀且尾部原引用保留、无可摘要前缀时返回入参本身（零摘要/零归档）。`AgentLoopManualCompactionTest` 未改一行，12 条回归原样通过。
+- **实测**：定向 7 文件 = **62 条**，失败/错误/跳过 0；`mvn package` = **250 条**，失败/错误/跳过 0，BUILD SUCCESS（较上轮 247 多出 3 条即新测试）。`git diff --check` 退出码 0，新测试文件无行尾空白。未运行 clean，未删 target/旧报告/临时候选副本，未调真实模型，未读秘密。
+- **状态**：代码与测试**已实施，待 GPT 复审**；本轮不宣告用户学习通过、不推进下一能力、不做任何 Git 写操作。
+
+**GPT 工程 Review（2026-10-12）**：核对 tracked diff、新测试全文、循环调用方及既有失败回归；策略移动与回填逻辑保持原语义，无已知运行行为阻塞。独立执行 `mvn package`：**250 条**，失败 / 错误 / 跳过均为 0，BUILD SUCCESS；`git diff --check` 通过，新测试无行尾空白，暂存区为空。
+
+- **Blocking（教学注释，不是运行 Bug）**：AgentLoop 回填处把 run 内局部重绑说成“下一次请求仍看到旧历史”；实际上本次 run 后续循环会用新引用，未同步的是调用方持有的列表。ContextCompactor 新方法把主动请求说成“模型已明确表态阶段结束 / 只有模型知道”，混淆可选意图与确定事实；压缩预算安全性仍属 harness，主动请求不能证明阶段或任务完成。
+- **限定返工**：`GPT-20261012-S08-MANUAL-BOUNDARY-002`，仅校正两类相关中文 JavaDoc / 行间注释，保持全部逻辑、API、测试和范围外维护项不变；无 Git 写授权，交付后复审。
+- **学习状态**：用户已答 A01–A04，GPT 在对话批阅；A02 / A03 主体理解正确，需区分主动压缩的可选语义调节与自动兜底、摘要常驻信息与磁盘可恢复信息。A04 拓展不作推进门槛；不要求重答显然的判断题，不将已回答自动记为关键理解全通过。
+- **后续检查点**：注释复审通过后，及时提出本小单元的具体提交方案并另获用户批准；Main / 子循环 / prepare / 响应式恢复与整章验收仍未完成。
+
+**注释校正结果（worker，`DS-20261012-S08-MANUAL-BOUNDARY-002-R1`，2026-10-12）**：两类教学说明已按 C1 / C2 校正，**未改任何运行语句、签名、import 或测试**。
+
+- **C1（AgentLoop 回填处行间注释）**：删掉“`messages = compacted` …下一次请求仍会看到旧历史，压缩等于没发生”这一在 run 内不成立的结论，改为分清两件事——本次 run 后续的 while 循环确实会用新引用，下一次正式请求能看到压缩候选；但调用方仍持有旧列表，其会话继续、持久化与失败恢复视角没同步，会与压缩后历史分叉。因此原地 `clear + addAll` 的目的是同步调用方会话并保留外层列表对象身份。同列表 no-op 的判引用解释保留；`if (compacted != messages)` 的位置、条件、顺序与异常路径未动。
+- **C2（主动压缩的语义）**：`ContextCompactor.compactAfterBatch` 的需求段改为“自动机制关注预算与历史规模（第一层预算与第二层 snip 每次进入都检查，后续层才受整体大小判断约束），不判断业务阶段；模型可依据进度请求收束历史”，并新增一段“这只是可选调节，不是事实或安全保证”——模型不准确知道 token 预算、上下文是否已满、阶段是否结束或任务是否完成；主动摘要有一次模型调用成本与信息损失，不承诺一定改善推理或降低总成本；harness 仍负责预算约束、自动整理接入与安全时机，`prepare` 已有算法但**尚未接入循环**，不能当成生产 CLI 已有保障。纯批次条目改为“该分类唯一事实是本批调用名全为 compact，因此没有别的业务工具新产出的结果需要优先保护”，不再从信号推断阶段完成；`AgentLoop` 类头同源的“只有它知道”一并最小校正，混合策略说明不变。
+- **范围**：只改上述两文件的中文 JavaDoc / 行间注释；未顺手校正 HistoryCompactor、其它方法或既存 TODO 漂移。
+- **实测**：定向 `ContextCompactorBatchCompactionTest,ContextCompactorApiTest,AgentLoopManualCompactionTest` = **17 条**（3+2+12），失败/错误/跳过 0；`mvn package` = **250 条**，失败/错误/跳过 0，BUILD SUCCESS；`git diff --check` 退出码 0。核对：注释之外无代码差异（把注释行剥离后与 HEAD 比较，剩余差异只有上一轮已复审的结构移动）；两个测试文件的修改时间仍为上一轮 21:49，本轮未触碰。未 clean、未删 target/报告/临时候选副本。
+- **状态**：**注释已校正，待 GPT 复审**；不做 Git 写操作，不自行放行或推进。
+
+**GPT 最终复审与学习收尾（2026-10-12）**：读取实际 Java diff、更新后的 JavaDoc / 行间注释、API 断言及新增三条直接契约测试；C1 已区分 run 局部重绑与调用方会话不同步，C2 已明确主动压缩是可选意图、不证明阶段完成，且 prepare 尚未接入。运行策略与失败行为保持原样，无已知阻塞，**Review Pass**。GPT 再次 `mvn package`：**250 条**，失败 / 错误 / 跳过均为 0，BUILD SUCCESS；`git diff --check` 通过，暂存区为空。
+
+- 用户已修订 A02，正确区分当前上下文中细节减少与磁盘仍可回查，以及回查增加定位成本；结合 A01 / A03 / A04 与对话，主动请求的可选性、最新证据保护、循环 / 压缩器职责和失败时保留已完成状态的核心学习点已批阅，可以推进下一小能力。反馈只在对话中，不改答案、不要求重复显然的判断；未覆盖的拓展不冒充全面验收。
+- 用户已明确批准一个本地小提交：`下沉批次压缩策略并内联历史回填`，仅 AgentLoop.java、ContextCompactor.java、ContextCompactorApiTest.java、ContextCompactorBatchCompactionTest.java、本任务单与 parent-manual-compaction-review.md 六文件；先提交本轮已验收单元，再开展下一轮同文件修改。授权不含 push 或历史改写，也不包含下一能力完成后的再次提交。实际 hash 待 worker 执行后 GPT 核验。
+- 下一能力为父循环每次正式请求前调用 prepare，单独交接、不同时接 Main / 子循环 / 响应式恢复，不因本轮 Pass 宣告 s08 完成。
+
+---
+
 ## 五、契约附录(按需查阅,不是学习顺序)
 
 ### 5.1 四层管线规格
@@ -766,7 +808,7 @@ Full transcript: <可信路径>
 7. **响应式**:难以手动触发,可跳过。
 8. `q` 退出无异常。
 
-### 7.4 当前工作区 Git 提交交接(2026-10-12，待 worker 执行)
+### 7.4 工作区 Git 提交交接(2026-10-12，已执行并由 GPT 核验)
 
 用户明确要求 GPT 规划当前工作区提交并写邮件交给 DeepSeek 执行。本次授权是新增本地 commit，不包含 push、amend、reset、rebase、squash 或归档引用操作。
 执行任务为 `GPT-20261012-S08-GIT-001`，基点是 `e815e72b4d68cae3a19e152a32b547028f0e0516`；规划时暂存区为空，main 与本地缓存 origin/main 对齐，未查询远端。
@@ -793,4 +835,5 @@ GPT 本次读取实际实现与 tracked diff，核对没有未实现方法占位
 
 本次提交清单共 37 个文件。`docs/notes/s08/parent-manual-compaction-review.md` 不在提交授权内，允许用户继续修改该文件，不影响其余批次执行，不据此宣告学习完成。
 精确路径、标题、文件摘要、验证要求与停止条件以执行邮件为准。SOPs 保持当前 ignored 状态，不 force add、不修改 .gitignore；不提交机器配置、秘密、构建产物或未知文件。不编辑用户笔记答案。
-本记录不是“已经提交”：实际 hash、批次验证与最终状态待 worker 回信后由 GPT 核验。Main、子循环压缩、请求前 prepare、响应式恢复链路及真机验收仍未完成，README 不提前改成 s08 完成。
+**执行与核验结果**：worker `DS-20261012-S08-GIT-001-R1` 已交付 B01–B12，GPT 核对实际 log/各批路径与标题、37 文件内容摘要、对应候选副本与全部测试报告，均与计划一致；12 个新增本地提交 `4c9f465` → `de534db`，父循环能力代码提交为 `2c048e3`。GPT 再次 `mvn package`：247 条，失败/错误/跳过均为 0，BUILD SUCCESS。核验时暂存区与 tracked diff 为空，只剩排除的父循环笔记未跟踪；本地领先缓存 origin/main 12，无 push/rebase 等历史操作。此记录同步与新职责重构属于后续工作区修改，不能把旧基线/授权沿用到新提交。
+Main、子循环压缩、请求前 prepare、响应式恢复链路及真机验收仍未完成，README 不提前改成 s08 完成。

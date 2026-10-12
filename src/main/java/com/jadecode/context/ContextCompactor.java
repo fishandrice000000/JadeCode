@@ -12,6 +12,7 @@ import com.jadecode.messages.Message;
 import com.jadecode.messages.Role;
 import com.jadecode.messages.TextBlock;
 import com.jadecode.messages.ToolResultBlock;
+import com.jadecode.messages.ToolUseBlock;
 
 /**
  * ContextCompactor -- 上下文压缩的<b>总入口</b>:固定四层管线与对外 API。
@@ -20,7 +21,8 @@ import com.jadecode.messages.ToolResultBlock;
  * 真正的算法不在本类,而在五个职责明确的策略类里;本类只负责按顺序编排它们,
  * 并为调用方保留一层<b>薄委托</b>(不是第二份实现)。对外(loop 集成)可见的入口只有
  * {@link #prepare}、{@link #toolResultBudget}、{@link #compactAll}、{@link #compactHistory}、
- * {@link #reactiveCompact}、{@link #extractActiveRequest} 与 {@link #isContextOverflow};
+ * {@link #compactAfterBatch}、{@link #reactiveCompact}、{@link #extractActiveRequest} 与
+ * {@link #isContextOverflow};
  * 其余层与工程委托收敛为包内可见,供同包测试直接调用。
  * </p>
  *
@@ -80,6 +82,16 @@ public final class ContextCompactor {
 
     /** 响应式补救的全局上限:同一次正式模型调用最多补救这么多次 */
     public static final int MAX_REACTIVE_RETRIES = 1;
+
+    /**
+     * compact 工具名:手动批次分类只认这个字符串值(与 {@code tools.CompactTool#name()} 一致)。
+     *
+     * <p>
+     * 这里刻意<b>不</b>从 CompactTool 共享常量:本类只做字符串值比较,不为共享一个名字而给工具类
+     * 增加对外依赖或引入枚举;值一旦与工具名不符,手动压缩测试会立刻失败。
+     * </p>
+     */
+    private static final String COMPACT_TOOL = "compact";
 
     /** 阈值集合 */
     private final CompactionLimits limits;
@@ -196,6 +208,105 @@ public final class ContextCompactor {
 
     private boolean smallEnough(List<Message> messages) {
         return estimateChars(messages) <= limits.contextCharLimit();
+    }
+
+    /* ===================== 手动批次压缩入口 ===================== */
+
+    /**
+     * 把"模型主动请求压缩"的一次批次动作,落到具体的压缩策略上。
+     *
+     * <p>
+     * <b>它应对的需求与场景</b>:自动机制关注的是预算与历史规模——第一层的结果预算与第二层的 snip
+     * 每次进入都会检查,只有后续层才受整体大小判断约束;它<b>不</b>判断业务阶段。而模型可以在长任务里
+     * 依据进度判断"某些探索记录不必再常驻",于是显式调用无副作用的 {@code compact} 工具请求收束历史。
+     * 父循环等这一批工具交换<b>全部闭合</b>后,把本批的调用集合交给本方法,由本方法挑一条压缩路径。
+     * </p>
+     *
+     * <p>
+     * <b>这只是可选调节,不是事实或安全保证</b>:模型并不准确知道 token 预算、上下文是否已经满了、
+     * 某个阶段是否结束或用户任务是否完成;主动摘要本身也有一次模型调用成本与信息损失,不承诺一定改善
+     * 推理或降低总成本,需要按场景取舍。harness 仍负责预算约束、自动整理的接入与安全执行时机,
+     * 主动请求不取代这些保障(请求前的 {@link #prepare} 已有算法,但尚未接入循环,不能当成生产 CLI
+     * 已经存在的自动保障)。
+     * </p>
+     *
+     * <p>
+     * <b>为什么在总入口(compactor)而不是在循环里</b>:纯 / 混合的分法是一种<b>信息保护取舍</b>,
+     * 属于压缩策略——它回答"哪些历史可以牺牲、哪些刚产生的证据必须留住"。循环只负责
+     * <b>时机与生命周期</b>(工具真的执行成功、整批结果回灌闭合、采用新历史继续跑)。职责分开后,
+     * 循环不必知道归档、落盘与摘要范围;本类也不必知道 hook、权限闸门、工具表或会话对象。
+     * </p>
+     *
+     * <p>
+     * <b>为什么必须等批次闭合才执行</b>:模型同一条回复里可能既有 compact 也有普通工具调用。
+     * 在工具执行中间裁剪历史,同批其它工具的结果还没回灌,会留下"有调用没结果"的半个交换,
+     * 甚至删掉已经发生过的文件写入记录,让模型重复副作用。所以本方法的前置条件是
+     * <b>调用方已经回灌完整批结果</b>;本方法不执行工具、不触发 hook、不确认权限,也不回灌结果。
+     * </p>
+     *
+     * <p>
+     * <b>分类与两条策略</b>:按本批<b>全部</b> {@code tool_use} 的名字判断,不看执行成功的子集、
+     * 不看结果正文,也不看结果消息里是否混入 reminder 文本块——分类依据是模型实际提出的调用集合。
+     * </p>
+     * <ul>
+     * <li><b>纯 compact 批次</b>(每个调用都是 {@code compact}):这个分类唯一的事实是本批调用名<b>全为</b>
+     * compact,所以没有别的业务工具新产生的、需要优先保护的结果,于是 {@link #compactAll} 把整段历史
+     * 换成一条摘要。<b>不</b>从这个信号推断阶段已完成或任务已被验收;混合策略不受影响。</li>
+     * <li><b>混合批次</b>(还含别的工具):本批可能有主任务模型<b>还没读过</b>的新证据,所以先
+     * {@link #toolResultBudget} 把超大的新鲜结果换成可恢复的"路径 + 预览"(候选),再让
+     * {@link #compactHistory} 只摘要<b>旧前缀</b>,最新那条闭合交换按原引用留在摘要后面。</li>
+     * </ul>
+     *
+     * <p>
+     * <b>替代设计的得失</b>:也可以让循环自己判断纯 / 混合,或让本方法接收一个"模式"参数;但那样会把
+     * 压缩取舍的细节复制到调用方,还多一个可被误用的开关。当前只暴露这一个入口,策略变化集中在
+     * compactor 内部;代价是本类需要知道 {@code compact} 这个工具名。
+     * </p>
+     *
+     * <p>
+     * <b>不可变与失败语义</b>:与其它入口一致——只返回<b>候选</b>,不修改传入的列表、{@link Message}
+     * 或其中的 block;<b>无变化时返回入参本身</b>。"采用候选"(clear + addAll 写回调用方列表)是
+     * <b>调用方的职责</b>,且只在本方法正常返回之后才做。落盘 / 归档失败(带 cause 的
+     * {@code IllegalStateException})与摘要失败({@link LlmException})都<b>原样传播</b>:不吞错、
+     * 不伪造摘要、不重跑已经完成的工具。混合路径里的预算结果只是候选——即使落盘文件已经写出,
+     * 摘要失败也不会把历史半替换成预览。
+     * </p>
+     *
+     * <p>
+     * <b>前置条件由调用方保证</b>(本方法不做全历史扫描或参数校验):本批确有"真实执行成功"的
+     * compact 请求、整批结果已回灌闭合、{@code toolCalls} 非空且就是本批全部调用,
+     * 且 {@code activeRequest} 是入口捕获的本次人类请求。
+     * </p>
+     *
+     * @param toolCalls     本批全部 tool_use(用于纯 / 混合分类)
+     * @param messages      已经闭合的当前历史
+     * @param activeRequest 入口捕获的本次请求;两条策略都会把它写进摘要消息
+     * @return 压缩候选;可能与 {@code messages} 是同一个列表对象,表示"没有可安全压缩的部分"
+     * @throws LlmException          摘要调用失败,原样向上传播
+     * @throws IllegalStateException 落盘 / 归档失败(带 cause)
+     */
+    public List<Message> compactAfterBatch(List<ToolUseBlock> toolCalls, List<Message> messages,
+            String activeRequest) throws LlmException {
+        // 1. 纯 / 混合分类:只要出现一个不是 compact 的调用,本批就算混合批次。
+        //    这里只看调用名,不看它有没有被拦截、有没有执行成功,也不扫描结果正文。
+        boolean pureCompactBatch = true;
+        for (ToolUseBlock u : toolCalls) {
+            if (!COMPACT_TOOL.equals(u.name())) {
+                pureCompactBatch = false;
+                break;
+            }
+        }
+
+        // 2. 纯 compact:本批没有新鲜业务数据,整段历史换成一条摘要(内部会先归档再摘要)。
+        if (pureCompactBatch) {
+            return compactAll(messages, activeRequest);
+        }
+
+        // 3. 混合批次:先把最新那条闭合交换里的超大新鲜结果变成可恢复的"路径 + 预览"(候选),
+        //    再让摘要只覆盖它之前的前缀——刚生成、模型还没读过的结果不能被先转述进摘要而失真。
+        //    两步都复用既有层;不调用整套 prepare,也不在这里重复实现归档或摘要逻辑。
+        List<Message> budgeted = toolResultBudget(messages);
+        return compactHistory(budgeted, activeRequest);
     }
 
     /* ===================== 第一层:最新结果批次预算 ===================== */

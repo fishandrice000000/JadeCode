@@ -50,6 +50,8 @@ class ContextCompactorApiTest {
         // 手动压缩入口:纯 compact 批次走 compactAll,混合批次走 compactHistory
         assertTrue(isPublic("compactAll", List.class, String.class));
         assertTrue(isPublic("compactHistory", List.class, String.class));
+        // 批次闭合后的手动压缩入口:循环把"本批全部调用"交给它,由它挑纯/混合策略
+        assertTrue(isPublic("compactAfterBatch", List.class, List.class, String.class));
         // 响应式补救与父子共用判定
         assertTrue(isPublic("reactiveCompact", List.class, String.class));
         assertTrue(isPublic("extractActiveRequest", List.class));
