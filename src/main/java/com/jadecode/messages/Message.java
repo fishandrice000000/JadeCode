@@ -59,4 +59,35 @@ public record Message(Role role, List<ContentBlock> content) {
         return String.join("\n", texts);
     }
 
+    /**
+     * 按运行期类型筛选本条消息的 content 块,保持原有顺序。
+     *
+     * <p>
+     * 用法:{@code message.blocksOfType(ToolUseBlock.class)}、
+     * {@code message.blocksOfType(ToolResultBlock.class)}、{@code message.blocksOfType(TextBlock.class)}。
+     * </p>
+     *
+     * <p>
+     * 只做类型筛选:不校验角色、不检查 ID 或调用配对,也不改变消息的 JSON 形态。
+     * 返回的列表不可修改,不暴露原 content 的结构修改能力;无匹配时返回空列表。
+     * </p>
+     *
+     * @param type 要筛选的块类型,不能为 null
+     * @param <T>  块类型,必须是 {@link ContentBlock} 的子类型
+     * @return 按原顺序排列的匹配块;不可修改
+     * @throws IllegalArgumentException type 为 null
+     */
+    public <T extends ContentBlock> List<T> blocksOfType(Class<T> type) {
+        if (type == null) {
+            throw new IllegalArgumentException("type 不能为 null");
+        }
+        List<T> matched = new ArrayList<>();
+        for (ContentBlock block : content) {
+            if (type.isInstance(block)) {
+                matched.add(type.cast(block));
+            }
+        }
+        return List.copyOf(matched);
+    }
+
 }

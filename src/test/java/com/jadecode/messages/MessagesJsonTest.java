@@ -1,5 +1,6 @@
 package com.jadecode.messages;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jadecode.util.Json;
@@ -97,5 +98,35 @@ class MessagesJsonTest {
         assertEquals("", onlyTools.extractText());
 
         assertEquals("", Message.assistant(List.of()).extractText());
+    }
+
+    /** ⑤ 工具 ID 前置不变量:null / 空白在构造阶段就直接拒绝 */
+    @Test
+    void toolIdsRejectNullOrBlankAtConstruction() {
+        JsonNode input = M.createObjectNode();
+
+        assertThrows(IllegalArgumentException.class, () -> new ToolUseBlock(null, "bash", input));
+        assertThrows(IllegalArgumentException.class, () -> new ToolUseBlock("   ", "bash", input));
+        assertThrows(IllegalArgumentException.class, () -> new ToolResultBlock(null, "out"));
+        assertThrows(IllegalArgumentException.class, () -> new ToolResultBlock("\t", "out"));
+    }
+
+    /** ⑥ 非法工具 ID 的线上 JSON 同样被拒绝反序列化;合法输入行为不变 */
+    @Test
+    void invalidToolIdsAreRejectedOnDeserialization() throws Exception {
+        String blankToolUseId = """
+                {"role":"assistant","content":[{"type":"tool_use","id":"  ","name":"bash","input":{}}]}""";
+        assertThrows(JsonProcessingException.class, () -> M.readValue(blankToolUseId, Message.class));
+
+        String missingToolResultId = """
+                {"role":"user","content":[{"type":"tool_result","content":"x"}]}""";
+        assertThrows(JsonProcessingException.class, () -> M.readValue(missingToolResultId, Message.class));
+
+        // 合法输入:构造与 JSON 往返保持原行为
+        Message legal = Message.assistant(List.of(
+                new TextBlock("调用"),
+                new ToolUseBlock("toolu_01", "bash", M.readTree("{\"command\":\"ls\"}")),
+                new ToolResultBlock("toolu_01", "pom.xml")));
+        assertEquals(legal, M.readValue(M.writeValueAsString(legal), Message.class));
     }
 }

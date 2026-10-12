@@ -19,4 +19,12 @@ import com.fasterxml.jackson.annotation.JsonTypeName;
 @JsonTypeName("tool_result")
 public record ToolResultBlock(@JsonProperty("tool_use_id") String toolUseId, String content) implements ContentBlock {
 
+    /**
+     * 前置不变量:工具调用 ID 不能为 null / 空白。
+     *
+     * <p>校验实现集中于 {@link ToolExchangeProtocol},合法输入的 JSON 形态与行为不变。</p>
+     */
+    public ToolResultBlock {
+        ToolExchangeProtocol.requireValidToolId(toolUseId, "tool_result tool_use_id");
+    }
 }
