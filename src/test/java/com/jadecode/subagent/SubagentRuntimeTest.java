@@ -342,4 +342,32 @@ class SubagentRuntimeTest {
         assertEquals(SubagentOutcome.FAILED, ends.get(0).get(Hooks.PARAM_OUTCOME));
         assertEquals("Error: " + thrown.getMessage(), ends.get(0).get(Hooks.PARAM_OUTPUT));
     }
+
+    /** ⑪ 模型回复内重复 tool_use ID:工具不执行、不追加 assistant;END 恰一次且 FAILED */
+    @Test
+    void duplicateToolUseIdsTriggerFailedEndExactlyOnce() {
+        Hooks hooks = new Hooks();
+        List<String> events = new ArrayList<>();
+        List<Map<String, ?>> ends = recordEnds(hooks);
+        hooks.register(Hooks.SUBAGENT_START, params -> {
+            events.add("start");
+            return null;
+        });
+
+        FakeTool bash = new FakeTool("bash", "should not run");
+        RecordingLlmClient recording = new RecordingLlmClient(new ScriptedLlmClient(
+                assistant(toolUse("t1", "bash"), toolUse("t1", "bash"))));
+        SubagentRuntime runtime = runtime(recording, Map.of("bash", bash), hooks);
+
+        IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
+                () -> runtime.run("task"));
+
+        assertTrue(thrown.getMessage().contains("t1"));
+        assertEquals(1, recording.requests().size()); // 模型确实被调用过一次,失败发生在处理回复时
+        assertEquals(0, bash.calls, "重复 ID 批次不得执行任何工具");
+        assertEquals(List.of("start"), events);
+        assertEquals(1, ends.size(), "END 必须恰好一次");
+        assertEquals(SubagentOutcome.FAILED, ends.get(0).get(Hooks.PARAM_OUTCOME));
+        assertEquals("Error: " + thrown.getMessage(), ends.get(0).get(Hooks.PARAM_OUTPUT));
+    }
 }
