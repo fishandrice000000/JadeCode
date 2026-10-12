@@ -60,6 +60,16 @@ import com.jadecode.util.Json;
  * 自己总结";压缩成功后,替换后的历史<b>原地写回</b>调用方持有的那个列表,于是下一次正常请求看到的
  * 就是压缩结果。todo 提醒的轮次计数不受影响:摘要调用不会被算成一个额外的工具轮。
  * </p>
+ *
+ * <p>
+ * <b>正式请求前的自动整理</b>:模型可能连续读文件、跑测试却始终没请求 compact,历史照样会涨,
+ * 所以不能把"记得请求压缩"当作上下文受保护的唯一依靠。启用压缩器时,<b>每一次</b>正式请求之前都会先跑
+ * 一遍 {@link ContextCompactor#prepare}:先按预算把超大的最新工具结果转成可恢复的"路径 + 预览",
+ * 再在消息条数过多时归档中段,只有整体仍然过大才逐层进入 micro / fit,最后才用一次摘要调用兜底。
+ * 它整理的是<b>预算与历史规模</b>,不判断业务阶段,也<b>不等于每轮都会摘要</b>;
+ * 它与模型主动调 compact 是两条独立入口——自动路径不要求模型先请求,主动路径也不依赖自动路径。
+ * 五参构造器(未启用压缩器)保持 s01–s07 的旧行为:既不自动整理,也不捕获入口请求、不处理 compact 请求。
+ * </p>
  */
 public class AgentLoop {
     /** LLM 连接;Main 装配时注入 */
@@ -78,8 +88,8 @@ public class AgentLoop {
     private final Hooks hooks;
 
     /**
-     * 手动压缩依赖;{@code null} 表示<b>未启用</b>:此时 run 的行为与 s01–s07 完全一致,
-     * 既不捕获入口请求,也不处理 compact 请求。
+     * 压缩依赖;{@code null} 表示<b>未启用</b>:此时 run 的行为与 s01–s07 完全一致——
+     * 既不在每次正式请求前自动整理,也不捕获入口请求、不处理 compact 请求。
      */
     private final ContextCompactor compactor;
 
@@ -111,11 +121,17 @@ public class AgentLoop {
     }
 
     /**
-     * 完整构造器:可注入手动压缩依赖。
+     * 完整构造器:可注入压缩依赖(自动整理与主动压缩共用)。
      *
      * <p>
      * <b>为什么用"可空依赖"而不是模式开关</b>:本阶段只有"启用 / 未启用"两种装配,一个可空参数
      * 已经够用,不需要模式枚举、工厂或泛化接口;{@code null} 明确表示"这条路径还没有压缩能力"。
+     * </p>
+     *
+     * <p>
+     * <b>注入它就同时启用了两条能力</b>:每次正式请求前的自动整理({@link ContextCompactor#prepare})
+     * 与批次闭合后的主动压缩({@link ContextCompactor#compactAfterBatch})都来自这一个依赖,两者独立生效——
+     * 工具表里<b>没有</b>注册 compact 也可以注入压缩器,此时只有自动整理在起作用。
      * </p>
      *
      * <p>
@@ -134,7 +150,8 @@ public class AgentLoop {
      * @param system    system prompt 原文
      * @param maxTokens 单请求 token 上限
      * @param hooks     hook 事件表
-     * @param compactor 手动压缩依赖;{@code null} = 未启用(旧路径)
+     * @param compactor 自动整理与主动压缩共用的依赖;{@code null} = 未启用(旧路径:既不自动整理,
+     *                  也不捕获入口请求、不处理 compact 请求)。不注册 compact 也可以注入它来启用自动整理
      * @throws IllegalArgumentException tools 注册了 compact 但 compactor 为 null
      */
     public AgentLoop(LlmClient client, Map<String, Tool> tools, String system, int maxTokens, Hooks hooks,
@@ -162,10 +179,16 @@ public class AgentLoop {
      * 在传入的 messages 上原地续跑,直到模型不再调工具为止。
      *
      * <p>
-     * 轮次语义:一轮 = while 循环一圈(模型一次回复 + 该回复里全部工具的串行执行 +
-     * 该批闭合后的压缩请求处理)。工具执行串行,结果按 tool_use 出现顺序回灌;
+     * 轮次语义:一轮 = while 循环一圈(正式请求前的自动整理 + 模型一次回复 + 该回复里全部工具的
+     * 串行执行 + 该批闭合后的压缩请求处理)。工具执行串行,结果按 tool_use 出现顺序回灌;
      * todo 提醒计数在 for 结束后统一推进一次,所以同轮的多条调用不会让计数多跳,
      * 压缩器内部的摘要调用也不会被算成额外的一轮。
+     * </p>
+     *
+     * <p>
+     * <b>两条整理路径的历史前提是一致的</b>:自动整理面对的是"上一次迭代结束时留下的完整历史"
+     * (入口历史已校验、每批交换都已闭合);批次闭合后的手动压缩触发时,手里同样是这份完整历史。
+     * 两者都不在工具执行中途动手,所以都可以安全地归档中段或摘要旧前缀。
      * </p>
      *
      * <p>
@@ -174,6 +197,8 @@ public class AgentLoop {
      * 因此启用压缩器时,在第一次模型调用之前用
      * {@link ContextCompactor#extractActiveRequest(List)} 捕获一次,存成 {@code final} 局部变量:
      * 之后的工具结果、Stop hook 注入的 synthetic user 消息、乃至压缩后的新历史,都不会改变这个来源。
+     * 自动整理用的是同一个 {@code activeRequest}:它只替换历史、不重新提取请求,
+     * 所以摘要消息里的 Current user request 始终是入口那一句。
      * 这里刻意不新增 {@code run(messages, activeRequest)} 重载,也不用跨 run 存活的字段——
      * 请求的生命周期就是这一次 run。
      * </p>
@@ -191,7 +216,9 @@ public class AgentLoop {
      *                 就是"当前会话",run 结束后可直接继续对话或持久化
      * @throws IllegalArgumentException 传入的既有历史存在畸形的工具交换(在第一次模型调用前拒绝);
      *                                  启用压缩器时,入口请求不满足契约同样在此抛出
-     * @throws LlmException 网络 / API 错误(含摘要调用失败),向上抛给调用方决定重试或退出
+     * @throws LlmException 网络 / API 错误,含自动整理与主动压缩里的摘要调用失败:原样向上抛,
+     *                      此后不再发起正式请求;已经成功写出的归档 / 落盘保留,已发生的工具副作用不撤销
+     * @throws IllegalStateException 自动整理或主动压缩里的归档 / 落盘失败(带 cause)
      */
     public void run(List<Message> messages) throws LlmException {
         // 0. 入口校验:既有历史的工具交换必须完整合法(相邻、角色正确、数量/顺序/ID 一一对应)。
@@ -205,11 +232,39 @@ public class AgentLoop {
         int roundsSinceTodo = 0; // 连续几轮没用 todo_write;每条用户消息(每次 run)从 0 重计
 
         while (true) {
-            // 1. 组装 CompleteRequest 并调用获取 LLM 回复
+            // 1. 正式请求之前的自动整理(只在这条循环启用了压缩器时执行)。位置的三条理由:
+            //    ① 必须在 client.complete 之前,这次正式请求才能看到整理后的历史;
+            //    ② 不能放进下面逐条执行工具的 for 里——那时同批结果还没回灌,历史是"有调用没结果"
+            //       的半个交换,就地裁剪会丢掉"已经执行过什么"的记录,模型可能重复副作用;
+            //    ③ 每次 while 迭代都经过这里,所以首次请求、普通工具结果之后的请求、Stop hook 强制
+            //       续跑之后的请求都同样受保护,而不是只在 run 入口或成功 compact 之后整理一次。
+            //    与手动压缩的分工一致:循环决定"何时"(请求边界),compactor 决定"如何整理"。
+            //    自动整理面向的是预算与历史规模,不判断业务阶段,也不等于每轮都会摘要——
+            //    前两层是确定性检查,摘要仍是压不下去时的最后手段。
+            if (compactor != null) {
+                List<Message> prepared = compactor.prepare(messages, activeRequest);
+                // 采用候选的规则与手动压缩一致:先拿到候选,只有它正常返回之后才动会话。
+                // 两个失败边界要分清,别混成"整理失败会回滚一切":
+                //   ① prepare 自己没正常返回(归档 / 摘要失败)时根本走不到这里——那次整理的部分候选
+                //      一律不采用,内存会话保持进入 prepare 时的状态;
+                //   ② 一旦在这里采用成功,随后正式请求失败也<b>不会</b>撤销已经采用的历史,
+                //      更不会抹掉已成功写出的归档 / 落盘结果或已经发生的工具副作用。
+                // 本类不做回滚,也不声称能回滚整个 run。
+                // 判引用是必需的:自动整理允许 no-op,返回入参本身;这时先 clear() 会把要保留的
+                // 内容一起清掉,再 addAll(自己)也救不回来。
+                // 也不能写成 messages = prepared:那只是给局部变量换个引用,调用方持有的那个列表
+                // 不会被同步,跨轮会话、持久化与失败恢复会和整理后的历史分叉。
+                if (prepared != messages) {
+                    messages.clear();
+                    messages.addAll(prepared);
+                }
+            }
+
+            // 2. 组装 CompleteRequest 并调用获取 LLM 回复
             ModelResponse response = client
                     .complete(new CompleteRequest(system, messages, maxTokens, List.copyOf(tools.values())));
 
-            // 2. 从 response.message().content() 收集 ToolUseBlock,并在追加 assistant 消息
+            // 3. 从 response.message().content() 收集 ToolUseBlock,并在追加 assistant 消息
             //    与执行任何工具之前拒绝重复调用 ID:失败不留半截 assistant 消息,也无工具副作用
             List<ToolUseBlock> toolCalls = new ArrayList<>();
 
@@ -220,10 +275,10 @@ public class AgentLoop {
             }
             ToolExchangeProtocol.requireDistinctCallIds(toolCalls);
 
-            // 3. 追加 assistant 消息
+            // 4. 追加 assistant 消息
             messages.add(response.message());
 
-            // 4. 没有 tool_use, 此轮结束
+            // 5. 没有 tool_use, 此轮结束
             if (toolCalls.isEmpty()) {
                 String force = hooks.trigger(Hooks.STOP, Map.of(Hooks.PARAM_MESSAGES, messages));
                 if (force != null) {
@@ -233,7 +288,7 @@ public class AgentLoop {
                 return;
             }
 
-            // 5. 调用 tool。本批的"是否请求压缩"标志是 run 循环里的局部变量,每批重新初始化:
+            // 6. 调用 tool。本批的"是否请求压缩"标志是 run 循环里的局部变量,每批重新初始化:
             //    它不能存进会话字段或工具自身,否则会跨批次、跨 run 残留,把上一批的请求算到下一批。
             List<ContentBlock> results = new ArrayList<>();
             boolean usedTodo = false; // 本轮是否成功执行过 todo_write;for 外声明,每轮一块
@@ -281,11 +336,11 @@ public class AgentLoop {
                 roundsSinceTodo = 0;
             }
 
-            // 6. 全部结果合成一条 user 消息:一个 ToolResultBlock(u.id(), output) 对应一个 ToolUseBlock。
+            // 7. 全部结果合成一条 user 消息:一个 ToolResultBlock(u.id(), output) 对应一个 ToolUseBlock。
             //    到这一行为止,本批的工具交换才"闭合":每个 tool_use 都有结果,执行记录完整。
             messages.add(Message.userBlocks(results));
 
-            // 7. 批次闭合之后,才处理本批的压缩请求。为什么必须等在这里:如果在上面的 for 里就地裁剪,
+            // 8. 批次闭合之后,才处理本批的压缩请求。为什么必须等在这里:如果在上面的 for 里就地裁剪,
             //    同批其它工具的结果还没回灌,会拆开工具交换、丢掉已发生的副作用记录,而且 results
             //    也还没进历史。
             if (compactRequested) {
