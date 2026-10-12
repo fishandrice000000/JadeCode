@@ -39,10 +39,20 @@ import com.jadecode.util.Json;
  * </p>
  *
  * <p>
- * <b>手动压缩(compact 工具)的分工</b>:模型负责<b>提出请求</b>——只有它知道自己是否做完了一个阶段;
- * harness 负责<b>决定何时执行</b>——要等这一批工具交换<b>全部闭合</b>(每个 tool_use 都有对应
- * tool_result 回灌)之后才动手。顺序不能颠倒:在工具执行中间裁剪历史,同批其它工具的结果还没回灌,
- * 会留下"有调用没结果"的半个交换,甚至删掉已经发生过的文件写入记录,让模型重复副作用。
+ * <b>手动压缩(compact 工具)的分工</b>:模型负责<b>提出请求</b>——它可以依据任务进度判断"某些探索记录
+ * 不必再常驻",主动请求收束历史;这是一种可选调节,并不表示它准确知道 token 预算、上下文是否已满、
+ * 某个阶段是否结束或用户任务是否完成。harness 负责<b>决定何时执行</b>——要等这一批工具交换
+ * <b>全部闭合</b>(每个 tool_use 都有对应 tool_result 回灌)之后才动手,并由自身的预算约束与自动整理
+ * 继续兜底,不让模型的主动请求取代这些保障。顺序不能颠倒:在工具执行中间裁剪历史,同批其它工具的结果
+ * 还没回灌,会留下"有调用没结果"的半个交换,甚至删掉已经发生过的文件写入记录,让模型重复副作用。
+ * </p>
+ *
+ * <p>
+ * <b>策略与时机分属两处</b>:本类只做两件事——<b>时机</b>(成功信号、闭合之后)与
+ * <b>会话更新</b>(把压缩候选原地写回调用方持有的列表)。"纯 compact 整段摘要 / 混合批次只摘要旧前缀"
+ * 这一信息保护取舍属于压缩策略,放在 {@link ContextCompactor#compactAfterBatch(List, List, String)};
+ * 本类不判断归档范围、落盘或摘要细节。注意"纯 compact"只表示模型请求压缩且本批没有别的新鲜数据,
+ * <b>不</b>代表某个用户任务已经完成。
  * </p>
  *
  * <p>
@@ -277,102 +287,21 @@ public class AgentLoop {
 
             // 7. 批次闭合之后,才处理本批的压缩请求。为什么必须等在这里:如果在上面的 for 里就地裁剪,
             //    同批其它工具的结果还没回灌,会拆开工具交换、丢掉已发生的副作用记录,而且 results
-            //    也还没进历史。压缩成功时,新历史会被原地写回 messages,下一次正常请求就用它。
+            //    也还没进历史。
             if (compactRequested) {
-                List<Message> compacted = compactAfterBatch(toolCalls, messages, activeRequest);
-                replaceHistoryInPlace(messages, compacted);
+                List<Message> compacted = compactor.compactAfterBatch(toolCalls, messages, activeRequest);
+                // 全部压缩步骤都成功返回之后,才把候选"采用"到调用方持有的这个列表上。
+                // 判引用是必需的:压缩器在无变化时会返回入参本身;若这时先 clear() 再 addAll(自己),
+                // 会先把历史清空,然后往"已经空了的那个列表"里添加它自己,历史就丢了。
+                // 为什么不用 messages = compacted 重绑局部变量:本次 run 后续的 while 循环确实会用
+                // 那个新引用,所以下一次正式请求也能看到压缩候选;但调用方手里仍是旧列表,它的会话继续、
+                // 持久化与失败恢复视角都没有同步,会与压缩后的历史分叉。原地 clear + addAll 的目的
+                // 正是同步调用方会话,并保留外层列表的对象身份。
+                if (compacted != messages) {
+                    messages.clear();
+                    messages.addAll(compacted);
+                }
             }
         }
-    }
-
-    /**
-     * 执行一次"批次闭合后的压缩动作",返回新的历史列表(此时还没写回调用方的列表)。
-     *
-     * <p>
-     * <b>纯 compact 还是混合批次</b>:按本批<b>全部</b> tool_use 的名字分类;不看结果消息里是否
-     * 出现 reminder 或普通 TextBlock,也不因为普通工具被拦截就把批次当成纯 compact——分类依据是
-     * 模型实际提出的调用集合。
-     * </p>
-     *
-     * <p>
-     * <b>纯 compact 批次</b>(每个调用都是 compact):模型已经明确表态"这一阶段结束了",
-     * 没有需要抢救的新鲜数据,于是 {@link ContextCompactor#compactAll} 把整段历史换成一条摘要。
-     * 一批里出现多个成功 compact 也只压缩一次。
-     * </p>
-     *
-     * <p>
-     * <b>混合批次</b>(还含别的工具):先对<b>最新结果批次</b>做可恢复的
-     * {@link ContextCompactor#toolResultBudget},把超大的新鲜输出换成"路径 + 一小段预览";
-     * 再让 {@link ContextCompactor#compactHistory} 只摘要旧前缀,最新那条闭合交换原样留在摘要后面。
-     * 两步都复用既有算法,循环里不重复实现归档或摘要逻辑,也不调用整套 prepare。
-     * </p>
-     *
-     * <p>
-     * <b>失败语义</b>:落盘失败(带 cause 的 {@code IllegalStateException})与摘要失败
-     * ({@link LlmException})都<b>原样传播</b>——不吞掉、不换成假摘要、不重跑已经完成的工具,
-     * 也不继续发起下一次正常请求。此刻完整的工具交换已经回灌进 {@code messages},而压缩器不修改
-     * 它的输入,所以失败后历史里保留的仍是那条完整闭合的记录,不会被清空或半替换。
-     * 混合路径里的预算结果只是"候选":只有最终摘要动作成功,它才会被写回历史;即使磁盘上已经写出
-     * 落盘文件,也不会提前提交部分替换。摘要失败时,已经成功写出的归档仍然保留。
-     * </p>
-     *
-     * @param toolCalls     本批全部 tool_use(用于纯/混合分类)
-     * @param messages      已经闭合的当前历史
-     * @param activeRequest 入口捕获的本次请求;纯压缩与混合压缩都会把它写进摘要消息
-     * @return 压缩后的新历史;可能与入参是同一个列表对象
-     * @throws LlmException          摘要调用失败,原样向上传播
-     * @throws IllegalStateException 落盘 / 归档失败(带 cause)
-     */
-    private List<Message> compactAfterBatch(List<ToolUseBlock> toolCalls, List<Message> messages,
-            String activeRequest) throws LlmException {
-        boolean pureCompactBatch = true;
-        for (ToolUseBlock u : toolCalls) {
-            if (!COMPACT_TOOL.equals(u.name())) {
-                pureCompactBatch = false;
-                break;
-            }
-        }
-
-        if (pureCompactBatch) {
-            return compactor.compactAll(messages, activeRequest);
-        }
-
-        // 混合批次:先把最新那条闭合交换里的超大新鲜结果变成可恢复的"路径 + 预览",
-        // 再让摘要只覆盖它之前的前缀——刚生成、模型还没读过的结果不能先被转述进摘要而失真。
-        List<Message> budgeted = compactor.toolResultBudget(messages);
-        return compactor.compactHistory(budgeted, activeRequest);
-    }
-
-    /**
-     * 把压缩结果<b>原地</b>写回调用方持有的列表,保留那个列表对象的身份。
-     *
-     * <p>
-     * 为什么要判引用:压缩器在没有变化时会<b>返回入参本身</b>(例如混合批次没有可摘要的前缀,
-     * 或预算与摘要都没改动任何一个 block)。若不做判断就 {@code clear()} 再
-     * {@code addAll(自己)},会先把列表清空,然后往"已经空了的那个列表"里添加它自己,历史就丢了。
-     * </p>
-     *
-     * <p>
-     * <b>为什么不能只给参数换个引用</b>:本方法是个 helper,它的 {@code messages} 参数只是调用方
-     * 传进来的一个引用副本。若在这里写 {@code messages = compacted},改的只是本方法的局部参数,
-     * 调用方手里的列表一点没变,下一次请求仍会看到旧历史——就本方法这层上下文而言,压缩等于没发生。
-     * </p>
-     *
-     * <p>
-     * 同理,在 {@link #run} 里对局部 {@code messages} 重绑也有问题,只是表现不同:后续循环确实会用
-     * 新列表,但<b>调用方持有的那个原历史列表没有被同步</b>(只有 clear + addAll 才会改到它),
-     * 于是跨轮会话、调用方的持久化以及失败恢复时看到的记录会与原历史分叉。这就是压缩结果必须
-     * <b>原地</b>灌回调用方列表的原因。
-     * </p>
-     *
-     * @param messages  调用方持有的历史列表(会被原地修改)
-     * @param compacted 压缩结果;若与 {@code messages} 是同一个对象则什么都不做
-     */
-    private static void replaceHistoryInPlace(List<Message> messages, List<Message> compacted) {
-        if (compacted == messages) {
-            return; // 无变化:返回的就是入参本身,先 clear 会把要保留的内容一起清掉
-        }
-        messages.clear();
-        messages.addAll(compacted);
     }
 }
