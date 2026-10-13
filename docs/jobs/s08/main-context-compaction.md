@@ -1,6 +1,6 @@
 # s08 里程碑 7E：把上下文保护装配到真实启动入口
 
-状态：**GPT 最终复审 Pass；阅读入口已提供；B17 待用户批准，随后进入 s08 收尾核对**。实施回信 `DS-20261013-S08-MAIN-COMPACTION-001-R1`，说明校正回信 `DS-20261013-S08-MAIN-COMPACTION-002-R1`。
+状态：**GPT 最终复审 Pass；阅读入口已提供；B17 ce40069 已由 GPT 本地提交并核验，随后进入 s08 收尾核对**。实施回信 `DS-20261013-S08-MAIN-COMPACTION-001-R1`，说明校正回信 `DS-20261013-S08-MAIN-COMPACTION-002-R1`。
 任务：`GPT-20261013-S08-MAIN-COMPACTION-001`。Git Authorization：**NONE**。
 基点：B16 `cd9be9df7e4fdb87846f80418cf09d42e1a650a2`；当前全量测试基线 287 条，不是本轮新增后的结果。
 
@@ -269,7 +269,7 @@ GPT 再次独立运行 Main 定向 **15 条**、`mvn package` **294 条**，
 不重新教学压缩算法或增加计数 / catch 必答题；一个可选共享作用域讨论不作为推进门槛。
 工程放行不代表用户理解已验证、真实模型验收或 s08 完成；既有专项缺口与维护仍保留。
 
-## 13. B17 本地提交方案（PLAN_ONLY，待用户批准）
+## 13. B17 本地提交方案与执行结果（USER_APPROVED，GPT 已执行）
 
 一笔完整能力：把父子上下文保护装配到实际启动入口，包含对应测试、必要契约与阅读交接。
 基点 / 预期父提交：`cd9be9df7e4fdb87846f80418cf09d42e1a650a2`。
@@ -290,7 +290,16 @@ GPT 再次独立运行 Main 定向 **15 条**、`mvn package` **294 条**，
 明确排除并保留六份既有编辑：parent-auto-prepare、parent-reactive-recovery、subagent-context-compaction
 各自的 jobs 与 notes 文件。机器配置、秘密、ignored SOP 邮箱、构建产物和仓库外材料均不纳入。
 
-由 GPT 获批后执行，仅精确暂存与一笔本地 commit；不 push / fetch / amend / reset / rebase / squash 或创建引用。
+用户已明确批准该九文件提交，由 GPT 执行，仅精确暂存与一笔本地 commit；不 push / fetch / amend / reset / rebase / squash 或创建引用。
 执行前重核 HEAD / status / staged 空与完整九文件内容，核对 staged 文件集合、stat、完整 diff、空白及快照。
 提交后核对父节点、标题、九文件、提交内容摘要与剩余六份编辑；不以测试通过或“执行下一步”推断提交已获批。
 实现 / 测试 / 说明是同一个检查点，不等待可选讨论回答，也不把提交当成章节验收。
+
+**执行与核验（2026-10-13）**：GPT 创建 `ce4006967f4032c7f4debb298e3d41c0558c8788`，
+父节点为上述 B16，标题与九文件集合完全一致，1010 插入 / 46 删除。
+staged / show 空白检查通过，提交内九份 SHA-256 与获批快照逐一一致；提交后 staged 空，
+仅保留原六份排除文档编辑，main 领先缓存 origin/main 17，未 push / fetch 或改历史。
+随后最终复核时，本机缓存 origin/main 已与 HEAD 对齐（0 / 0，均为 ce40069）；以上领先数是提交后首次核验的状态。
+GPT 本轮没有执行 push 或 fetch，不据缓存变化推断是谁更新了远端，也不声称独立联网核实远端。
+源码与复审独立 15 / 294 条通过版本一致，未重复运行真实调用。
+核验后只回填本单、总任务单与阅读指南的实际 hash / 状态，尚未另行提交，不追加 commit 或 amend。

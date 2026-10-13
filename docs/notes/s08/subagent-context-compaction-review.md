@@ -2,7 +2,7 @@
 
 工程状态：**GPT 复审 Pass（2026-10-13，SUBAGENT-COMPACTION-003）**。
 独立验证：19 条新测试、85 条相关回归、全量 287 条，失败 / 错误 / 跳过均 0。
-B16 本地小提交已获批，待 worker 执行；比较基点为 `5e70fd2`。
+B16 已由 GPT 本地提交并核验：`cd9be9d`，标题「接通子代理上下文整理与有限恢复」；父提交为 `5e70fd2`。
 工程契约与提交范围见 [任务单](../../jobs/s08/subagent-context-compaction.md)。
 
 ## 1. 这次增加什么，而不是再学一遍压缩
@@ -54,11 +54,11 @@ Main 尚未装配压缩器，因此测试中的显式注入有效，不代表当
 辅助摘要失败后保留归档的用例尚未独立比对完整 JSON，列为非阻塞维护；
 失败发生在归档之后，不能说该归档不存在。旧用户笔记与答案均不修改。
 
-尚未提交时可查看生产文件差异：
+查看本轮提交中的生产文件差异：
 
 ```sh
-git diff 5e70fd2 -- src/main/java/com/jadecode/subagent/SubagentRuntime.java src/main/java/com/jadecode/context/ContextCompactor.java
+git show cd9be9d -- src/main/java/com/jadecode/subagent/SubagentRuntime.java src/main/java/com/jadecode/context/ContextCompactor.java
 ```
 
-新测试 / 本单尚未跟踪，直接打开阅读；普通 git diff 不显示未跟踪文件。
+新测试与本单已随 B16 留档；`git show --stat cd9be9d` 可查看精确六文件范围。
 工程 Pass 不等于用户理解已被验证，也不等于 s08 完成。

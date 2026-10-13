@@ -2,8 +2,9 @@
 
 课程 s08 直译:第九把工具 `compact` + `ContextCompactor`(估算、落盘、切片、微压缩、模型摘要、响应式补救)。
 
-> **当前工作流(2026-10-10)**:剩余代码由 codex-deepseek 按 GPT 的限定任务实现，GPT 先工程 Review，用户再通过 notes 阅读题单与笔记回答学习。本文件继续作为每章工程任务留档，不被 notes 替代。
+> **当前工作流(2026-10-13)**:ChatGPT 统一负责规划、实现、测试、工程自审与学习批阅，用户通过 notes 阅读题单与回答问题学习。不再使用 DeepSeek 派工、独立角色文件或邮件通信；下文旧分工、邮件路径与 Message-ID 保留当时事实，不作为当前执行入口。本文件继续作为每章工程任务留档，不被 notes 替代。
 > **状态:部分能力已工程 Review / 运行验证通过，整章尚未验收。** 2026-10-12 Git 规划时 GPT 重新运行 `mvn package`：247 条，失败 / 错误 / 跳过均为 0。包含 History 15、fit 19、micro 14、API 2、入口提取 11、超限分类 6、响应式压缩 9、compact 工具 3、父循环主动压缩 12 条；具体范围见 §六。“已编写”不代表正确，工程通过不代表用户已理解。当前 Git 交接见 §7.4，其它带日期的任务/验证记录保留当时事实。
+> **当前收尾状态（2026-10-14）**：Main / 父子接入及离线收尾 `d15a4a9` 已提交并核验；新增 37 条验证，最终 `mvn package` 331 条全绿，工程自审 Pass。用户真机 R01 / R03 / R04 / R05 与 R02 自动转存通过，R02 模型路径回读仍待补，不提前宣布 s08 全部验收完成。允许进入 s09 概念与方案阶段。路径优化未实施，响应块警告按用户裁决留到流式传输优化。精确范围与证据见 [offline-acceptance.md](offline-acceptance.md)。
 > 任务按**自上而下、主干先行**组织(见 `docs/SOPs/Learn-SOP.md`「作业组织原则」)。
 
 ---
@@ -477,7 +478,7 @@ CompactTool                                                                   �
   一个可选架构讨论不作为 Main 推进门槛。B16 精确六文件方案见任务单 §13，用户已批准；用户重新指定 GPT 执行，已创建并核验 `cd9be9d`，未 push / 改历史。
   下一项 Main 正式装配，当前 CLI 仍未启用；真实验收、剩余专项测试与维护项不提前宣告完成。
 
-### 里程碑 7E — Main 正式装配上下文保护（GPT 最终复审 Pass，B17 待批准）
+### 里程碑 7E — Main 正式装配上下文保护（GPT 最终复审 Pass，B17 ce40069 已提交）
 
 - 任务 `GPT-20261013-S08-MAIN-COMPACTION-001`，契约见 [main-context-compaction.md](main-context-compaction.md)。
 - B16 `cd9be9d` 已核验。父子运行路径不再重复实施；本轮只填补 Main 仍走未注入压缩器的旧构造器这一缺口。
@@ -515,7 +516,7 @@ CompactTool                                                                   �
   GPT 再次独立 Main 定向 15 条、全量 294 条通过，失败 / 错误 / 跳过均 0、退出码 0；
   首轮十一文件回归 100 条的记录保持，不冒称本轮重复执行。当前 CLI 接线已工程放行。
   [必要阅读说明](../../notes/s08/main-context-compaction-review.md)已提供，不加重复细节题，
-  一个可选共享作用域讨论不作为推进门槛。B17 精确九文件方案见任务单 §13，待用户批准后由 GPT 执行。
+  一个可选共享作用域讨论不作为推进门槛。B17 精确九文件方案见任务单 §13，用户批准后已由 GPT 创建并核验 `ce40069`。
   下一项 s08 收尾缺口核对与用户真机验收；未验证真实摘要质量，不提前宣布 s08 完成或进入 s09。
 
 ---
@@ -673,7 +674,7 @@ Full transcript: <可信路径>
 由 codex-gpt 设计测试意图、codex-deepseek 实现测试代码。预计落点:新增 `ContextCompactorTest`、`CompactToolTest`,
 以及一个可脚本化失败的假 `LlmClient`;扩展 `AgentLoopTest`、`SubagentRuntimeTest`、`MainTest`、`SubagentToolTest`。
 
-覆盖清单(供设计对照,**当前一条都还没写**):
+历史覆盖规划（供设计对照；不再表示“当前一条都还没写”）。实际覆盖以已落地测试与 [收尾证据](offline-acceptance.md) 为准：
 
 1. 阈值内 prepare 内容等价、输入对象图不变、外层 list 身份在循环替换后保持;
 2. 最新批次预算:最大项优先、30k/200k 边界、预览长度、完整原文可读、非末尾批次不被误处理;
@@ -755,7 +756,7 @@ Full transcript: <可信路径>
 | 父循环正式请求超限后的有限补救(窄 catch / 额度 / reactiveCompact 接入) | `AgentLoop` | 7C | **GPT 工程 Review Pass(PARENT-REACTIVE-002)，用户选择跳过题目**：只捕获正式 `complete` 的 `LlmException`；命中分类且额度未耗尽时补救一次并按引用保护采用、`continue` 重试，成功归零；no-op 也消耗额度，失败边界与不重跑旧工具已核验；GPT 独立新测试 11 条、定向 87 条、全量 268 条通过；B15 `5e70fd2` 已核验，Main / 子循环未接 |
 | 子代理上下文的自动整理 / 主动压缩 / 超限补救与 30 轮生命周期 | `SubagentRuntime` | 7D | **GPT 工程复审 Pass(SUBAGENT-COMPACTION-003)**：三条入口、子目标 / 历史隔离、成功回复轮次与收尾已核验；生产代码返工未改，关键补测落实；GPT 独立 19 / 85 / 287 条全绿；必要阅读说明已提供，B16 `cd9be9d` 已提交并核验；Main 未装配 |
 
-### 尚待实现(worker 按邮件分批实现，用户 Review 学习)
+### 尚待实现(ChatGPT 按小能力分批实现，用户 Review 学习)
 
 | 方法 | owner | 里程碑 | 备注 |
 | --- | --- | --- | --- |
@@ -930,10 +931,13 @@ Full transcript: <可信路径>
 
 ## 七、后续阶段边界
 
-### 7.1 永久测试与集成(局部测试已落地,最终集成尚未开始)
+### 7.1 永久测试与集成（离线收尾 Pass，真机主路径通过）
 
-**状态:**已有 API 可见性测试;2026-10-10 在用户明确代写授权下新增 `MicroCompactorTest` 的 14 条行为测试并通过。
-其余 s08 行为测试和最终循环集成仍待相关核心实现 Review 后,由 codex-deepseek 落地。
+**当前状态（2026-10-14）**：micro / fit / 摘要 / 请求提取 / 超限分类、父子循环与 Main 已有永久测试。
+本轮新增 ToolOutputStore / TranscriptStore / ToolResultBudgetCompactor / SnipCompactor /
+ContextCompactorPreparation 五份测试，并补 History 的两条失败分支，总计新增 37 条。
+最终完整构建 331 条通过，失败 / 错误 / 跳过均为 0，工程自审 Pass。
+历史代理分工保留于实施记录，但后续由 ChatGPT 按当前统一工作流负责；不再等待邮件或旧执行者。
 
 - 局部自检**不替代**永久测试、最终集成或整章验收;
 - **不能**因为"骨架能编译"或"旧测试全绿"就勾选任何新能力完成——旧测试全绿只说明没有回归,不说明 s08 有任何一条路径被实现;
@@ -951,18 +955,18 @@ Full transcript: <可信路径>
 - **执行结果（2026-10-13）**：上述计划已由 worker（`DS-20261013-S08-MAIN-COMPACTION-001-R1`）实施——
   `Main.buildLoop(config, cwd, client)` 共用装配、单实例压缩器共享给父子、两张表加 compact、两份 prompt 加边界句；
   `MainCompactionAssemblyTest` 6 条 + `MainTest` 9 条证明真实接线；定向 15 条、十一文件回归 100 条、全量 294 条全绿。
-  GPT 已独立核验同数量测试，说明校正经最终复审 Pass；阅读入口已交付，B17 待批准。真机验收（§7.3）与整章完成状态不变。
+  GPT 已独立核验同数量测试，说明校正经最终复审 Pass；阅读入口已交付，B17 `ce40069` 已本地提交并核验。真机验收（§7.3）与整章完成状态不变。
 
-### 7.3 真机验收计划(待整章实现与永久测试完成后)
+### 7.3 真机验收记录（主路径通过，R02 路径回读待补）
 
-1. `mvn -q package` 后 `./jade repl`。
-2. **第一层**:让它读一个大文件,观察 `<persisted-output>` 外壳与预览,`.task_outputs/tool-results/` 出现完整原文。
-3. **第二层**:连续多轮工具调用把消息数推过 50,观察 `[N messages archived at ...]` 与 `.transcripts/` 里的 JSONL。
-4. **第三层**:堆到超过 50000 字符,观察较早的已消费结果变成 `[Earlier tool result saved at ...]`,路径可读回完整原文。
-5. **第四层**:继续堆到压不下去,观察出现 `[Compacted]`,三个分区齐全。
-6. **手动 compact**:让模型调用 `compact`,确认 `[HOOK] compact`、稳定文案,并且**先**看到同批普通工具的执行记录**才**发生压缩。
-7. **响应式**:难以手动触发,可跳过。
-8. `q` 退出无异常。
+精确步骤见 [offline-acceptance-guide.md](../../notes/s08/offline-acceptance-guide.md) 的 R01–R05：
+短任务、现有大任务单的自动转存与回读、一次 compact 后继续工作、子任务压缩并返回父任务、普通工具失败与正常退出。
+不需要机械打满 50 条或故意制造服务端超限；各层边界与有限重试由离线测试提供确定证据。
+“读一个大文件”不能一概认作第一层：第一层要求最新批次总结果超过 200000 字符；
+约 6 万字符的单项通常经第三层 fit 转存。按实际调用与新文件验收，不仅听模型自述。
+真实 API 成本由用户自行执行承担，ChatGPT 本轮没有调用实际模型或创建真机 fixture。
+用户已提供完整 REPL 日志，正文与父子归档经只读核验；实际结果见 [offline-acceptance.md](offline-acceptance.md) §7。
+尚未证明模型按 R02 转存路径回读，README 的 s08 完成标记保持不变；路径优化不在本章收尾实施范围。
 
 ### 7.4 工作区 Git 提交交接(2026-10-12，已执行并由 GPT 核验)
 

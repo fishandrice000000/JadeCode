@@ -1,6 +1,6 @@
 # s08 里程碑 7D：子代理的上下文压缩与有限恢复
 
-状态：**GPT 工程复审 Pass；必要阅读说明已提供；B16 小提交已获批待 worker 执行，下一项为 Main 装配**。实施回信 `DS-20261013-S08-SUBAGENT-COMPACTION-001-R1`，补测试回信 `DS-20261013-S08-SUBAGENT-COMPACTION-002-R1`，复审回信 `GPT-20261013-S08-SUBAGENT-COMPACTION-003`。
+状态：**GPT 工程复审 Pass；必要阅读说明已提供；B16 已由 GPT 本地提交并核验，下一项为 Main 装配**。实施回信 `DS-20261013-S08-SUBAGENT-COMPACTION-001-R1`，补测试回信 `DS-20261013-S08-SUBAGENT-COMPACTION-002-R1`，复审回信 `GPT-20261013-S08-SUBAGENT-COMPACTION-003`。
 任务 `GPT-20261013-S08-SUBAGENT-COMPACTION-001`。Git Authorization：**NONE**。
 依赖：父循环自动 / 主动 / 响应式压缩已工程 Pass，B15 `5e70fd2` 已核验。
 用户选择跳过上一轮题目并要求继续，不把未答题记成学习通过。
@@ -283,7 +283,7 @@ GPT 独立执行新测试 **19 条**、同九文件回归 **85 条**、全量 **
 用户理解不因测试通过而自动记为验证通过；CLI、真实摘要质量和整章验收仍未完成。
 复审回信为 INFO / REVIEW_SUPPORT，无需 worker 回复，也不授权下一功能或 Git 写操作。
 
-## 13. B16 小提交方案（USER_APPROVED，待 worker 执行）
+## 13. B16 小提交方案与执行结果（USER_APPROVED，GPT 已执行）
 
 目标：保存子会话上下文压缩与生命周期集成的独立工程检查点。
 依赖 B15 `5e70fd25c28ebfc3b2ad55731f82b00713e0df08`；一笔本地提交。
@@ -304,8 +304,11 @@ GPT 独立执行新测试 **19 条**、同九文件回归 **85 条**、全量 **
 也排除 ignored 邮箱、构建产物、机器配置、秘密和所有仓库外临时副本。
 提交前精确核对 staged 路径 / stat / 完整 diff / 空白与获批内容；不宽泛 add。
 用户于 2026-10-13 明确回复“批准这笔本地提交”，授权上述六文件的一笔本地提交。
-执行任务 `GPT-20261013-S08-GIT-B16-001`，USER_APPROVED；worker 核对六文件获批快照后精确暂存并提交一次。
-GPT 不执行 Git 写操作；完成回信后核验实际 hash、父节点、文件集合及提交内容。
+原执行任务 `GPT-20261013-S08-GIT-B16-001` 指派 worker；用户在其尚未执行时明确改为本次及以后由 GPT 处理 Git，原指派已撤回，具体提交范围与授权不变。
+GPT 于 2026-10-13 执行提交 `cd9be9df7e4fdb87846f80418cf09d42e1a650a2`，父节点为上述 B15，标题与精确六文件范围一致，1726 插入 / 91 删除。
+提交前重新运行 `mvn package`：287 条，失败 / 错误 / 跳过均 0，BUILD SUCCESS、退出码 0；staged 空白检查通过。
+提交内六文件 SHA-256 与获批快照逐一一致，show --check 通过，提交后 staged 空；四份旧编辑保留，未 push / 改历史。
+本节完成状态及阅读指南的 hash 同步发生在提交核验后，不追加提交或 amend；历史快照中“待 worker 执行”是接手前的状态，不代表 worker 实际执行。
 仅计划本地 commit，不含 push / fetch / amend / reset / rebase / squash 或创建引用。
 不等待可选讨论作答，不将提交等同学习或章节完成。
 留档后下一项按总任务单 §7.2 接 Main，不重写压缩策略或扩展记忆功能。

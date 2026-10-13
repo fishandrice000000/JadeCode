@@ -1,7 +1,8 @@
 # s08：正式请求被拒绝后，Agent 如何有限地恢复
 
 工程状态：**GPT Review Pass（2026-10-13，PARENT-REACTIVE-002）**。
-用户学习：**待阅读 / 作答**。本地提交：**B15 已获批，待 worker 执行**。
+用户学习：**用户选择跳过本轮题目并继续；不记为作答验证通过**。
+本地提交：**B15 `5e70fd2` 已执行并经 GPT 核验**。
 独立验证：新测试 11 条、相关回归 87 条、全量 268 条，失败 / 错误 / 跳过均 0。
 工程契约与精确提交方案见 [parent-reactive-recovery.md](../../jobs/s08/parent-reactive-recovery.md)。
 
@@ -13,7 +14,7 @@ harness 已经执行 prepare，但本地字符估算并不等于服务端 token 
 加上 system、工具定义、输出预算等因素，正式请求仍可能被以“上下文过长”拒绝。
 
 如果没有补救，任务在这里中断；如果从头重跑整个任务，已经执行过的文件写入或命令可能再执行一次。
-这次能力的目标是：**改变模型下一次看见的历史，重新请求下一步行动，不重做已经完成的行动。**
+这次能力的目标是：**改变模型下一次看****见的历史，****重新请求下一步行动，不重做已经完成的行动。**
 这与普通网络重试不同：有损压缩会改变模型可见证据，不能对每种失败都套用，也不能无限尝试。
 它是 harness 的有限恢复策略，不是模型又主动调用了一次 compact 工具。
 
@@ -108,7 +109,6 @@ ContextCompactor.reactiveCompact 的 JavaDoc 已正确区分这两种请求；
 
 回答：
 
-
 ### A02：有限补救为什么要计数，机会为什么又会重置
 
 场景甲：历史很短，但单条最新结果特别大；它全落在保留尾部内，没有可摘要的前缀。
@@ -122,7 +122,6 @@ ContextCompactor.reactiveCompact 的 JavaDoc 已正确区分这两种请求；
    不必评价哪种永远正确，指出它们适合的需求差异即可。
 
 回答：
-
 
 ### A03：失败恢复为什么不能把所有调用包在一起
 
@@ -139,7 +138,6 @@ ContextCompactor.reactiveCompact 的 JavaDoc 已正确区分这两种请求；
 
 回答：
 
-
 ## 6. 可后补拓展
 
 ### A04：当安全保真与窗口限制冲突，产品如何交给用户选择
@@ -151,16 +149,16 @@ ContextCompactor.reactiveCompact 的 JavaDoc 已正确区分这两种请求；
 
 回答：
 
-
 ## 7. 当前检查点怎么查看
 
-尚未提交，比较基点为 B14 `8c82914`：
+本轮已提交为 B15 `5e70fd2`，父节点为 B14 `8c82914`：
 
 ```sh
-git diff 8c82914 -- src/main/java/com/jadecode/agent/AgentLoop.java src/main/java/com/jadecode/context/ContextCompactor.java
+git show --stat 5e70fd2
+git show 5e70fd2 -- src/main/java/com/jadecode/agent/AgentLoop.java src/main/java/com/jadecode/context/ContextCompactor.java src/test/java/com/jadecode/agent/AgentLoopReactiveCompactionTest.java
 ```
 
-新测试、任务单与本指南尚未跟踪，普通 git diff 不会显示它们，直接打开文件阅读。
-B15 具体六文件已获用户批准，待 worker 执行；不阻塞当前学习，不等待答题完成。
-目前尚未执行 commit；不授权 push 或改写历史。
+新测试、任务单与本指南已在该提交中；后续工作区编辑与提交内容分开看。
+GPT 核验实际六文件、父节点与快照一致；没有 push 或改写历史的授权。
+用户明确选择跳过本轮题目，题目与已有编辑保留，不代答、不追加批注。
 本轮工程 Pass 不等于用户已理解，也不等于 s08 章节完成。
