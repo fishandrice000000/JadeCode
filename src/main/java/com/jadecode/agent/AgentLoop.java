@@ -70,6 +70,18 @@ import com.jadecode.util.Json;
  * 它与模型主动调 compact 是两条独立入口——自动路径不要求模型先请求,主动路径也不依赖自动路径。
  * 五参构造器(未启用压缩器)保持 s01–s07 的旧行为:既不自动整理,也不捕获入口请求、不处理 compact 请求。
  * </p>
+ *
+ * <p>
+ * <b>被拒绝后的有限补救</b>:自动整理靠的是<b>本地字符估算</b>,估得准不等于服务端也肯收,所以正式请求
+ * 仍可能被以"上下文过长"拒绝。这条兜底只针对<b>正式请求</b>抛出的异常:先用
+ * {@link ContextCompactor#isContextOverflow} 做一次近似判定(只认现有两个关键词),命中且本次请求还有额度时,
+ * 请 {@link ContextCompactor#reactiveCompact} 造一份"旧前缀摘要 + 原样保留近期尾部"的候选并采用,
+ * 再回到循环顶部重新整理、重新发<b>同一次</b>正式请求(每次正式请求最多
+ * {@link ContextCompactor#MAX_REACTIVE_RETRIES} 次)。认证 / 限流 / 网络这类命中不了分类的失败不靠压缩处理
+ * ——压缩改变不了它们的根因,只会白白损伤上下文。额度是 run 局部的:正式请求成功即归零,所以每个新请求
+ * 各有一次机会;重试不会重跑任何已经执行过的工具,也不算新业务轮。补救自身失败(归档 / 摘要)按原样传播;
+ * 候选一旦采用,之后的重试失败也不会回滚。五参 / null 压缩器路径不做补救。
+ * </p>
  */
 public class AgentLoop {
     /** LLM 连接;Main 装配时注入 */
@@ -216,9 +228,12 @@ public class AgentLoop {
      *                 就是"当前会话",run 结束后可直接继续对话或持久化
      * @throws IllegalArgumentException 传入的既有历史存在畸形的工具交换(在第一次模型调用前拒绝);
      *                                  启用压缩器时,入口请求不满足契约同样在此抛出
-     * @throws LlmException 网络 / API 错误,含自动整理与主动压缩里的摘要调用失败:原样向上抛,
-     *                      此后不再发起正式请求;已经成功写出的归档 / 落盘保留,已发生的工具副作用不撤销
-     * @throws IllegalStateException 自动整理或主动压缩里的归档 / 落盘失败(带 cause)
+     * @throws LlmException 网络 / API 错误。被当前分类判为"上下文过长"的正式请求异常,会在本次请求的额度内
+     *                      先尝试一次补救;额度耗尽、命中不了分类,以及自动整理 / 主动压缩 / 补救里的摘要失败,
+     *                      都<b>原样向上抛</b>——不包装成成功。抛异常之后不再发起新的正式请求;
+     *                      已经成功写出的归档 / 落盘保留,已发生的工具副作用不撤销,也不重跑
+     * @throws IllegalStateException 自动整理、主动压缩或补救里的归档 / 落盘失败(带 cause);
+     *                               此时同样不会采用部分候选
      */
     public void run(List<Message> messages) throws LlmException {
         // 0. 入口校验:既有历史的工具交换必须完整合法(相邻、角色正确、数量/顺序/ID 一一对应)。
@@ -230,6 +245,11 @@ public class AgentLoop {
         final String activeRequest = compactor == null ? null : ContextCompactor.extractActiveRequest(messages);
 
         int roundsSinceTodo = 0; // 连续几轮没用 todo_write;每条用户消息(每次 run)从 0 重计
+
+        // 本次正式请求已经用掉的补救次数。它是 run 的局部变量(不是实例字段),所以:
+        //   - 不跨 run 继承;每个新 run、每个新的正式请求都从 0 开始;
+        //   - 正式请求一旦成功就归零,下一次正式请求又是一次新的机会。
+        int reactiveRetries = 0;
 
         while (true) {
             // 1. 正式请求之前的自动整理(只在这条循环启用了压缩器时执行)。位置的三条理由:
@@ -260,9 +280,49 @@ public class AgentLoop {
                 }
             }
 
-            // 2. 组装 CompleteRequest 并调用获取 LLM 回复
-            ModelResponse response = client
-                    .complete(new CompleteRequest(system, messages, maxTokens, List.copyOf(tools.values())));
+            // 2. 组装 CompleteRequest 并调用获取 LLM 回复。
+            //    这是整条循环里唯一被 try/catch 包住的地方,而且只 catch 这一个正式调用抛出的
+            //    LlmException:prepare 的整理、工具执行、hooks,以及各种摘要调用都不在捕获范围内——
+            //    它们各自的失败按原来的语义直接向上抛,不会被误当成"这次正式请求超限"而去补救。
+            ModelResponse response;
+            try {
+                response = client
+                        .complete(new CompleteRequest(system, messages, maxTokens, List.copyOf(tools.values())));
+            } catch (LlmException error) {
+                // 2.1 失败分流:只有"看起来是上下文过长"、且这次正式请求还有额度,才值得付一次有损压缩。
+                //     compactor == null(五参旧路径)不补救;命中不了分类的失败(认证 401 / 限流 429 /
+                //     网络中断 / 普通 400)也不补救——压缩改变不了它们的根因,只会白白损伤上下文。
+                //     关键词判定本身只是近似:服务端换个措辞会漏判、说明里恰好引用这两个词会误判,
+                //     所以这里只把它当"值不值得试一次"的开关,不声称穷尽了所有真实超限。
+                //     额度用尽同样直接抛出,而且抛的是<b>当前这个</b>异常对象:不包装、不无限重试。
+                if (compactor == null || !ContextCompactor.isContextOverflow(error)
+                        || reactiveRetries >= ContextCompactor.MAX_REACTIVE_RETRIES) {
+                    throw error;
+                }
+
+                // 2.2 先消耗额度。即使下面拿到的是 no-op 也算"已经试过一次"——事实如此,不能因为
+                //     没有变化就不计数,否则同一层 while 会无限 continue 下去。
+                reactiveRetries++;
+
+                // 2.3 只造候选:压缩器负责"旧前缀摘要 + 原样保留近期尾部",它不捕获错误、不发请求、
+                //     不管重试计数;归档或摘要失败会在这里原样抛出(不会被上面那个 catch 接住)。
+                List<Message> recovered = compactor.reactiveCompact(messages, activeRequest);
+
+                // 2.4 采用规则与自动整理、手动压缩一致:返回入参本身 = 没变化(比如空前缀 no-op),
+                //     这时先 clear() 会把要保留的内容一起清掉;只有换了列表才原地 clear + addAll,
+                //     调用方持有的会话列表身份始终不变。
+                if (recovered != messages) {
+                    messages.clear();
+                    messages.addAll(recovered);
+                }
+
+                // 2.5 回到循环顶部重新走一遍:自动整理 → 组装正式请求。
+                //     这里刻意<b>不</b>把失败当成一轮:失败的调用没有拿到主任务回复,所以不追加 assistant、
+                //     不执行工具、不推进 reminder 计数、不触发 Stop——重试的是"同一次正式请求"。
+                continue;
+            }
+            // 2.6 正式请求成功,本次额度归零:下一次正式请求又是新的一次机会(不是整个 run 只许补救一次)。
+            reactiveRetries = 0;
 
             // 3. 从 response.message().content() 收集 ToolUseBlock,并在追加 assistant 消息
             //    与执行任何工具之前拒绝重复调用 ID:失败不留半截 assistant 消息,也无工具副作用

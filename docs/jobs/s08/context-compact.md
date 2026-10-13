@@ -370,7 +370,7 @@ CompactTool                                                                   �
 - 用户已明确批准一个本地小提交：`下沉批次压缩策略并内联历史回填`，仅 AgentLoop.java、ContextCompactor.java、ContextCompactorApiTest.java、ContextCompactorBatchCompactionTest.java、本任务单与 parent-manual-compaction-review.md 六文件；先提交本轮已验收单元，再开展下一轮同文件修改。授权不含 push 或历史改写，也不包含下一能力完成后的再次提交。实际 hash 待 worker 执行后 GPT 核验。
 - 下一能力为父循环每次正式请求前调用 prepare，单独交接、不同时接 Main / 子循环 / 响应式恢复，不因本轮 Pass 宣告 s08 完成。
 
-### 里程碑 7B — 父循环请求前的自动整理（GPT 工程复审 Pass，待用户学习 / 获批提交执行）
+### 里程碑 7B — 父循环请求前的自动整理（GPT 工程复审 Pass，已提交，学习主干收尾）
 
 - **任务与依赖**：`GPT-20261012-S08-PARENT-AUTO-001`，依赖 7A 职责整理与注释复审 Pass；完整工程契约见
   [parent-auto-prepare.md](parent-auto-prepare.md)。
@@ -393,6 +393,34 @@ CompactTool                                                                   �
 - **GPT Review（2026-10-13）**：独立定向 **66 条**与全量 **257 条**全绿，空白检查通过；已核验 B13 六文件提交内容与批准快照一致。运行接入未发现阻塞缺陷，但 Stop 用例未实际触发续跑后的整理，无法识别该边界漏调用；prepare 注释也需区分“候选生成失败不采用”与“采用后正式请求失败不回滚”。**Blocking，暂不放行学习**，限定任务 `GPT-20261013-S08-PARENT-AUTO-002`；细节见 [parent-auto-prepare.md](parent-auto-prepare.md) §9。无 Git 写授权，用户笔记不改。
 
 **GPT 最终复审（2026-10-13，PARENT-AUTO-003）**：R1 的 Stop 大文本在第二次正式请求前触发摘要，输入 / 归档角色与完整正文核对落实；R2 的失败采用边界、共用依赖说明与历史前提标题校正落实。独立自动整理 7 条、定向 66 条、全量 257 条通过，失败 / 错误 / 跳过均 0，空白检查通过，**Pass**。测试候选体量不能证明摘要输入未截断的非阻塞说明已在指南澄清；worker 变异检查未由 GPT 重跑。已提供[自动整理阅读指南](../../notes/s08/parent-auto-prepare-review.md)，用户待作答；B14 精确六文件提交方案见 [parent-auto-prepare.md](parent-auto-prepare.md) §12，PLAN_ONLY，待批准。Main / 子循环 / 响应式恢复及整章验收未完成。
+
+**B14 提交核验（2026-10-13）**：用户批准后，worker 创建 `8c82914ed9abe8df7283b0828ae9b812f1125d3c`“接通父循环请求前的自动上下文整理”。GPT 核对父节点 `0274083`、精确六文件及全部 SHA-256 均与获批快照一致，六文件 914 插入 / 17 删除，提交空白检查通过，**Git Review Pass**。既有工程验证版本不变，257 条报告全绿，本轮不重复相同源码测试；核验时工作区干净，本地领先缓存 origin/main 14，worker 报告未 push / 改历史。GPT 此后仅同步本次 jobs / 指南状态，这三份文档更新未提交，不另补提交。学习仍待用户作答，后续集成与整章验收未完成；详见 [parent-auto-prepare.md](parent-auto-prepare.md) §13。
+
+- **学习收尾（2026-10-13）**：GPT 已读取实际回答、在对话澄清 A01 / A03 题干；用户明确以架构主干理解为目标，不要求大致描述逐项复述代码门槛，并要求继续。7B 可推进下一小能力，不把未答测试语义当已全面理解，不改笔记答案。
+
+### 里程碑 7C — 父循环正式请求超限后的有限补救（GPT 工程 Review Pass，待用户学习）
+
+- 任务 `GPT-20261013-S08-PARENT-REACTIVE-001`，契约见 [parent-reactive-recovery.md](parent-reactive-recovery.md)。
+- 只 catch 正式 complete 的 LlmException，复用现有错误分类 / reactiveCompact；同一次请求最多一次补救，成功归零；补救后重新进入 prepare，不重跑工具、不给摘要走主任务 hooks。null / 非匹配 / 额度耗尽原样传播，no-op 同样消耗机会。
+- 仅父循环接入、必要注释 / 新测试与 jobs；不改算法 / 分类关键词，不接 Main / 子循环，不改 read_file。Git Authorization：NONE；旧 B14 授权已完成。
+- **后续候选 READ-DEDUP（未实施）**：用户提出同一文件未修改时省略重复读取输出。Codex 的实际读取与上下文管理行为尚未核实，不在本轮调查。候选条件不只“以前读过”，还包括文件版本、读取范围、旧原文在下一次有效上下文的可见性、归档 / 摘要后的失效与强制重读；留待后续记忆 / 上下文专题，不据此修改当前工具。
+- **实施结果（worker `DS-20261013-S08-PARENT-REACTIVE-001-R1`，2026-10-13）**：正式 `client.complete` 单独包在
+  `try/catch (LlmException)` 内（全循环唯一被捕获处）；命中现有超限分类且本次请求额度未耗尽时，
+  先消耗额度（no-op 也消耗），调用 `reactiveCompact` 并按引用保护原位采用，再 `continue` 回到 while 顶部
+  重新自动整理与请求；正式请求成功即把额度归零，失败尝试不追加 assistant / 不执行工具 / 不推进 reminder 与 Stop。
+  null / 非匹配 / 额度耗尽抛当前异常对象，补救自身失败原样传播。同步更新 `ContextCompactor` 中
+  `isContextOverflow` / `reactiveCompact` 的调用方接入状态说明。新增 `AgentLoopReactiveCompactionTest` 11 条；
+  新测试 11 条、定向 8 文件 **87 条**、全量 `mvn package` **268 条**全绿。Main / 子循环未接；未提交（NONE）。
+  已知基线:全仓 `git diff --check` 仍报用户题单两处既有行尾空格,未修笔记格式;本轮允许文件空白检查干净。
+
+- **GPT 独立 Review（2026-10-13，PARENT-REACTIVE-002）：Pass**。实际源码、diff、新测试与调用链已核对；
+  正式请求窄 catch、成功后额度重置、no-op 消耗、采用前 / 后失败边界与不重跑旧工具符合契约。
+  GPT 独立新增测试 11 条、相关回归 87 条、全量 268 条，失败 / 错误 / 跳过均 0、退出码 0；
+  本轮范围空白检查通过，用户题单既有空格不改。非阻塞注释：“压缩器不发请求”应为“不发正式请求”，
+  它仍会调用辅助摘要；指南已明确纠正，源码待后续 worker 在明确范围内校正。
+  [本轮阅读指南](../../notes/s08/parent-reactive-recovery-review.md) 已提供，A01–A03 核心题待用户作答。
+  B15 精确六文件方案见 [parent-reactive-recovery.md](parent-reactive-recovery.md) §10；用户已明确批准，USER_APPROVED，待 worker 执行；
+  不接 Main / 子循环，不开始整章验收，不实现 READ-DEDUP。已收到对应回信，5 分钟轮询结束。
 
 ---
 
@@ -623,11 +651,12 @@ Full transcript: <可信路径>
 | `summarizeHistory()` | `HistoryCompactor` | 5 | **工程 Review Pass(HISTORY-002)**:专用事实 prompt、单条 user 输入、空 tools、注入的输出上限;成功但无正文回 `(empty summary)` |
 | `summaryInput()` | `HistoryCompactor` | 5 | **工程 Review Pass(HISTORY-002)**:完整 JSON,超限时前 ¼ + 省略标记 + 后 ¾(标记另计长度) |
 | `extractActiveRequest()` | `ContextCompactor` | 6 | **工程 Review Pass(REQUEST-002)**:入口校验(非空 / 末条 USER / 不含 tool_result / 至少一个非空白文本),返回末条按序换行连接的完整文本(不 trim);11 条测试通过，已作答/对话批阅，用户决定本轮学习收尾；已接显式注入压缩器的父循环 run 入口，Main/子循环尚未接入 |
-| `isContextOverflow()` | `ContextCompactor` | 6 | **工程 Review Pass(OVERFLOW-002)**:只看异常自身说明,忽略大小写子串匹配 `prompt_too_long` / `too many tokens`(显式 `Locale.ROOT`),null 异常或 null 说明返回 false;6 条测试;Agent 阅读题单已提供，尚未接入失败恢复链路 |
-| `reactiveCompact()` | `ContextCompactor` | 6 | **工程 Review Pass(REACTIVE-002)**:候选起点 `max(0, size - keepRecentMessages)` 经 `safeTailStart` 保护工具交换;先归档整段、再只摘要前缀,返回 `[Reactive compact]` 摘要 + 原引用尾部;空前缀返回入参(零 IO/零调用);9 条测试，Agent 题单已提供;响应式失败恢复链路未接入 |
+| `isContextOverflow()` | `ContextCompactor` | 6 | **工程 Review Pass(OVERFLOW-002)**:只看异常自身说明,忽略大小写子串匹配 `prompt_too_long` / `too many tokens`(显式 `Locale.ROOT`),null 异常或 null 说明返回 false;6 条测试;Agent 阅读题单已提供；7C 已接显式注入压缩器的父循环失败恢复，Main / 子循环未接 |
+| `reactiveCompact()` | `ContextCompactor` | 6 | **工程 Review Pass(REACTIVE-002)**:候选起点 `max(0, size - keepRecentMessages)` 经 `safeTailStart` 保护工具交换;先归档整段、再只摘要前缀,返回 `[Reactive compact]` 摘要 + 原引用尾部;空前缀返回入参(零 IO/零调用);9 条测试，Agent 题单已提供；7C 已接显式注入压缩器的父循环补救，Main / 子循环未接 |
 | `CompactTool` 五个方法 | `CompactTool` | 6 | **工程 Review Pass(COMPACT-002)**:`name` = `compact`、`description` 课程原文、空 `properties`/`required`,复用默认空 object schema;`execute` 忽略入参恒定返回 `OUTPUT`;无依赖、无状态、无 IO;3 条薄壳测试;Agent 题单已提供，父循环显式注入路径已识别该信号，Main 未注册、子循环未接 |
 | 父循环主动压缩接入(六参构造器 / 批次标志 / 纯混合策略 / 原地回填) | `AgentLoop` | 7A | **工程 Review Pass(PARENT-MANUAL-003)，待用户学习**:运行控制流暂未发现阻塞缺陷；已校正历史三阶段注释、摘要输入改为结构相等、确认尾部原引用与 hooks/reminder/被拦工具分类，并补“预算候选已生成后摘要失败不半提交”用例；12 条定向测试、GPT 独立全量 247 条通过，阅读题单已提供；Main 未注册、子循环未接 |
 | 父循环正式请求前的自动整理(prepare 接入 / 候选采用) | `AgentLoop` | 7B | **GPT 工程复审 Pass(PARENT-AUTO-003)，待用户学习**：每次正式请求前调用 `prepare` 并按引用保护原位采用候选；Stop 场景已重写为“续跑注入大文本 → 第二次请求前才摘要”（顺序断言与完整输入核对；变异为 worker 报告），失败边界注释与构造器措辞已澄清；定向 66 条、全量 257 条通过；Main / 子循环未接 |
+| 父循环正式请求超限后的有限补救(窄 catch / 额度 / reactiveCompact 接入) | `AgentLoop` | 7C | **GPT 工程 Review Pass(PARENT-REACTIVE-002)，待用户学习**：只捕获正式 `complete` 的 `LlmException`；命中分类且额度未耗尽时补救一次并按引用保护采用、`continue` 重试，成功归零；no-op 也消耗额度，失败边界与不重跑旧工具已核验；GPT 独立新测试 11 条、定向 87 条、全量 268 条通过；B15 已获批待执行，Main / 子循环未接 |
 
 ### 尚待实现(worker 按邮件分批实现，用户 Review 学习)
 
@@ -794,7 +823,7 @@ Full transcript: <可信路径>
 | `messages/ToolUseBlock.java` / `ToolResultBlock.java` | 构造阶段拒绝 null / 空白 ID(线上 JSON 走同一构造器);JSON 字段与合法输入行为不变 |
 | `messages/Message.java` | 新增 `blocksOfType(Class<T>)` 泛型筛选;其余行为不变 |
 | `tools/CompactTool.java` | **工程 Review Pass(COMPACT-002)，3 条薄壳测试通过**:`name`/`description`/空 `properties`/空 `required` + 默认空 object schema;`execute` 忽略入参恒定返回 `OUTPUT`,无依赖、无状态、无 IO;父循环显式注入路径已接入，Main 尚未注册、子循环未接；Agent 阅读题单已提供 |
-| `agent/AgentLoop.java` | **7A + 7B 工程 Review Pass，7B 待用户学习 / 获批提交执行**:六参构造器注入 `ContextCompactor`(null = 旧路径:既不自动整理,也不捕获请求、不处理 compact;注册了 compact 却没注入则在构造时拒绝)；入口捕获一次 activeRequest；**每次正式请求前**调用 `prepare` 并按引用保护原位采用候选;批次局部 `compactRequested` 只在"未被拦截 + 输出精确等于 `CompactTool.OUTPUT`"时置位；闭合后按全批名字分纯/混合并压缩；两种采用都用 `clear()`+`addAll()` 并保护列表身份。注释含“历史三阶段”与两条整理路径的失败边界。Main 未注册、子代理循环未接。7A 验收 commit `2c048e3`、职责整理 commit `0274083`;7B 尚未提交 |
+| `agent/AgentLoop.java` | **7A + 7B + 7C 工程 Review Pass；7B 学习主干已收尾，7C 待用户学习 / B15 已获批待执行**:六参构造器注入 `ContextCompactor`(null = 旧路径:不自动整理、不捕获入口请求、不处理 compact、不补救超限；注册 compact 却没注入在构造时拒绝)；入口捕获一次 activeRequest；每次正式请求前 `prepare` 并按引用保护原位采用；闭合批次后按纯 / 混合策略处理成功 compact 信号；正式请求超限时按分类与局部额度补救一次，成功归零，失败不重跑已完成工具。Main 未注册、子循环未接。7A commit `2c048e3`、职责整理 `0274083`、7B `8c82914` 已核验；7C 尚未提交 |
 
 **已保留的规格常量**(不需改动):`MAX_REACTIVE_RETRIES`、`CompactTool.OUTPUT`、纯 getter `limits()`。
 
