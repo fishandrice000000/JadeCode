@@ -88,7 +88,12 @@ public class SubagentRuntime {
     private final Hooks hooks;
 
     /**
-     * 压缩依赖;{@code null} 表示这条委派路径不压缩(与 Main 当前装配一致)。
+     * 压缩依赖;{@code null} 表示这条委派路径不压缩(旧路径,五参构造器)。
+     *
+     * <p>
+     * 生产装配({@code Main.buildLoop})已经用六参构造器把<b>父循环那一个</b>压缩器传给子代理,
+     * 所以真实 task 调用同样能自动整理、处理 compact 信号并对超限做有限补救。
+     * </p>
      *
      * <p>
      * 它本身不持有会话状态,父子循环可以共享同一个实例;注入它并不会把父会话塞进子会话——
