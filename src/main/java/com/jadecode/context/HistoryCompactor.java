@@ -94,7 +94,8 @@ final class HistoryCompactor {
      *
      * <p>
      * <b>顺序不可颠倒</b>:先成功写出 transcript,再调用摘要模型。这样无论摘要是否成功,
-     * 完整原文都已经可回查;反过来先摘要后归档,一旦归档失败就会"摘要留着、原文没了"。
+     * 本次传入的完整历史都已经可回查。这里遵守“有损替换前先保存恢复副本”的契约,
+     * 不是说先摘要后归档失败会删除内存原文:本类始终不修改入参,失败时原历史仍在调用方手里。
      * </p>
      *
      * <p>
@@ -170,7 +171,8 @@ final class HistoryCompactor {
         // 步骤 3:归档必须保存整段原历史(含尾部两条),否则回查时会看不到最新结果。
         Path transcript = transcriptStore.writeTranscript(messages);
 
-        // 步骤 4:只把前缀交给模型。subList 是只读视图,不会被本方法修改。
+        // 步骤 4:只把前缀交给模型。subList 是由原列表支撑的视图,并非自动只读;
+        // 本路径只读取 / 序列化它,不修改视图,因此不会连带修改调用方历史。
         String summary = summarizeHistory(messages.subList(0, prefixEnd));
 
         // 步骤 5:摘要消息在前,尾部两条按原顺序、原引用接在后面(不合并、不拆开这对交换)。

@@ -383,6 +383,49 @@ class HistoryCompactorTest {
         assertDoesNotThrow(() -> ToolExchangeProtocol.validateHistory(compacted));
     }
 
+    /** 前缀 + 新鲜尾部也必须先归档;归档失败不能调用摘要或改变尾部对象。 */
+    @Test
+    void compactHistoryArchiveFailureKeepsFreshTailAndSkipsSummary() throws IOException {
+        Files.writeString(transcriptDir, "阻挡归档目录");
+        List<Message> mutable = new ArrayList<>(consumedPrefix());
+        mutable.addAll(freshTail());
+        List<Message> input = List.copyOf(mutable);
+        String before = ContextSerialization.toJson(input);
+        RecordingLlmClient client = new RecordingLlmClient(new ScriptedLlmClient());
+
+        IllegalStateException error = assertThrows(IllegalStateException.class,
+                () -> compactor(client).compactHistory(input, "当前任务"));
+
+        assertInstanceOf(IOException.class, error.getCause());
+        assertTrue(client.requests().isEmpty());
+        assertEquals(before, ContextSerialization.toJson(input));
+        assertEquals("阻挡归档目录", Files.readString(transcriptDir));
+    }
+
+    /** 固定摘要异常原样传播，不重试；此前归档必须包含不参与摘要的新鲜尾部。 */
+    @Test
+    void compactHistorySummaryFailureRetainsCompleteArchiveIncludingFreshTail() throws IOException {
+        List<Message> mutable = new ArrayList<>(consumedPrefix());
+        mutable.addAll(freshTail());
+        List<Message> input = List.copyOf(mutable);
+        String before = ContextSerialization.toJson(input);
+        LlmException fixed = new LlmException("预置摘要失败");
+        RecordingLlmClient client = new RecordingLlmClient(request -> {
+            throw fixed;
+        });
+
+        LlmException actual = assertThrows(LlmException.class,
+                () -> compactor(client).compactHistory(input, "当前任务"));
+
+        assertSame(fixed, actual);
+        assertEquals(1, client.requests().size());
+        // 归档包含完整尾部,摘要请求只包含前缀;两个范围不能混淆。
+        assertArchiveMatches(onlyTranscriptFile(), input);
+        assertEquals(ContextSerialization.toJson(consumedPrefix()),
+                client.requests().getFirst().messages().getFirst().extractText());
+        assertEquals(before, ContextSerialization.toJson(input));
+    }
+
     @Test
     void compactHistoryDegradesToCompactAllWithoutFreshTail() throws Exception {
         // 历史里有较早的交换,但末尾是普通 user 文本 → 没有"新鲜交换"要保护。

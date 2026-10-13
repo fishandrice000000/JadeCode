@@ -75,7 +75,9 @@ final class SnipCompactor {
         List<Message> head = new ArrayList<>(messages.subList(0, headEnd));
         List<Message> tail = new ArrayList<>(messages.subList(tailStart, totalLength));
 
-        // 归档中间内容
+        // 先归档本层收到的完整历史(含头尾),再用 marker 替换中段。
+        // marker 的 N 只表示从模型可见历史移走的消息数,不是归档文件行数;
+        // 写入失败会在此抛出,下面的重建不会执行,调用方仍持有完整原列表。
         Message archivedMid = Message.userText(
                 "[" + (tailStart - headEnd) + " messages archived at "
                         + transcriptStore.writeTranscript(messages).toString() + "]");
