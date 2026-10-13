@@ -141,9 +141,11 @@ public class AgentLoop {
      * </p>
      *
      * <p>
-     * <b>注入它就同时启用了两条能力</b>:每次正式请求前的自动整理({@link ContextCompactor#prepare})
-     * 与批次闭合后的主动压缩({@link ContextCompactor#compactAfterBatch})都来自这一个依赖,两者独立生效——
-     * 工具表里<b>没有</b>注册 compact 也可以注入压缩器,此时只有自动整理在起作用。
+     * <b>注入它启用的能力</b>:每次正式请求前的自动整理({@link ContextCompactor#prepare})
+     * 与正式请求被判定超限时的有限补救({@link ContextCompactor#reactiveCompact})都来自这一个依赖,
+     * 只要注入了压缩器就一直有效;此后再把 compact 注册进工具表,才会多出"模型主动请求压缩"
+     * 这条入口({@link ContextCompactor#compactAfterBatch})。也就是说:工具表里<b>没有</b>注册 compact
+     * 也可以注入压缩器,那时自动整理与超限补救照常工作,只是模型没有主动请求压缩的工具可用。
      * </p>
      *
      * <p>
@@ -153,8 +155,9 @@ public class AgentLoop {
      * </p>
      *
      * <p>
-     * 本轮不修改 Main,所以生产 CLI 仍走五参构造器(未启用);测试通过显式注入压缩器验证真实父循环链路。
-     * 压缩器不持有会话状态,父子循环可以共享同一个实例。
+     * <b>生产装配已经用这个构造器</b>:{@code Main.buildLoop} 会建一个生产默认压缩器传给父循环,
+     * 所以 CLI 的 run / repl 默认就具备自动整理、主动压缩与超限补救。五参构造器保留给"不启用压缩"的
+     * 装配路径(例如只需要旧行为的调用方或测试)。压缩器不持有会话状态,父子循环可以共享同一个实例。
      * </p>
      *
      * @param client    LLM 客户端(真实或测试替身)
@@ -162,8 +165,9 @@ public class AgentLoop {
      * @param system    system prompt 原文
      * @param maxTokens 单请求 token 上限
      * @param hooks     hook 事件表
-     * @param compactor 自动整理与主动压缩共用的依赖;{@code null} = 未启用(旧路径:既不自动整理,
-     *                  也不捕获入口请求、不处理 compact 请求)。不注册 compact 也可以注入它来启用自动整理
+     * @param compactor 自动整理、超限补救与主动压缩共用的依赖;{@code null} = 未启用(旧路径:既不自动整理、
+     *                  不补救超限,也不捕获入口请求、不处理 compact 请求)。不注册 compact 也可以注入它,
+     *                  此时自动整理与超限补救仍然生效,只是没有模型主动请求压缩的入口
      * @throws IllegalArgumentException tools 注册了 compact 但 compactor 为 null
      */
     public AgentLoop(LlmClient client, Map<String, Tool> tools, String system, int maxTokens, Hooks hooks,
