@@ -1,5 +1,6 @@
 package com.jadecode;
 
+import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
@@ -14,6 +15,8 @@ import com.jadecode.config.Env;
 import com.jadecode.context.ContextCompactor;
 import com.jadecode.llm.AnthropicSdkLlmClient;
 import com.jadecode.llm.LlmClient;
+import com.jadecode.memory.MemoryManager;
+import com.jadecode.memory.MemoryStore;
 import com.jadecode.messages.Message;
 import com.jadecode.messages.ToolResultBlock;
 import com.jadecode.messages.ToolUseBlock;
@@ -145,7 +148,8 @@ public class Main implements Callable<Integer> {
      * @param config 运行期配置(API key、端点、模型、正式请求输出上限)
      * @param cwd    工作区目录:技能扫描、路径围栏、归档与落盘位置都以它为准
      * @param client LLM 客户端;父、子正式请求与辅助摘要共用同一个实例
-     * @return 组装好的 AgentLoop(已启用自动整理、主动压缩与超限补救)
+     * @return 父循环，启用上下文保护与工作区 Memory；子代理不自动维护长期记忆
+     * @throws IllegalStateException 工作区不能绑定记忆存储（保留 IOException cause）
      */
     static AgentLoop buildLoop(AppConfig config, Path cwd, LlmClient client) {
         PathResolver resolver = new PathResolver(cwd);
@@ -164,6 +168,15 @@ public class Main implements Callable<Integer> {
         ContextCompactor compactor = new ContextCompactor(client,
                 cwd.resolve(".transcripts"),
                 cwd.resolve(".task_outputs").resolve("tool-results"));
+
+        // Memory 属于用户任务的跨会话知识；只给父循环接线，不让子任务临时猜测直接写入库。
+        // 构造只是绑定现有 cwd，不创建 .memory、不提取、不发请求；首次召回在 run 入口发生。
+        MemoryManager memory;
+        try {
+            memory = new MemoryManager(client, new MemoryStore(cwd));
+        } catch (IOException failure) {
+            throw new IllegalStateException("无法绑定工作区记忆存储", failure);
+        }
 
         // 子代理工具表(D1):五把基础工具 + compact——不含 task(只有一层委派)、
         // 不含 todo_write(聚焦子任务无需计划表)、也不含 load_skill:子代理不能自己加载技能,
@@ -209,7 +222,8 @@ public class Main implements Callable<Integer> {
                 systemPrompt(cwd, skillLoader.catalog()),
                 config.maxTokens(),
                 hooks,
-                compactor);
+                compactor,
+                memory);
     }
 
     /* ----- 内置 hook 的实现 ----- */

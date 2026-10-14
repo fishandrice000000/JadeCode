@@ -27,7 +27,7 @@ import com.jadecode.util.Json;
  * 模型仍可能误判，本服务不声称能证明知识真实或阻止全部记忆污染。</p>
  *
  * <p>调用方应在主任务真正结束、Stop 不要求续跑后调用一次；本类不触发 Stop、工具或主循环重试，
- * 不修改传入消息，也不自动整理旧记忆。M2 尚未接入 CLI，因此构造此服务本身不会产生记忆。</p>
+ * 不修改传入消息，也不自动整理旧记忆。CLI 由 MemoryManager 在正确边界调用，构造本身不产生记忆。</p>
  */
 public final class MemoryExtractionService {
     private static final int RECENT_MESSAGES = 12;

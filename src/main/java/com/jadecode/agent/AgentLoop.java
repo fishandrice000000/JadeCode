@@ -10,6 +10,7 @@ import com.jadecode.llm.CompleteRequest;
 import com.jadecode.llm.LlmClient;
 import com.jadecode.llm.LlmException;
 import com.jadecode.llm.ModelResponse;
+import com.jadecode.memory.MemoryManager;
 import com.jadecode.messages.ContentBlock;
 import com.jadecode.messages.Message;
 import com.jadecode.messages.TextBlock;
@@ -34,7 +35,7 @@ import com.jadecode.util.Json;
  * <p>
  * run 入口先做一次既有历史校验(工具交换必须完整合法,见
  * {@link ToolExchangeProtocol#validateHistory(List)}):非法历史在第一次模型调用前就被拒绝。
- * 如果注入了压缩器,入口还会用 {@link ContextCompactor#extractActiveRequest(List)} 捕获一次
+ * 如果注入了压缩器或记忆管理器,入口还会用 {@link ContextCompactor#extractActiveRequest(List)} 捕获一次
  * "本次 run 的请求",整轮沿用(原因见 {@link #run})。
  * </p>
  *
@@ -90,7 +91,7 @@ public class AgentLoop {
     /** 工具分发表:模型 tool_use 块的 name → Tool;执行按此查表 */
     private final Map<String, Tool> tools;
 
-    /** system prompt 原文,随每次请求原样发给模型 */
+    /** 基础 system；启用记忆时每次 run 派生固定背景，不污染下一次用户任务。 */
     private final String system;
 
     /** 单次请求的 max_tokens 上限 */
@@ -101,9 +102,12 @@ public class AgentLoop {
 
     /**
      * 压缩依赖;{@code null} 表示<b>未启用</b>:此时 run 的行为与 s01–s07 完全一致——
-     * 既不在每次正式请求前自动整理,也不捕获入口请求、不处理 compact 请求。
+     * 不在每次正式请求前自动整理、不处理 compact 请求；若单独启用记忆，仍会捕获入口请求。
      */
     private final ContextCompactor compactor;
+
+    /** 可选长期记忆生命周期；旧五 / 六参构造器不启用，父 CLI 七参装配启用。 */
+    private final MemoryManager memory;
 
     /** todo_write 的工具名:只有成功执行它才算"用了 todo"(见 {@link #run}) */
     private static final String TODO_TOOL = "todo_write";
@@ -155,7 +159,7 @@ public class AgentLoop {
      * </p>
      *
      * <p>
-     * <b>生产装配已经用这个构造器</b>:{@code Main.buildLoop} 会建一个生产默认压缩器传给父循环,
+     * <b>生产装配使用七参构造器同时启用记忆</b>:{@code Main.buildLoop} 会建一个生产默认压缩器传给父循环,
      * 所以 CLI 的 run / repl 默认就具备自动整理、主动压缩与超限补救。五参构造器保留给"不启用压缩"的
      * 装配路径(例如只需要旧行为的调用方或测试)。压缩器不持有会话状态,父子循环可以共享同一个实例。
      * </p>
@@ -172,6 +176,27 @@ public class AgentLoop {
      */
     public AgentLoop(LlmClient client, Map<String, Tool> tools, String system, int maxTokens, Hooks hooks,
             ContextCompactor compactor) {
+        this(client, tools, system, maxTokens, hooks, compactor, null);
+    }
+
+    /**
+     * 生产完整装配：在六参压缩行为之外，可启用每次用户任务的长期记忆生命周期。
+     *
+     * <p>memory 为 null 保持旧行为；非 null 时入口捕获当前请求、召回一次，正常结束后提取 / 整理。
+     * 记忆不改变工具批次、Stop、压缩或正式请求重试的次序，辅助 IO 失败由管理器报告。
+     * 构造本身无 IO / 模型调用；messages 仍由 run 的调用方持有。</p>
+     *
+     * @param client 正式请求客户端
+     * @param tools 工具分发表；compact 注册要求 compactor 非空
+     * @param system 基础 system，不含本次召回背景
+     * @param maxTokens 正式请求输出上限
+     * @param hooks hook 事件表
+     * @param compactor 可选上下文保护
+     * @param memory 可选工作区长期记忆管理
+     * @throws IllegalArgumentException 注册 compact 却未提供压缩器
+     */
+    public AgentLoop(LlmClient client, Map<String, Tool> tools, String system, int maxTokens, Hooks hooks,
+            ContextCompactor compactor, MemoryManager memory) {
         if (compactor == null && tools.containsKey(COMPACT_TOOL)) {
             throw new IllegalArgumentException("工具表注册了 " + COMPACT_TOOL
                     + " 但构造时未提供 ContextCompactor:压缩请求将无人处理,请注入压缩器或移除该工具");
@@ -182,6 +207,7 @@ public class AgentLoop {
         this.maxTokens = maxTokens;
         this.hooks = hooks;
         this.compactor = compactor;
+        this.memory = memory;
     }
 
     /**
@@ -231,7 +257,7 @@ public class AgentLoop {
      * @param messages 会话消息列表,原地追加 assistant / user 消息;调用方持有的
      *                 就是"当前会话",run 结束后可直接继续对话或持久化
      * @throws IllegalArgumentException 传入的既有历史存在畸形的工具交换(在第一次模型调用前拒绝);
-     *                                  启用压缩器时,入口请求不满足契约同样在此抛出
+     *                                  启用压缩器或记忆时,入口请求不满足契约同样在此抛出
      * @throws LlmException 网络 / API 错误。被当前分类判为"上下文过长"的正式请求异常,会在本次请求的额度内
      *                      先尝试一次补救;额度耗尽、命中不了分类,以及自动整理 / 主动压缩 / 补救里的摘要失败,
      *                      都<b>原样向上抛</b>——不包装成成功。抛异常之后不再发起新的正式请求;
@@ -244,9 +270,14 @@ public class AgentLoop {
         //    在第一次模型调用前拒绝,避免把非法历史发给模型。
         ToolExchangeProtocol.validateHistory(messages);
 
-        // 0.1 启用压缩器时,再捕获本次 run 的"人类请求"(入口校验也在这里完成:非法入口在
+        // 0.1 启用压缩器或记忆时,捕获本次 run 的"人类请求"(入口校验也在这里完成:非法入口在
         //     任何模型调用与工具副作用之前抛出)。未启用路径保持旧行为,不施加这个形状限制。
-        final String activeRequest = compactor == null ? null : ContextCompactor.extractActiveRequest(messages);
+        final String activeRequest = compactor == null && memory == null
+                ? null : ContextCompactor.extractActiveRequest(messages);
+
+        // 0.2 原课程每次用户任务召回一次。工具结果 / Stop 续跑 / 超限重试仍属于同一个任务，
+        // 不重复选择，也不拿它们的 USER 角色误当成用户新需求。背景只在本次 run 的 system 中。
+        final String taskSystem = memory == null ? system : memory.prepareSystem(system, activeRequest);
 
         int roundsSinceTodo = 0; // 连续几轮没用 todo_write;每条用户消息(每次 run)从 0 重计
 
@@ -291,7 +322,7 @@ public class AgentLoop {
             ModelResponse response;
             try {
                 response = client
-                        .complete(new CompleteRequest(system, messages, maxTokens, List.copyOf(tools.values())));
+                        .complete(new CompleteRequest(taskSystem, messages, maxTokens, List.copyOf(tools.values())));
             } catch (LlmException error) {
                 // 2.1 失败分流:只有"看起来是上下文过长"、且这次正式请求还有额度,才值得付一次有损压缩。
                 //     compactor == null(五参旧路径)不补救;命中不了分类的失败(认证 401 / 限流 429 /
@@ -348,6 +379,10 @@ public class AgentLoop {
                 if (force != null) {
                     messages.add(Message.userText(force));
                     continue;
+                }
+                // Stop 不要求续跑才算真正完成。辅助提取回复不能加入主历史、更不能交给工具分发。
+                if (memory != null) {
+                    memory.finishTask(messages);
                 }
                 return;
             }

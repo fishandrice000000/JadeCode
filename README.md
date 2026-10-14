@@ -16,7 +16,7 @@
 
 ## 目录结构
 
-已实现(s01–s07);s08 起的包随章节逐个新建,见下方映射表。
+已实现 s01–s07；s08 上下文保护与 s09 Memory 已接入 CLI，独立章节验收状态见下方进度。
 
 ```
 src/main/java/com/jadecode/
@@ -31,6 +31,8 @@ src/main/java/com/jadecode/
 ├── todo/             # TodoManager(计划表校验与渲染)
 ├── subagent/         # SubagentRuntime(嵌套循环 + 消息隔离 + 三终态)
 ├── skills/           # SkillDefinition, SkillLoader(catalog 常驻 / 全文按需)
+├── context/          # ContextCompactor(请求前保护 / 主动压缩 / 超限补救)
+├── memory/           # 工作区记忆：召回 / 提取 / 数量触发整理 / 生命周期装配
 └── agent/            # AgentLoop(主循环 + todo reminder)
 ```
 
@@ -87,4 +89,10 @@ mvn -q test                                 # 单元测试
 - [x] s05:TodoWrite + reminder 注入
 - [x] s06:Subagent + task 工具(独立上下文、30 轮上限、三终态)
 - [x] s07:Skill Loading(两层知识注入:catalog 常驻,SKILL.md 全文按需)
-- [ ] s08–s17:逐章实现(见映射表)
+- [ ] s08:CLI 上下文保护已接入；真机主路径通过，转存路径回读补验仍待完成
+- [ ] s09:Memory 存储、召回、提取、整理已接入父 CLI；独立真机验收待完成
+- [ ] s10–s17:逐章实现(见映射表)
+
+Memory 使用工作区 `.memory/`，每次用户任务入口召回一次，真正结束后提取，新增成功后按数量尝试整理。
+辅助请求沿用现有客户端，不带工具；记忆维护失败告警，不抹掉已完成的主任务结果。
+子代理不自主维护长期记忆。记忆内容的真伪、长期价值与合并质量依赖模型，格式校验不提供语义保证。

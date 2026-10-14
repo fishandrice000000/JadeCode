@@ -29,7 +29,7 @@ import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
  *
  * <p>记忆文件存在并不等于模型已经看见。读取入口回答“工作区里有哪些合法记录”，
  * {@link MemoryRecallService} 再决定哪些记录进入下一次请求；本类不理解内容的长期价值，
- * 不使用临时关键词否决记录；只有调用方显式调用 saveNew 才写入，不自动提取或整理记忆。</p>
+ * 不使用临时关键词否决记录；只有调用方显式新增或替换才写入，不自动提取或判断整理内容。</p>
  *
  * <p>库位于注入工作区的 {@code .memory} 下，只有一层 Markdown 文件。
  * 每次读取重新扫描，返回不可修改的列表与不可变字符串；不缓存上一会话的选择。
@@ -197,6 +197,137 @@ public final class MemoryStore {
                 deleteCreated(path, failure);
             }
             throw failure;
+        }
+    }
+
+    /**
+     * 把整理模型产生的整份候选库发布到磁盘，仅供同包整理服务调用。
+     *
+     * <p>expected 是模型实际看过的记录快照。发布前重新扫描并比较，库已经改变就拒绝，
+     * 不用旧模型结论覆盖新内容。候选必须非空且生成的文件名唯一；模型不能指定删除路径。
+     * 只替换快照中的合法普通文件，坏文件、目录和链接占位不删除、不覆盖。</p>
+     *
+     * <p>先在专属临时目录写完候选及索引，再删除旧记录、创建新记录，最后原子发布索引。
+     * 普通 IO 失败会删除本批新文件并尝试恢复已删除旧文件；恢复失败作为 suppressed 保留。
+     * 恢复针对文件内容，不保证权限等元数据；这是课程式文件库的失败恢复，不是崩溃事务，
+     * 不支持并发写入的事务隔离。成功后的临时材料清理失败只告警，不伪装成发布失败。</p>
+     *
+     * @param expected 本次辅助请求使用的完整合法记录快照
+     * @param drafts 整理后的完整库，不是增量更新
+     * @throws IOException 库变更、对象类型冲突、写入或发布失败
+     * @throws IllegalArgumentException 候选为空或不同名称生成同一文件名；检查在写盘前完成
+     */
+    void replaceRecords(List<MemoryRecord> expected, List<MemoryDraft> drafts) throws IOException {
+        List<MemoryRecord> snapshot = List.copyOf(expected);
+        // 1. 固定整库输出。不能只挑合法条目留下，否则坏条目会被解释成“模型要删除的旧知识”。
+        var documents = new LinkedHashMap<String, String>();
+        for (MemoryDraft draft : List.copyOf(drafts)) {
+            if (documents.putIfAbsent(memoryFilename(draft.name()), memoryDocument(draft)) != null) {
+                throw new IllegalArgumentException("整理后的记忆文件名发生碰撞");
+            }
+        }
+        if (documents.isEmpty()) {
+            throw new IllegalArgumentException("不允许用空整理结果清空记忆库");
+        }
+        if (!snapshot.equals(listRecords())) {
+            throw new IOException("整理期间记忆库发生变化，未发布旧快照的整理结果");
+        }
+        Path root = checkedRoot();
+        Path index = root.resolve("MEMORY.md");
+        checkIndexTarget(index);
+        var originals = new LinkedHashMap<Path, String>();
+        for (MemoryRecord record : snapshot) {
+            Path path = root.resolve(record.filename());
+            // listRecords 可以读取库内链接；破坏性替换不能把链接恢复成普通文件，故在这里拒绝。
+            if (!Files.readAttributes(path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS).isRegularFile()) {
+                throw new IOException("整理只允许替换普通非链接记忆文件: " + record.filename());
+            }
+            originals.put(path, record.content());
+        }
+        for (String filename : documents.keySet()) {
+            Path target = root.resolve(filename);
+            if (!originals.containsKey(target) && Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
+                throw new IOException("整理目标被快照之外的对象占用: " + filename);
+            }
+        }
+
+        Path staging = Files.createTempDirectory(root, ".memory-consolidate-");
+        List<Path> staged = new ArrayList<>();
+        List<Path> removed = new ArrayList<>();
+        List<Path> created = new ArrayList<>();
+        IOException failure = null;
+        try {
+            // 2. 完整编码并写完临时候选。比如 UTF-8 编码失败发生在旧库仍完整的时候。
+            StringBuilder catalog = new StringBuilder();
+            for (var entry : documents.entrySet()) {
+                Path temporary = staging.resolve(entry.getKey());
+                staged.add(temporary);
+                Files.writeString(temporary, entry.getValue(), StandardCharsets.UTF_8,
+                        StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+                MemoryRecord record = parseRecord(entry.getKey(), entry.getValue());
+                if (record == null) {
+                    throw new IOException("候选编码后不能读回为合法记忆");
+                }
+                catalog.append("- [").append(indexText(record.name())).append("](")
+                        .append(record.filename()).append(") - ").append(indexText(record.description())).append('\n');
+            }
+            Path stagedIndex = staging.resolve("MEMORY.md");
+            staged.add(stagedIndex);
+            Files.writeString(stagedIndex, catalog.toString(), StandardCharsets.UTF_8);
+            // 临时目录不参与一层记录扫描；再次确认模型调用/准备期间没有出现新版本。
+            if (!snapshot.equals(listRecords())) {
+                throw new IOException("准备整理候选期间记忆库发生变化");
+            }
+
+            // 3. 只删除已核验的旧记录。逐个登记实际删除路径，失败时只恢复这些路径。
+            for (Path path : originals.keySet()) {
+                Files.delete(path);
+                removed.add(path);
+            }
+            for (var entry : documents.entrySet()) {
+                Path target = root.resolve(entry.getKey());
+                try (var writer = Files.newBufferedWriter(target, StandardCharsets.UTF_8,
+                        StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)) {
+                    created.add(target);
+                    writer.write(entry.getValue());
+                }
+            }
+            // 4. 索引最后发布。移动失败则原索引仍在，随后按原内容恢复记录。
+            checkIndexTarget(index);
+            Files.move(stagedIndex, index, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException error) {
+            failure = error;
+            for (Path path : created) {
+                deleteCreated(path, error);
+            }
+            for (Path path : removed) {
+                try {
+                    Files.writeString(path, originals.get(path), StandardCharsets.UTF_8,
+                            StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+                } catch (IOException restoreFailure) {
+                    error.addSuppressed(restoreFailure);
+                }
+            }
+            throw error;
+        } finally {
+            // 5. 只清理自己的已知临时文件与空目录，不递归清扫用户库。
+            for (Path path : staged) {
+                cleanupStaged(path, failure);
+            }
+            cleanupStaged(staging, failure);
+        }
+    }
+
+    /** 发布后的清理问题不改变发布结果；失败路径则把清理原因附到原异常。 */
+    private static void cleanupStaged(Path path, IOException original) {
+        try {
+            Files.deleteIfExists(path);
+        } catch (IOException cleanupFailure) {
+            if (original != null) {
+                original.addSuppressed(cleanupFailure);
+            } else {
+                System.err.println("[Memory] 临时整理材料清理失败: " + path.getFileName());
+            }
         }
     }
 
