@@ -31,7 +31,7 @@ import com.jadecode.util.Json;
  * 本服务只让辅助模型看到目录，正文选择完成后才进入返回背景；辅助请求不带工具，
  * 不运行主任务的 Stop / 工具 / 压缩生命周期，也不会修改主会话。</p>
  *
- * <p>M1 只生成背景，不决定调用方如何组装 system；Main / 父子循环尚未接入。
+ * <p>本服务只生成背景，不决定调用方如何组装 system；父 CLI 由 MemoryManager 接入。
  * 保存资格判断、提取、文件写入与整理不属于本类；尤其没有“临时词命中就拒绝保存”的逻辑。</p>
  */
 public final class MemoryRecallService {

@@ -49,7 +49,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p>
  * 假客户端按 <b>system prompt</b> 区分父 / 子(子代理 prompt 独有 "Complete the given task"),
- * 按<b>是否有工具表</b>区分正式请求与辅助摘要,并保存每次请求的<b>快照</b>;
+ * 先按专用 prompt 识别 s09 记忆维护，再按<b>是否有工具表</b>区分正式请求与辅助摘要,
+ * 并保存每次压缩相关请求的<b>快照</b>;
  * 请求里持有的是可变列表引用,不复制就会在后续回填之后读到被改写的历史。
  * </p>
  *
@@ -92,6 +93,11 @@ class MainCompactionAssemblyTest {
 
         @Override
         public ModelResponse complete(CompleteRequest request) throws LlmException {
+            // s09 新增无工具的记忆提取；它不是摘要，不能计入本测试的压缩事件与摘要次数。
+            // 本套用例没有预置记忆，合法 [] 表示没有新知识；原压缩断言和工具剧本保持不变。
+            if (request.system().startsWith("Treat the dialogue and catalog as reference data")) {
+                return textReply("[]");
+            }
             CompleteRequest snapshot = new CompleteRequest(request.system(), List.copyOf(request.messages()),
                     request.maxTokens(), request.tools());
             if (request.tools().isEmpty()) {

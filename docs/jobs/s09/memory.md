@@ -1,6 +1,6 @@
 # s09 工程任务单：选择性跨会话记忆
 
-日期：2026-10-14。状态：M1 / M2 已实现、编译与工程自审 Pass；M2 验证见 §12，CLI 接线与真机验收未开始。
+日期：2026-10-14。状态：M1–M4 已实现并接入 CLI；工程自审与离线验证见 §15，独立真机验收待完成。
 执行方：ChatGPT；学习者与最终决策者：用户。
 课程来源：本机 `../learn-claude-code/s09_memory/README.zh.md` 与 `code.py`。
 学习入口：[Memory 概念指南](../../notes/s09/memory-introduction.md)。
@@ -72,7 +72,7 @@ M1 的 Java 小任务已在 §8 定义并交付；其它单元尚未细化，不
 概念阶段新建的两份 s09 文档当时没有 Git 提交授权，未混入此前三笔提交；后续 M1 五文件授权见 §10。
 后续按 M1–M4 的能力检查点另提精确提交方案，不 push、不改历史。
 
-当前单元：M1 源码讨论后用户要求继续，进入 M2 提取 / 保存；精确范围与暂停点见 §11。
+当前单元：M2 留档后，用户明确要求一次完成后续 M3 / M4，不再逐项停下来答题；范围见 §14。
 
 ## 7. 提取策略裁决与概念批阅（2026-10-14）
 
@@ -246,3 +246,106 @@ IO 清理可能留下空库目录；不以自动删除库或全面并发系统�
 other-agents-analysis、SOP、生成物、临时材料或机器配置。只精确暂存与一笔本地提交，不 push、不改历史。
 用户已明确批准本节精确四文件的本地提交，不沿用 M1 或此前文档提交授权。
 实际 hash / 执行结果以 Git 记录与本轮对话为准；后续 M3 / M4 不混入本检查点。
+
+## 14. 用户授权的 M3 / M4 合并交付
+
+用户要求直接完成剩余 s09 再进入 s10，优先于本单前述逐单元暂停点；不要求先答完 E01–E03。
+M2 四文件已按独立授权提交为 47b5f5e；M3 / M4 实施时尚无 Git 提交批准，后续授权见 §16。
+
+目标：CLI 父循环在用户任务入口召回，Stop 真正允许结束后提取，新增成功后尝试十条阈值整理。
+不是每次内部模型请求召回 / 提取；工具批次、Stop 续跑与正式请求重试共享一次召回背景。
+父循环维护工作区 .memory；子代理不自主提取或召回，需要的知识由父任务显式带入。
+
+实现范围：MemoryStore、MemoryRecallService / MemoryExtractionService 的接线说明、
+新增 MemoryConsolidationService / MemoryManager、AgentLoop、Main、README 的当前能力说明，
+本任务单与新增 memory-lifecycle-review.md。必要时适配已有 MainCompactionAssemblyTest 的辅助请求分类，
+不新增测试方法 / 单元测试文件，不改变原压缩断言，不引入新配置、CLI 参数或依赖。
+用户 memory-recall-review.md 答案、研究目录、s08 存储优化与子代理运行时不改。
+
+契约：
+
+- 一次召回生成 run 局部 system，辅助回复不加入主历史 / 工具分发 / Stop。
+- 成功新增后才检查整理；少于十条不调用模型，完整 JSON 输入超过 20000 UTF-16 单元则明确跳过。
+  整理使用同一客户端、空工具、3000 输出 token；模型返回完整非空整库，最多三十条。
+- 保留 / 合并 / 删除的语义由模型决定；没有词语黑名单，也没有独立过期检测或可靠时间顺序。
+  整库回复的任一坏条目、空数组、过多条目或安全文件名碰撞均拒绝整批，不能部分过滤后删除旧库。
+- 替换前核对模型输入快照、文件类型与快照外目标冲突；先完整写临时候选及索引，
+  只替换合法普通旧记录，坏文件 / 链接 / 目录不删除。普通 IO 故障尝试恢复旧内容，恢复失败明确保留。
+  索引最后原子发布；不宣称文件库有断电事务、权限元数据恢复或并发隔离。
+- Memory IO / 模型 / 坏回复明确诊断，但不抹掉已完成主任务结果。程序错误不 catch-all 隐藏。
+  主任务失败不提取；辅助整理失败不撤销先前已经成功保存的提取记录。
+- 保留旧五 / 六参 AgentLoop 构造行为；七参才启用 Memory，Main 使用七参装配父循环。
+- 同名纠正仍可能被只新增机制跳过；小库或无新增时不整理，不能承诺所有矛盾自动解决。
+
+验证：编译、最小无网络临时演示、已有装配测试的定向回归、跳过测试的 package。
+不调用真实 provider，不读取 .env，不在项目工作区生成记忆。用户另做独立真机验收。
+暂停点：交付剩余 s09，给精简阅读顺序与真机检查，再开始 s10 概念；本轮不实现 s10。
+
+## 15. M3 / M4 工程交付与验证
+
+已接通：Main → 七参 AgentLoop → MemoryManager → 入口召回 / 完成后提取 / 新增后整理。
+新增 MemoryConsolidationService；MemoryStore 提供同包整库替换与普通失败恢复。
+旧五 / 六参循环不自动启用 Memory，SubagentRuntime 与原工具表不变。
+README 同步当前能力，不把未完成真机验收的 s08 / s09 标记为章节完成。
+精简阅读与验收：[memory-lifecycle-review.md](../../notes/s09/memory-lifecycle-review.md)。
+
+实际验证：
+
+- `mvn -q -DskipTests compile`：退出码 0。
+- 最终 `mvn -q -DskipTests package`：退出码 0，已重建 CLI 产物；本命令没有执行测试。
+- 首次 `mvn -q -Dtest=MainTest,MainCompactionAssemblyTest test`：退出码 1，15 条中 5 failure、0 error、0 skipped。
+  根因是旧假客户端把全部空工具请求当作摘要，新的提取请求错误增加摘要计数；不是压缩多执行。
+  仅适配该假客户端：识别专用提取 prompt 并回复合法 []，保持原六条用例与压缩断言不变。
+  最窄复测 `mvn -q -Dtest=MainCompactionAssemblyTest test`：退出码 0，6 / 0 / 0 / 0。
+  首轮 MainTest 原有 9 条全绿；没有新增 / 删除 / 禁用测试，不冒称全量回归。
+- 临时 MemoryLifecycleDemo：javac 退出码 0；实际 Main 接线，无网络 Java 演示最终退出码 0。
+  初次演示退出码 1：临时断言只捕获 MalformedInputException，而 Files.writeString 实际抛
+  UnmappableCharacterException；二者均为 CharacterCodingException，修正演示捕获范围后重新执行通过。
+  产品已在破坏旧库之前失败，没有为通过演示改写产品失败语义。
+- 九条旧库 + Stop 强制续跑：召回 1 次、正式请求 2 次、最终提取 1 次、整理 1 次，十条 → 一条。
+  两次正式请求的 system 相同；辅助回复没有进入主历史，最终 assistant 原回复仍在。
+- 新建父循环再次召回已持久化正文；合法空提取不整理。
+- 空 / 缺字段 / 清洗名称碰撞的整库输出拒绝，旧记录与索引不变；真实 UTF-8 候选写入失败发生在
+  临时准备阶段，旧库仍完整，临时整理材料已清理。
+- MEMORY.md 被目录占用：提取 IO 故障告警，旧库不变，主任务原回答仍可展示。
+- 主请求 LlmException 不提取；旧五参构造器只执行一次主调用，无自动记忆维护。
+
+**Pass（M3 / M4 工程自审）**：实现后重新核对实际文件、调用顺序、专用 JSON 回复契约、
+主历史不变性、空 / 非法候选保护、名称与链接围栏、索引最后发布、普通失败恢复和中文注释。
+同一实现者完成自审，不声称独立审查或没有任何潜在 Bug。
+
+未验证边界：未真实调用模型，未动态触发“删除旧记录之后”的发布失败 / 恢复失败，
+未测试不支持原子移动的文件系统、断电或并发修改。预检查不是并发隔离；失败恢复不保留权限等元数据。
+模型可能错误合并 / 删除；同名纠正可能被只新增层跳过；小库、无新增与过大库不保证自动整理。
+system 中召回正文虽有界，但不是服务端准确 token 预算，压缩器的消息估算不包含完整 system。
+提取可看到摘要 / synthetic user，不能以 role 证明全是人类确认事实。没有秘密扫描器或语义可信度证明。
+Memory 是独立 Harness 写盘路径，不是工具权限审批；当前未提供 CLI 禁用开关或“只读任务禁止自动记忆写入”
+的结构化契约，不能仅凭模型没有调 write_file 就宣称进程没有写运行期文件。
+
+用户已表达对四阶段主干的理解并要求跳过进一步逐题停顿；不把未答的 E / R 拓展题记录成通过。
+进入 s10 概念不等于 s09 独立真机验收完成；提交完成也与章节验收分开。
+最终构建、临时清理与精确提交方案见本轮对话；M3 / M4 已获得 §16 精确范围的提交批准。
+
+本轮 /tmp 专用演示目录及其中源码、class、记录和索引已清理，没有处理任何既有材料。
+用户 M1 笔记 SHA-256 保持 1d8337ce11aada3305c9cc8be3914d86cc2bb8ac6b8ccd2cb129566832666cde 不变。
+
+## 16. M3 / M4 本地提交检查点（USER_APPROVED）
+
+建议一笔 `接通长期记忆整理与父循环生命周期`，依赖已提交的 M2 47b5f5e，精确十一文件：
+
+1. README.md
+2. src/main/java/com/jadecode/Main.java
+3. src/main/java/com/jadecode/agent/AgentLoop.java
+4. src/main/java/com/jadecode/memory/MemoryStore.java
+5. src/main/java/com/jadecode/memory/MemoryRecallService.java
+6. src/main/java/com/jadecode/memory/MemoryExtractionService.java
+7. src/main/java/com/jadecode/memory/MemoryConsolidationService.java
+8. src/main/java/com/jadecode/memory/MemoryManager.java
+9. src/test/java/com/jadecode/MainCompactionAssemblyTest.java
+10. docs/jobs/s09/memory.md
+11. docs/notes/s09/memory-lifecycle-review.md
+
+整库发布、生命周期接入、既有装配剧本适配与必要文档作为本次用户要求的完整收尾能力。
+用户已明确批准上述十一文件的本地暂存与提交；排除用户召回笔记答案、研究目录、s10 两份概念文档、运行产物与 SOP。
+不 push、不改历史；独立真机验收另记，不用未答拓展题阻塞提交审批。
+执行前后核对范围与文件快照；实际提交 hash / 执行结果见 Git 记录及本轮对话。
