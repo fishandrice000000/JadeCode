@@ -1,6 +1,6 @@
 # s09 工程任务单：选择性跨会话记忆
 
-日期：2026-10-14。状态：M1 已实现、编译与工程自审 Pass；验证见 §9，CLI 接线与真机验收未开始。
+日期：2026-10-14。状态：M1 / M2 已实现、编译与工程自审 Pass；M2 验证见 §12，CLI 接线与真机验收未开始。
 执行方：ChatGPT；学习者与最终决策者：用户。
 课程来源：本机 `../learn-claude-code/s09_memory/README.zh.md` 与 `code.py`。
 学习入口：[Memory 概念指南](../../notes/s09/memory-introduction.md)。
@@ -72,7 +72,7 @@ M1 的 Java 小任务已在 §8 定义并交付；其它单元尚未细化，不
 概念阶段新建的两份 s09 文档当时没有 Git 提交授权，未混入此前三笔提交；后续 M1 五文件授权见 §10。
 后续按 M1–M4 的能力检查点另提精确提交方案，不 push、不改历史。
 
-当前暂停点：用户阅读 M1 召回源码并讨论架构取舍；不同时实现 M2 提取 / 保存或接主循环。
+当前单元：M1 源码讨论后用户要求继续，进入 M2 提取 / 保存；精确范围与暂停点见 §11。
 
 ## 7. 提取策略裁决与概念批阅（2026-10-14）
 
@@ -166,3 +166,83 @@ API 与失败契约：
 排除 docs/notes/other-agents-analysis、ignored SOP、生成物、临时演示与机器配置。只精确 add 与一次本地 commit，
 不 push、不改历史。用户已明确批准本节精确五文件的本地暂存与提交，不沿用此前三笔文档授权。
 执行前后核对实际 Git 范围与快照；本检查点的实际 hash / 执行结果以 Git 记录及本轮对话为准。
+
+## 11. M2 当前小能力：任务结束后的提取与安全新增
+
+M1 检查点 edd489c 已提交。用户已答 R01，并经对话澄清“描述影响选中、正文粒度影响使用”；
+R02 用户选择跳过，R03 以对话讲解截断与回查；不冒称两题书面作答通过，不改已有答案。
+
+本轮入口 MemoryExtractionService.extract(messages)：由未来主循环在 Stop 不要求续跑之后调用，
+当前只实现服务，不提前接线、不执行当前学习对话的真实记忆提取。
+
+精确范围：修改 MemoryStore.java（新增写入与索引）；新建 memory/MemoryExtractionService.java；
+本任务单；新建 docs/notes/s09/memory-extraction-review.md。MemoryRecallService 与旧笔记不改。
+不修改 Main、AgentLoop、SubagentRuntime、pom 或测试，不实施整理、更新旧记录、回查策略或目录优化。
+
+契约：
+
+- 从最近十二条消息取得 user / assistant 纯文本，最多 8000 UTF-16 单元，保留最新尾部，不拆代理对。
+  不加入 tool_use / tool_result 正文；不改变输入消息。无文本不调用模型、不创建库。
+- 辅助提取只调用一次已有 LlmClient，1000 输出 token、空工具表；已有记忆只发送预算内目录，最多 6000 字符。
+  提示要求长期、聚焦的知识与有用描述，排除秘密、工具输出、助手猜测和临时限制；这是模型语义要求，不是关键词规则。
+- 完整 JSON 数组才继续；候选要求 name / type / scope / description / body 为合法非空字符串。
+  current_task 不保存，persistent 才交给存储；个别坏候选跳过。没有临时词过滤或内容语义裁判。
+- 调用失败 / 整体回复非法返回明确状态，不写文件；不伪装成成功存储。真实存储 IOException 向上报告。
+- MemoryStore.saveNew 接受已校验的 MemoryDraft 列表，只新增；文件名从名称生成安全 slug，不能由模型指定路径。
+  同名 / slug 清洗碰撞 / 既有非法文件 / 目录 / 软链占位均不覆盖，计为未新增；旧知识修正留待 M3 明确。
+- UTF-8 Markdown + YAML frontmatter，与 M1 读取格式相容。完成全部本批新记录后重建 MEMORY.md，
+  临时索引写完关闭后在同目录原子替换；索引必须为普通非链接文件或不存在。
+- 普通 IO 失败尝试清理本批新记录与临时索引，旧记录不变；清理失败保留为 suppressed，不报告假成功。
+  不是多文件崩溃事务，不保证断电恢复，不引入锁 / worktree / 日志服务；不自动删除已有库内容。
+
+验证：mvn -q -DskipTests compile 与无网络临时演示，观测 persistent / current_task、真实落盘可由 M1 读取、
+同名不覆盖、非法整体回复不写盘、失败传播及本批清理。没有新的 JUnit 套件，不调用真实 provider，不读取秘密。
+演示只在专用 /tmp 工作区产生运行材料，结束后清理自己的材料；用户答案与 other-agents-analysis 保留。
+交付后先源码学习，不自动开始 M3 / M4。Git 本轮没有提交授权，另提具体范围，不沿用 M1 授权。
+
+## 12. M2 交付与工程自审
+
+已实现 MemoryExtractionService.extract → MemoryDraft → MemoryStore.saveNew，提供结构 / scope 筛选、
+新文件排他写入与索引重建。M1 的读取签名保留，库根围栏提为读写共用私有方法，读取行为不变。
+服务不接主循环，不自动执行本学习对话的记忆提取，不整理旧记录，也没有临时词过滤。
+阅读入口：[提取与保存指南](../../notes/s09/memory-extraction-review.md)。
+
+实际验证：
+
+- `mvn -q -DskipTests compile`：实现后退出码 0；自审同步读写说明、整理 import 后再次退出码 0。
+- 临时 ExtractionDemo：javac 退出码 0；无网络 Java 演示退出码 0，未新增或运行 JUnit / mvn package。
+- 空输入 SUCCESS / stored=0 / ignored=0，没有创建库；辅助请求 tools=0，工具正文未进入输入，原历史未改变。
+- 混合四候选（persistent、current_task、非法类型、slug 碰撞）：实际新增 1、忽略 3。
+  UTF-8 正文与 YAML 元数据可由 M1 listRecords 读回；MEMORY.md 指向该新增记录。
+- 再次提取相同候选：新增 0、忽略 4，原文件未被覆盖；整体非数组返回 INVALID_RESPONSE，模型异常返回 MODEL_FAILED。
+- 直接提供含“本次任务暂时”的合法草稿仍能保存，证明没有关键词否决，不宣称模型误分类已经被程序纠正。
+- 使用孤立代理字符触发真实 UTF-8 MalformedInputException：本批先写成功的新记录与后续半成品均清理，
+  此前旧记录和索引逐字保持。不是依赖模拟权限或随机竞态的失败演示。
+
+**Pass（M2 工程自审）**：ChatGPT 在实现后重新核对源码、提取提示、状态与 IO 失败边界、YAML 编码、
+排他创建、名称碰撞、索引替换和本批清理，并复核演示中的实际文件与输入不变性。
+读写 API 均有中文 JavaDoc 与阶段 / 关键分支行间注释。自审来自同一实现者，不声称独立 Review 或绝对无 Bug。
+
+边界：没有真实模型验收、循环接线、自动整理或新 / 旧知识冲突解决；相同名称的纠正不会在 M2 覆盖旧记录。
+没有语义重复识别，只按目标文件是否已被占用防覆盖；字段合法、scope=persistent 不保证是真实长期知识。
+采样仅最近十二条消息的纯文本，可能漏掉早期偏好；摘要 / synthetic user 的来源未建模，角色不等于真实人类来源证明。
+索引原子替换不等于整个记录库的崩溃事务；未动态穷举索引发布失败、清理失败、并发目录变更或不支持原子移动的文件系统。
+IO 清理可能留下空库目录；不以自动删除库或全面并发系统解决此问题。
+
+本轮临时演示源码、class 与生成记录 / 索引已清理；不清理用户的旧笔记或研究目录。
+旧 M1 用户答案与其已有尾空格保持原样，文件 SHA-256 在本轮前后完全一致。
+接下来用户阅读 M2 主流程与讨论设计取舍，不自动推进 M3 / M4。
+
+## 13. M2 本地提交检查点（USER_APPROVED）
+
+建议一笔：`添加长期记忆的提取与安全新增`，依赖 M1 edd489c，精确四文件：
+
+1. src/main/java/com/jadecode/memory/MemoryStore.java
+2. src/main/java/com/jadecode/memory/MemoryExtractionService.java
+3. docs/jobs/s09/memory.md
+4. docs/notes/s09/memory-extraction-review.md
+
+两份实现与必要契约、学习交接作为同一小能力。不纳入 memory-recall-review.md 的用户答案、
+other-agents-analysis、SOP、生成物、临时材料或机器配置。只精确暂存与一笔本地提交，不 push、不改历史。
+用户已明确批准本节精确四文件的本地提交，不沿用 M1 或此前文档提交授权。
+实际 hash / 执行结果以 Git 记录与本轮对话为准；后续 M3 / M4 不混入本检查点。
