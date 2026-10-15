@@ -115,3 +115,20 @@ SIGKILL/断电，且依赖 Linux 系统工具。不动态验证缺 setsid/kill�
 执行器、管理器、工具适配和循环/退出接线形成同一完整能力；已有断言适配与必要文档随实现保存。
 不使用完整工作区之外的未提交源码支撑构建，不纳入旧答案、研究目录、tmp、生成物、忽略的 SOP 或机器配置。
 精确 staged 核验后执行，hash 以 Git 记录为准；不 push，不改写历史。
+
+## 7. 用户独立真机验收进度（实施已提交 cb37bf8）
+
+- R1/R2：用户真实 REPL 先收到 bg_0001 启动回执，再 read_file 发布说明；下一次用户请求报告
+  completed 通知并读取 report.txt。ChatGPT 只读复核实际文件为 services=3 / ready=2 / blocked=1；
+  模型正确区分命令完成与整个版本可发布。正常启动、继续工具工作和跨用户轮次通知符合预期；
+  终端日志本身没有逐次参数/时序快照，不单独以它证明精确并行时间。
+- R3：bg_0002 故意 exit 7，后续用户输入触发通知，模型报告 failed、退出码 7 和原输出。
+  该次没有新增工具 hook，累计工具结果数仍为 4，符合不重跑、不修复、不轮询要求。
+- R4 尚未验收：首次指令的 shutdown-check.pid / shutdown-unexpected.txt 文件名含 shutdown，
+  被 CommandPolicy.checkDenyList 的 command.contains 规则在 PreToolUse 阶段拒绝。
+  没有 bg_id，不能记为后台清理失败或通过；这是验收材料与既有粗粒度规则不匹配。
+  已修正忽略的 tmp/s11-background-report/RUNBOOK.md，使用 bg-exit-check.pid / bg-exit-unexpected.txt，
+  不修改权限策略、不运行真实模型。等待用户按修正指令启动后台检查并退出 REPL。
+
+两条已知旁支现象仍按原范围处理：未知 ContentBlock 待后续优化，Memory INVALID_RESPONSE 是辅助提取失败，
+不能因此宣称 Memory 正常，也不把它误当成本章后台任务失败。用户源码理解与 R4 完成前不勾选整章验收。
