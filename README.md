@@ -16,7 +16,7 @@
 
 ## 目录结构
 
-已实现 s01–s07；s08 上下文保护与 s09 Memory 已接入 CLI，独立章节验收状态见下方进度。
+已实现 s01–s07；s08 上下文保护、s09 Memory 与 s10 Task System 已接入 CLI，独立章节验收状态见下方进度。
 
 ```
 src/main/java/com/jadecode/
@@ -33,6 +33,7 @@ src/main/java/com/jadecode/
 ├── skills/           # SkillDefinition, SkillLoader(catalog 常驻 / 全文按需)
 ├── context/          # ContextCompactor(请求前保护 / 主动压缩 / 超限补救)
 ├── memory/           # 工作区记忆：召回 / 提取 / 数量触发整理 / 生命周期装配
+├── tasks/            # 持久任务图：创建 / 依赖 / 认领 / 完成与解锁，六工具由父循环使用
 └── agent/            # AgentLoop(主循环 + todo reminder)
 ```
 
@@ -91,8 +92,13 @@ mvn -q test                                 # 单元测试
 - [x] s07:Skill Loading(两层知识注入:catalog 常驻,SKILL.md 全文按需)
 - [ ] s08:CLI 上下文保护已接入；真机主路径通过，转存路径回读补验仍待完成
 - [ ] s09:Memory 存储、召回、提取、整理已接入父 CLI；独立真机验收待完成
-- [ ] s10–s17:逐章实现(见映射表)
+- [ ] s10:持久任务图与六个任务工具已接入父 CLI；独立真机验收待完成
+- [ ] s11–s17:逐章实现(见映射表)
 
 Memory 使用工作区 `.memory/`，每次用户任务入口召回一次，真正结束后提取，新增成功后按数量尝试整理。
 辅助请求沿用现有客户端，不带工具；记忆维护失败告警，不抹掉已完成的主任务结果。
 子代理不自主维护长期记忆。记忆内容的真伪、长期价值与合并质量依赖模型，格式校验不提供语义保证。
+
+Task System 使用 `.tasks/{id}.json`。先创建取得实际 ID，再增加依赖；认领检查前置条件，完成报告刚解锁任务。
+`list_tasks` 查看全部进度，`get_task` 读取完整描述。`task` 仍表示子代理委派，不是持久任务创建。
+本章按顺序执行，不保证并发抢单互斥，不自动调度、恢复精确执行断点或证明 completed 工作正确。
