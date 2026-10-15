@@ -13,11 +13,13 @@ import com.jadecode.llm.ModelResponse;
 import com.jadecode.memory.MemoryManager;
 import com.jadecode.messages.ContentBlock;
 import com.jadecode.messages.Message;
+import com.jadecode.messages.Role;
 import com.jadecode.messages.TextBlock;
 import com.jadecode.messages.ToolExchangeProtocol;
 import com.jadecode.messages.ToolResultBlock;
 import com.jadecode.messages.ToolUseBlock;
 import com.jadecode.safety.Hooks;
+import com.jadecode.tools.BackgroundManager;
 import com.jadecode.tools.CompactTool;
 import com.jadecode.tools.Tool;
 import com.jadecode.util.Json;
@@ -83,8 +85,13 @@ import com.jadecode.util.Json;
  * 各有一次机会;重试不会重跑任何已经执行过的工具,也不算新业务轮。补救自身失败(归档 / 摘要)按原样传播;
  * 候选一旦采用,之后的重试失败也不会回滚。五参 / null 压缩器路径不做补救。
  * </p>
+ *
+ * <p><b>s11 后台通知</b>：只有显式后台 bash 才把耗时 IO 移到工作线程；启动调用仍经本循环的
+ * PreToolUse，并立即用一个启动回执闭合 tool_use。完成事件只在后续正式请求前由本线程收集，
+ * 作为 USER 文本追加，不复用原调用 ID、不让后台线程并发写历史，也不唤醒空闲循环。
+ * REPL 的多次 run 共用同一队列，整场 CLI 会话退出时才 close。</p>
  */
-public class AgentLoop {
+public class AgentLoop implements AutoCloseable {
     /** LLM 连接;Main 装配时注入 */
     private final LlmClient client;
 
@@ -106,8 +113,11 @@ public class AgentLoop {
      */
     private final ContextCompactor compactor;
 
-    /** 可选长期记忆生命周期；旧五 / 六参构造器不启用，父 CLI 七参装配启用。 */
+    /** 可选长期记忆生命周期；旧五 / 六参构造器不启用，父 CLI 八参装配启用。 */
     private final MemoryManager memory;
+
+    /** 父会话后台队列；旧装配为 null。跨 REPL run 存活，不跨 CLI 会话共享。 */
+    private final BackgroundManager background;
 
     /** todo_write 的工具名:只有成功执行它才算"用了 todo"(见 {@link #run}) */
     private static final String TODO_TOOL = "todo_write";
@@ -159,7 +169,7 @@ public class AgentLoop {
      * </p>
      *
      * <p>
-     * <b>生产装配使用七参构造器同时启用记忆</b>:{@code Main.buildLoop} 会建一个生产默认压缩器传给父循环,
+     * <b>生产装配使用八参构造器同时启用记忆与后台命令</b>:{@code Main.buildLoop} 会建一个生产默认压缩器传给父循环,
      * 所以 CLI 的 run / repl 默认就具备自动整理、主动压缩与超限补救。五参构造器保留给"不启用压缩"的
      * 装配路径(例如只需要旧行为的调用方或测试)。压缩器不持有会话状态,父子循环可以共享同一个实例。
      * </p>
@@ -180,7 +190,7 @@ public class AgentLoop {
     }
 
     /**
-     * 生产完整装配：在六参压缩行为之外，可启用每次用户任务的长期记忆生命周期。
+     * s09 兼容装配：在六参压缩行为之外，可启用每次用户任务的长期记忆生命周期，不启用后台通知。
      *
      * <p>memory 为 null 保持旧行为；非 null 时入口捕获当前请求、召回一次，正常结束后提取 / 整理。
      * 记忆不改变工具批次、Stop、压缩或正式请求重试的次序，辅助 IO 失败由管理器报告。
@@ -197,6 +207,26 @@ public class AgentLoop {
      */
     public AgentLoop(LlmClient client, Map<String, Tool> tools, String system, int maxTokens, Hooks hooks,
             ContextCompactor compactor, MemoryManager memory) {
+        this(client, tools, system, maxTokens, hooks, compactor, memory, null);
+    }
+
+    /**
+     * s11 生产装配：在既有上下文与记忆行为之外，启用父会话后台通知。
+     *
+     * <p>background 必须与父 bash 使用同一个实例；工作者不访问 messages。
+     * 入口先捕获用户请求，每次正式请求前再收通知，然后自动整理历史。
+     * 构造不启动线程/命令；调用方在整场 CLI 会话结束时 close，不在每次 run 后关闭。</p>
+     * @param client 正式请求客户端
+     * @param tools 工具分发表，后台 bash 必须先经过 PreToolUse
+     * @param system 基础提示词
+     * @param maxTokens 正式请求输出额度
+     * @param hooks hook 表
+     * @param compactor 可选上下文保护；compact 工具要求它非空
+     * @param memory 可选长期记忆
+     * @param background 可选后台会话所有者；null 保持旧行为
+     */
+    public AgentLoop(LlmClient client, Map<String, Tool> tools, String system, int maxTokens, Hooks hooks,
+            ContextCompactor compactor, MemoryManager memory, BackgroundManager background) {
         if (compactor == null && tools.containsKey(COMPACT_TOOL)) {
             throw new IllegalArgumentException("工具表注册了 " + COMPACT_TOOL
                     + " 但构造时未提供 ContextCompactor:压缩请求将无人处理,请注入压缩器或移除该工具");
@@ -208,6 +238,7 @@ public class AgentLoop {
         this.hooks = hooks;
         this.compactor = compactor;
         this.memory = memory;
+        this.background = background;
     }
 
     /**
@@ -287,6 +318,32 @@ public class AgentLoop {
         int reactiveRetries = 0;
 
         while (true) {
+            // s11：先捕获入口 activeRequest，才允许追加外部事件；不能把通知误当成用户新需求。
+            // 此刻入口历史或上批工具交换都已闭合，工作线程从不直接修改这个列表。
+            if (background != null) {
+                List<String> notifications = background.collect();
+                if (!notifications.isEmpty()) {
+                    // 合并到最后的 USER，不在最新 tool_result 后另加纯文本 USER：批次预算只看
+                    // 末条，HistoryCompactor 只保护末尾两条交换，另起一条会错过它们的保护。
+                    // MicroCompactor 另按最后 assistant 判已消费，不能笼统说所有层都只看末条。
+                    // 重建 content，不改原消息块，也保持 tool_use/result 的相邻配对。
+                    List<ContentBlock> content = new ArrayList<>();
+                    boolean merge = !messages.isEmpty() && messages.getLast().role() == Role.USER;
+                    if (merge) {
+                        content.addAll(messages.getLast().content());
+                    }
+                    for (String notification : notifications) {
+                        content.add(new TextBlock(notification));
+                    }
+                    Message event = Message.userBlocks(List.copyOf(content));
+                    if (merge) {
+                        messages.set(messages.size() - 1, event);
+                    } else {
+                        messages.add(event);
+                    }
+                }
+            }
+
             // 1. 正式请求之前的自动整理(只在这条循环启用了压缩器时执行)。位置的三条理由:
             //    ① 必须在 client.complete 之前,这次正式请求才能看到整理后的历史;
             //    ② 不能放进下面逐条执行工具的 for 里——那时同批结果还没回灌,历史是"有调用没结果"
@@ -456,6 +513,17 @@ public class AgentLoop {
                     messages.addAll(compacted);
                 }
             }
+        }
+    }
+
+    /**
+     * 关闭父 CLI 会话拥有的后台命令，不修改历史、不调用模型。
+     * run 正常返回不自动关闭，REPL 后续用户输入仍可收通知；旧装配没有资源时无副作用。
+     */
+    @Override
+    public void close() {
+        if (background != null) {
+            background.close();
         }
     }
 }

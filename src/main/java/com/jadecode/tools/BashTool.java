@@ -1,128 +1,120 @@
 package com.jadecode.tools;
 
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 /**
- * bash:执行 shell 命令的工具,模型最常用的动作入口。
+ * bash 工具：缺省同步；父循环可显式 run_in_background=true 后先拿启动回执。
  *
- * <p>实现要点:经 {@code /bin/sh -c} 启动子进程;stderr 并流进 stdout(模型只看到一路
- * 输出);默认 120 秒超时,到点强杀进程防孤儿;stdout 超过 50000 字符截断。</p>
+ * <p>两条路径都必须先经调用方 PreToolUse，不能因换线程而跳过权限检查。后台命令由
+ * BackgroundManager 拥有，父循环收集完成通知；本工具不写历史、不调模型。</p>
  */
 public class BashTool implements Tool {
-    private static final int MAX_OUTPUT = 50000;
-
-    /** 单条命令的超时秒数 */
+    private final Path cwd;
     private final long timeoutSeconds;
+    /** null 表示没有通知接收方，只提供同步能力，例如聚焦子代理。 */
+    private final BackgroundManager background;
 
-    /** 默认构造:120 秒超时 */
+    /** 兼容旧装配：当前进程目录、120 秒，仅同步。 */
     public BashTool() {
         this(120);
     }
 
-    /**
-     * @param timeoutSeconds 单条命令的超时秒数;超时杀进程并回 "Error: Timeout (Ns)"
-     */
+    /** 兼容旧定向测试：当前进程目录，仅同步；超时须为正数。 */
     public BashTool(long timeoutSeconds) {
-        this.timeoutSeconds = timeoutSeconds;
+        this(Path.of(""), timeoutSeconds, null);
+    }
+
+    /** 子代理显式绑定工作区，但不接后台通知队列。 */
+    public BashTool(Path cwd) {
+        this(cwd, 120, null);
     }
 
     /**
-     * @return 工具名 "bash"
+     * 父 CLI 装配：同步与后台命令交给同一管理器，退出由 AgentLoop.close 清理。
+     * @param background 必须非 null，须与父循环注入同一个实例
      */
+    public BashTool(BackgroundManager background) {
+        this(Path.of(""), 120, java.util.Objects.requireNonNull(background));
+    }
+
+    /** 统一构造，不启动线程/命令；能力取决于是否注入管理器。 */
+    private BashTool(Path cwd, long timeoutSeconds, BackgroundManager background) {
+        if (timeoutSeconds <= 0) {
+            throw new IllegalArgumentException("timeoutSeconds must be positive");
+        }
+        this.cwd = cwd;
+        this.timeoutSeconds = timeoutSeconds;
+        this.background = background;
+    }
+
+    /** @return 仍叫 bash，后台也适用原命令权限规则。 */
     @Override
     public String name() {
         return "bash";
     }
 
-    /**
-     * @return 给模型的说明:跑 shell 命令
-     */
+    /** @return 不向没有接收方的子代理承诺后台通知。 */
     @Override
     public String description() {
-        return "Run a shell command.";
+        return background == null ? "Run a shell command synchronously."
+                : "Run a shell command. Set run_in_background=true only for independent slow commands;"
+                + " returns a background ID, not completion. Results arrive on a later request as task notifications.";
     }
 
-    /**
-     * @return 单参数 command(string);多行、管道都在这一条字符串里
-     */
+    /** @return 有管理器才声明可选 boolean；字符串 \"true\" 不算布尔。 */
     @Override
     public Map<String, String> properties() {
-        return Map.of("command", "string");
+        return background == null ? Map.of("command", "string")
+                : Map.of("command", "string", "run_in_background", "boolean");
     }
 
-    /**
-     * @return 必填 [command]
-     */
+    /** @return command 必填；省略后台参数保持同步默认。 */
     @Override
     public List<String> required() {
         return List.of("command");
     }
 
     /**
-     * 缺 command 直接报错;否则透传 {@link #run(String)}。
-     *
-     * @param input 模型参数,须含 command 字符串
-     * @return 执行结果或 "Error: ..." 文案(超时/中断/IO 失败也走字符串,不抛)
+     * 校验再执行：只有真实 boolean true 走后台，不猜命令关键词。
+     * @param input 不修改；非空字符串 command，可选布尔 run_in_background
+     * @return 同步结果、启动回执或 Error；回执不证明进程已经成功启动或完成
      */
     @Override
     public String execute(ObjectNode input) {
-        JsonNode commandNode = input.get("command");
-        if (commandNode == null) {
+        JsonNode command = input.get("command");
+        if (command == null) {
             return "Error: Missing required parameter: command";
         }
-        return run(commandNode.asText());
-    }
-
-    /**
-     * 跑一条命令并等它结束:先 waitFor 再读输出(先读后等会被管道写满死锁),
-     * 超时强杀;输出 UTF-8 解码、去首尾空白、超长截断、空则回 "(no output)"。
-     */
-    private String run(String command) {
-        // 1. 启动进程:sh -c 执行,stderr 并流进 stdout
-        ProcessBuilder pb = new ProcessBuilder("/bin/sh", "-c", command);
-        pb.redirectErrorStream(true);
-        Process process;
-        try {
-            process = pb.start();
-        } catch (IOException e) {
-            return "Error: " + e.getMessage(); // 进程起不来(比如 sh 不存在)
+        if (!command.isTextual() || command.textValue().isBlank()) {
+            return "Error: command must be a non-empty string";
         }
-
-        // 2. 等待结束,带超时——先等后读(坑 3 的顺序)
-        boolean finished;
-        try {
-            finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt(); // 恢复中断标志:Java 惯例,不吞中断
-            process.destroyForcibly();
-            return "Error: Interrupted";
+        JsonNode requested = input.get("run_in_background");
+        if (requested != null && !requested.isBoolean()) {
+            return "Error: run_in_background must be a boolean";
         }
-
-        if (!finished) { // 超时:必须杀掉,否则留孤儿进程
-            process.destroyForcibly();
-            return "Error: Timeout (" + timeoutSeconds + "s)";
+        boolean asynchronous = requested != null && requested.booleanValue();
+        if (asynchronous && background == null) {
+            return "Error: Background execution is not available in this agent";
         }
-
-        // 3. 进程已结束,读输出(UTF-8,坏字节自动替换成 U+FFFD)
-        String out;
-        try {
-            byte[] bytes = process.getInputStream().readAllBytes();
-            out = new String(bytes, StandardCharsets.UTF_8).strip();
-        } catch (IOException e) {
-            return "Error: " + e.getMessage();
+        if (asynchronous) {
+            try {
+                String id = background.start(command.textValue());
+                return "[Background task " + id + " started] The result will be collected on a later request.";
+            } catch (IllegalArgumentException | IllegalStateException failure) {
+                return "Error: " + failure.getMessage();
+            }
         }
-
-        // 4. 空输出与截断
-        if (out.isEmpty()) {
-            return "(no output)";
+        // 父循环使用会话所有者；旧装配/子代理使用执行后立即关闭的局部执行器。
+        if (background != null) {
+            return background.runForeground(command.textValue());
         }
-        return out.length() > MAX_OUTPUT ? out.substring(0, MAX_OUTPUT) : out;
+        try (ShellCommand shell = new ShellCommand(cwd, timeoutSeconds)) {
+            return shell.run(command.textValue()).text();
+        }
     }
 }

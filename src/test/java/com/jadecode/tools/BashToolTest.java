@@ -39,7 +39,7 @@ class BashToolTest {
         assertEquals("err", run("echo err 1>&2"));
     }
 
-    /** ④ 未知命令:shell 存在、进程正常启动,stderr 报 not found(不是 "Error:") */
+    /** ④ 未知命令:shell 存在，stderr 含 not found；s11 起还明确报告非零退出。 */
     @Test
     void unknownCommandReturnsShellError() {
         String out = run("jadecode-nonexistent-cmd-xyz");
@@ -53,7 +53,7 @@ class BashToolTest {
         assertEquals("Error: Timeout (2s)", run(impatient, "sleep 5"));
     }
 
-    /** ⑥ 超长输出截断到 50000 字符(60000 < 64KB 管道缓冲,进程能正常退出) */
+    /** ⑥ 超长输出截断到 50000 字符；s11 边执行边排空，不依赖管道缓冲够大。 */
     @Test
     void longOutputIsTruncated() {
         String out = run("awk 'BEGIN{for(i=0;i<60000;i++)printf \"x\"}'");
