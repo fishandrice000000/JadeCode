@@ -16,7 +16,7 @@
 
 ## 目录结构
 
-已实现 s01–s07；s08 上下文保护、s09 Memory 与 s10 Task System 已接入 CLI，独立章节验收状态见下方进度。
+已实现 s01–s07、s10；s08 上下文保护、s09 Memory 与 s11 后台命令已接入 CLI，独立章节验收状态见下方进度。
 
 ```
 src/main/java/com/jadecode/
@@ -26,7 +26,7 @@ src/main/java/com/jadecode/
 ├── util/             # Json(共享 ObjectMapper), Ansi(终端色码)
 ├── messages/         # Message + sealed ContentBlock(text/tool_use/tool_result)
 ├── llm/              # LlmClient 接口 + AnthropicSdkLlmClient(SDK 隔离层)
-├── tools/            # Tool, ToolSchema + bash / read_file / write_file / edit_file / glob / todo_write / task / load_skill
+├── tools/            # 工具适配 + BackgroundManager(后台 bash / 完成队列) / ShellCommand(进程生命周期)
 ├── safety/           # PathResolver, PathGuard, CommandPolicy, PermissionGate, Hooks
 ├── todo/             # TodoManager(计划表校验与渲染)
 ├── subagent/         # SubagentRuntime(嵌套循环 + 消息隔离 + 三终态)
@@ -93,7 +93,8 @@ mvn -q test                                 # 单元测试
 - [ ] s08:CLI 上下文保护已接入；真机主路径通过，转存路径回读补验仍待完成
 - [ ] s09:Memory 存储、召回、提取、整理已接入父 CLI；独立真机验收待完成
 - [x] s10:持久任务图与六个任务工具；订单统计实景与重启只读恢复验收通过
-- [ ] s11–s17:逐章实现(见映射表)
+- [ ] s11:显式后台 bash、请求前完成通知与退出清理已接入；用户源码学习与独立真机验收待完成
+- [ ] s12–s17:逐章实现(见映射表)
 
 Memory 使用工作区 `.memory/`，每次用户任务入口召回一次，真正结束后提取，新增成功后按数量尝试整理。
 辅助请求沿用现有客户端，不带工具；记忆维护失败告警，不抹掉已完成的主任务结果。
@@ -102,3 +103,12 @@ Memory 使用工作区 `.memory/`，每次用户任务入口召回一次，真�
 Task System 使用 `.tasks/{id}.json`。先创建取得实际 ID，再增加依赖；认领检查前置条件，完成报告刚解锁任务。
 `list_tasks` 查看全部进度，`get_task` 读取完整描述。`task` 仍表示子代理委派，不是持久任务创建。
 本章按顺序执行，不保证并发抢单互斥，不自动调度、恢复精确执行断点或证明 completed 工作正确。
+
+Background Tasks 沿用 `bash`，仅父代理增加可选布尔参数 `run_in_background`；省略或 false 仍同步。
+显式 true 先返回 `bg_...` 启动回执，完成后在下一次正式请求前注入 `<task_notification>`，
+不复用原 tool_use_id，不唤醒空闲循环、不自动等待所有命令结束，也不会改 s10 的任务状态。
+REPL 下一条用户输入仍能收通知；退出整场 CLI 会话会清理原命令组，不提供跨重启恢复。
+默认每条命令 120 秒，最多 32 个未收集后台任务；通知正文只保留最多 500 字符摘要并标注截断，
+没有完整输出文件，需要可靠产物时由命令显式写入工作区。
+当前 shell 生命周期实现面向 Linux，依赖 `/usr/bin/setsid` 与 `/bin/kill`；进程组清理不是沙箱，
+自行另开 session 的程序、SIGKILL 与断电不在保证范围内。课程阅读见 [s11 指南](docs/notes/s11/background-tasks-review.md)。

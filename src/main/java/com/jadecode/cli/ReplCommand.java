@@ -37,41 +37,43 @@ public class ReplCommand implements Callable<Integer> {
     @Override
     public Integer call() {
         // 1. 装配
-        AgentLoop loop = Main.buildLoop();
+        // 管理器跨用户轮次存活，只在 q/EOF/异常离开整个 REPL 时关闭；不能每轮提前取消。
+        try (AgentLoop loop = Main.buildLoop()) {
 
-        // 2. 输入流:UTF-8 逐行读
-        BufferedReader reader = new BufferedReader(
-                new InputStreamReader(System.in, StandardCharsets.UTF_8));
+            // 2. 输入流:UTF-8 逐行读
+            BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(System.in, StandardCharsets.UTF_8));
 
-        // 3. history 必须在循环外——多轮对话的连续性全靠它跨迭代存活
-        List<Message> history = new ArrayList<>();
+            // 3. history 必须在循环外——多轮对话的连续性全靠它跨迭代存活
+            List<Message> history = new ArrayList<>();
 
-        System.out.println("JadeCode REPL — 输入任务回车发送;行尾 \\ 可跨行续写;q/exit 或 Ctrl+D 退出");
-        while (true) {
-            String query;
-            try {
-                query = collectQuery(reader); // null = 退出(EOF 或退出词)
-            } catch (IOException e) {
-                // 输入流坏了:打印后退出,返回 1
-                System.err.println("读取输入失败: " + e.getMessage());
-                return 1;
+            System.out.println("JadeCode REPL — 输入任务回车发送;行尾 \\ 可跨行续写;q/exit 或 Ctrl+D 退出");
+            while (true) {
+                String query;
+                try {
+                    query = collectQuery(reader); // null = 退出(EOF 或退出词)
+                } catch (IOException e) {
+                    // 输入流坏了:打印后退出,try-with-resources 仍关闭后台命令
+                    System.err.println("读取输入失败: " + e.getMessage());
+                    return 1;
+                }
+                if (query == null) {
+                    break; // EOF(Ctrl+D)或退出词
+                }
+
+                loop.hooks().trigger(Hooks.USER_PROMPT_SUBMIT, Map.of(Hooks.PARAM_QUERY, query));
+
+                history.add(Message.userText(query));
+                try {
+                    loop.run(history);
+                    System.out.println(history.getLast().extractText());
+                } catch (LlmException e) {
+                    System.err.println("调用模型失败: " + e.getMessage());
+                    // 不退出循环，也不取消后台任务：后续用户输入仍能收集完成事件
+                }
             }
-            if (query == null) {
-                break; // EOF(Ctrl+D)或退出词
-            }
-
-            loop.hooks().trigger(Hooks.USER_PROMPT_SUBMIT, Map.of(Hooks.PARAM_QUERY, query));
-
-            history.add(Message.userText(query));
-            try {
-                loop.run(history);
-                System.out.println(history.getLast().extractText());
-            } catch (LlmException e) {
-                System.err.println("调用模型失败: " + e.getMessage());
-                // 不退出循环:交互会话要韧,一次失败不杀整个会话
-            }
+            return 0;
         }
-        return 0;
     }
 
     /** 收集一条 query:行尾恰好一个反斜杠 → 剥掉它、软换行继续收(Claude Code 同款交互);

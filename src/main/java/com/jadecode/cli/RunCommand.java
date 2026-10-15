@@ -35,13 +35,11 @@ public class RunCommand implements Callable<Integer> {
      */
     @Override
     public Integer call() {
-        AgentLoop loop = Main.buildLoop();
-
-        List<Message> history = new ArrayList<>();
-
-        loop.hooks().trigger(Hooks.USER_PROMPT_SUBMIT, Map.of(Hooks.PARAM_QUERY, prompt));
-        history.add(Message.userText(prompt));
-        try {
+        // 一次性 CLI 的生命周期就是这次 call；成功或异常退出都终止尚未完成的后台命令。
+        try (AgentLoop loop = Main.buildLoop()) {
+            List<Message> history = new ArrayList<>();
+            loop.hooks().trigger(Hooks.USER_PROMPT_SUBMIT, Map.of(Hooks.PARAM_QUERY, prompt));
+            history.add(Message.userText(prompt));
             loop.run(history);
 
             System.out.println(history.getLast().extractText());
