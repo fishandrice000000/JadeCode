@@ -6,6 +6,7 @@ import java.util.Map;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jadecode.context.ContextCompactor;
+import com.jadecode.cron.CronScheduler;
 import com.jadecode.llm.CompleteRequest;
 import com.jadecode.llm.LlmClient;
 import com.jadecode.llm.LlmException;
@@ -113,11 +114,16 @@ public class AgentLoop implements AutoCloseable {
      */
     private final ContextCompactor compactor;
 
-    /** 可选长期记忆生命周期；旧五 / 六参构造器不启用，父 CLI 八参装配启用。 */
+    /** 可选长期记忆生命周期；旧五 / 六参构造器不启用，父 CLI 九参装配启用。 */
     private final MemoryManager memory;
 
     /** 父会话后台队列；旧装配为 null。跨 REPL run 存活，不跨 CLI 会话共享。 */
     private final BackgroundManager background;
+
+    /** s12 只负责共享装配，计时线程由 REPL 的 CronRuntime 启动；旧装配为 null。 */
+    private final CronScheduler cron;
+    /** CLI 退出后禁止晚到的模型回复继续派发新工具；已经发生的 IO 不回滚。 */
+    private volatile boolean closed;
 
     /** todo_write 的工具名:只有成功执行它才算"用了 todo"(见 {@link #run}) */
     private static final String TODO_TOOL = "todo_write";
@@ -169,7 +175,7 @@ public class AgentLoop implements AutoCloseable {
      * </p>
      *
      * <p>
-     * <b>生产装配使用八参构造器同时启用记忆与后台命令</b>:{@code Main.buildLoop} 会建一个生产默认压缩器传给父循环,
+     * <b>生产装配使用九参构造器同时启用记忆、后台命令与定时依赖</b>:{@code Main.buildLoop} 会建一个生产默认压缩器传给父循环,
      * 所以 CLI 的 run / repl 默认就具备自动整理、主动压缩与超限补救。五参构造器保留给"不启用压缩"的
      * 装配路径(例如只需要旧行为的调用方或测试)。压缩器不持有会话状态,父子循环可以共享同一个实例。
      * </p>
@@ -211,7 +217,7 @@ public class AgentLoop implements AutoCloseable {
     }
 
     /**
-     * s11 生产装配：在既有上下文与记忆行为之外，启用父会话后台通知。
+     * s11 兼容装配：在既有上下文与记忆行为之外，启用父会话后台通知，不接定时运行时。
      *
      * <p>background 必须与父 bash 使用同一个实例；工作者不访问 messages。
      * 入口先捕获用户请求，每次正式请求前再收通知，然后自动整理历史。
@@ -227,6 +233,23 @@ public class AgentLoop implements AutoCloseable {
      */
     public AgentLoop(LlmClient client, Map<String, Tool> tools, String system, int maxTokens, Hooks hooks,
             ContextCompactor compactor, MemoryManager memory, BackgroundManager background) {
+        this(client, tools, system, maxTokens, hooks, compactor, memory, background, null);
+    }
+
+    /**
+     * s12 生产装配：定时工具与 REPL 运行时共享同一状态所有者，构造不启动定时器。
+     * @param client 正式请求客户端
+     * @param tools 工具表，含 compact 时必须接压缩器
+     * @param system 基础提示词
+     * @param maxTokens 正式请求输出上限
+     * @param hooks 原权限与事件 hooks
+     * @param compactor 可选上下文保护
+     * @param memory 可选记忆生命周期
+     * @param background 可选后台命令/通知所有者
+     * @param cron 可选定时状态；null 保持旧构造器行为
+     */
+    public AgentLoop(LlmClient client, Map<String, Tool> tools, String system, int maxTokens, Hooks hooks,
+            ContextCompactor compactor, MemoryManager memory, BackgroundManager background, CronScheduler cron) {
         if (compactor == null && tools.containsKey(COMPACT_TOOL)) {
             throw new IllegalArgumentException("工具表注册了 " + COMPACT_TOOL
                     + " 但构造时未提供 ContextCompactor:压缩请求将无人处理,请注入压缩器或移除该工具");
@@ -239,6 +262,7 @@ public class AgentLoop implements AutoCloseable {
         this.compactor = compactor;
         this.memory = memory;
         this.background = background;
+        this.cron = cron;
     }
 
     /**
@@ -246,6 +270,11 @@ public class AgentLoop implements AutoCloseable {
      */
     public Hooks hooks() {
         return hooks;
+    }
+
+    /** REPL 所需的实际运行依赖；不主动读取任务文件或启动线程，旧装配返回 null。 */
+    public CronScheduler cronScheduler() {
+        return cron;
     }
 
     /**
@@ -297,6 +326,45 @@ public class AgentLoop implements AutoCloseable {
      *                               此时同样不会采用部分候选
      */
     public void run(List<Message> messages) throws LlmException {
+        runInternal(messages, null, null);
+    }
+
+    /**
+     * 定时回合入口：加入一项新任务，首个合法正式回复后通知运行时确认接收。
+     *
+     * <p>首回复前失败没有工具副作用，恢复入口历史并归还本次收走的后台通知。
+     * 摘要已写出的归档不会删除；首回复后失败保留真实历史/工具结果，不重试整项业务。
+     * 调用方必须与人工 run 串行；回调只确认交付，不得调用模型或抛出普通保存错误。</p>
+     * @param messages 共享可变历史，成功及首回复后的失败原地保留进度
+     * @param prompt 到期的用户授权任务，不来自工具完成通知
+     * @param onReceived 首个合法正式回复的回调，不是业务成功回调
+     */
+    public void runScheduled(List<Message> messages, String prompt, Runnable onReceived) throws LlmException {
+        java.util.Objects.requireNonNull(onReceived);
+        // 只复制外层：首回复前只有上下文整理/通知重建，它们不原地修改已有 Message/content。
+        // 此时尚无主任务工具副作用，才允许用快照恢复内存；写出的 transcript 不在回滚范围。
+        List<Message> snapshot = List.copyOf(messages);
+        List<String> gathered = new ArrayList<>();
+        // 数组只是让同一线程里的回调能记录“已经收到”，不是跨线程共享标记。
+        boolean[] received = {false};
+        messages.add(Message.userText("[Scheduled] " + prompt));
+        try {
+            runInternal(messages, () -> {
+                received[0] = true;
+                onReceived.run();
+            }, gathered);
+        } finally {
+            if (!received[0]) {
+                messages.clear();
+                messages.addAll(snapshot);
+                if (background != null) background.restoreNotifications(gathered);
+            }
+        }
+    }
+
+    /** 共用推理主干；可选回调与通知收据仅用于 s12 的首次交付确认，普通 run 不改变原行为。 */
+    private void runInternal(List<Message> messages, Runnable firstResponse, List<String> gathered) throws LlmException {
+        if (closed) throw new IllegalStateException("Agent loop is closed");
         // 0. 入口校验:既有历史的工具交换必须完整合法(相邻、角色正确、数量/顺序/ID 一一对应)。
         //    在第一次模型调用前拒绝,避免把非法历史发给模型。
         ToolExchangeProtocol.validateHistory(messages);
@@ -318,10 +386,13 @@ public class AgentLoop implements AutoCloseable {
         int reactiveRetries = 0;
 
         while (true) {
+            if (closed) throw new IllegalStateException("Agent loop is closed");
             // s11：先捕获入口 activeRequest，才允许追加外部事件；不能把通知误当成用户新需求。
             // 此刻入口历史或上批工具交换都已闭合，工作线程从不直接修改这个列表。
             if (background != null) {
                 List<String> notifications = background.collect();
+                // 只记录首回复前拿走的事件，失败回滚才能归还；收到回复后不再存在“尚未交付”的问题。
+                if (firstResponse != null && gathered != null) gathered.addAll(notifications);
                 if (!notifications.isEmpty()) {
                     // 合并到最后的 USER，不在最新 tool_result 后另加纯文本 USER：批次预算只看
                     // 末条，HistoryCompactor 只保护末尾两条交换，另起一条会错过它们的保护。
@@ -381,6 +452,8 @@ public class AgentLoop implements AutoCloseable {
                 response = client
                         .complete(new CompleteRequest(taskSystem, messages, maxTokens, List.copyOf(tools.values())));
             } catch (LlmException error) {
+                // 退出期间即使晚到的是超限错误，也不能因此再发一次辅助摘要请求。
+                if (closed) throw new IllegalStateException("Agent loop is closed", error);
                 // 2.1 失败分流:只有"看起来是上下文过长"、且这次正式请求还有额度,才值得付一次有损压缩。
                 //     compactor == null(五参旧路径)不补救;命中不了分类的失败(认证 401 / 限流 429 /
                 //     网络中断 / 普通 400)也不补救——压缩改变不了它们的根因,只会白白损伤上下文。
@@ -415,6 +488,8 @@ public class AgentLoop implements AutoCloseable {
             }
             // 2.6 正式请求成功,本次额度归零:下一次正式请求又是新的一次机会(不是整个 run 只许补救一次)。
             reactiveRetries = 0;
+            // q/EOF 可发生在定时 HTTP 等待期间；晚到回复不能再追加工具或开始新副作用。
+            if (closed) throw new IllegalStateException("Agent loop is closed");
 
             // 3. 从 response.message().content() 收集 ToolUseBlock,并在追加 assistant 消息
             //    与执行任何工具之前拒绝重复调用 ID:失败不留半截 assistant 消息,也无工具副作用
@@ -429,6 +504,10 @@ public class AgentLoop implements AutoCloseable {
 
             // 4. 追加 assistant 消息
             messages.add(response.message());
+            if (firstResponse != null) {
+                firstResponse.run();
+                firstResponse = null;
+            }
 
             // 5. 没有 tool_use, 此轮结束
             if (toolCalls.isEmpty()) {
@@ -438,7 +517,7 @@ public class AgentLoop implements AutoCloseable {
                     continue;
                 }
                 // Stop 不要求续跑才算真正完成。辅助提取回复不能加入主历史、更不能交给工具分发。
-                if (memory != null) {
+                if (memory != null && !closed) {
                     memory.finishTask(messages);
                 }
                 return;
@@ -451,6 +530,7 @@ public class AgentLoop implements AutoCloseable {
             boolean compactRequested = false; // 本轮是否有"真正执行成功"的 compact 请求
 
             for (ToolUseBlock u : toolCalls) {
+                if (closed) throw new IllegalStateException("Agent loop is closed");
                 // 查表与权限闸门都在 PRE_TOOL_USE 的 hook 里,首个非 null 即拦截
                 String blocked = hooks.trigger(Hooks.PRE_TOOL_USE, Map.of(Hooks.PARAM_BLOCK, u));
                 if (blocked != null) {
@@ -522,6 +602,7 @@ public class AgentLoop implements AutoCloseable {
      */
     @Override
     public void close() {
+        closed = true;
         if (background != null) {
             background.close();
         }
