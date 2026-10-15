@@ -14,6 +14,7 @@ dependency-reduced-pom.xml
 .worktrees/
 .runtime/
 .scheduled_tasks.json
+.scheduled-tasks-*.tmp
 
 # 工作用文档, 与学习内容无关
 docs/SOPs

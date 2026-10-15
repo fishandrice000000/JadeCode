@@ -4,16 +4,12 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
 import java.util.concurrent.Callable;
 
 import com.jadecode.Main;
 import com.jadecode.agent.AgentLoop;
+import com.jadecode.agent.CronRuntime;
 import com.jadecode.llm.LlmException;
-import com.jadecode.messages.Message;
-import com.jadecode.safety.Hooks;
 import com.jadecode.util.Ansi;
 
 import picocli.CommandLine.Command;
@@ -23,7 +19,8 @@ import picocli.CommandLine.Command;
  *
  * <p>
  * 循环:收一条 query → 触发 UserPromptSubmit → 追加 user 消息 → 跑 AgentLoop →
- * 打印最终回复。history 跨迭代存活,是多轮对话的全部状态。
+ * 打印最终回复。CronRuntime 持有跨迭代 history，并串行接收人工请求与到期 prompt；
+ * 等待终端输入在回合锁外，定时任务能在此时自动开始。
  * 调用模型失败只报错不退出循环——交互会话要韧,一次失败不杀整个会话。
  * </p>
  */
@@ -38,14 +35,16 @@ public class ReplCommand implements Callable<Integer> {
     public Integer call() {
         // 1. 装配
         // 管理器跨用户轮次存活，只在 q/EOF/异常离开整个 REPL 时关闭；不能每轮提前取消。
-        try (AgentLoop loop = Main.buildLoop()) {
+        try (AgentLoop loop = Main.buildLoop();
+                CronRuntime runtime = new CronRuntime(loop, loop.cronScheduler(), System.out::println, System.err::println)) {
 
             // 2. 输入流:UTF-8 逐行读
             BufferedReader reader = new BufferedReader(
                     new InputStreamReader(System.in, StandardCharsets.UTF_8));
 
-            // 3. history 必须在循环外——多轮对话的连续性全靠它跨迭代存活
-            List<Message> history = new ArrayList<>();
+            // 3. Runtime 持有跨用户轮次的 history 和回合锁，计时器只入队、消费者在空闲时调用模型。
+            // readLine 保持在锁外，等用户输入不会阻止定时任务发起，也不会与定时回合并发修改历史。
+            runtime.start();
 
             System.out.println("JadeCode REPL — 输入任务回车发送;行尾 \\ 可跨行续写;q/exit 或 Ctrl+D 退出");
             while (true) {
@@ -61,12 +60,8 @@ public class ReplCommand implements Callable<Integer> {
                     break; // EOF(Ctrl+D)或退出词
                 }
 
-                loop.hooks().trigger(Hooks.USER_PROMPT_SUBMIT, Map.of(Hooks.PARAM_QUERY, query));
-
-                history.add(Message.userText(query));
                 try {
-                    loop.run(history);
-                    System.out.println(history.getLast().extractText());
+                    runtime.runUser(query);
                 } catch (LlmException e) {
                     System.err.println("调用模型失败: " + e.getMessage());
                     // 不退出循环，也不取消后台任务：后续用户输入仍能收集完成事件

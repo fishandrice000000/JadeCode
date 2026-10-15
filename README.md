@@ -34,7 +34,8 @@ src/main/java/com/jadecode/
 ├── context/          # ContextCompactor(请求前保护 / 主动压缩 / 超限补救)
 ├── memory/           # 工作区记忆：召回 / 提取 / 数量触发整理 / 生命周期装配
 ├── tasks/            # 持久任务图：创建 / 依赖 / 认领 / 完成与解锁，六工具由父循环使用
-└── agent/            # AgentLoop(主循环 + todo reminder)
+├── cron/             # 定时时间规则、待交付状态与工作区持久化
+└── agent/            # AgentLoop + CronRuntime(REPL 空闲唤醒与回合串行)
 ```
 
 仓库根 `skills/<name>/SKILL.md` 存放可被 `load_skill` 加载的真实技能:system prompt 只带 name + description 的目录,完整正文仅在模型调用 `load_skill` 后作为 tool_result 进入消息。
@@ -94,7 +95,8 @@ mvn -q test                                 # 单元测试
 - [ ] s09:Memory 存储、召回、提取、整理已接入父 CLI；独立真机验收待完成
 - [x] s10:持久任务图与六个任务工具；订单统计实景与重启只读恢复验收通过
 - [x] s11:显式后台 bash、请求前完成通知与退出清理；用户学习与 R1–R4 真机验收通过
-- [ ] s12–s17:逐章实现(见映射表)
+- [ ] s12:定时 prompt、持久恢复与 REPL 空闲交付已接通；工程结果见任务单，用户学习与真机验收待完成
+- [ ] s13–s17:逐章实现(见映射表)
 
 Memory 使用工作区 `.memory/`，每次用户任务入口召回一次，真正结束后提取，新增成功后按数量尝试整理。
 辅助请求沿用现有客户端，不带工具；记忆维护失败告警，不抹掉已完成的主任务结果。
@@ -112,3 +114,13 @@ REPL 下一条用户输入仍能收通知；退出整场 CLI 会话会清理原�
 没有完整输出文件，需要可靠产物时由命令显式写入工作区。
 当前 shell 生命周期实现面向 Linux，依赖 `/usr/bin/setsid` 与 `/bin/kill`；进程组清理不是沙箱，
 自行另开 session 的程序、SIGKILL 与断电不在保证范围内。课程阅读见 [s11 指南](docs/notes/s11/background-tasks-review.md)。
+
+Cron Scheduler 提供 `schedule_cron`、`list_crons`、`cancel_cron`，父十八把工具、子代理仍六把。
+五段 cron 使用进程本地时间；支持星号、星号步进、数值、区间与列表，星期日为 0，日与星期都受限时取 OR。
+REPL 到期入队，在 Agent 空闲时主动发起 `[Scheduled]` 回合；人工与定时回合串行访问同一历史。
+`recurring` / `durable` 默认 true；持久定义与 pending 状态保存至工作区 `.scheduled_tasks.json`。
+模型首个合法正式回复表示交付确认，不是业务验收；一次性删除，周期项等待下一次匹配。
+进程停止后不执行、不补跑停机分钟；`run` 只管理定义，不开启常驻调度。需要停机也执行应使用外部调度服务。
+至少一次交付可能在崩溃后重复；确认前失败退避 5 秒，连续三次暂停本会话自动投递，保留 durable 待交付记录。
+定时线程不能读取交互审批；到期任务也不会绕过原权限规则。一个工作区的定时库不支持多个 CLI 并发写入。
+完整学习入口见 [s12 指南](docs/notes/s12/cron-scheduler-review.md)。

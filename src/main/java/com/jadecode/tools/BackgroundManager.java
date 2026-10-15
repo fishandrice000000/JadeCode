@@ -19,9 +19,11 @@ public final class BackgroundManager implements AutoCloseable {
     private static final int MAX_PENDING = 32;
     private static final int SUMMARY_CHARS = 500;
     private final ShellCommand shell;
-    /** 同一锁保护任务和完成队列，确保发布与收集各一次。 */
+    /** 同一锁保护任务和完成队列，完成只发布一次；失败重取通知不重新执行命令。 */
     private final Map<String, String> tasks = new HashMap<>();
     private final ArrayDeque<Completion> ready = new ArrayDeque<>();
+    /** 定时首请求失败回滚时归还的通知；它们已经是有界文本，不重新执行命令。 */
+    private final ArrayDeque<String> returnedNotifications = new ArrayDeque<>();
     private long counter;
     private boolean closed;
 
@@ -92,16 +94,27 @@ public final class BackgroundManager implements AutoCloseable {
 
     /**
      * 非阻塞地取走此刻完成的所有通知，按完成入队顺序返回，运行中的任务不等待。
-     * @return 独立文本事件；同一事件最多返回一次，调用方决定如何注入会话
+     * @return 独立文本事件，取走后不重复返回；s12 首回复前失败可显式归还后重取，不重跑命令
      */
     public synchronized List<String> collect() {
-        List<String> notifications = new ArrayList<>();
+        List<String> notifications = new ArrayList<>(returnedNotifications);
+        returnedNotifications.clear();
         while (!ready.isEmpty()) {
             Completion completion = ready.removeFirst();
             tasks.remove(completion.id());
             notifications.add(completion.notification());
         }
         return List.copyOf(notifications);
+    }
+
+    /**
+     * s12 首次正式回复前失败时归还尚未确认模型接收的通知，不恢复/重跑已完成 shell。
+     * 只有历史所有者知道本次哪些文本未交付；须原样归还先前 collect 的结果，不能传模型编造的事件。
+     * 已关闭会话不再投递；按原顺序放回队首，后完成的事件仍排在后面。
+     */
+    public synchronized void restoreNotifications(List<String> notifications) {
+        if (closed) return;
+        for (int i = notifications.size() - 1; i >= 0; i--) returnedNotifications.addFirst(notifications.get(i));
     }
 
     /** 线程间只传不可变完成值，不暴露内部可变表。 */
@@ -136,6 +149,7 @@ public final class BackgroundManager implements AutoCloseable {
             closed = true;
             tasks.clear();
             ready.clear();
+            returnedNotifications.clear();
         }
         shell.close();
     }
