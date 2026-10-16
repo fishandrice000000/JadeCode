@@ -1,42 +1,24 @@
 package com.jadecode.context;
 
 /**
- * CompactionLimits -- 压缩管线的全部阈值,集中一处便于测试注入。
+ * 压缩各层用的全部阈值。把阈值集中到一个类型里，测试时才能注入很小的值，
+ * 否则要构造几十万字符的输入才能触发某一层。生产用 {@link #courseDefaults()}，测试自己构造小值。
  *
- * <p>
- * <b>单位</b>:所有"大小"都是 Java {@link String#length()} 的字符数(等价于课程
- * {@code len(json.dumps(messages, ensure_ascii=False))}),不是字节数,也不是精确 token 数。
- * </p>
+ * <p>所有“长度”都指 Java 字符数（{@link String#length()}），不是字节数，也不是精确 token 数。
  *
- * <p>
- * <b>为什么要单独抽一个类型</b>:四层管线里每一层都有自己的触发阈值,散在
- * {@link ContextCompactor} 里就没法在单元测试中把阈值调小——不注入小阈值,就只能构造
- * 几十万字符的输入才能触发某一层。生产装配用 {@link #courseDefaults()};测试构造小阈值。
- * </p>
- *
- * <p>
- * 各分量对应的课程常量名写在下面各 {@code @param} 里,具体数值见作业单
- * {@code docs/jobs/s08/context-compact.md} 的管线表。<b>不要用反射改常量来测阈值</b>。
- * </p>
- *
- * @param contextCharLimit         课程 {@code CONTEXT_CHAR_LIMIT};超过才进第三、四层
- * @param toolResultBatchCharLimit 课程
- *                                 {@code TOOL_RESULT_BATCH_CHAR_LIMIT};只看最后一条
- *                                 user 消息
- * @param largeResultCharLimit     课程 {@code LARGE_RESULT_CHAR_LIMIT};单项超过它就要落盘
- * @param summaryInputCharLimit    课程
- *                                 {@code SUMMARY_INPUT_CHAR_LIMIT};超出时掐头去尾留中缝
- * @param keepRecentResults        课程 {@code KEEP_RECENT_RESULTS};micro
- *                                 层保留的已消费结果条数
- * @param keepRecentMessages       课程 {@code KEEP_RECENT_MESSAGES};reactive
- *                                 层保留的最近消息条数
+ * @param contextCharLimit         超过这个长度才进第三、四层
+ * @param toolResultBatchCharLimit 最新一批工具结果的总量上限，只看最后一条 user 消息
+ * @param largeResultCharLimit     单个结果超过这个长度就要存盘
+ * @param summaryInputCharLimit    交给模型摘要的输入上限，超出时截取中间一段
+ * @param keepRecentResults        micro 层保留的“已读过”结果条数
+ * @param keepRecentMessages       响应式补救保留的最近消息条数
  * @param microResultMinChars      micro 层不处理的短结果门槛
- * @param budgetPreviewChars       第一层落盘后保留的预览字符数
- * @param fitPreviewChars          第三层 fit 落盘后保留的预览字符数
- * @param summaryMaxOutputTokens   摘要请求的 max_tokens(摘要请求不带任何 tools)
- * @param snipMaxMessages          snip 层的消息数门槛
- * @param snipHeadMessages         snip 层固定保留的头部消息数
- * @param targetRatio              micro / fit 的目标 = contextCharLimit * ratio
+ * @param budgetPreviewChars       第一层存盘后保留的预览字符数
+ * @param fitPreviewChars          第三层兜底存盘后保留的预览字符数
+ * @param summaryMaxOutputTokens   摘要请求的 max_tokens（摘要请求不带工具）
+ * @param snipMaxMessages          snip 层的消息条数门槛
+ * @param snipHeadMessages         snip 层固定保留的头部消息条数
+ * @param targetRatio              micro / fit 的目标长度 = contextCharLimit * ratio
  */
 public record CompactionLimits(
         int contextCharLimit,
@@ -54,15 +36,9 @@ public record CompactionLimits(
         double targetRatio) {
 
     /**
-     * 生产默认阈值:按课程原值逐项组装。
+     * 生产默认阈值，数值来自课程。
      *
-     * <p>
-     * TODO(s08-user): 组装课程默认值。课程各常量的数值见作业单
-     * {@code docs/jobs/s08/context-compact.md} §二 的管线表;本 record 的分量顺序与
-     * {@code @param} 顺序一一对应。
-     * </p>
-     *
-     * @return 课程原始阈值
+     * @return 默认阈值
      */
     public static CompactionLimits courseDefaults() {
         return new CompactionLimits(
@@ -82,11 +58,7 @@ public record CompactionLimits(
     }
 
     /**
-     * micro / fit 两层的目标字符数。
-     *
-     * <p>
-     * TODO(s08-user): 由 {@link #contextCharLimit} 与 {@link #targetRatio} 推出。
-     * </p>
+     * micro 和 fit 两层要压到的目标长度，由总上限乘目标比例得到。
      *
      * @return 目标字符数
      */

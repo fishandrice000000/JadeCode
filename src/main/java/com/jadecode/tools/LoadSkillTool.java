@@ -7,13 +7,10 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jadecode.skills.SkillLoader;
 
 /**
- * load_skill:按名字取回完整 SKILL.md 原文。
+ * load_skill 工具：按名字取回完整的 SKILL.md 原文。
  *
- * <p>
- * 薄壳:参数校验在此,查表与全文取回全在 {@link SkillLoader}。
- * 这是"两层知识注入"的第二层——system prompt 里的 catalog 只是目录,
- * 模型认为某个技能适用时才调本工具把全文拉进 messages。
- * </p>
+ * <p>参数在这里校验，查表和读文件都在 {@link SkillLoader}。这是两层注入的第二层：
+ * system prompt 里只有技能目录，模型觉得某个技能适用时才调用本工具把全文拉进消息。
  */
 public final class LoadSkillTool implements Tool {
     /** 技能加载器:构造器注入 */
@@ -59,7 +56,7 @@ public final class LoadSkillTool implements Tool {
     }
 
     /**
-     * 缺参检查后透传 {@link SkillLoader#load(String)}。
+     * 检查完参数后直接交给 {@link SkillLoader#load(String)}。
      *
      * @param input 模型参数,须含 name
      * @return 完整 SKILL.md 原文;缺参回 "Error: Missing required parameter: name";

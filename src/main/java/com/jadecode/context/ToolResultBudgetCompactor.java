@@ -10,16 +10,12 @@ import com.jadecode.messages.Role;
 import com.jadecode.messages.ToolResultBlock;
 
 /**
- * ToolResultBudgetCompactor -- 第一层:最新结果批次的预算控制。
+ * 第一层：控制最新一批工具结果的大小。
  *
- * <p>
- * 只看最后一条 user 消息里的最新结果批次,超预算就从最大项开始落盘并留预览,不调用模型,
- * 内容可完整取回。旧结果不归它管(那是 {@link MicroCompactor} / {@link ToolResultFitter} 的事)。
- * </p>
- *
- * <p>
- * 本类<b>没有可变会话状态</b>,父子循环可以安全共享同一个实例。
- * </p>
+ * <p>只看最后一条 user 消息里的最新结果。总量超预算时，从最大的结果开始存盘，
+ * 历史里只留路径和预览，直到回到预算以内。不调模型，内容可以按路径完整取回。
+ * 更早的结果不归它管，那是 {@link MicroCompactor} 和 {@link ToolResultFitter} 的事。
+ * 本类不保存会话状态，父子循环可以安全共享同一个实例。
  */
 final class ToolResultBudgetCompactor {
 
@@ -39,20 +35,13 @@ final class ToolResultBudgetCompactor {
     }
 
     /**
-     * 只看最后一条 user 消息中的最新结果批次:批次总量超过预算时,从最大项开始,
-     * 把超过单项上限的完整内容落盘,上下文里只留可信路径与前若干字符预览,
-     * 直到批次回到预算内或没有符合条件的项。
+     * 处理最后一条 user 消息里的最新结果：总量超过预算时，从最大的结果开始，
+     * 超过单项上限的内容存盘，历史里只留路径和预览，直到回到预算以内或没有可处理的项。
      *
-     * <p>
-     * 非末尾批次一律不动——旧结果归 {@link MicroCompactor#microCompact} 管。
-     * </p>
-     *
-     * <p>
-     * TODO(s08-user): 实现本层。注意"从最大项开始"与"每替换一项就重新统计"。
-     * </p>
+     * <p>只看末尾这一批，更早的结果不动，它们由 {@link MicroCompactor} 处理。
      *
      * @param messages 消息列表
-     * @return 处理后的列表;无需处理时原样返回入参
+     * @return 处理后的列表；不需要处理时返回入参本身
      */
     List<Message> toolResultBudget(List<Message> messages) {
         // 边界条件 1: 消息列表为空
@@ -135,15 +124,11 @@ final class ToolResultBudgetCompactor {
     }
 
     /**
-     * 第一层的单项处理:超过单项上限才落盘,否则原样返回。
-     *
-     * <p>
-     * TODO(s08-user): 实现本方法(很薄,但阈值判断在这一层)。
-     * </p>
+     * 处理单个工具结果：不超过单项上限就原样返回，超过就存盘并返回预览外壳。
      *
      * @param toolUseId 工具调用 ID
      * @param output    完整原文
-     * @return 原文,或落盘预览外壳
+     * @return 原文，或存盘后的预览外壳
      */
     String persistLargeOutput(String toolUseId, String output) {
         if (output.length() <= limits.largeResultCharLimit()) {

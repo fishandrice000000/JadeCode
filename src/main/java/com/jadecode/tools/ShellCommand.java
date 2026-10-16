@@ -131,8 +131,9 @@ final class ShellCommand implements AutoCloseable {
     private record Captured(String text, boolean truncated) { }
 
     /**
-     * 一条命令的资源所有权：正常收尾、finally、CLI/JVM 关闭可能竞争，但只允许首次终止发送信号。
-     * 用每个命令自己的锁，不在整个 processes 锁内等待 kill，其他命令仍可登记或收尾。
+     * 一条正在运行的命令。正常收尾、finally 和关闭流程都可能调用 stop，
+     * 这里保证只发一次停止信号，不向可能已被系统回收的旧进程号重复发。
+     * 用每条命令自己的锁，不在整个 processes 锁里等 kill，其他命令还能继续登记或收尾。
      */
     private static final class Running {
         private final Process process;
@@ -173,7 +174,7 @@ final class ShellCommand implements AutoCloseable {
         }
     }
 
-    /** 幂等关闭：先禁止新启动并取快照，再在锁外终止；正常 close 移除 JVM hook。 */
+    /** 重复调用也没问题：先禁止新启动并取一份快照，再在锁外停止；正常关闭时移除 JVM 钩子。 */
     @Override
     public void close() {
         List<Running> active;

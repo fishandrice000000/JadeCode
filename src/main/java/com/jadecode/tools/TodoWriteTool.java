@@ -9,13 +9,11 @@ import com.jadecode.todo.TodoManager;
 import com.jadecode.util.Json;
 
 /**
- * todo_write:模型更新计划状态;构造器注入 TodoManager(仿 GlobTool 注入 PathResolver)。
+ * todo_write 工具：模型用整份列表更新当前计划。
  *
- * <p>
- * 本类只是薄壳:缺参与判型在此拦下,列表校验与整表替换全在
- * {@link TodoManager#update(ArrayNode)}。发给模型的 schema 是手拼的数组结构
- * (见 {@link #inputSchema()}),平铺的 properties()/required() 仅作缺参检查表。
- * </p>
+ * <p>本类只做接口适配：缺参数、类型不对在这里拦住；列表校验和整表替换在
+ * {@link TodoManager#update(ArrayNode)}。发给模型的参数结构是手拼的数组（见 {@link #inputSchema()}），
+ * 平铺的 properties() 和 required() 只用来检查参数有没有缺。
  */
 public class TodoWriteTool implements Tool {
     /** 计划账本:元素校验与整表替换都在它那边 */

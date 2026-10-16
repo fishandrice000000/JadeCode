@@ -24,11 +24,12 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jadecode.util.Json;
 
 /**
- * s12 时间与交付状态管理：到期先落盘 pending，再交给运行时串行发送 prompt。
+ * 保存定时定义和待交付状态。到时间后先把交付标记存盘，再交给会话运行时按顺序执行。
  *
- * <p>不创建计时线程、不调用模型或 shell；CronProducer 生产事件，SessionRuntime 统一消费。
- * 同一实例的方法串行保护内存/文件，但不是多进程任务库锁；同一工作区只由一个 CLI 管理。
- * 文件用临时文件原子替换，未 fsync，不承诺断电耐久性或恰好一次交付。</p>
+ * <p>本类不创建计时线程、不调模型也不跑 shell：由 CronProducer 周期性检查，
+ * 把到期的任务交给 SessionRuntime 统一排队执行。同一实例的方法用同步保护内存和文件，
+ * 但不是多进程的任务库锁，约定一个工作区只由一个 CLI 管理。文件用临时文件原子替换，
+ * 未做 fsync，不承诺断电后不丢，也不能保证恰好交付一次。
  */
 public final class CronScheduler {
     private static final int MAX_JOBS = 100;
@@ -37,7 +38,7 @@ public final class CronScheduler {
     private final Clock clock;
     private Map<String, CronJob> jobs = new LinkedHashMap<>();
     private final ArrayDeque<String> ready = new ArrayDeque<>();
-    /** 已由运行时取走但尚未确认的记录，不允许另一个消费者再次取得。 */
+    /** 已由运行时取走但还没确认的记录，不让另一个取任务的线程再拿到。 */
     private final Set<String> leased = new HashSet<>();
     private boolean loaded;
 

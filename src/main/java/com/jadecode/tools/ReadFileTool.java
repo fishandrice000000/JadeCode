@@ -21,7 +21,7 @@ public class ReadFileTool implements Tool {
     private final PathResolver resolver;
 
     /**
-     * @param resolver 路径解析器;Main 装配时注入
+     * @param resolver 路径解析器，由 Main 创建时注入
      */
     public ReadFileTool(PathResolver resolver) {
         this.resolver = resolver;

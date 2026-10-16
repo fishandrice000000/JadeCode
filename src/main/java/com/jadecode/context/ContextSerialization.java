@@ -7,18 +7,12 @@ import com.jadecode.messages.Message;
 import com.jadecode.util.Json;
 
 /**
- * ContextSerialization -- 压缩管线共用的 JSON 序列化与字符估算。
+ * 压缩各层共用的 JSON 序列化与字符数估算。
  *
- * <p>
- * 抽出来的唯一理由:让各策略类与 transcript 落盘都能用同一份序列化,
- * 而不必反向依赖总入口 {@link ContextCompactor},也不把这段代码复制多份。
- * 本类<b>无状态</b>,全部是 static helper。
- * </p>
- *
- * <p>
- * <b>单位是字符</b>(Java {@link String#length()}),不是字节,也不是精确 token。
- * 序列化统一走项目共享的 {@link Json#mapper()},不另起 {@code ObjectMapper}。
- * </p>
+ * <p>抽出来是为了让各个策略类和 transcript 落盘都用同一份序列化，
+ * 不用反向依赖入口类 {@link ContextCompactor}，也不用把代码复制多份。
+ * 类里全是静态方法，不保存状态。长度单位是 Java 字符数（{@link String#length()}），
+ * 不是字节数，也不是精确 token 数。序列化统一用项目共享的 {@link Json#mapper()}。
  */
 final class ContextSerialization {
 
@@ -27,15 +21,7 @@ final class ContextSerialization {
     }
 
     /**
-     * 估算上下文字符数:整段消息的 JSON 序列化长度。
-     *
-     * <p>
-     * 单位是字符,不是字节,也不是精确 token。
-     * </p>
-     *
-     * <p>
-     * TODO(s08-user): 实现本方法。用项目共享的 {@code Json.mapper()},别另起 ObjectMapper。
-     * </p>
+     * 估算一段消息的字符数：把整段消息序列化成 JSON 后的长度。
      *
      * @param messages 消息列表
      * @return JSON 文本的字符数

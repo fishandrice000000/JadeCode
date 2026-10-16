@@ -18,18 +18,14 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 
 /**
- * 技能加载器:扫描 {@code skills/<name>/SKILL.md},把目录信息与完整原文分开供出。
+ * 扫描 {@code skills/<name>/SKILL.md}，把技能目录和完整原文分开提供。
  *
- * <p>
- * 两个出口对应两层知识注入:{@link #catalog()} 给 system prompt 用(只有 name / description),
- * {@link #load(String)} 给 {@code load_skill} 工具用(完整原文)。二者严格不混——
- * 完整 SKILL.md 绝不进 system prompt。
- * </p>
+ * <p>两个出口对应两层知识注入：{@link #catalog()} 给 system prompt（只有名字和简介），
+ * {@link #load(String)} 给 {@code load_skill} 工具（完整原文）。两者不会混：
+ * 完整 SKILL.md 不会进 system prompt。
  *
- * <p>
- * 根目录由 Main 注入({@code cwd.resolve("skills")}),本类不读全局 cwd。
- * 根目录不存在是合法空 registry;真实 I/O 故障则 fail-fast 抛异常,不伪装成空目录。
- * </p>
+ * <p>技能根目录由 Main 注入，本类不读全局工作目录。根目录不存在算合法的空技能表；
+ * 真实的读写错误则直接抛异常，不假装成空目录。
  */
 public final class SkillLoader {
     /** 技能 manifest 的文件名(约定每个技能目录下恰好一个) */

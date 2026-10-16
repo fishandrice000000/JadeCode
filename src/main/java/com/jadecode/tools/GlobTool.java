@@ -22,7 +22,7 @@ import com.jadecode.safety.PathResolver;
 public class GlobTool implements Tool {
     private static final int MAX_MATCHES = 200;
 
-    /** 工作区根;由 Main 装配注入(仿其他路径类工具),本类不持有全局状态 */
+    /** 工作区根，由 Main 创建时注入；本类不保存全局状态。 */
     private final PathResolver resolver;
 
     /**

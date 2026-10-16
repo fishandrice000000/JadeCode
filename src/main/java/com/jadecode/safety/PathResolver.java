@@ -6,13 +6,11 @@ import java.nio.file.Path;
 import java.util.Iterator;
 
 /**
- * PathResolver 路径解析器
+ * 把字符串路径解析成真实的可操作路径，包括把路径里的符号链接逐段展开。
  *
- * 类 Python Path.resolve() 的机制层:词法归一化 + 逐段解析符号链接。
- * 比 toRealPath 强在悬空链接也能追——逐段 isSymbolicLink + readSymbolicLink
- * 只读链接本身,不要求目标存在(s02 PathGuard 手工走法的抽取)。
- *
- * 只提供机制,不做政策:越界、高危的判断由 PathGuard 负责。
+ * <p>和 {@code toRealPath()} 不同，即使链接指向一个还不存在的文件也能解析出来：
+ * 逐个目录看过去，遇到链接就读它的目标继续走，不要求目标已经存在。
+ * 本类只管怎么把路径算出来，不管能不能访问；越界和高危目录的判断在 {@link PathGuard}。
  */
 public class PathResolver {
     /** 词法工作区(绝对路径,归一化后) */

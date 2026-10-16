@@ -71,7 +71,7 @@ public class SubagentRuntime {
     /** 单次请求的 max_tokens,与父循环同值 */
     private final int maxTokens;
 
-    /** 共享事件表:子代理的工具调用同样过权限与生命周期 hook */
+    /** 子代理和父代理共用同一份事件表：子工具调用一样会走权限检查和前后 hook。 */
     private final Hooks hooks;
 
     /**

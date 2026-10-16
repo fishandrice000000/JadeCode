@@ -7,17 +7,17 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 /**
- * 一项可跨会话恢复的工作，而不是模型消息、子代理或当前轮的 Todo 清单项。
+ * 一项可以跨会话恢复的工作，不是消息、不是子代理，也不是当前轮的 Todo 清单项。
  *
- * <p>模型提出任务内容与依赖，Harness 保存这个值并检查状态转换。记录为 completed 只表示
- * 完成操作被接受，不证明代码通过验收。record 与不可变依赖列表使调用方不能绕过存储层原地改状态。</p>
+ * <p>内容与依赖由模型提出，存储层保存并检查状态转换。标记为 completed 只表示“完成操作被接受”，
+ * 不代表代码真的通过验收。record 和不可变的依赖列表让调用方不能绕过存储层直接改状态。
  *
- * @param id Harness 分配的稳定任务 ID，不是文件路径
- * @param subject 非空简短标题
- * @param description 完整工作说明，允许空字符串但不允许 null
+ * @param id 存储层分配的稳定任务 ID，不是文件路径
+ * @param subject 非空的简短标题
+ * @param description 完整工作说明，可以为空字符串但不能为 null
  * @param status pending / in_progress / completed
- * @param owner pending 时为 null，其余状态为非空负责者标签，不是认证凭据
- * @param blockedBy 前置任务 ID 的不可变列表；全部完成才允许认领
+ * @param owner pending 时为 null，其余状态必须是非空负责者标签，不是登录凭证
+ * @param blockedBy 前置任务 ID 列表（不可修改），全部完成才允许认领
  */
 public record Task(String id, String subject, String description, Status status,
         @JsonInclude(JsonInclude.Include.ALWAYS) String owner, List<String> blockedBy) {

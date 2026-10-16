@@ -14,16 +14,10 @@ import com.jadecode.messages.Role;
 import com.jadecode.messages.TextBlock;
 
 /**
- * TranscriptStore -- 完整历史的 JSONL 归档与归档标记的可信识别。
+ * 把完整历史写成 JSONL 归档，以及判断一条消息是不是可信的归档标记。
  *
- * <p>
- * 只持有注入的 transcript 目录。<b>不决定何时归档、归档哪一段、是否重复归档</b>——
- * 那些是 snip / 响应式压缩等策略的职责。
- * </p>
- *
- * <p>
- * 本类<b>没有可变会话状态</b>,父子循环可以安全共享同一个实例。
- * </p>
+ * <p>只保存注入的 transcript 目录，不决定什么时候归档、归档哪一段、要不要重复归档。
+ * 那些由 snip、响应式补救等策略自己决定。本类不保存会话状态，父子循环可以安全共享。
  */
 final class TranscriptStore {
 
@@ -125,8 +119,8 @@ final class TranscriptStore {
      * </p>
      *
      * <p>
-     * 与 {@link ToolOutputStore#persistedOutputPath} 同样 fail-closed:形状不符、路径非绝对、解析失败、
-     * 落在 transcript 目录之外、不是普通文件 —— 一律 false。
+     * 和 {@link ToolOutputStore#persistedOutputPath} 一样拿不准就判不可信:形状不符、路径不是絕對路径、
+     * 解析失败、落在 transcript 目录外、不是普通文件 —— 都返回 false。
      * </p>
      *
      * @param message 候选消息
@@ -197,7 +191,7 @@ final class TranscriptStore {
             Path realFile = path.toRealPath();
             return realFile.startsWith(realDir) && Files.isRegularFile(realFile);
         } catch (IOException e) {
-            // 解析失败或文件读不到 = 无法判定 → fail-closed。
+            // 解析失败或文件读不到 = 无法判断,当作不可信。
             return false;
         }
     }

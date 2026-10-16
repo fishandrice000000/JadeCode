@@ -8,16 +8,10 @@ import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 
 /**
- * ToolOutputStore -- 工具结果的落盘、预览外壳与可信路径识别。
+ * 工具结果的存盘、预览外壳，以及判断一段文本里的存盘路径可不可信。
  *
- * <p>
- * 只持有注入的 tool-results 目录,<b>不持有阈值</b>:预览保留多少字符由调用方传进来,
- * "多大才值得落盘"这类策略判断留在各压缩策略里。
- * </p>
- *
- * <p>
- * 本类<b>没有可变会话状态</b>,父子循环可以安全共享同一个实例。
- * </p>
+ * <p>只保存注入的 tool-results 目录，不保存阈值。预览留多少字符由调用方传进来，
+ * “多大才值得存盘”由各个压缩策略自己决定。本类不保存会话状态，父子循环可以安全共享同一个实例。
  */
 final class ToolOutputStore {
 
@@ -99,29 +93,19 @@ final class ToolOutputStore {
     }
 
     /**
-     * 识别一段工具结果里是否带有<b>本 compactor 生成的、可信的</b>落盘路径。
+     * 判断一段工具结果里的存盘路径是不是可信（也就是本压缩器自己写的）。
      *
-     * <p>
-     * 只认我们自己写的两种形状(见 {@link #persistedPreview} 与
-     * {@link MicroCompactor#microCompact} 写出的占位)。工具输出里伪造的
-     * {@code Full output: /tmp/...} 一律不认:候选路径必须是绝对的、
-     * 解析后仍位于注入的 tool-results 目录之下,且<b>确实是普通文件</b>。
-     * </p>
+     * <p>只认两种由本压缩器生成的外壳（见 {@link #persistedPreview} 和 {@link MicroCompactor} 的占位）。
+     * 工具输出里自己伪造的 {@code Full output: /tmp/...} 不认。外壳必须从字符串开头逐字匹配，
+     * 路径只在固定位置取，不扫描正文或预览里的同名行，否则伪造的文本就能冒充。
+     * 候选路径必须是绝对路径，解析真实路径后仍在 tool-results 目录下，而且确实是普通文件；
+     * 包含关系用 {@link Path#startsWith} 逐段比较，不用字符串前缀。
      *
-     * <p>
-     * <b>只认固定形状</b>:外壳必须从字符串<b>最开头</b>逐字匹配,路径取固定位置的那一行——
-     * 绝不扫描正文或预览里的同名行,否则伪造的 {@code Full output: ...} 就能冒充 marker。
-     * 候选必须原本就是绝对路径,解析真实路径后仍在真实 tool-results 目录之下,且确实是普通文件;
-     * 包含判断用 {@link Path#startsWith}(逐段),不用字符串前缀比较。
-     * </p>
-     *
-     * <p>
-     * 这里是 fail-closed:形状不符、无候选、非法路径、越界、非普通文件、无法判定,
-     * 一律当作不可信返回 null,调用方会重新落盘——最坏多一个文件,绝不丢数据。
-     * </p>
+     * <p>拿不准就当不可信返回 null（形状不符、没有候选、路径非法、越界、不是普通文件、解析失败都一样），
+     * 调用方会重新存盘。最坏多一个文件，不会丢数据。
      *
      * @param output 工具结果文本
-     * @return 可信的绝对路径字符串;不可信或无法判定时为 null
+     * @return 可信的绝对路径字符串；不可信或无法判断时为 null
      */
     String persistedOutputPath(String output) {
         if (output == null) {
@@ -171,7 +155,7 @@ final class ToolOutputStore {
             }
             return realFile.toString();
         } catch (IOException e) {
-            // 解析失败或文件读不到 = 无法判定 → fail-closed。
+            // 解析失败或文件读不到 = 无法判断,当作不可信。
             return null;
         }
     }
@@ -231,16 +215,12 @@ final class ToolOutputStore {
     }
 
     /**
-     * 生成落盘预览外壳:已有可信 marker 就复用它(并从中回读预览),否则先落盘再取预览。
-     *
-     * <p>
-     * TODO(s08-user): 实现本方法,外壳格式见作业单。
-     * </p>
+     * 生成存盘预览外壳：已经有可信存盘路径的就复用（并从文件里读回预览），否则先存盘再取预览。
      *
      * @param toolUseId    工具调用 ID
      * @param output       完整原文
      * @param previewChars 预览保留的字符数
-     * @return 落盘预览外壳文本
+     * @return 存盘预览外壳文本
      */
     String persistedPreview(String toolUseId, String output, int previewChars) {
         String saved = persistedOutputPath(output);
