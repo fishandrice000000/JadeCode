@@ -8,7 +8,7 @@ import java.util.List;
 import java.util.Map;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.jadecode.safety.PathResolver;
+import com.jadecode.filesystem.PathResolver;
 
 /**
  * write_file:把整段内容写入文件(UTF-8,覆盖式)。

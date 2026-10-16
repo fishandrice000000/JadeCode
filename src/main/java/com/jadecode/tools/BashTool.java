@@ -6,7 +6,9 @@ import java.util.Map;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.jadecode.agent.ExecutionContext;
+import com.jadecode.execution.ExecutionContext;
+import com.jadecode.process.BackgroundManager;
+import com.jadecode.process.ShellCommand;
 
 /**
  * 把模型给出的 shell 命令交给 ShellCommand 或 BackgroundManager 运行。
@@ -163,7 +165,7 @@ public class BashTool implements Tool {
             if (context == null) return "Error: Background execution requires a Harness task context";
             try {
                 boolean required = waiting == null || waiting.booleanValue();
-                String id = background.start(command.textValue(), context, required);
+                String id = background.start(command.textValue(), context.id(), required);
                 return "[Background task " + id + " started] " + (required
                         ? "The current task must process its result before finishing; it will resume automatically."
                         : "Detached from the current task. Its result is a later session notification.");

@@ -7,6 +7,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.jadecode.hooks.Hooks;
 import com.jadecode.llm.CompleteRequest;
 import com.jadecode.llm.LlmClient;
 import com.jadecode.llm.LlmException;
@@ -19,7 +20,6 @@ import com.jadecode.messages.Role;
 import com.jadecode.messages.TextBlock;
 import com.jadecode.messages.ToolResultBlock;
 import com.jadecode.messages.ToolUseBlock;
-import com.jadecode.safety.Hooks;
 import com.jadecode.tools.Tool;
 import com.jadecode.util.Json;
 import org.junit.jupiter.api.Test;

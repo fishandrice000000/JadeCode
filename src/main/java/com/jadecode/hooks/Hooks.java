@@ -1,4 +1,4 @@
-package com.jadecode.safety;
+package com.jadecode.hooks;
 
 import java.util.ArrayList;
 import java.util.HashMap;

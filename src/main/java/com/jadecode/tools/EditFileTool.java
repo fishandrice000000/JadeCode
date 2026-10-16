@@ -8,7 +8,7 @@ import java.util.List;
 import java.util.Map;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.jadecode.safety.PathResolver;
+import com.jadecode.filesystem.PathResolver;
 
 /**
  * edit_file:在文件里做精确文本替换,只替换第一处匹配。

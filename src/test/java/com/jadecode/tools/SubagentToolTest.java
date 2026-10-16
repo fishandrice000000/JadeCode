@@ -4,6 +4,7 @@ import java.util.List;
 import java.util.Map;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.jadecode.hooks.Hooks;
 import com.jadecode.llm.LlmClient;
 import com.jadecode.llm.LlmException;
 import com.jadecode.llm.ModelResponse;
@@ -12,7 +13,6 @@ import com.jadecode.llm.ScriptedLlmClient;
 import com.jadecode.messages.Message;
 import com.jadecode.messages.Role;
 import com.jadecode.messages.TextBlock;
-import com.jadecode.safety.Hooks;
 import com.jadecode.subagent.SubagentRuntime;
 import com.jadecode.util.Json;
 import org.junit.jupiter.api.Test;

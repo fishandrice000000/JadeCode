@@ -11,7 +11,7 @@ import java.util.Map;
 import java.util.stream.Stream;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.jadecode.safety.PathResolver;
+import com.jadecode.filesystem.PathResolver;
 
 /**
  * glob:按 glob 模式在工作区内找文件,输出匹配的相对路径(每行一条,字典序)。

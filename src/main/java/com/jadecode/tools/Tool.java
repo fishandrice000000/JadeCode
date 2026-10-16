@@ -4,7 +4,7 @@ import java.util.List;
 import java.util.Map;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.jadecode.agent.ExecutionContext;
+import com.jadecode.execution.ExecutionContext;
 
 /**
  * 模型可以调用的工具。AgentLoop 按 tool_use 中的 name 找到实现，再依次调用 execute。

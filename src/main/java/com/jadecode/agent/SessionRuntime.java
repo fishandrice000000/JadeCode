@@ -10,15 +10,18 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.function.Consumer;
 
 import com.jadecode.cron.CronJob;
+import com.jadecode.cron.CronProducer;
+import com.jadecode.execution.Approval;
+import com.jadecode.execution.ExecutionContext;
+import com.jadecode.hooks.Hooks;
 import com.jadecode.llm.LlmException;
 import com.jadecode.messages.ContentBlock;
 import com.jadecode.messages.Message;
 import com.jadecode.messages.Role;
 import com.jadecode.messages.TextBlock;
-import com.jadecode.safety.Hooks;
+import com.jadecode.process.BackgroundManager.Completion;
+import com.jadecode.process.BackgroundManager;
 import com.jadecode.safety.PermissionGate;
-import com.jadecode.tools.BackgroundManager;
-import com.jadecode.tools.BackgroundManager.Completion;
 
 /**
  * 管理一次 CLI 会话：把收到的任务排好队，一次做完一项，再做下一项。
@@ -137,7 +140,7 @@ public final class SessionRuntime implements AutoCloseable {
      *         空请求以 IllegalArgumentException 失败，队列满或会话退出以 RejectedExecutionException
      *         失败，执行出错则记录实际错误。取消此 future 不会自动停止已经开始的命令
      */
-    public CompletableFuture<String> submit(String prompt, PermissionGate.Approval approval) {
+    public CompletableFuture<String> submit(String prompt, Approval approval) {
         CompletableFuture<String> result = new CompletableFuture<>();
         if (prompt == null || prompt.isBlank()) {
             result.completeExceptionally(new IllegalArgumentException("Prompt must not be blank"));

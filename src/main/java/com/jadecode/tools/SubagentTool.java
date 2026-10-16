@@ -4,7 +4,7 @@ import java.util.List;
 import java.util.Map;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.jadecode.agent.ExecutionContext;
+import com.jadecode.execution.ExecutionContext;
 import com.jadecode.llm.LlmException;
 import com.jadecode.subagent.SubagentRuntime;
 

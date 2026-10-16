@@ -1,4 +1,4 @@
-package com.jadecode.tools;
+package com.jadecode.process;
 
 import java.io.IOException;
 import java.io.InputStreamReader;
@@ -19,7 +19,7 @@ import java.util.concurrent.TimeoutException;
  * 这不是沙箱，自行另开 session 的程序可能逃离该组。不写输出文件。
  * 实例拥有启动的进程，必须 close；JVM 正常关闭另有兜底，SIGKILL/断电无法兜底。</p>
  */
-final class ShellCommand implements AutoCloseable {
+public final class ShellCommand implements AutoCloseable {
     private static final int MAX_OUTPUT = 50_000;
     private final Path cwd;
     private final long timeoutSeconds;
@@ -34,7 +34,7 @@ final class ShellCommand implements AutoCloseable {
      * @param cwd shell 初始目录；内部 cd 不改变其他命令目录
      * @param timeoutSeconds 正数，每条命令独立计时
      */
-    ShellCommand(Path cwd, long timeoutSeconds) {
+    public ShellCommand(Path cwd, long timeoutSeconds) {
         if (timeoutSeconds <= 0) {
             throw new IllegalArgumentException("timeoutSeconds must be positive");
         }
@@ -43,9 +43,9 @@ final class ShellCommand implements AutoCloseable {
     }
 
     /** 最终结果：exitCode=null 表示超时/IO/中断；output 有界，truncated 表示不完整。 */
-    record Result(String output, Integer exitCode, boolean truncated) {
+    public record Result(String output, Integer exitCode, boolean truncated) {
         /** 工具协议文本：非零退出明确失败，不能仅把错误命令的 stdout 当作成功结果。 */
-        String text() {
+        public String text() {
             String body = output.isEmpty() ? "(no output)" : output;
             return exitCode != null && exitCode != 0
                     ? "Error: command exited with status " + exitCode + "\n" + body : body;
@@ -60,7 +60,7 @@ final class ShellCommand implements AutoCloseable {
      * @param command 已校验的 shell 文本
      * @return 只有 exitCode=0 才算成功，失败保留原因
      */
-    Result run(String command) {
+    public Result run(String command) {
         Running running;
         try {
             synchronized (processes) {

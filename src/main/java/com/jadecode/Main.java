@@ -9,13 +9,15 @@ import java.util.concurrent.Callable;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jadecode.agent.AgentLoop;
-import com.jadecode.agent.ExecutionContext;
 import com.jadecode.cli.ReplCommand;
 import com.jadecode.cli.RunCommand;
 import com.jadecode.config.AppConfig;
 import com.jadecode.config.Env;
 import com.jadecode.context.ContextCompactor;
 import com.jadecode.cron.CronScheduler;
+import com.jadecode.execution.ExecutionContext;
+import com.jadecode.filesystem.PathResolver;
+import com.jadecode.hooks.Hooks;
 import com.jadecode.llm.AnthropicSdkLlmClient;
 import com.jadecode.llm.LlmClient;
 import com.jadecode.memory.MemoryManager;
@@ -23,17 +25,15 @@ import com.jadecode.memory.MemoryStore;
 import com.jadecode.messages.Message;
 import com.jadecode.messages.ToolResultBlock;
 import com.jadecode.messages.ToolUseBlock;
+import com.jadecode.process.BackgroundManager;
 import com.jadecode.safety.CommandPolicy;
-import com.jadecode.safety.Hooks;
 import com.jadecode.safety.PathGuard;
-import com.jadecode.safety.PathResolver;
 import com.jadecode.safety.PermissionGate;
 import com.jadecode.skills.SkillLoader;
 import com.jadecode.subagent.SubagentOutcome;
 import com.jadecode.subagent.SubagentRuntime;
 import com.jadecode.tasks.TaskStore;
 import com.jadecode.todo.TodoManager;
-import com.jadecode.tools.BackgroundManager;
 import com.jadecode.tools.BashTool;
 import com.jadecode.tools.CompactTool;
 import com.jadecode.tools.CronTools;
@@ -48,9 +48,8 @@ import com.jadecode.tools.Tool;
 import com.jadecode.tools.WriteFileTool;
 import com.jadecode.util.Ansi;
 import com.jadecode.util.Json;
-
-import picocli.CommandLine;
 import picocli.CommandLine.Command;
+import picocli.CommandLine;
 
 /**
  * JadeCode 的命令行主类。picocli 根据参数选择 run 或 repl；不带子命令时只显示用法。
