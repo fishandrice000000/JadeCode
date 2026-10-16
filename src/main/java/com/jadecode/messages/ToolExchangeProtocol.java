@@ -5,23 +5,14 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * ToolExchangeProtocol -- 工具调用交换的共享协议规则:配对判定与历史校验。
+ * 工具调用和结果配对规则的唯一实现：判断消息是不是工具调用/结果，校验一份历史是否配对。
  *
- * <p>
- * 本类是工具交换规则的<b>唯一实现位置</b>:
- * </p>
- * <ul>
- * <li>工具 ID 的构造前置校验({@link #requireValidToolId});</li>
- * <li>配对判定({@link #hasToolUse} / {@link #isToolResult} /
- * {@link #isClosedToolExchange});</li>
- * <li>批次内调用 ID 唯一性({@link #requireDistinctCallIds});</li>
- * <li>既有历史的结构校验({@link #validateHistory})。</li>
- * </ul>
+ * <p>包含四件事：工具 ID 不能为空（{@link #requireValidToolId}）、
+ * 配对判定（{@link #hasToolUse}、{@link #isToolResult}、{@link #isClosedToolExchange}）、
+ * 同一批调用 ID 不重复（{@link #requireDistinctCallIds}）、以及校验已有历史的结构（{@link #validateHistory}）。
  *
- * <p>
- * 压缩管线({@code ToolExchangeBoundary})与父、子循环只<b>委托/调用</b>这里,
- * 不各写一份 ID 或配对算法。本类<b>无状态</b>,全部是 static helper,不需要构造实例。
- * </p>
+ * <p>压缩管线（{@code ToolExchangeBoundary}）和父、子循环都调用这里，不另写一套。
+ * 类里全是静态方法，不保存状态。
  */
 public final class ToolExchangeProtocol {
 
@@ -88,18 +79,16 @@ public final class ToolExchangeProtocol {
     }
 
     /**
-     * 判断 {@code messages[assistantIndex]} 与其后一条消息是否构成一个<b>闭合的工具交换</b>。
+     * 判断 {@code messages[assistantIndex]} 和它后面那条消息是不是一对完整的工具调用与结果。
      *
-     * <p>
-     * 判定条件见作业单 §工具交换不变式。要点:assistant 消息含一个或多个 tool_use(可同时含 text);
-     * 紧随其后的 user 消息对每个 tool use 都有且只有一个同 ID 的 ToolResultBlock,顺序一致;
-     * 结果消息允许同时带 reminder 等非 tool-result 的 text 块;缺失、重复、错序、错 ID、
-     * 孤立 result 一律不算闭合。
-     * </p>
+     * <p>算完整需要：assistant 消息含一个或多个 tool_use（可以同时含 text）；
+     * 紧接着的 user 消息对每个 tool_use 都有且只有一个同 ID 的结果，顺序一致。
+     * 结果消息里可以同时带 reminder 等文本块。缺结果、重复、错序、ID 不对、以及孤零零的
+     * tool_result，都不算完整。
      *
      * @param messages       消息列表
      * @param assistantIndex 候选 assistant 消息下标
-     * @return true = 闭合的工具交换
+     * @return true 表示这一对是完整的
      */
     public static boolean isClosedToolExchange(List<Message> messages, int assistantIndex) {
         // 边界条件 1: assistantIndex 不合法
@@ -146,16 +135,14 @@ public final class ToolExchangeProtocol {
     }
 
     /**
-     * 拒绝同一批次(一条 assistant 消息)内的重复 tool_use ID。
+     * 拒绝同一批次（一条 assistant 消息）里重复的 tool_use ID。
      *
-     * <p>
-     * 父、子循环在追加 assistant 消息与执行任何工具<b>之前</b>调用本方法:
-     * 重复 ID 会让"每个调用恰好一个结果"的配对契约无法成立,必须明确失败,
-     * 不能留下半截 assistant 消息,也不能产生工具副作用。
-     * </p>
+     * <p>父、子循环在把 assistant 消息加进历史、执行任何工具之前调用本方法。
+     * 重复 ID 会让“每个调用恰好一个结果”无法成立，必须直接报错，不能留下半截消息，
+     * 也不能让工具产生副作用。
      *
      * @param calls 本次模型回复里的全部 tool_use 块
-     * @throws IllegalArgumentException 存在重复 ID(信息里带重复的那个 ID)
+     * @throws IllegalArgumentException 存在重复 ID，异常信息里会带上那个 ID
      */
     public static void requireDistinctCallIds(List<ToolUseBlock> calls) {
         String duplicateId = firstDuplicateCallId(calls);
@@ -165,17 +152,15 @@ public final class ToolExchangeProtocol {
     }
 
     /**
-     * 校验一份"既有历史"可以直接发给模型。
+     * 校验一份已有历史能不能直接发给模型。
      *
-     * <p>
-     * 规则:工具调用/结果必须相邻(assistant tool_use 紧跟一条 user 结果消息)、角色正确
-     * (tool_use 只能在 assistant,tool_result 只能在 user)、数量/顺序/ID 一一对应且调用 ID
-     * 不重复;孤立、缺失、错序或错误角色的工具块都会被明确拒绝。普通文本消息(包括压缩管线
-     * 写出的 archive marker 这类 user 文本)不参与配对检查,始终允许。
-     * </p>
+     * <p>规则：assistant 的 tool_use 后面必须紧跟一条 user 结果消息；tool_use 只能出现在
+     * assistant，tool_result 只能出现在 user；数量、顺序、ID 要一一对应，调用 ID 不能重复。
+     * 孤立、缺失、错序或角色不对的工具块都会报错。普通文本消息不参与配对检查，比如压缩管线
+     * 写出的归档标记这类 user 文本总是允许的。
      *
      * @param messages 待校验的完整历史
-     * @throws IllegalArgumentException 历史中存在畸形的工具交换
+     * @throws IllegalArgumentException 历史中存在不合法的工具调用和结果
      */
     public static void validateHistory(List<Message> messages) {
         for (int i = 0; i < messages.size(); i++) {
@@ -223,7 +208,7 @@ public final class ToolExchangeProtocol {
                                         + resultBlocks.get(k).toolUseId() + " 不匹配");
                     }
                 }
-                i++; // 配对的 user 结果消息已消费,跳过
+                i++; // 配对的 user 结果消息已经看过，跳过它
             } else {
                 // user 只能回灌结果,不能发起调用
                 if (!uses.isEmpty()) {

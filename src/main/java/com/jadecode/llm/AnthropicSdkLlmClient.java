@@ -21,15 +21,13 @@ import com.jadecode.messages.ToolUseBlock;
 import com.jadecode.tools.Tool;
 
 /**
- * AnthropicSdkLlmClient -- LlmClient 的官方 SDK 实现
+ * 用官方 Anthropic SDK 实现 {@link LlmClient}。
  *
- * 全项目唯一接触 com.anthropic.* SDK 类型的类(隔离设计兑现):
- * 出方向把内部类型换成 SDK 类型(toParams / toMessageParam / toSdkTool ...),
- * 入方向把 SDK 响应立即归一化为内部 ContentBlock(toResponse),
- * 项目其余部分不认识 SDK 类型。SDK 类型全部用全限定名,隔离边界在代码里可见。
+ * <p>这是全项目唯一引用 {@code com.anthropic.*} 的类：发出请求时把内部消息转成 SDK 类型，
+ * 收到响应时马上转回内部的 ContentBlock。其他代码都不认识 SDK 类型。
  */
 public class AnthropicSdkLlmClient implements LlmClient {
-    /** SDK 客户端:本类之外不出现(隔离边界) */
+    /** SDK 客户端：只在木类内部使用，不暴露给其他代码。 */
     private final AnthropicClient client;
     /** 模型 id,每次请求都带上 */
     private final String model;
@@ -48,10 +46,10 @@ public class AnthropicSdkLlmClient implements LlmClient {
     }
 
     /**
-     * 同步调一次模型:内部请求 → SDK 参数 → 发送 → 响应归一化为内部类型。
+     * 同步调一次模型：把内部请求转成 SDK 参数发出，再把响应转回内部类型。
      *
      * @param request 内部请求(system / messages / maxTokens / tools)
-     * @return 归一化后的响应(assistant 消息 + token 用量)
+     * @return 转回内部类型后的响应（assistant 消息 + token 用量）
      * @throws LlmException 服务端错误(带 HTTP 状态码)或网络类异常(状态码 0)
      */
     @Override

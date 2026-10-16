@@ -25,13 +25,14 @@ import com.jadecode.tasks.Task.Status;
 import com.jadecode.util.Json;
 
 /**
- * 工作区持久任务图：检查任务是否具备开始条件，并保存责任与进度，模型仍负责实际执行。
+ * 工作区里的持久任务图：检查任务能不能开始，保存负责人和进度。实际工作仍由模型自己做。
  *
- * <p>主流程是 create → updateDependencies → claim → complete；load / list 用于恢复和观察。
- * 与 TodoWrite 整表替换不同，每次只发布一项任务的新版本。模型不能通过本 API 任意改 status 或路径。</p>
+ * <p>主流程是创建 → 加依赖 → 认领 → 完成；读取和列举用于恢复和查看。
+ * 与 todo_write 整表替换不同，这里每次只更新一项任务的新版本，模型也不能随意改状态或路径。
  *
- * <p>本章按顺序执行设计：快照用于一次操作内统一判断，不是数据库事务或并发锁。
- * 原子替换保护旧 JSON 不被普通写入失败截断，不保证断电耐久或多个进程同时认领的互斥。</p>
+ * <p>按顺序执行设计：每次操作先取一份快照统一判断，不是数据库事务或并发锁。
+ * 写入用临时文件原子替换，保护旧 JSON 不被普通写入失败截断，但不保证断电后的耐久性，
+ * 也不保证多个进程同时认领时的互斥。
  */
 public final class TaskStore {
     private final Path workspaceRoot;

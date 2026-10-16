@@ -14,7 +14,7 @@ import java.util.Map;
  * <p>
  * 解析规则:逐行 trim;空行与 # 注释跳过;无 '=' 或 key 为空跳过;重复 key 后者胜。
  * 查询时先查 .env 解析结果,再回退 {@link System#getenv(String)}——.env 覆盖系统环境,
- * 与课程 override=True 语义一致。
+ * 和课程的 override=True 行为一致。
  * </p>
  */
 public final class Env {

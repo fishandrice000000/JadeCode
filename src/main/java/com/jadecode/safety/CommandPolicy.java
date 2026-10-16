@@ -4,12 +4,10 @@ import java.util.List;
 import java.util.regex.Pattern;
 
 /**
- * bash 命令策略:闸门 1(黑名单硬拒)与闸门 2(破坏性 / 高危目录 → 询问)的规则判定。
+ * 判断一条 bash 命令是不是被禁止、还是需要先问用户。
  *
- * <p>
- * 只判定不执行:返回 null = 放行,非 null = 拒绝或询问理由(文案经闸门回灌给模型)。
- * 三个检查互不调用,串联顺序由 {@link PermissionGate} 决定。
- * </p>
+ * <p>只判断不执行：返回 null 表示放行，非 null 是拒绝或询问的理由，会作为工具结果回给模型。
+ * 三段检查互不调用，先后顺序由 {@link PermissionGate} 决定。
  */
 public class CommandPolicy {
     private static final List<String> DENY_LIST = List.of("rm -rf /", "sudo", "shutdown", "reboot", "mkfs", "dd if=",
@@ -57,8 +55,8 @@ public class CommandPolicy {
      * 闸门 2 的 bash 部分追加:命令中出现高危目录路径片段 → 询问。
      *
      * <p>
-     * 堵 bash 旁路文件高危防线的洞(cat /etc/hostname 之类);
-     * 片段由 {@link PathGuard#highRiskDirs()} 派生(目录 + "/"),单一真相源。
+     * 堵上 bash 绕过文件高危防线的漏洞（比如 {@code cat /etc/hostname}）：命令里出现高危目录片段就询问。
+     * 片段由 {@link PathGuard#highRiskDirs()} 生成（目录后面加 "/"），两边共用同一份清单。
      * </p>
      *
      * @param command 完整命令字符串

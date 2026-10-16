@@ -13,10 +13,10 @@ import com.jadecode.tasks.TaskStore;
 import com.jadecode.util.Json;
 
 /**
- * 六个任务工具的薄适配：模型参数 → TaskStore 受控操作 → tool_result 文本。
+ * 六个任务工具的接口适配：把模型参数转成 {@link TaskStore} 的受控操作，再把结果转成文字。
  *
- * <p>六个实例共享同一工作区存储，不是六份任务库。状态、依赖和 IO 规则集中在 TaskStore；
- * 本类只判参数形状、声明工具 schema 并序列化结果，不调用模型、不启动任务或子代理。</p>
+ * <p>六个实例共用同一个工作区存储，不是六份任务库。状态、依赖和文件规则都在 TaskStore；
+ * 本类只检查参数形状、声明参数结构、序列化结果，不调模型、不启动任务或子代理。
  */
 public final class TaskTools {
     /** 本章只有一个任务管理者；模型不能通过参数冒充另一个 owner。 */

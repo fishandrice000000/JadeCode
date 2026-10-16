@@ -6,16 +6,11 @@ import java.util.List;
 import com.jadecode.messages.Message;
 
 /**
- * SnipCompactor -- 第二层:消息条数过多时归档中段。
+ * 第二层：消息条数过多时归档中段。
  *
- * <p>
- * 完整历史写进 transcript,再用一条 archive marker 换掉中段:结果 = 最初若干条 + marker + 最近若干条。
- * 两个切点都要避开完整的工具交换(见 {@link ToolExchangeBoundary})。
- * </p>
- *
- * <p>
- * 本类<b>没有可变会话状态</b>,父子循环可以安全共享同一个实例。
- * </p>
+ * <p>把完整历史写进 transcript，再用一条归档标记换掉中间一段，
+ * 结果是“最初若干条 + 标记 + 最近若干条”。两个切点都要避开完整的工具调用对，
+ * 切不出合法结构时宁可整次不做。本类不保存会话状态，父子循环可以安全共享同一个实例。
  */
 final class SnipCompactor {
 
@@ -35,21 +30,12 @@ final class SnipCompactor {
     }
 
     /**
-     * 消息数超过阈值时,先把完整历史写进 transcript,再用一条 archive marker 换掉中段:
-     * 结果 = 最初若干条 + marker + 最近若干条。
-     *
-     * <p>
-     * 两个切点都要避开完整的工具交换(见 {@link ToolExchangeBoundary#safeHeadEnd} /
-     * {@link ToolExchangeBoundary#safeTailStart})。
-     * 切不出合法结构时宁可整次不做;中段本来就只有一条可信 marker 时也不要重复写归档。
-     * </p>
-     *
-     * <p>
-     * TODO(s08-user): 实现本层。先算切点、判幂等,再落归档、拼新列表。
-     * </p>
+     * 消息数超过门槛时，把完整历史写进 transcript，再用一条归档标记换掉中段。
+     * 两个切点都要避开完整的工具调用对。如果切不出合法结构，宁可整次不做；
+     * 中段本来就只有一条可信标记时也不要重复归档。
      *
      * @param messages 消息列表
-     * @return 裁剪后的列表;无需或无法裁剪时原样返回入参
+     * @return 裁剪后的列表；不需要或无法裁剪时返回入参本身
      */
     List<Message> snipCompact(List<Message> messages) {
         int totalLength = messages.size();

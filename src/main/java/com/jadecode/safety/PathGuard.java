@@ -5,14 +5,12 @@ import java.nio.file.Path;
 import java.util.List;
 
 /**
- * PathGuard 路径分类器(v2)
+ * 判断一个路径属于哪一类：工作区内、高危目录，还是工作区外。
  *
- * 从 s02 的"硬拦器"转型为"分类器":解析路径后分三类——
- * 工作区内(放行)/ 高危区(闸门 1 硬拒)/ 工作区外(闸门 2 询问)。
- * 只做判断,不抛异常;拒绝与否由 PermissionGate 决定。
+ * <p>只做分类，不抛异常。是否拒绝由 {@link PermissionGate} 决定：高危目录直接拒绝，
+ * 工作区外则询问用户。高危目录清单只是学习项目里的样例，不是完整的安全边界。
  *
- * 注意:裸工具路线下,工具本身不再调用本类——分类结果经闸门生效,
- * 单点执法是已接受的取舍(见 docs/jobs/v2/path-fence.md)。
+ * <p>工具本身不会再调本类，分类结果都经过权限闸门生效。
  */
 public class PathGuard {
     // 学习项目清单:不完整,不是完整安全边界(课程对 deny list 同定位)
@@ -44,7 +42,7 @@ public class PathGuard {
         return "Access outside workspace";
     }
 
-    /** 高危目录清单(CommandPolicy 构造 bash 路径片段规则用,单一真相源) */
+    /** 高危目录清单。CommandPolicy 用它拼接 bash 路径片段规则，两边共用同一份清单，不各写一份。 */
     static List<String> highRiskDirs() {
         return HIGH_RISK;
     }

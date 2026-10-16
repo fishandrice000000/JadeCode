@@ -10,8 +10,8 @@ import com.jadecode.cron.CronScheduler;
 import com.jadecode.util.Json;
 
 /**
- * 三把定时工具的薄适配：模型只管理时间规则和 prompt，不指定文件路径或直接修改交付状态。
- * 所有实例共享父会话的一份调度器，仍由 AgentLoop 在 PreToolUse 放行后执行。
+ * 三把定时工具：模型只能管理时间规则和 prompt，不能指定文件路径，也不能直接改交付状态。
+ * 三个实例共用父会话的一个调度器，仍然由 AgentLoop 在权限检查通过后执行。
  */
 public final class CronTools {
     private CronTools() { }
