@@ -9,6 +9,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jadecode.hooks.Hooks;
 import com.jadecode.llm.CompleteRequest;
+import com.jadecode.llm.ToolDefinition;
 import com.jadecode.llm.LlmClient;
 import com.jadecode.llm.LlmException;
 import com.jadecode.llm.ModelResponse;
@@ -109,7 +110,7 @@ class SubagentRuntimeTest {
         assertEquals(1, requests.size());
         assertEquals("sub-system", requests.get(0).system());
         assertEquals(8000, requests.get(0).maxTokens());
-        assertEquals(List.of("bash"), requests.get(0).tools().stream().map(Tool::name).toList());
+        assertEquals(List.of("bash"), requests.get(0).tools().stream().map(ToolDefinition::name).toList());
         // 消息隔离:首个请求只有子 prompt,父对话一个字都没进来
         List<Message> first = requests.get(0).messages();
         assertEquals(1, first.size());

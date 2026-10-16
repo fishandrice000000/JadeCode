@@ -25,7 +25,7 @@ src/main/java/com/jadecode/
 ├── config/           # Env(.env 解析), AppConfig(缺省值与校验)
 ├── util/             # Json(共享 ObjectMapper), Ansi(终端色码)
 ├── messages/         # Message + sealed ContentBlock(text/tool_use/tool_result)
-├── llm/              # LlmClient 接口 + AnthropicSdkLlmClient(SDK 隔离层)
+├── llm/              # LlmClient / ToolDefinition(数据快照) + AnthropicSdkLlmClient(SDK 隔离层)
 ├── tools/            # Tool / ToolSchema 与工具适配器
 ├── execution/        # ExecutionContext / Approval：可信来源、审批与取消契约
 ├── process/          # BackgroundManager(后台 bash / 完成队列) / ShellCommand(进程生命周期)

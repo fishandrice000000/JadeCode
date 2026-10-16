@@ -58,3 +58,10 @@ CLI 拥有 TerminalDisplay 与 ConsoleInput。退出时先拒绝待答审批，�
 - `mvn -q -DskipTests package`：退出 0。初次定向测试退出 0，但发现 target 保留旧包类；以清理后的结果为准。
 - `mvn -q clean -Dtest=PermissionGateTest,PathGuardTest,PathResolverTest,HooksTest,BashToolTest,FileToolsTest,SubagentToolTest test`：退出 0，42 tests / 0 failures / 0 errors / 0 skipped。
 - 后续批次仍待实现：工具定义拆分、AgentExecutor/session/bootstrap 边界、通知渲染和关闭责任调整。
+
+### 批次 2：模型工具定义
+
+- 批次 1 已提交：`d24c6ce`。
+- 新增 llm.ToolDefinition；构造/读取均深复制完整 ObjectNode。Tool.definition 每次正式请求生成数据快照，实际工具仍由 Tool.execute 执行。父子请求、CompleteRequest、SDK 和原有断言定位已同步。
+- 工程自审：Pass。llm 不再引用 tools，未更改 SDK schema 映射算法；已知根级字段丢失仍保留。
+- `mvn -q -Dtest=AgentLoopTest,SubagentRuntimeTest,ToolSchemaTest,MainCompactionAssemblyTest test`：退出 0，40 tests / 0 failures / 0 errors / 0 skipped；无新增/删除/禁用测试。
