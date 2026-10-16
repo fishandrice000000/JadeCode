@@ -22,33 +22,19 @@ import com.jadecode.tools.Tool;
 import com.jadecode.util.Json;
 
 /**
- * 子代理运行时:一次委派 = 一段全新 messages 的嵌套循环。
+ * 在独立的消息列表里运行一项子任务，完成后只把最终文字交给父 Agent。
  *
- * <p>
- * 与父循环({@link com.jadecode.agent.AgentLoop})的关系:共享 LlmClient / Hooks / 工作区,
- * 但消息完全隔离——子代理从只有一条 user 消息的列表起步,父代理只收它的最终文本。
- * 工具表由 Main 装配传入(不含 task,故只有一层委派)。
- * </p>
+ * <p>父 Agent 调用 task 时，会在当前线程等本类返回。子任务从一条 user(prompt) 开始，
+ * 不读取父历史。模型客户端、hooks、工作区和压缩器可以共用，但每次 run 的消息、任务原文、
+ * 轮数和重试次数都单独创建，不会混到上次委派或父任务里。</p>
  *
- * <p>
- * <b>为什么子会话也需要上下文保护</b>:全新上下文降低了起步负担,却挡不住子任务自己读文件、跑构建
- * 而把历史越堆越长。只保护父会话会留下"主会话能持续、长子任务仍会超限中断"的缺口。
- * 所以这里复用父循环那套压缩能力:每次正式请求前自动整理({@link ContextCompactor#prepare}),
- * 批次闭合后处理主动压缩请求({@link ContextCompactor#compactAfterBatch}),正式请求被判定为
- * 上下文过长时做一次有限补救({@link ContextCompactor#reactiveCompact})。
- * </p>
+ * <p>子任务也可能读很多文件把上下文撑大，所以每次请求模型前同样调用 prepare，
+ * 遇到上下文超限时限次压缩后重试，compact 工具则等整批结果都加进历史后再处理。
+ * 这些父子能力的组合是 JadeCode 的做法，不是声称原 s08 课程已有同样实现。</p>
  *
- * <p>
- * <b>共享什么、隔离什么</b>:共享的是<b>无会话状态</b>的压缩依赖与存储;隔离的是这一次委派自己的
- * 东西——messages、子目标(入口 prompt 原文)、已消耗轮数与补救额度,全都是 run 的局部变量,
- * 不写成实例字段。同一个运行时连续跑两次委派,历史与目标不会串:
- * 子任务目标与父用户的请求本来就不是同一个字符串,辅助摘要也不属于子代理的一次"行动"。
- * </p>
- *
- * <p>
- * <b>本类是 JadeCode 的组合设计</b>:本机 s08 课程只给了主循环的压缩策略,没有这套子循环生命周期;
- * 这里是把 s06 的子代理与 s08 的策略接起来,不冒充原课程已有实现。
- * </p>
+ * <p>本次重构只让子 Agent 沿用父任务的来源、询问用户的方法和会话退出检查。
+ * 它仍用自己的历史，不加入父任务队列，也没有后台 bash。
+ * 因此用户退出后，子模型即使才返回，也不能继续启动新工具。</p>
  */
 public class SubagentRuntime {
     /** 子代理最多消耗几轮"成功回复";循环正常走完即超限,回 stopped 文案 */
@@ -89,50 +75,40 @@ public class SubagentRuntime {
     private final Hooks hooks;
 
     /**
-     * 压缩依赖;{@code null} 表示这条委派路径不压缩(旧路径,五参构造器)。
+     * 子任务压缩消息所用的对象，null 表示不压缩。
      *
-     * <p>
-     * 生产装配({@code Main.buildLoop})已经用六参构造器把<b>父循环那一个</b>压缩器传给子代理,
-     * 所以真实 task 调用同样能自动整理、处理 compact 信号并对超限做有限补救。
-     * </p>
-     *
-     * <p>
-     * 它本身不持有会话状态,父子循环可以共享同一个实例;注入它并不会把父会话塞进子会话——
-     * 子代理仍然从全新的 messages 起步。
-     * </p>
+     * <p>Main.buildLoop 把父 Agent 使用的同一个压缩器传进来，所以子 Agent 也能处理
+     * 请求前压缩、compact 工具和上下文超限。共用的是压缩方法及保存目录，
+     * 不是消息列表；压缩器里不保存本次任务的 history，子消息仍在每次 run 中新建。</p>
      */
     private final ContextCompactor compactor;
 
     /**
-     * 不压缩的构造器:保持原有装配方式,等价于把第六个参数传 {@code null}。
-     *
-     * @param client    LLM 客户端
-     * @param tools     子代理工具表
-     * @param system    子代理 system prompt
-     * @param maxTokens 单请求 token 上限
-     * @param hooks     共享事件表
+     * 创建不压缩历史的子 Agent，和六参数版本传 compactor=null 相同，不立即执行任务。
+     * @param client 请求模型的客户端，与父 Agent 共用
+     * @param tools 子工具表，当前不包含 task
+     * @param system 子 Agent 的 system 提示词
+     * @param maxTokens 单次回答生成 token 的上限
+     * @param hooks 工具检查及子任务开始/结束时调用的函数表
+     * @throws IllegalArgumentException 工具表有 compact，却未提供处理它的压缩器
      */
     public SubagentRuntime(LlmClient client, Map<String, Tool> tools, String system, int maxTokens, Hooks hooks) {
         this(client, tools, system, maxTokens, hooks, null);
     }
 
     /**
-     * 完整构造器:可注入压缩依赖(请求前自动整理 + 主动压缩 + 超限补救共用它)。
+     * 给子 Agent 提供自动压缩、compact 工具和超限重试共用的压缩器。
      *
-     * <p>
-     * <b>配置错误早暴露</b>:工具表里注册了 compact 却没提供压缩器,说明装配漏了一半——
-     * 工具会"成功"返回 {@link CompactTool#OUTPUT},却没有任何人处理这个请求。这种组合在<b>构造时</b>
-     * 就抛 {@link IllegalArgumentException}(与父循环一致),不留到运行期静默失效。
-     * 反过来,<b>不</b>注册 compact 也可以注入压缩器:那时只有请求前的自动整理与超限补救生效。
-     * </p>
-     *
-     * @param client    LLM 客户端
-     * @param tools     子代理工具表;注册了 compact 时必须同时提供 compactor
-     * @param system    子代理 system prompt
-     * @param maxTokens 单请求 token 上限
-     * @param hooks     共享事件表
-     * @param compactor 压缩依赖;{@code null} = 不压缩(旧路径)
-     * @throws IllegalArgumentException tools 注册了 compact 但 compactor 为 null
+     * <p>工具表有 compact 却没给压缩器，就立即报错；否则工具会说“已请求压缩”，
+     * 实际上却没人去压缩。也可以只给压缩器、不开放 compact 工具，
+     * 那仍可自动整理历史和处理上下文超限。构造时不请求模型或压缩消息。</p>
+     * @param client 请求模型的客户端，与父 Agent 共用
+     * @param tools 子工具表，当前不包含 task
+     * @param system 子 Agent 的 system 提示词
+     * @param maxTokens 单次回答生成 token 的上限
+     * @param hooks 工具检查及子任务开始/结束时调用的函数表
+     * @param compactor 压缩器，可为 null；工具表含 compact 时必须提供
+     * @throws IllegalArgumentException 工具表含 compact 但 compactor 为 null
      */
     public SubagentRuntime(LlmClient client, Map<String, Tool> tools, String system, int maxTokens, Hooks hooks,
             ContextCompactor compactor) {
@@ -149,12 +125,12 @@ public class SubagentRuntime {
     }
 
     /**
-     * 兼容独立委派调用，创建无审批通道、无父会话关闭绑定的 USER 身份。
-     * 真正的父工具调用使用双参数重载，避免丢失定时来源或父会话关闭信号。
-     *
-     * @param prompt 本次独立子任务描述
-     * @return 子代理最终文本或 30 轮耗尽提示
-     * @throws LlmException 正式模型或压缩辅助请求不可继续
+     * 独立调用子 Agent 时使用，不带父会话的信息。
+     * 默认创建 USER 任务，但没有询问用户的方法，也不知道父会话是否退出。
+     * 真正的 task 工具应调用双参数版本。
+     * @param prompt 子任务要做的事
+     * @return 最终文字或 30 轮用完的提示
+     * @throws LlmException 请求模型或生成压缩摘要失败
      * @see #run(String, ExecutionContext)
      */
     public String run(String prompt) throws LlmException {
@@ -162,40 +138,40 @@ public class SubagentRuntime {
     }
 
     /**
-     * 在全新历史中同步完成一项委派，继承父身份而不继承父会话调度权。
+     * 用全新消息列表完成一项子任务，父 Agent 在调用这里的线程等最终结果。
      *
-     * <p><b>Agent 数据流：</b>只用 prompt 创建一条 USER → 请求前整理 → 正式模型请求
-     * → 校验本批调用 ID → 同步工具执行 → 整批结果回灌 → 必要的主动压缩，重复直到
-     * 无工具回复且 Stop 放行。父代理只拿最终文本，不接收子历史或中间工具交换。
-     * 当前装配的子 bash 仅同步，不共享父收件箱或后台队列。</p>
+     * <p>先把 prompt 放成 USER 消息，每轮压缩需要缩短的历史后请求模型。
+     * 模型要用工具就依次执行，把整批结果加进历史，必要时处理 compact；
+     * 不再调用工具且 Stop 也不要求继续时，返回最终文字。父 Agent 不拿这份中间历史。</p>
      *
-     * <p><b>目标与权限：</b>prompt 原文固定为子 activeRequest，Stop/工具结果不能替换它。
-     * context 从父执行器传入；定时委派仍无交互审批资格。它提供父会话关闭的只读视图，
-     * 在模型前后、工具前及审批返回后复核；关闭不是回滚，不能撤销已进行的 IO。</p>
+     * <p>prompt 原文一直记在 activeRequest，不能被工具输出或 Stop 提示换掉。
+     * context 由父程序传来：定时子任务仍不能询问用户，也沿用父会话的退出检查。
+     * 请求模型前后、执行工具前、等用户批准后都查是否退出，不只依赖线程中断。
+     * 已经写入的文件不会因退出还原。</p>
      *
-     * <p><b>轮次与失败：</b>只对成功取得的正式回复计数，最多 30 次；失败重试及辅助摘要
-     * 不占成功轮数，每次正式成功后重置超限补救额度。第 30 次若能结束则 DONE，否则闭合
-     * 已发工具批次后 STOPPED，不再发第 31 次正式请求。内层 catch 只分类正式请求超限；
-     * 辅助压缩失败不能当作正式超限再次补救。LlmException（含关闭）由外层报告一次 FAILED，
-     * 压缩 IO 与重复调用 ID 按各自既有 FAILED 分支传播；不承诺任意自定义 hook/工具的
-     * 运行异常也都已被统一转换成 LlmException。</p>
+     * <p>只有拿到正式模型回复才消耗一轮，最多 30 轮；摘要和失败重试不算。
+     * 第 30 次若能结束就返回 DONE，否则先给已调用工具加上结果，再返回 STOPPED，
+     * 不发第 31 次请求。正式请求的超限错误才考虑压缩重试，生成摘要失败不能再套一层重试。</p>
      *
-     * @param prompt 父代理提供的子任务描述；启用压缩时须符合其合法请求契约，不修改原字符串
-     * @param context 非 null 的可信来源、审批通道及关闭视图，模型不能通过 prompt 改写
-     * @return 最终文本（空白时使用既有无摘要提示），或轮数耗尽时的 STOPPED 文本
-     * @throws LlmException 模型/辅助摘要失败或父会话已关闭，保留错误交给 SubagentTool 包装
-     * @throws IllegalStateException 压缩归档 IO 等无法继续的运行失败
+     * <p>LlmException（包括父会话退出）由外层报告 FAILED 后重新抛出；
+     * 归档出错和调用 ID 重复也有各自的 FAILED 处理。其它自定义工具或 hook 的意外运行异常
+     * 不一定被转换成 LlmException，不能据此以为所有异常都已经在这里统一处理。</p>
+     * @param prompt 子任务描述；启用压缩时须符合压缩器对请求的要求，不修改原字符串
+     * @param context 父任务来源、询问用户的方法和会话退出检查，不可为 null
+     * @return 最终文字，空白时使用已有无摘要提示；轮数用完则返回 STOPPED 提示
+     * @throws LlmException 模型或压缩摘要失败，或用户已退出父会话
+     * @throws IllegalStateException 压缩归档等运行失败，不能继续
      * @throws NullPointerException context 为 null
      */
     public String run(String prompt, ExecutionContext context) throws LlmException {
         java.util.Objects.requireNonNull(context, "executionContext");
-        // 子历史是本次调用的局部状态；只传身份，不借父 history 引用，避免子工具交换污染父协议。
+        // 每次 run 都新建子消息列表，不用父 history；父对话中只保留这次 task 的最终结果。
         List<Message> messages = new ArrayList<>();
 
         messages.add(Message.userText(prompt));
 
-        // 本次委派的"当前请求"就是入口 prompt 原文:不借用父循环的 extractActiveRequest、
-        // 不从随后的工具结果或 Stop 注入里重新提取,也不存成实例字段——它只活在这一个 run 里。
+        // 这次子任务要做的事就是 prompt；不用从父历史找，也不从之后的工具结果或 Stop 提示重取。
+        // 只存在本次 run 的局部变量里，不放在对象字段上，避免下一次委派沿用旧任务。
         final String activeRequest = prompt;
 
         // 触发事件 SUBAGENT_START(一次委派恰好一次)
@@ -206,10 +182,10 @@ public class SubagentRuntime {
 
         try {
             while (turns < MAX_TURNS) {
-                // 不只依赖线程中断：第三方模型客户端可能忽略中断，但下一执行边界仍应停止。
+                // 网络客户端可能不理会中断；继续下一步前仍要看用户是否已退出。
                 checkSessionOpen(context);
                 // 1. 正式请求之前的自动整理(未注入压缩器时整段跳过,保持旧行为)。
-                //    首次请求、工具结果回灌之后、Stop 续跑之后、补救重试之前都会经过这里。
+                //    第一次请求、加入工具结果后、Stop 要求继续后、超限重试前，都会经过这里。
                 if (compactor != null) {
                     List<Message> prepared;
                     try {
@@ -234,7 +210,7 @@ public class SubagentRuntime {
                     response = client
                             .complete(new CompleteRequest(system, messages, maxTokens, List.copyOf(tools.values())));
                 } catch (LlmException error) {
-                    // 父会话已退出时不因晚到的超限错误再发起摘要补救。
+                    // 如果用户在等模型时退出，即使现在才返回超限错误，也不要再调用摘要模型。
                     checkSessionOpen(context);
                     // 2.1 恢复分流:命中"上下文过长"的分类、且本次委派还有额度,才值得付一次有损压缩。
                     //     不匹配(认证 / 限流 / 网络)或额度耗尽的异常原样抛出,交给外层统一 END(FAILED)。
@@ -331,7 +307,7 @@ public class SubagentRuntime {
                     }
 
                     // 调用工具获取输出
-                    // 审批答复可能晚到；关闭信号随身份继承，不能只在 while 顶部检查。
+                    // 等用户批准期间也可能退出；执行工具前再检查，不能只在 while 开始时检查。
                     checkSessionOpen(context);
                     ObjectNode node = u.input() instanceof ObjectNode o ? o : Json.mapper().createObjectNode();
                     String output = tool.execute(node, context);
@@ -349,15 +325,15 @@ public class SubagentRuntime {
                     hooks.trigger(Hooks.SUBAGENT_TOOL,
                             Map.of(Hooks.PARAM_BLOCK, u, Hooks.PARAM_OUTPUT, output));
 
-                    // 回灌结果
+                    // 记下这个调用 ID 对应的工具结果。
                     results.add(new ToolResultBlock(u.id(), output));
                 }
 
-                // 7. 全部结果合成一条 user 消息:到这一行为止,本批的工具交换才"闭合"
+                // 7. 全部结果一起加入一条 USER；现在这批每个 tool_use 都有对应的 tool_result。
                 messages.add(Message.userBlocks(results));
 
-                // 8. 闭合之后才处理主动压缩:整批结果都已回灌,分类(纯 compact 整段摘要 / 混合批次先预算
-                //    再摘要旧前缀)交给压缩器,子循环不复制这套策略。
+                // 8. 全部结果都已写入历史，现在才处理 compact。只有 compact 时可摘要整段；
+                //    混有其它工具时先限制结果长度、保留新结果，再摘要旧消息，具体做法交给压缩器。
                 if (compactRequested) {
                     checkSessionOpen(context);
                     List<Message> compacted;
@@ -386,10 +362,12 @@ public class SubagentRuntime {
     }
 
     /**
-     * 子代理没有父收件箱，但必须遵守父会话关闭边界；取消作为 LlmException 走既有一次 FAILED 收尾。
-     * 已在进行中的 IO 不回滚；检查只阻止后续模型／工具步骤，不声称强制终止第三方 HTTP。
-     * @param context 继承的非 null 只读会话关闭视图
-     * @throws LlmException 父会话已经关闭，交由外层 FAILED 分支收尾，不发起摘要补救
+     * 子 Agent 继续请求模型或执行工具前，检查用户是否已退出父会话。
+     *
+     * <p>把退出报告成 LlmException，是为了让现有外层 catch 统一发出一次 FAILED。
+     * 它不能立刻打断第三方网络请求或还原文件，只能阻止后面的操作。</p>
+     * @param context 父任务传来的信息，通过其中函数读取会话是否退出
+     * @throws LlmException 父会话已退出；不因此再请求压缩摘要
      */
     private static void checkSessionOpen(ExecutionContext context) throws LlmException {
         if (context.isCancelled()) throw new LlmException("Parent session is closed");

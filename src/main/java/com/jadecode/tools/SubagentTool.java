@@ -9,21 +9,22 @@ import com.jadecode.llm.LlmException;
 import com.jadecode.subagent.SubagentRuntime;
 
 /**
- * task:委派子代理——用全新对话上下文跑一个子任务,只回传它的最终文本。
+ * task 工具：让一个子 Agent 用独立的消息列表完成子任务，把最终文字返回给父 Agent。
  *
- * <p>
- * 薄壳:参数校验在此,嵌套循环与消息隔离全在 {@link SubagentRuntime}。
- * 子代理工具表不含本工具,故只有一层委派。
- * 委派在当前执行线程同步运行，父任务等待返回；子历史不进入父历史，只有最终文本作为
- * 这次 task 调用的结果。执行身份另行继承，以保证来源审批和会话关闭不因委派而丢失。
- * </p>
+ * <p>这里只检查参数，实际请求模型和执行工具在 SubagentRuntime。
+ * 调用 task 的线程会等子 Agent 返回，不是后台执行。子 Agent 的中间消息不加入父 history，
+ * 父 Agent 只收到这次 task 的结果；子工具表没有 task，因此不能再派第三层子 Agent。</p>
+ *
+ * <p>子 Agent 仍沿用父任务的来源和退出检查。定时任务不能因为派了子 Agent 就申请人工批准，
+ * 用户退出后，也不能让子 Agent 刚收到的模型回复继续启动工具。</p>
  */
 public class SubagentTool implements Tool {
-    /** 子代理运行时:构造器注入(仿 GlobTool 注入 PathResolver) */
+    /** 负责运行子 Agent 的对象，通过构造器传进来。 */
     private final SubagentRuntime runtime;
 
     /**
-     * @param runtime 子代理运行时
+     * 记住实际运行子 Agent 的对象，构造时不执行任务。
+     * @param runtime 子 Agent 的模型循环
      */
     public SubagentTool(SubagentRuntime runtime) {
         this.runtime = runtime;
@@ -38,7 +39,7 @@ public class SubagentTool implements Tool {
     }
 
     /**
-     * @return 给模型的说明:全新上下文跑子任务,只返回最终文本
+     * @return 给模型看的说明：子任务从独立消息列表开始，只返回最终文字
      */
     @Override
     public String description() {
@@ -62,11 +63,10 @@ public class SubagentTool implements Tool {
     }
 
     /**
-     * 为无上下文的旧调用方提供兼容入口，创建无人工审批通道的独立 USER 身份。
-     * 生产调用应使用双参数重载，以继承真实来源和父会话关闭信号。
-     *
-     * @param input 模型参数,须含 prompt
-     * @return 子代理最终文本、轮数耗尽提示或 Error 文本；不直接修改父历史
+     * 旧调用者不传任务信息时使用，创建没有询问用户功能的 USER 任务。
+     * CLI 应调用双参数版本，把真正的任务来源和会话是否退出也传给子 Agent。
+     * @param input 模型参数，要有 prompt，不修改
+     * @return 子 Agent 的最终文字、轮数用完提示或 Error 说明，不在此修改父 history
      * @see #execute(ObjectNode, ExecutionContext)
      */
     @Override
@@ -75,15 +75,15 @@ public class SubagentTool implements Tool {
     }
 
     /**
-     * 校验委派参数后同步运行子代理，传递可信身份，但不传父历史或父收件箱。
+     * 检查 prompt 是否缺失，然后等子 Agent 做完；不给它父消息列表或父任务队列。
      *
-     * <p>context 来自父执行器，不从 input 恢复。定时任务委派后仍是 SCHEDULED，不能
-     * 利用子代理申请人工批准；会话关闭视图也沿用，防止子模型的晚到回复启动新工具。</p>
-     * @param input 非 null 参数对象；检查 prompt 是否缺失，沿用已有 asText 转换行为，不修改输入
-     * @param context 非 null 的父执行身份，同步传给 SubagentRuntime
-     * @return 子代理最终文本或轮数上限提示；缺参、LlmException 转为 Error 文本，
-     *         由父执行器包装为原 task 调用的 tool_result。其它意外运行异常不在此伪装为成功
-     * @throws NullPointerException context 为 null 且已经进入子运行器
+     * <p>context 由父程序另外传入，不从 input 读取。定时任务仍是 SCHEDULED，不能询问用户。
+     * 子 Agent 也用相同的方法检查会话是否退出，免得模型回复较晚，退出后还去执行工具。</p>
+     * @param input 非 null 参数对象，prompt 沿用 asText 转换方式；不修改输入
+     * @param context 非 null 的父任务信息，直接交给 SubagentRuntime
+     * @return 最终文字或轮数耗尽提示；缺参及 LlmException 返回 Error 说明，
+     *         父执行器再包装为本次 task 的 tool_result。其它意外运行异常继续抛出
+     * @throws NullPointerException context 为 null，且已调用子运行器
      */
     @Override
     public String execute(ObjectNode input, ExecutionContext context) {

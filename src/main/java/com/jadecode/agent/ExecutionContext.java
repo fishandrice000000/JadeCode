@@ -7,36 +7,38 @@ import java.util.function.BooleanSupplier;
 import com.jadecode.safety.PermissionGate;
 
 /**
- * Harness 创建的一次任务执行身份，不是模型参数，也不是 s10 的持久任务条目。
+ * 记录这项任务由谁发起，以及程序如何处理它的权限和退出。
  *
- * <p>任务 ID 将后台命令与发起任务关联；来源决定能否交互审批。两者都由运行器传给工具与
- * 子代理，不能从模型提交的 JSON 中恢复。approval 是终端提供的审批通道，不负责安全规则；
- * 没有通道时需要询问的操作仍然拒绝。身份不可变；sessionClosed 是所属会话取消状态的
- * 只读视图，子代理借它拒绝关闭后的晚到回复，不接管父队列或跨进程状态。</p>
- * @param id 本次执行的身份，与 cron 定义 ID、tool_use_id 和 bg_id 分开
- * @param source 真实发起来源，子代理继承，不因换线程而改变
- * @param approval 人工任务的审批通道；null 表示没有交互通道
- * @param sessionClosed Harness 提供的线程安全只读关闭信号，不由模型设置
+ * <p>用户和定时器都用同一线程执行任务，不能靠线程判断要不要询问用户。
+ * 所以程序在排队前记录 source，再原样传给工具和子代理；模型不能在 JSON 里填写它。
+ * 子代理接到定时任务仍然是 SCHEDULED，不能因此获得人工批准。</p>
+ *
+ * <p>id 用于找回这项任务启动的后台命令。approval 是询问用户的函数，不负责判断哪些命令
+ * 需要批准；那由 PermissionGate 决定。sessionClosed 是一个检查函数，调用时才读取
+ * 用户是否退出，让子代理在等模型或等批准后，也能停止后续操作。</p>
+ * @param id 本次执行的 run_ ID，不同于定时定义 ID、工具调用 ID 和后台命令 bg_id
+ * @param source USER 表示用户提交，SCHEDULED 表示定时触发
+ * @param approval 询问用户的函数，null 表示不能询问
+ * @param sessionClosed 检查所属会话是否已退出的函数，由程序提供，不是模型参数
  */
 public record ExecutionContext(String id, Source source, PermissionGate.Approval approval, BooleanSupplier sessionClosed) {
     /**
-     * 两种可信的新任务来源：USER 可携带人工审批通道，SCHEDULED 不允许交互审批。
-     * 后台完成和 Stop 是当前任务的续跑，不创建新的来源；也不能因执行线程改变而变成 USER。
+     * 区分用户直接发起和定时触发。后台结果和 Stop 要求继续，都沿用原任务来源。
      */
     public enum Source {
-        /** 用户直接提交；只有同时携带审批通道且会话未关闭，才可询问用户。 */
+        /** 用户直接提交的任务；还需要有询问用户的函数，且会话没退出，才能申请批准。 */
         USER,
-        /** 定时定义到期触发；不能把后续工具/子代理的执行线程当作人工审批资格。 */
+        /** 时间到了自动触发的任务，工具和子代理都不能向用户申请批准。 */
         SCHEDULED
     }
 
     /**
-     * 在 Harness 构造边界校验身份完整性，不推断权限或执行安全规则。
-     * @param id 非空白执行 ID，区分同一会话中的不同目标
-     * @param source 非 null 的真实发起来源
-     * @param approval 可选审批通道；即使非 null，SCHEDULED 也不会因此获得交互审批
-     * @param sessionClosed 非 null、线程安全的只读关闭视图
-     * @throws IllegalArgumentException id 缺失或为空白
+     * 检查任务 ID 和必须提供的字段，不在构造时检查命令权限或执行任何工作。
+     * @param id 非空白的任务 ID
+     * @param source 任务来源，不可为 null
+     * @param approval 可以为 null；即使提供，SCHEDULED 也不能询问用户
+     * @param sessionClosed 检查会话是否退出的函数，不可为 null，应能安全地由不同线程调用
+     * @throws IllegalArgumentException id 为 null 或空白
      * @throws NullPointerException source 或 sessionClosed 为 null
      */
     public ExecutionContext {
@@ -46,12 +48,14 @@ public record ExecutionContext(String id, Source source, PermissionGate.Approval
     }
 
     /**
-     * 兼容独立调用方：不绑定父会话关闭信号，其 isCancelled 始终为 false。
-     * 生产会话应使用四参数版本，才能让子代理观察父会话关闭；此默认值不是额外权限。
-     * @param id 非空白执行 ID
-     * @param source 可信任务来源
-     * @param approval 可选审批通道
-     * @throws IllegalArgumentException id 缺失或为空白
+     * 给没有父会话的旧调用者使用，默认 isCancelled 一直返回 false。
+     *
+     * <p>真正的 CLI 任务应传四个参数，把检查会话退出的函数也传进来，
+     * 否则子代理不知道父会话已经退出。这里默认 false 不代表跳过权限检查。</p>
+     * @param id 非空白的任务 ID
+     * @param source 任务来源
+     * @param approval 询问用户的函数，可为 null
+     * @throws IllegalArgumentException id 为 null 或空白
      * @throws NullPointerException source 为 null
      */
     public ExecutionContext(String id, Source source, PermissionGate.Approval approval) {
@@ -59,10 +63,10 @@ public record ExecutionContext(String id, Source source, PermissionGate.Approval
     }
 
     /**
-     * 为一次新提交的任务分配执行 ID；排队前即固定身份，不启动模型、命令或文件 IO。
-     * @param source 发起来源
-     * @param approval 可选的人工审批通道
-     * @return 只供本次执行使用的上下文
+     * 创建一个新的 run_ ID，供独立调用者执行一项任务，不启动线程或命令。
+     * @param source 任务来自用户还是定时器
+     * @param approval 询问用户的函数，可为 null
+     * @return 新任务的信息，没有父会话退出检查，isCancelled 默认一直为 false
      * @throws NullPointerException source 为 null
      */
     public static ExecutionContext create(Source source, PermissionGate.Approval approval) {
@@ -70,12 +74,14 @@ public record ExecutionContext(String id, Source source, PermissionGate.Approval
     }
 
     /**
-     * 为会话的新请求分配执行 ID，并绑定可被子代理继承的关闭视图。
-     * 构造不启动线程或 IO；supplier 在查询时读取状态，不是注册的取消回调。
-     * @param source 可信发起来源，不从模型文本推断
-     * @param approval 可选人工审批通道
-     * @param sessionClosed 读取所属会话关闭状态的线程安全函数，例如读取 volatile 标记
-     * @return 带唯一 run_ ID 的上下文；同一任务的工具与子代理传递同一身份
+     * 为刚提交的任务分配 run_ ID，并记下以后如何检查用户是否退出。
+     *
+     * <p>同一任务的工具和子代理使用同一份信息，不另换来源或任务 ID。
+     * 这里仅保存函数，不调用它来等待退出，也不启动线程、模型或命令。</p>
+     * @param source 程序确定的任务来源，不能从模型文字中取
+     * @param approval 询问用户的函数，可为 null
+     * @param sessionClosed 检查会话是否退出的函数，例如读取 SessionRuntime 的 volatile closed 字段
+     * @return 新任务的信息，工具和子代理沿用它
      * @throws NullPointerException source 或 sessionClosed 为 null
      */
     public static ExecutionContext create(Source source, PermissionGate.Approval approval, BooleanSupplier sessionClosed) {
@@ -83,8 +89,9 @@ public record ExecutionContext(String id, Source source, PermissionGate.Approval
     }
 
     /**
-     * 查询所属会话是否关闭，供工具/子代理在执行边界拒绝晚到回复或批准。
-     * @return 关闭视图当前值；false 不承诺之后不会关闭，true 也不能撤销已开始的 IO
+     * 检查用户现在是否已退出这项任务所在的会话。
+     * @return 已退出为 true；false 只表示此刻没退出，不保证下一刻仍然如此。
+     *         true 也不会还原已经写入的文件或自动停止所有正在进行的操作
      */
     public boolean isCancelled() { return sessionClosed.getAsBoolean(); }
 }

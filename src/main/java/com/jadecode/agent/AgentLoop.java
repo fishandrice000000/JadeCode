@@ -27,58 +27,58 @@ import com.jadecode.tools.Tool;
 import com.jadecode.util.Json;
 
 /**
- * 当前任务的执行器：执行一个模型步骤或一个工具批次，不再拥有整个会话循环。
+ * 负责请求模型、执行工具，以及需要时压缩消息。
  *
- * <p>SessionRuntime 决定何时执行、等待或结束；本类将结果作为 SessionEvent 交回运行器，
- * 不自行领取新请求、收集后台通知或修改会话历史。普通模型与工具仍同步执行，只有显式后台
- * bash 才由工作者执行。统一事件入口不等于所有操作都异步化。</p>
+ * <p>什么时候开始一项任务、等不等后台命令、能不能结束，由 SessionRuntime 决定。
+ * 本类只做好它交来的这一步：request 取得模型回复，executeTools 执行一批工具，
+ * compactAfterBatch 在结果写进历史后压缩。除明确放到后台的 bash 外，其它操作仍在调用线程
+ * 执行，不是每收到一个事件就另开线程。</p>
  *
- * <p>可按调用顺序阅读：activeRequest/taskSystem 固定任务目标和召回背景，request 获取
- * 正式回复，executeTools 执行其中的工具，compactAfterBatch 在完整结果回灌后处理主动压缩，
- * stop/finish 参与结束检查。是否继续、等待后台或领取新任务，均由 SessionRuntime 决定。
- * 保留类名与 run API 是为兼容既有装配和调用方，不表示本类还有另一套会话调度循环。</p>
+ * <p>先读 activeRequest、taskSystem，了解如何记住用户请求和查到的记忆；
+ * 再读 request → executeTools → compactAfterBatch；最后看 stop 和 finish。
+ * run(messages) 留给旧调用者，但也使用 SessionRuntime，不再单独保留一套循环。</p>
  *
- * <p>压缩仍遵守原契约：每次正式请求前自动整理，正式请求超限才有限补救，工具批次闭合后
- * 才处理 compact。辅助摘要不计业务轮，不进入工具分发或 Stop；文件 IO 副作用不回滚。</p>
+ * <p>生成摘要只是为了缩短消息，摘要回复不能当成模型的工作回答去分发工具或触发 Stop。
+ * 请求失败不会自动还原已经写入的文件，也不会重跑执行过的工具。</p>
  */
 public class AgentLoop implements AutoCloseable {
-    /** 正式主任务请求使用的客户端；辅助服务是否使用同一客户端由装配决定。 */
+    /** 向模型请求下一步操作的客户端；查记忆和生成摘要的客户端由相应对象保存。 */
     private final LlmClient client;
-    /** 工具名到实现的分发表；装配后不应由外部并发改写。 */
+    /** 工具名称与实现对象的对应表；开始运行后，外部不要再修改。 */
     private final Map<String, Tool> tools;
-    /** 基础 system；每项任务可在此基础上追加一次记忆召回背景。 */
+    /** 基础 system 提示词，每项任务开始时可能再加上查到的记忆。 */
     private final String system;
-    /** 单次正式回复的输出 token 上限，不是上下文压缩字符阈值。 */
+    /** 模型一次回答最多生成多少 token，不是历史消息允许的字符数。 */
     private final int maxTokens;
-    /** 同步扩展点，包括工具审批、展示与 Stop 控制；并非异步消息队列。 */
+    /** 工具执行前后和任务结束时调用的函数表，用来查权限、显示日志或要求继续。 */
     private final Hooks hooks;
-    /** 可选压缩策略；它产生候选历史，运行器决定采用，不拥有会话列表。 */
+    /** 压缩器，可以没有；生成较短的消息列表，再由 SessionRuntime 写回 history。 */
     private final ContextCompactor compactor;
-    /** 可选任务级记忆服务，不在每次后台唤醒时重新召回。 */
+    /** 长期记忆功能，可以没有；一项任务开始时查一次，不因后台命令完成就重查。 */
     private final MemoryManager memory;
-    /** 与父 bash 共享的命令资源；整个会话关闭时一并释放。 */
+    /** 父 bash 使用的命令管理器；用户退出时停止其中的命令。 */
     private final BackgroundManager background;
-    /** 定时定义与 pending 状态；本类仅把它交给运行器，不启动计时线程。 */
+    /** 保存定时任务和待发送状态的对象；本类不负责定时检查。 */
     private final CronScheduler cron;
-    /** 退出后禁止新请求/工具；volatile 使消费者可看见 CLI 线程的关闭。 */
+    /** 用户退出后设为 true；volatile 让处理线程也能看到这个变化。 */
     private volatile boolean closed;
 
-    /** 识别本批是否更新过计划，用于重置提醒计数，不据此判断业务完成。 */
+    /** 用来识别本批是否调用 todo_write，调用后重新计数，不据此判断任务已完成。 */
     private static final String TODO_TOOL = "todo_write";
-    /** 只认实际执行且返回稳定信号的 compact 调用，不扫描任意输出文本猜测压缩意图。 */
+    /** 只处理真正执行过且返回指定文字的 compact，不靠扫描任意工具输出猜是否要压缩。 */
     private static final String COMPACT_TOOL = "compact";
-    /** 连续三个未更新 todo 的工具批次后附带的普通文本提醒，不是新目标。 */
+    /** 连续三批工具都没更新 todo 后，给模型的提醒；不是用户的新任务。 */
     private static final String REMINDER_MESSAGE = "<reminder>Update your todos.</reminder>";
 
     /**
-     * 创建最小执行器，保留旧调用方不启用后续章节能力的装配方式。
-     * 不启动模型、命令或线程；工具表不能包含无人处理的 compact。
-     * @param client 正式模型客户端
-     * @param tools 工具分发表，不得注册 compact
-     * @param system 基础系统提示
-     * @param maxTokens 单次正式回复的输出 token 上限
-     * @param hooks 同步 hook 注册表
-     * @throws IllegalArgumentException 注册了 compact 但没有提供压缩器
+     * 只提供模型、工具和 hook 的基本功能，不启用压缩、记忆、后台或定时任务。
+     * 构造时不启动线程，不调用模型或工具。
+     * @param client 向模型发请求的客户端
+     * @param tools 工具名称与具体实现的对应表
+     * @param system 基础 system 提示词
+     * @param maxTokens 模型单次回答最多生成多少 token
+     * @param hooks 工具执行前后和任务结束时调用的函数表
+     * @throws IllegalArgumentException tools 含 compact，但没有压缩器处理它
      * @see #AgentLoop(LlmClient, Map, String, int, Hooks, ContextCompactor, MemoryManager, BackgroundManager, CronScheduler)
      */
     public AgentLoop(LlmClient client, Map<String, Tool> tools, String system, int maxTokens, Hooks hooks) {
@@ -86,14 +86,14 @@ public class AgentLoop implements AutoCloseable {
     }
 
     /**
-     * 在最小执行器上增加上下文保护；其余可选能力不启用，构造不触发压缩。
-     * @param client 正式模型客户端
-     * @param tools 工具分发表
-     * @param system 基础系统提示
-     * @param maxTokens 单次正式回复的输出 token 上限
-     * @param hooks 同步 hook 注册表
-     * @param compactor 自动整理、主动压缩和超限补救共用的策略，可为 null
-     * @throws IllegalArgumentException 注册 compact 却未提供 compactor
+     * 在基本功能上增加消息压缩，仍不启用记忆、后台或定时任务。
+     * @param client 向模型发请求的客户端
+     * @param tools 工具名称与具体实现的对应表
+     * @param system 基础 system 提示词
+     * @param maxTokens 模型单次回答最多生成多少 token
+     * @param hooks 工具执行前后和任务结束时调用的函数表
+     * @param compactor 自动压缩、compact 工具和超限重试共用的压缩器；null 表示不压缩
+     * @throws IllegalArgumentException 注册 compact 却没传 compactor
      */
     public AgentLoop(LlmClient client, Map<String, Tool> tools, String system, int maxTokens, Hooks hooks,
             ContextCompactor compactor) {
@@ -101,15 +101,15 @@ public class AgentLoop implements AutoCloseable {
     }
 
     /**
-     * 绑定压缩与任务级记忆，不启用后台或定时依赖；构造不召回或提取记忆。
-     * @param client 正式模型客户端
-     * @param tools 工具分发表
-     * @param system 召回前的基础系统提示
-     * @param maxTokens 单次正式回复的输出 token 上限
-     * @param hooks 同步 hook 注册表
-     * @param compactor 可选压缩策略
-     * @param memory 可选入口召回与结束维护服务，后台续跑不重新建立任务
-     * @throws IllegalArgumentException 注册 compact 却未提供 compactor
+     * 增加压缩和长期记忆功能。构造时只保存这些对象，不立即读记忆或请求模型。
+     * @param client 向模型发请求的客户端
+     * @param tools 工具名称与具体实现的对应表
+     * @param system 基础 system 提示词
+     * @param maxTokens 模型单次回答最多生成多少 token
+     * @param hooks 工具执行前后和任务结束时调用的函数表
+     * @param compactor 压缩器，可为 null
+     * @param memory 每项任务开始时查记忆、做完后保存记忆的对象，可为 null
+     * @throws IllegalArgumentException 注册 compact 却没传 compactor
      */
     public AgentLoop(LlmClient client, Map<String, Tool> tools, String system, int maxTokens, Hooks hooks,
             ContextCompactor compactor, MemoryManager memory) {
@@ -117,16 +117,16 @@ public class AgentLoop implements AutoCloseable {
     }
 
     /**
-     * 增加会话后台命令资源，不启用定时生产；绑定资源本身不启动命令或线程。
-     * @param client 正式模型客户端
-     * @param tools 工具分发表
-     * @param system 基础系统提示
-     * @param maxTokens 单次正式回复的输出 token 上限
-     * @param hooks 同步 hook 注册表
-     * @param compactor 可选压缩策略
-     * @param memory 可选任务级记忆服务
-     * @param background 可选后台管理器；必须与父 bash 使用同一实例，否则无法正确等待/收集结果
-     * @throws IllegalArgumentException 注册 compact 却未提供 compactor
+     * 再增加后台命令功能，仍不启动定时检查。构造时不会运行任何命令。
+     * @param client 向模型发请求的客户端
+     * @param tools 工具名称与具体实现的对应表
+     * @param system 基础 system 提示词
+     * @param maxTokens 模型单次回答最多生成多少 token
+     * @param hooks 工具执行前后和任务结束时调用的函数表
+     * @param compactor 压缩器，可为 null
+     * @param memory 长期记忆功能，可为 null
+     * @param background 必须与父 bash 使用同一个管理器，才能收集并等待它启动的命令；可为 null
+     * @throws IllegalArgumentException 注册 compact 却没传 compactor
      */
     public AgentLoop(LlmClient client, Map<String, Tool> tools, String system, int maxTokens, Hooks hooks,
             ContextCompactor compactor, MemoryManager memory, BackgroundManager background) {
@@ -134,20 +134,21 @@ public class AgentLoop implements AutoCloseable {
     }
 
     /**
-     * 生产装配：仅绑定依赖，实际会话和计时器由 CLI 显式启动。
+     * 保存完整 CLI 所需的各个对象，构造时不读文件、不启动线程，也不调用模型。
      *
-     * <p>参数中的资源由装配方准备；本构造器不读取配置、不做文件 IO，也不复制工具表。
-     * 注册 compact 却不提供处理器会立即失败，避免工具返回“已请求”而实际没有压缩。</p>
-     * @param client 正式模型调用客户端，辅助服务的客户端由各自装配决定
-     * @param tools 工具分发表；包含 compact 时要求 compactor 非空
-     * @param system 不含本次召回背景的基础提示
-     * @param maxTokens 单次正式请求上限
-     * @param hooks 工具与 Stop 扩展点
-     * @param compactor 可选上下文保护，无会话历史所有权
-     * @param memory 可选任务入口召回与结束维护
-     * @param background 可选会话后台命令所有者
-     * @param cron 可选工作区定时状态，不在本类启动计时
-     * @throws IllegalArgumentException 注册 compact 却未提供 compactor
+     * <p>如果工具表有 compact 却没传压缩器，立即报错。否则模型调用 compact 后虽然拿到
+     * “已请求压缩”的回答，实际上却没人执行压缩，会误导模型和用户。tools 不复制，
+     * 构造后调用者不要再从其它线程修改它。</p>
+     * @param client 向模型发请求的客户端
+     * @param tools 工具名称与具体实现的对应表
+     * @param system 基础 system 提示词
+     * @param maxTokens 模型单次回答最多生成多少 token
+     * @param hooks 工具执行前后和任务结束时调用的函数表
+     * @param compactor 压缩器，可为 null；工具表有 compact 时必须提供
+     * @param memory 长期记忆功能，可为 null
+     * @param background 与父 bash 共用的命令管理器，可为 null
+     * @param cron 与定时工具共用的任务记录，可为 null；这里只保存它，不开始检查时间
+     * @throws IllegalArgumentException 注册 compact 却没传 compactor
      */
     public AgentLoop(LlmClient client, Map<String, Tool> tools, String system, int maxTokens, Hooks hooks,
             ContextCompactor compactor, MemoryManager memory, BackgroundManager background, CronScheduler cron) {
@@ -167,46 +168,47 @@ public class AgentLoop implements AutoCloseable {
     }
 
     /**
-     * 提供同一 hook 注册表，供装配方添加入口、工具和结束回调。
-     * @return 原 hook 对象；只应在受控装配阶段注册，不启动消费者或触发回调
+     * 取得同一份 hook 表，供 Main 在开始运行之前添加日志、权限检查等函数。
+     * @return 构造时传入的 Hooks；调用此方法不会触发里面的函数
      */
     public Hooks hooks() { return hooks; }
 
     /**
-     * 供运行器创建定时生产适配器，确保生产者与定时工具观察同一份状态。
-     * @return 绑定的调度器；旧装配未启用 cron 时为 null，获取它不代表计时器已经运行
+     * 让 SessionRuntime 使用和定时工具相同的任务记录。
+     * @return 构造时传入的调度器；没有定时功能时为 null，取得对象不表示定时检查已经启动
      */
     public CronScheduler cronScheduler() { return cron; }
 
     /**
-     * 向同包运行器提供后台命令资源，不把管理器暴露成模型工具参数。
-     * @return 与父 bash 共享的管理器；未启用后台能力时为 null
+     * 让 SessionRuntime 取得 bash 使用的命令管理器，以便收结果和停止命令。
+     * @return 共享的管理器；没有后台功能时为 null
      */
     BackgroundManager background() { return background; }
 
     /**
-     * 兼容既有调用方：在调用者持有的列表上完成一个任务，仍使用唯一的会话执行实现。
+     * 按旧 API 执行一项任务，直接修改调用者给出的消息列表。
      *
-     * <p>此入口不启动 cron，也不在返回时关闭整个执行器；后续 run 可继续同一历史。异常原样
-     * 向上传播，已经采用的压缩、完整工具交换及 IO 保留。不要与另一个运行器并发调用。</p>
-     * @param messages 可变、工具交换完整的既有历史，末条为本次请求
-     * @throws LlmException 既有有限超限补救后仍无法继续的模型错误
-     * @throws RuntimeException 历史/回复非法、执行链意外失败或执行器关闭；已发生的副作用不撤销
+     * <p>实际委托 SessionRuntime.runExisting，不启动定时检查，也不在返回时关闭 AgentLoop。
+     * 调用者可以再次传入同一历史继续对话，但不能在另一个线程同时运行它。
+     * 失败前已加入的消息、压缩后的历史及文件修改都会留下，不会自动还原。</p>
+     * @param messages 可修改的消息列表，末条已是本次请求，工具调用必须各有对应结果
+     * @throws LlmException 模型请求或压缩摘要失败，不能继续
+     * @throws RuntimeException 消息不合法、执行意外出错或执行器已退出
      */
     public void run(List<Message> messages) throws LlmException {
         SessionRuntime.runExisting(this, messages);
     }
 
     /**
-     * 在任务入口检查工具交换结构，并在需要时从最新请求捕获固定目标。
+     * 开始处理任务时，检查消息中的工具调用和结果是否配对，然后记住用户请求。
      *
-     * <p>即使没有压缩/记忆也检查交换结构；两项能力均关闭时保留旧入口语义并返回 null。
-     * 启用任一能力时，目标必须来自合法请求。后台通知、Stop 输入和摘要都不能在续跑时
-     * 替换此目标。本方法只读历史，不做模型调用或文件 IO。</p>
-     * @param messages 已含当前请求的完整历史
-     * @return 供压缩和召回使用的目标；两项服务都未启用时为 null
-     * @throws IllegalArgumentException 历史工具交换非法，或启用相关服务但无法提取合法请求
-     * @throws IllegalStateException 执行器已关闭
+     * <p>用户请求只取这一次。以后 history 末条可能变成工具结果、后台通知或 Stop 提示，
+     * 不能再把那些文字当成用户想做的新任务。压缩和长期记忆都没启用时，不需要请求原文，
+     * 返回 null，但仍检查工具调用配对。</p>
+     * @param messages 已含本次请求的历史；只读取，不修改，也不调用模型或读写文件
+     * @return 本次请求原文；压缩和记忆都未启用时为 null
+     * @throws IllegalArgumentException 调用和结果不配对，或需要请求原文却找不到合法请求
+     * @throws IllegalStateException 执行器已退出
      */
     String activeRequest(List<Message> messages) {
         ensureOpen();
@@ -215,13 +217,14 @@ public class AgentLoop implements AutoCloseable {
     }
 
     /**
-     * 为一项任务准备固定的 system，最多在入口进行一次记忆召回。
+     * 在开始一项任务时查一次长期记忆，把查到的内容放进基础 system 提示词。
      *
-     * <p>本方法不改写消息历史。启用记忆时可能读取记忆文件并请求辅助模型，具体召回
-     * 失败降级由 MemoryManager 负责，不把辅助回复当作主任务回复。</p>
-     * @param activeRequest 入口目标；启用 memory 时由入口提取保证合法
-     * @return 基础提示或追加召回背景后的提示，跨工具轮、后台等待和 Stop 续跑复用
-     * @throws IllegalStateException 执行器已关闭
+     * <p>没有记忆功能就直接返回原 system。后面即使运行多批工具、等后台或 Stop 要求继续，
+     * 也复用这次返回的字符串，不每次都查记忆。查记忆可能读文件和请求辅助模型，
+     * 失败时怎么处理由 MemoryManager 负责；不把辅助模型的回答加入主对话。</p>
+     * @param activeRequest 用户最初的请求，启用记忆时应已由 activeRequest 方法检查
+     * @return 这项任务接下来一直使用的 system 提示词，不修改消息列表
+     * @throws IllegalStateException 执行器已退出
      */
     String taskSystem(String activeRequest) {
         ensureOpen();
@@ -229,28 +232,32 @@ public class AgentLoop implements AutoCloseable {
     }
 
     /**
-     * 一次正式模型步骤，自动整理与有限超限补救包含在同一次步骤内。
+     * 请求一次模型回答，必要时先压缩；如果模型明确说上下文太长，可在限次内压缩后重试。
      *
-     * <p>历史候选通过事件交给运行器采用，本类不 clear/add 历史。只 catch 正式 complete
-     * 的 LlmException，归档或辅助摘要失败直接传播，不误当作正式请求超限。已经采用的候选
-     * 不因后续请求失败而撤销；定时首回复前的恢复是运行器的交付策略。</p>
-     * @param messages 运行器拥有的可变历史；本方法不直接写入，但同步 events 回调会更新它
-     * @param activeRequest 本任务入口目标
-     * @param taskSystem 本任务入口召回后的固定提示
-     * @param events 当前消费者线程内的统一历史事件入口，不启动另一线程
-     * @return 已校验调用 ID 的主任务回复，不执行工具
-     * @throws LlmException 正式请求不适合超限补救、补救次数耗尽，或辅助压缩调用失败
-     * @throws IllegalArgumentException 正式回复不是 ASSISTANT 或一批工具调用 ID 不唯一
-     * @throws IllegalStateException 执行器已关闭，包括请求返回后才观察到关闭
+     * <p>每次尝试前调用 prepare。需要更换历史时，调用 events.accept 让 SessionRuntime.apply
+     * 立即修改原 messages 的内容，然后把更新后的消息交给模型。本方法自己不 clear/add，
+     * 也不另开线程，返回时还没有执行回复中的工具。</p>
+     *
+     * <p>catch 只包住正式的 client.complete。网络、限流等错误不能一律当作上下文超限；
+     * 生成摘要失败也不能再套进超限重试。已成功换上的历史不会因后续模型失败而恢复成旧版。
+     * 定时任务第一次回答前如何恢复历史，由 SessionRuntime.fail 单独处理。</p>
+     * @param messages 当前历史；本方法读取它，但 events 函数会直接更新这个列表的内容
+     * @param activeRequest 本次用户请求，压缩后仍须记住
+     * @param taskSystem 本任务开始时准备好的 system 提示词
+     * @param events 收到新历史时立即执行的函数，实际为 SessionRuntime.apply
+     * @return ASSISTANT 回复和其中的工具调用；已检查一批内的调用 ID 不重复，但尚未执行工具
+     * @throws LlmException 不能重试的模型错误、重试次数用完，或压缩摘要失败
+     * @throws IllegalArgumentException 回复不是 ASSISTANT，或工具调用 ID 重复
+     * @throws IllegalStateException 用户已退出，包括等模型回答时才退出的情况
      */
     SessionEvent.ModelReply request(List<Message> messages, String activeRequest, String taskSystem,
             Consumer<SessionEvent> events) throws LlmException {
-        // 补救次数只属于本次正式步骤；即使压缩没有变短，也计一次，避免无限付费重试。
+        // 只数这次请求的重试次数；压缩没缩短也算试过一次，否则可能无限调用付费模型。
         int retries = 0;
         while (true) {
             ensureOpen();
             if (compactor != null) {
-                // 候选同步采用后，下面 client.complete 读到的仍是同一 history 对象中的新内容。
+                // events 会立即把压缩后的消息放回原列表，下面发给模型的就是更新后的历史。
                 List<Message> prepared = compactor.prepare(messages, activeRequest);
                 if (prepared != messages) events.accept(new SessionEvent.HistoryPrepared(prepared));
             }
@@ -261,7 +268,7 @@ public class AgentLoop implements AutoCloseable {
                 response = client.complete(new CompleteRequest(taskSystem, messages, maxTokens,
                         List.copyOf(tools.values())));
             } catch (LlmException failure) {
-                // 只有主请求错误进入这条分流；关闭期间不再付费发起补救摘要。
+                // 这里只处理主任务模型请求的错误；用户退出了就不要再请求摘要来尝试重试。
                 ensureOpen();
                 if (compactor == null || !ContextCompactor.isContextOverflow(failure)
                         || retries >= ContextCompactor.MAX_REACTIVE_RETRIES) throw failure;
@@ -271,7 +278,7 @@ public class AgentLoop implements AutoCloseable {
                 continue;
             }
 
-            // 晚到回复不能在会话关闭后触发新的工具副作用。
+            // 用户可能在等回答时退出；即使模型现在才回复，也不能接着执行工具。
             ensureOpen();
             if (response.message().role() != Role.ASSISTANT) {
                 throw new IllegalArgumentException("Formal model response must be ASSISTANT");
@@ -283,21 +290,19 @@ public class AgentLoop implements AutoCloseable {
     }
 
     /**
-     * 同步执行整批工具并返回一个完整结果事件；本方法不修改历史、不处理压缩。
-     * 运行器此前已采用 assistant/tool_use，期间不能插入新请求或其它上下文。
+     * 按顺序执行模型这次要求的整批工具，返回每个调用的结果，不修改 history。
      *
-     * <p>普通工具失败仍返回 Error 文本。若自定义工具或 hook 意外抛 RuntimeException，
-     * 已拿到的真实结果保留，尚未完成的调用用明确失败结果补齐，随后由运行器结束任务。
-     * 这样下一任务不会继承一份孤立 tool_use 历史，也不会重跑已发生的副作用。</p>
+     * <p>调用前，SessionRuntime 已把含 tool_use 的模型回复放进历史。
+     * 这里先查权限，再执行工具；被拒绝和未知工具也返回对应 ID 的 tool_result。
+     * 普通 Error 文本留给模型判断怎么办，不直接当成整个任务失败。</p>
      *
-     * <p>失败占位只表示“没有拿到该调用的结果”，不保证调用完全没执行：工具可能先写文件
-     * 再抛异常，因此不能把占位当作可以安全重试的证明。</p>
-     *
-     * @param calls 已校验 ID 唯一且已回灌 assistant 的整批调用，按模型给出的顺序执行
-     * @param context 当前任务的可信身份、审批通道和关闭视图，传给 hook 及需要它的工具
-     * @param previousRounds 此前连续未调用 todo_write 的批次数，不是单个工具数
-     * @return 整批结果和下一计数；普通 Error 文本不设置 failure，意外运行异常则记录到
-     *         failure 并补齐未产出结果的 ID。调用方必须先采用整批结果，再报告任务失败
+     * <p>若某工具或 hook 意外抛 RuntimeException，就保留已有结果，给未拿到结果的调用补上
+     * 明确失败说明。调用者先把整批结果加进 history，再结束任务，避免只有 tool_use 没有结果。
+     * 失败说明只代表没拿到结果，不代表工具什么都没做；它可能先写了文件才抛异常，不能随便重跑。</p>
+     * @param calls 这次回复里的工具调用，ID 已检查不重复，顺序不变
+     * @param context 程序记录的任务来源、任务 ID、询问用户的方法和退出检查方法
+     * @param previousRounds 自上次 todo 更新或提醒以来的工具批次数，不是工具个数
+     * @return 完整的一批结果和新的提醒计数；意外异常放在 failure 中，普通 Error 文本不放在那里
      */
     SessionEvent.ToolBatch executeTools(List<ToolUseBlock> calls, ExecutionContext context, int previousRounds) {
         List<ContentBlock> results = new ArrayList<>();
@@ -306,7 +311,7 @@ public class AgentLoop implements AutoCloseable {
         RuntimeException failure = null;
         try {
             for (ToolUseBlock call : calls) {
-                // 1. 先复核会话再走安全 hook；阻止/未知工具也要返回同一调用 ID 的结果。
+                // 1. 先查是否退出，再查权限；被拒绝或未知的工具，也要返回与调用 ID 对应的结果。
                 ensureOpen();
                 if (context.isCancelled()) throw new IllegalStateException("Parent session is closed");
                 String blocked = hooks.trigger(Hooks.PRE_TOOL_USE,
@@ -320,12 +325,12 @@ public class AgentLoop implements AutoCloseable {
                     results.add(new ToolResultBlock(call.id(), "Error: Unknown tool: " + call.name()));
                     continue;
                 }
-                // 交互审批可能等了很久；批准返回后仍要复核关闭，不能把晚到批准用于退出后的工具。
+                // 等用户批准可能很久；用户若已退出，即使现在收到批准，也不能再执行工具。
                 ensureOpen();
                 if (context.isCancelled()) throw new IllegalStateException("Parent session is closed");
                 ObjectNode input = call.input() instanceof ObjectNode node ? node : Json.mapper().createObjectNode();
                 String output = tool.execute(input, context);
-                // 先保留真实结果，再调用展示 hook；hook 失败不能抹去已经执行过什么。
+                // 先记下工具确实返回的结果，再显示日志，免得日志出错后连执行结果都丢掉。
                 results.add(new ToolResultBlock(call.id(), output));
                 usedTodo |= call.name().equals(TODO_TOOL);
                 compact |= call.name().equals(COMPACT_TOOL) && CompactTool.OUTPUT.equals(output);
@@ -333,14 +338,14 @@ public class AgentLoop implements AutoCloseable {
                         Map.of(Hooks.PARAM_BLOCK, call, Hooks.PARAM_OUTPUT, output, Hooks.PARAM_CONTEXT, context));
             }
         } catch (RuntimeException unexpected) {
-            // 2. results 按调用顺序积累；其长度就是尚未产出结果的起点，不伪造工具已成功执行。
+            // 2. results 中已有前面调用的结果；从下一个没拿到结果的 ID 开始补失败说明。
             failure = unexpected;
             for (int index = results.size(); index < calls.size(); index++) {
                 results.add(new ToolResultBlock(calls.get(index).id(),
                         "Error: Tool batch interrupted; this call did not produce a result. The task failed."));
             }
         }
-        // 3. 提醒按工具批次计数；已失败任务不再附带“继续更新 todo”的普通续跑提示。
+        // 3. 一批工具只加一次计数；任务已经失败，就不再加“更新 todo”的继续工作提示。
         int rounds = usedTodo ? 0 : previousRounds + 1;
         if (failure == null && rounds >= 3) {
             results.add(new TextBlock(REMINDER_MESSAGE));
@@ -350,15 +355,17 @@ public class AgentLoop implements AutoCloseable {
     }
 
     /**
-     * 在整批 tool_result 已采用后兑现主动压缩请求，避免切开正在进行的工具交换。
+     * 所有工具结果已写进历史后，再处理 compact 工具提出的压缩请求。
      *
-     * <p>compact=true 只来自实际 CompactTool 成功信号，构造器已保证对应压缩器存在。</p>
-     * @param batch 刚执行完的完整批次；compact=false 时立即返回，不做 IO 或摘要请求
-     * @param messages 已包含该批全部结果的当前历史
-     * @param activeRequest 固定任务目标，压缩后仍须保留
-     * @param events 同步候选采用入口，保持外层历史列表对象身份
-     * @throws LlmException 主动摘要调用失败；既有工具副作用不回滚
-     * @throws IllegalStateException 需要压缩时执行器已关闭
+     * <p>不能在两个工具之间压缩，否则可能只保留调用却丢掉结果。
+     * batch.compact 只有在真正执行 compact 并得到指定返回文字后才为 true。
+     * 构造时已保证有工具就有压缩器；没请求压缩时立即返回，不调用模型或写文件。</p>
+     * @param batch 刚执行完的一批工具
+     * @param messages 已有这一批全部结果的历史
+     * @param activeRequest 本次用户原始请求，压缩后也要保留
+     * @param events 把压缩后的消息放回原 history 列表的函数
+     * @throws LlmException 生成摘要失败；工具已经做过的文件修改不会还原
+     * @throws IllegalStateException 需要压缩时，执行器已退出
      */
     void compactAfterBatch(SessionEvent.ToolBatch batch, List<Message> messages, String activeRequest,
             Consumer<SessionEvent> events) throws LlmException {
@@ -369,10 +376,11 @@ public class AgentLoop implements AutoCloseable {
     }
 
     /**
-     * 让同步 Stop hook 检查模型的结束意图，不在此处宣告整项任务完成。
-     * @param messages 当前完整历史；hook 按只读约定检查，不应自行修改列表
-     * @return null 表示 Stop 不再要求工作；非 null 为当前目标的继续输入，不是新的排队请求
-     * @throws IllegalStateException 执行器已关闭
+     * 模型不再调用工具时，问 Stop hook 是否还有事情没做完。
+     * @param messages 当前历史，hook 应只读取，不直接修改
+     * @return hook 返回 null 时本方法也返回 null；否则把其提示包装成 Continue，
+     *         由运行器加入 history，让模型继续当前任务，不把它排成新任务
+     * @throws IllegalStateException 执行器已退出
      */
     SessionEvent.Continue stop(List<Message> messages) {
         ensureOpen();
@@ -381,12 +389,13 @@ public class AgentLoop implements AutoCloseable {
     }
 
     /**
-     * 运行任务结束时的记忆提取/整理；只有无待处理必等结果且 Stop 放行后才调用。
+     * 在该等的后台结果都已处理、Stop 也允许结束后，保存并整理长期记忆。
      *
-     * <p>未启用 memory 时不做事；启用后可能调用辅助模型和写记忆文件，维护失败的记录/降级
-     * 遵循 MemoryManager 契约，不能把辅助调用当作新主任务。</p>
-     * @param messages 本任务结束时的完整当前历史，不由本方法改写
-     * @throws IllegalStateException 执行器已关闭
+     * <p>没有记忆功能就直接返回；有的话可能读写文件或调用辅助模型。
+     * 具体失败处理由 MemoryManager 负责，不能把辅助回复当成主任务回答。
+     * 工具运行到一半或仍在等后台时不能调用，否则可能把没完成的结论当成长期知识。</p>
+     * @param messages 当前已完成任务的历史，只读，不由本方法追加消息
+     * @throws IllegalStateException 执行器已退出
      */
     void finish(List<Message> messages) {
         ensureOpen();
@@ -394,17 +403,20 @@ public class AgentLoop implements AutoCloseable {
     }
 
     /**
-     * 在关键执行边界拒绝关闭后的新步骤；不是对已开始 IO 的事务锁或撤销机制。
-     * @throws IllegalStateException 执行器已经关闭
+     * 在请求模型或执行工具前，检查用户是否已经退出。
+     * 只能阻止后面的操作，不能还原已经写入的文件或立即停止正在等待的网络请求。
+     * @throws IllegalStateException 执行器已退出
      */
     private void ensureOpen() {
         if (closed) throw new IllegalStateException("Agent loop is closed");
     }
 
     /**
-     * 禁止后续执行并释放会话全部 shell，包括脱离当前任务的后台命令，可重复调用。
-     * 普通 run 返回不会自动调用它。此处不关闭运行器队列、不回滚文件，也不保证取消在途 HTTP；
-     * 运行器负责整个退出顺序，本类负责执行能力和命令资源边界。
+     * 用户退出整个会话时调用：标记已退出，并停止所有 shell 命令，重复调用也可以。
+     *
+     * <p>包括设置“不必等它”的后台命令，因为那只是当前任务不用等，不是退出 CLI 后还要运行。
+     * 普通 run 返回不会自动调用这里。任务队列由 SessionRuntime 另行处理，
+     * 本方法也不会还原文件或保证马上停止模型的网络请求。</p>
      */
     @Override
     public void close() {

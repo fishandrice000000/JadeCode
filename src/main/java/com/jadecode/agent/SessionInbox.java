@@ -5,33 +5,35 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
 /**
- * 进程内收件箱：有界 FIFO 存新任务，变化信号唤醒唯一消费者。
+ * 给尚未开始的任务排队，先来的先执行，最多保存 64 项。
  *
- * <p>后台结果由 BackgroundManager 的有界队列保管，只发送唤醒信号，不与新请求争抢容量。
- * 这里不调用模型、不修改历史、不持久化。当前任务等待后台结果时不能领取下一任务。</p>
+ * <p>用户和定时检查线程把任务放进来，SessionRuntime 的处理线程取走任务。
+ * 后台命令的结果另存在 BackgroundManager，不占这 64 个名额；
+ * 命令跑完只需要调用 wake，叫处理线程去查结果，不会因此开始一项新任务。</p>
+ * <p>本类不请求模型、不改历史、不存文件，退出后队列不会恢复。</p>
  */
 final class SessionInbox {
-    /** 只限制尚未领取的新请求，不含当前任务或后台完成记录。 */
+    /** 只数排队中的请求，不数正在做的任务和已经完成的后台命令。 */
     private static final int CAPACITY = 64;
-    /** 所有访问受本对象监视器保护；队尾写入、队首领取实现 FIFO。 */
+    /** 访问这个队列前都要拿 synchronized 锁；从尾部加入，从头部取走。 */
     private final ArrayDeque<Entry> requests = new ArrayDeque<>();
-    /** 关闭后不再收请求，也不执行剩余队列。 */
+    /** 退出后不再收请求，剩余排队任务也不执行。 */
     private boolean closed;
-    /** 变化版本只用于判断是否值得等待，不代表结果数或消息序号。 */
+    /** 每次 wake 加一；用来判断刚才是否有线程叫我们检查，不代表结果个数。 */
     private long revision;
 
     /**
-     * 绑定请求与提交者等待的完成通道；future 不进入模型上下文。
-     * @param request 由可信生产者创建的新目标
-     * @param result 入队不完成它，只有任务结束/失败/关闭后才完成
+     * 把一项请求和将来返回答案的对象放在一起。
+     * @param request 要执行的请求
+     * @param result 给调用者取最终答案或错误用的 future，不会把它发给模型
      */
     record Entry(SessionEvent.Request request, CompletableFuture<String> result) { }
 
     /**
-     * 非阻塞地提交到队尾，并发生产者通过同一锁确定入队顺序。
-     * @param entry 不可为 null 的入口，由生产者创建，不在这里执行模型或写历史
-     * @return true 表示已入队且已唤醒消费者；false 表示关闭或已满，没有改变队列。
-     *         入口必须据此拒绝人工 future 或归还 cron lease，不能当成交付成功
+     * 把请求加到队尾，立即返回，不等任务执行，也不等队列腾位置。
+     * @param entry 要加入的请求和结果 future，不可为 null
+     * @return true 表示已经排队，并叫醒等待线程；false 表示已退出或队列满，没有加入。
+     *         调用者要报告排队失败；定时请求则留到以后重试，不能当成已经送到模型
      */
     synchronized boolean offer(Entry entry) {
         if (closed || requests.size() >= CAPACITY) return false;
@@ -41,10 +43,12 @@ final class SessionInbox {
     }
 
     /**
-     * 空闲消费者阻塞领取下一新目标；当前任务等待后台时不得调用此方法。
-     * 后台唤醒可能使 wait 返回，但队列仍空时继续等，不会凭通知创造一项任务。
-     * @return 队首入口，领取后从队列移除；已关闭时为 null，即使关闭前曾有排队项
-     * @throws InterruptedException 等待被中断，交由消费循环决定退出
+     * 从队首取任务。队列空时线程在 wait 里等，不会反复循环占用 CPU。
+     *
+     * <p>只有当前没在做任务时才调用这里。等后台构建时也不能取下一项。
+     * 后台命令可能调用 wake，但没有新任务的话仍继续等，不会因为被叫醒就凭空执行任务。</p>
+     * @return 取出并移除的请求；会话已退出时返回 null，不执行剩余任务
+     * @throws InterruptedException 等待线程被中断，由外层循环处理
      */
     synchronized Entry take() throws InterruptedException {
         while (!closed && requests.isEmpty()) wait();
@@ -52,33 +56,39 @@ final class SessionInbox {
     }
 
     /**
-     * 在扫描后台结果前记录变化版本，与 awaitChange 配合避免“结果已到但消费者睡下去”。
-     * @return 当前版本；它不是需要逐一确认的事件数量
+     * 取得“有事发生”的计数，供 awaitChange 判断该不该等待。
+     * 调用者先读它，再去检查后台结果；这样不容易错过刚跑完的命令。
+     * @return 当前计数，不是后台结果数量，也不用按这个数去取消息
      */
     synchronized long revision() { return revision; }
 
     /**
-     * 仅在版本仍未变化且未关闭时等待，不取走请求、不扫描结果也不轮询模型。
-     * @param observed 调用方在扫描后台结果之前读取的 revision；已有变化则立即返回
-     * @throws InterruptedException 等待被中断
+     * 计数还和刚才一样时，让线程等着；计数已改变就直接返回。
+     *
+     * <p>例如先读到 5，检查结果后还没来得及等，命令就跑完，把计数变成 6。
+     * 这里发现 6 不等于 5，就不会睡下去。返回后由调用者重新查结果，不在这里取下一项任务。</p>
+     * @param observed 调用者检查后台结果之前读到的计数
+     * @throws InterruptedException 等待线程被中断
      */
     synchronized void awaitChange(long observed) throws InterruptedException {
         while (!closed && revision == observed) wait();
     }
 
     /**
-     * 更新版本并唤醒等待者；可由生产者、后台工作者或关闭线程调用。
-     * 信号可合并，真实请求/结果在各自有界容器中，不靠唤醒次数还原数据。
-     * 因此新请求已满也不会阻止后台结果发送此信号。
+     * 把计数加一，并用 notifyAll 叫醒 wait 中的线程，让它们再检查一次。
+     *
+     * <p>这里不保存结果正文，不要求每叫醒一次就对应处理一条结果。
+     * 结果已经保存在 BackgroundManager，因此任务队列满了也不影响命令报告完成。</p>
      */
     synchronized void wake() { revision++; notifyAll(); }
 
     /**
-     * 幂等关闭：停止接收，清空未执行入口并让其 future 明确失败，不排空业务。
+     * 不再接收任务，清掉排队请求，并通知这些请求的调用者“退出了，没执行”。
      *
-     * <p>先在锁内取出入口并唤醒消费者，再在锁外完成 future。CompletableFuture 可能同步
-     * 执行调用方回调，若持锁完成它，会把外部代码带入收件箱临界区。当前任务不在此队列，
-     * 其完成通道由 SessionRuntime.close 负责；本方法也不关闭模型或 shell。</p>
+     * <p>先在 synchronized 里取出并清空队列，再到锁外让 future 失败。
+     * 因为完成 future 可能马上运行调用者注册的函数，不要让那些函数一直拿着队列锁。
+     * 已经开始的任务不在队列里，由 SessionRuntime.close 通知；本类不停止模型或命令。
+     * 重复调用也可以。</p>
      */
     void close() {
         List<Entry> abandoned;

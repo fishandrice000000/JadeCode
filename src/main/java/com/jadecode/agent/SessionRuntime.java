@@ -21,67 +21,65 @@ import com.jadecode.tools.BackgroundManager;
 import com.jadecode.tools.BackgroundManager.Completion;
 
 /**
- * 一个 CLI 会话的运行器，也是会话历史的唯一写入者。
+ * 管理一次 CLI 会话：把收到的任务排好队，一次做完一项，再做下一项。
  *
- * <p><b>为什么需要这一层：</b>用户输入、定时任务和后台命令都可能在不同时间产生消息。
- * 如果这些组件直接调用模型或修改历史，就很难判断“当前究竟在做谁的任务”。本类把新目标
- * 放入 FIFO 收件箱，一次只推进一个目标；工具结果、Stop 续跑和该目标必等的后台结果则继续
- * 当前任务，而不是重新排队。等待后台结果时不轮询模型，也不领取下一个目标。</p>
+ * <p>例如，用户要求“构建项目，再检查报告”。构建可以放到后台，模型趁这时读其它文件。
+ * 但只要构建结果还没处理，这项任务就没有结束；后来的用户请求或定时任务要继续排队。
+ * 本类负责决定什么时候请模型继续、什么时候等后台命令、什么时候才算做完。</p>
  *
- * <p><b>阅读主线：</b>{@link #submit} 提交 → {@link #consume} 领取 → {@link #execute}
- * 建立任务上下文 → {@link #runTask} 推进模型/工具/等待 → 完成结果 future。
- * 所有历史变更集中在 {@link #apply}；模型、工具、压缩和记忆的具体工作委托给
- * {@link AgentLoop}，定时投递状态委托给 {@link CronProducer}。</p>
+ * <p>阅读顺序：{@link #submit} 把任务放进队列 → {@link #consume} 取出任务 →
+ * {@link #execute} 准备这项任务需要的数据 → {@link #runTask} 请求模型并执行工具。
+ * 所有模型回复和工具结果都由 {@link #apply} 写入 history；具体怎么请求模型、执行工具和
+ * 压缩历史，则交给 {@link AgentLoop}。</p>
  *
- * <p>生产者只入队或发唤醒信号，不接触历史。正常模式由唯一消费者线程执行；旧
- * {@link AgentLoop#run(List)} 入口则在调用线程复用同一过程。会话和收件箱不做跨进程恢复。
- * 关闭会终止所属命令，但不能撤销此前的文件修改，也不保证立即取消在途 HTTP。</p>
+ * <p>通常只有本类启动的一个线程修改 history。其它线程只往队列放任务，或告诉它
+ * “有后台命令跑完了”。旧的 {@link AgentLoop#run(List)} 则直接用调用者线程。
+ * 程序退出后队列和当前历史不会恢复；已经写入的文件不会还原，网络请求也不一定立即停止。</p>
  */
 public final class SessionRuntime implements AutoCloseable {
     /**
-     * 会话的可观察阶段，不是 s10 持久任务条目的状态。
-     * IDLE 表示可领取新目标；RUNNING 表示正在推进当前目标；WAITING_BACKGROUND
-     * 表示当前目标仍占据执行位置；CLOSED 表示整个会话已退出，不再接受正常执行。
+     * 这次会话现在在做什么，不是 s10 任务文件里保存的任务状态。
      */
     public enum State {
-        /** 没有当前任务，消费者可阻塞领取下一项请求。 */
+        /** 现在没有任务，处理线程等待队列里的下一项请求。 */
         IDLE,
-        /** 正推进当前目标，包括模型请求、同步工具、压缩或记忆维护。 */
+        /** 正在请求模型、执行同步工具、压缩消息或处理长期记忆。 */
         RUNNING,
-        /** 当前任务尚未结束，只等必等后台结果，不领取队首新请求或轮询模型。 */
+        /** 当前任务在等后台命令跑完；不做下一项任务，也不反复问模型。 */
         WAITING_BACKGROUND,
-        /** 整个会话已关闭，不再启动新执行步骤，也不排空队列。 */
+        /** 用户已经退出，不再开始新操作，排队任务也不再执行。 */
         CLOSED
     }
-    /** 单步执行能力；不拥有本类的历史或请求队列。 */
+    /** 实际请求模型、执行工具和压缩历史的对象；什么时候调用它，由本类决定。 */
     private final AgentLoop engine;
-    /** 与父 bash 共用的命令管理器；旧装配可为 null。 */
+    /** 与父 bash 共用的后台命令管理器；没有后台功能时为 null。 */
     private final BackgroundManager background;
-    /** 消费者独占写入的可变列表；压缩也保留此列表对象身份，只替换其内容。 */
+    /** 发给模型的消息列表，只由处理线程修改；压缩时换内容，不换这个列表对象。 */
     private final List<Message> history;
-    /** 仅排队新目标，同时提供后台结果到达时的变化信号。 */
+    /** 尚未开始的任务在这里排队；后台命令跑完后，也通过它叫醒等待线程。 */
     private final SessionInbox inbox = new SessionInbox();
-    /** 到期任务的生产适配器；是否启动由 CLI 模式决定。 */
+    /** 检查定时任务是否到期的对象，REPL 会启动它，单次 run 不启动。 */
     private final CronProducer cron;
-    /** 进度、等待和最终答复输出；回调不应抛异常或长时间阻塞。 */
+    /** 显示进展、等待提示和最终回答的函数，调用后应尽快正常返回。 */
     private final Consumer<String> output;
-    /** 任务失败及调度诊断输出，与业务答复分开。 */
+    /** 显示任务或定时检查错误的函数，不把错误提示当成最终回答。 */
     private final Consumer<String> errors;
-    /** volatile 让 UI 可以观察阶段；它并不赋予 UI 修改历史的权限。 */
+    /** volatile 让终端线程看到处理线程更新的状态，但终端仍不能修改 history。 */
     private volatile State state = State.IDLE;
-    /** 同时供提交者、消费者和子代理的只读关闭视图观察。 */
+    /** 退出时设为 true，父子 Agent 都可以检查用户是否已经退出。 */
     private volatile boolean closed;
-    /** 向关闭线程发布当前任务，以便退出时让等待结果的调用者及时收到失败。 */
+    /** 记录正在处理的任务，退出时用它通知调用者“这项任务没做完”。 */
     private volatile Active active;
-    /** start 创建的唯一消费者；兼容 runExisting 模式不创建线程。 */
+    /** start 创建的任务处理线程；旧 runExisting 直接用调用者线程。 */
     private Thread consumer;
 
     /**
-     * 创建空历史会话，绑定依赖和后台唤醒入口，但不启动线程、计时器或模型请求。
+     * 创建一段空对话，记住要使用的执行器和输出函数。
+     * 不会请求模型或启动线程；调用 start 才开始处理任务，退出时应调用 close。
      *
-     * @param engine 专属于此会话的执行器，不能同时交给另一运行器使用
-     * @param output 接收进度和最终答复的非 null 回调
-     * @param errors 接收诊断信息的非 null 回调
+     * @param engine 这次会话使用的 AgentLoop，不可同时交给另一会话使用
+     * @param output 显示进展和回答的函数，不可为 null
+     * @param errors 显示错误的函数，不可为 null
      * @throws NullPointerException engine 为 null
      * @see #start(boolean)
      * @see #close()
@@ -91,13 +89,14 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 绑定会话历史；兼容入口通过此构造器借用调用方的列表，而不是复制一份断开关联的历史。
-     * 构造会替换后台管理器的完成监听器，但不消费已有结果，也不执行任务。
+     * 直接使用给定的消息列表创建会话，供旧的 run(messages) 调用。
      *
-     * @param engine 本会话的执行能力
-     * @param history 可变历史，绑定期间调用方不得并发修改
-     * @param output 正常输出通道
-     * @param errors 诊断输出通道
+     * <p>不复制列表，所以追加消息或压缩后，调用者也看得见。使用期间，调用者不能从另一线程
+     * 修改它。这里还设置“后台命令跑完时叫醒本会话”的函数，但不会取结果、启动线程或执行任务。</p>
+     * @param engine 请求模型和执行工具的对象
+     * @param history 已有的、可以修改的消息列表
+     * @param output 显示正常结果的函数
+     * @param errors 显示错误的函数
      */
     private SessionRuntime(AgentLoop engine, List<Message> history, Consumer<String> output, Consumer<String> errors) {
         this.engine = java.util.Objects.requireNonNull(engine);
@@ -110,12 +109,12 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 启动唯一消费者；REPL 同时启动定时生产，单次 run 只消费显式提交的任务。
+     * 启动一个专门处理任务的线程。没有任务时，它会等队列，不会不断询问模型。
      *
-     * <p>重复调用不再创建线程，也不改变首次选择的定时模式。消费者空闲时等待收件箱，
-     * 不会因为单纯启动会话就调用模型。线程是 daemon，但调用方仍须显式 close 清理命令。</p>
-     * @param enableCron true 表示允许生产到期任务；单次 run 传 false
-     * @throws IllegalStateException 会话已关闭，不能重新启动
+     * <p>REPL 传 true，还会启动定时检查；单次 run 传 false。重复调用不会再开线程，
+     * 也不会改变第一次的定时设置。线程虽是 daemon，退出时仍须 close，才能停止所属命令。</p>
+     * @param enableCron 是否检查并执行到期定时任务
+     * @throws IllegalStateException 已退出的会话不能重新启动
      */
     public synchronized void start(boolean enableCron) {
         if (closed) throw new IllegalStateException("Session is closed");
@@ -127,16 +126,16 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 将一项人工目标放入收件箱，不等待模型、审批或后台命令完成。
+     * 把用户的新请求放到队尾，立即返回，不等模型回答。
      *
-     * <p>本方法在入队前生成可信执行身份；模型不能通过 prompt 或工具 JSON 将定时任务
-     * 伪装成人工任务。当前任务忙碌或等待后台时，新目标只排队，不抢占。调用方应先 start。
-     * future 是观察结果的通道，取消该 future 不等于终止已经启动的工具。</p>
-     * @param prompt 非空白的用户目标；原文将在领取时加入历史
-     * @param approval 人工审批通道，可为 null；没有通道的需询问操作会被安全门拒绝
-     * @return 真正结束后提供最终答复的 future；空输入以 IllegalArgumentException 完成失败，
-     *         收件箱已关闭或已满以 RejectedExecutionException 完成失败，执行失败则保留其原因。
-     *         排队成功、首个模型回复和命令启动都不代表该 future 已成功
+     * <p>比如 A 还在等构建结果，用户又输入 B，B 只会排队，不会打断 A。
+     * 程序会记录任务来自用户，并保存询问用户是否允许某项操作的函数。
+     * 模型不能在 prompt 或工具参数里给自己增加这项权限。调用前应先 start。</p>
+     * @param prompt 用户要做的事，不得为 null 或全是空白
+     * @param approval 询问用户是否允许操作的函数；null 表示不能询问，需询问的操作会被拒绝
+     * @return 以后取得最终回答的 CompletableFuture。成功排队不代表做完：
+     *         空请求以 IllegalArgumentException 失败，队列满或会话退出以 RejectedExecutionException
+     *         失败，执行出错则记录实际错误。取消此 future 不会自动停止已经开始的命令
      */
     public CompletableFuture<String> submit(String prompt, PermissionGate.Approval approval) {
         CompletableFuture<String> result = new CompletableFuture<>();
@@ -153,17 +152,16 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 观察当前会话阶段，不返回可变历史，也不等待状态变化。
-     * @return 读取瞬间的状态；返回后消费者可能已进入下一阶段
+     * 查看现在是在处理任务、等后台结果，还是已退出，不返回消息列表。
+     * @return 此刻的状态；返回后，处理线程可能已经做到了下一步
      */
     public State state() { return state; }
 
     /**
-     * 将到期定义包装为可信的 SCHEDULED 请求，与人工请求按相同 FIFO 排队。
-     *
-     * @param job 调度器已领取临时投递资格的任务定义
-     * @return 是否入队；false 时 CronProducer 归还 lease（临时投递资格），不确认交付。
-     *         true 也只是入队，真正确认要等首个合法正式模型回复
+     * 把到期的定时任务放进队列，和用户请求一样按先后顺序执行。
+     * @param job 调度器刚选出的到期任务
+     * @return true 只表示排队成功；false 时 CronProducer 会让调度器以后再取它。
+     *         要等模型第一次正常回复，才记为任务已送达；不能在这里就从待发送记录中划掉它
      */
     private boolean publishCron(CronJob job) {
         ExecutionContext context = ExecutionContext.create(ExecutionContext.Source.SCHEDULED, null, () -> closed);
@@ -172,9 +170,10 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 消费者线程的最外层循环：空闲时阻塞领取队首，完成整项任务后才领取下一项。
-     * execute 内部已处理普通任务失败，因此一项失败不会自动清空其后的请求。
-     * 关闭使 take 返回 null；中断则恢复中断标记并退出。此处不重试任何业务副作用。
+     * 从队首取一项任务，等 execute 处理完，再取下一项。
+     *
+     * <p>当前任务在等后台构建时，也不会去做下一项任务。普通执行错误由 execute 报告，
+     * 不会丢掉后面排队的请求。会话退出时 take 返回 null；线程被中断时记住中断状态并退出。</p>
      */
     private void consume() {
         try {
@@ -189,17 +188,18 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 建立并收尾一项任务，人工、定时和兼容入口共用此生命周期。
+     * 准备并执行一项完整任务，用户请求、定时请求和旧 run(messages) 都调用这里。
      *
-     * <p>先复核定时项是否仍可交付，再采用入口消息，随后固定本次目标并做一次记忆召回。
-     * 捕获目标必须早于后台通知注入，否则末条 USER 的通知可能被误当成用户真正要做的事。
-     * 工具轮、Stop 和后台恢复都沿用这个目标与召回背景，不重新经过入口。</p>
+     * <p>先检查定时任务是否已被取消或需要稍后重试，再把请求加进 history。
+     * 接着记住用户原本要做的事，并查一次长期记忆，最后调用 runTask。
+     * 先记请求原文、再加后台通知，免得把最后一条 USER 的通知错当成新请求。
+     * 后面执行工具、等后台或 Stop 要求继续，都不重新选择任务或再查一遍记忆。</p>
      *
-     * <p>失败通过 fail 完成结果通道；本方法不向消费循环抛出通常的模型/执行错误。
-     * 只有定时项在首个正式回复前失败时恢复入口前历史，以配合投递重试；这不是 IO 事务回滚。</p>
-     * @param entry 已领取的目标及其结果通道
-     * @param append true 表示追加新请求并触发人工入口 hook；false 仅用于已有末条请求的
-     *               run(messages)，避免重复追加和重复触发 hook
+     * <p>出错后调用 fail，通常保留已经执行的步骤。只有定时任务还没拿到第一次正常模型回复时，
+     * 才恢复添加这项任务前的消息，以便稍后重试。恢复消息不会还原已写入的文件。</p>
+     * @param entry 从队列取出的请求，以及通知调用者任务结果的 future
+     * @param append true 表示加上新请求，来自用户时还调用 UserPromptSubmit hook；
+     *               false 表示旧 run(messages) 已有这条请求，不要再加一次
      */
     private void execute(SessionInbox.Entry entry, boolean append) {
         Active task = new Active(entry, history);
@@ -208,7 +208,7 @@ public final class SessionRuntime implements AutoCloseable {
         try {
             ensureOpen();
             if (task.cronId() != null) {
-                // 生产后、执行前可能发生取消或退避；未尝试的项归还而不是假确认。
+                // 排队后可能被取消，也可能暂时不允许重试；先不执行，不能把它记成已经送达。
                 if (!cron.canDeliver() || !cron.pending(task.cronId())) {
                     cron.release(task.cronId());
                     entry.result().completeExceptionally(new IllegalStateException("Cron delivery deferred or cancelled"));
@@ -223,7 +223,7 @@ public final class SessionRuntime implements AutoCloseable {
                 }
                 apply(entry.request());
             }
-            // 捕获先于任何通知注入，之后即使换了历史，也始终是这一个目标。
+            // 先记住用户请求，再加入后台通知；之后历史即使压缩，仍记着用户原本要做什么。
             task.goal = engine.activeRequest(history);
             task.system = engine.taskSystem(task.goal);
             runTask(task);
@@ -239,48 +239,51 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 推进当前目标的核心循环；阅读事件化 Agent 时应优先阅读本方法。
+     * 反复请模型决定下一步，执行它要求的工具，直到这项任务真正做完。
      *
-     * <p>每轮依次为：收集可带入的后台结果 → 请求模型并采用回复 → 确认模型已收到的通知
-     * → 执行工具批次（如有）→ 处理结束意图。没有 tool_use 只是模型想结束，不是任务已结束：
-     * 若还有必等命令，应等待其结果并继续请求；若 Stop 追加要求，也继续当前任务。
-     * 只有这些条件全部满足，才运行结束记忆维护、输出 Completed 并完成 future。</p>
+     * <p>每轮先把已完成的后台结果放进 history，再请求模型。有工具调用就执行整批工具，
+     * 把每个调用的结果一起加进 history，然后继续问模型。</p>
      *
-     * <p>在途模型请求期间也可能到达结果，因此无工具回复后还要再收一次必等结果。
-     * 一旦采用了新结果，必须让模型看过再判断结束。首个合法正式回复在工具执行前确认
-     * cron 投递；这只表示收到任务，不表示业务成功，后续失败不会重投整项业务。</p>
-     * @param task 当前任务独占的运行状态，跨等待保留；不修改其中固定的入口目标
-     * @throws LlmException 正式请求有限补救后仍失败，或压缩辅助调用失败
-     * @throws InterruptedException 等待后台变化时被中断
-     * @throws RuntimeException 执行链意外失败或会话已关闭；交由 execute 统一收尾
+     * <p>没有工具调用也不能马上结束。例如模型说“构建还在跑”，而当前任务必须等构建结果：
+     * 程序要等命令完成，不花模型请求反复问进度，也不做队列里的下一项任务。
+     * 结果到了再放进 history，请模型继续。Stop hook 若说还有事，也继续当前任务。
+     * 这些事都处理完，才整理长期记忆、显示最终回答，并完成任务的 future。</p>
+     *
+     * <p>等模型回答时，也可能刚好有后台命令跑完，所以想结束时再查一次。
+     * 定时任务在第一次正常回复时记为送达，先记录再执行工具；
+     * 这不代表业务成功，后续失败不能让整个定时任务从头重跑。</p>
+     * @param task 当前任务的数据，等后台期间也保留
+     * @throws LlmException 请求模型或压缩摘要失败，已经不能继续
+     * @throws InterruptedException 等后台结果时线程被中断
+     * @throws RuntimeException 执行出错或用户退出，交给 execute 处理
      */
     private void runTask(Active task) throws LlmException, InterruptedException {
         while (!closed) {
-            // 1. 正常请求边界可带入当前必等结果及已完成的脱离任务通知；后者只是参考上下文。
+            // 1. 请模型继续前，先加入已完成的后台结果；不必等待的命令结果只供参考。
             deliverResults(task, true);
             SessionEvent.ModelReply reply = engine.request(history, task.goal, task.system, this::apply);
             apply(reply);
-            // 确认发生在工具执行之前。辅助召回/摘要的回复不会经过这里。
+            // 模型已正常回答，定时任务就算送到了，不用等工具成功；查记忆或生成摘要不算此次回答。
             if (!task.received) {
                 task.received = true;
                 if (task.cronId() != null) cron.received(task.cronId());
             }
-            // 2. 有效回复证明上一轮通知已交给模型；此时才释放后台记录容量，不代表命令业务成功。
+            // 2. 模型已收到刚才送出的结果通知，可以删掉后台记录；这不等于业务已经成功。
             if (background != null) background.acknowledge(task.receipts);
             task.receipts.clear();
 
             if (!reply.calls().isEmpty()) {
-                // 3. 同步闭合整个工具批次。异常批次也先采用完整结果，防止遗留孤立 tool_use。
+                // 3. 执行这一批工具，把每个调用的结果一起写入历史；出错也要配齐调用和结果的 ID。
                 SessionEvent.ToolBatch batch = engine.executeTools(reply.calls(), task.context(), task.rounds);
                 apply(batch);
                 task.rounds = batch.roundsSinceTodo();
                 if (batch.failure() != null) throw batch.failure();
-                // 到这里整批交换已经闭合；压缩只能在此之后采用。
+                // 这一批 tool_use 都已有 tool_result，现在才能压缩，不会把调用与结果拆开。
                 engine.compactAfterBatch(batch, history, task.goal, this::apply);
                 continue;
             }
 
-            // 请求在途期间可能有结果到达；采用后必须再请求一次，不能没让模型看就宣布完成。
+            // 等模型回答时也许又有命令跑完；加入结果后要再问一次，不能还没给它看就宣布结束。
             if (deliverResults(task, false)) continue;
             if (background != null && background.hasRequired(task.context().id())) {
                 if (!reply.message().extractText().isBlank()) output.accept("[Progress] " + reply.message().extractText());
@@ -295,7 +298,7 @@ public final class SessionRuntime implements AutoCloseable {
                 apply(continuation);
                 continue;
             }
-            // 4. 无待处理依赖、Stop 不再续跑后才做任务结束维护；中间进度不能提前走到这里。
+            // 4. 该等的结果都已处理，Stop 也没要求继续，才保存长期记忆并给出最终回答。
             engine.finish(history);
             ensureOpen();
             String answer = reply.message().extractText();
@@ -307,14 +310,14 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 非阻塞地领取当前可采用的后台结果，并把通知作为历史事件统一回灌。
+     * 取出已经跑完的后台命令，把结果说明加入 history，不等仍在运行的命令。
      *
-     * <p>领取仅从 ready 队列移除记录，不立即释放后台容量。task.receipts 保存领取凭据，
-     * 等合法正式回复后确认；定时首回复前失败时可以凭原记录归还，而不是重跑命令。</p>
-     * @param task 决定必等结果所属的执行身份，并保存尚未确认的领取凭据
-     * @param includeDetached true 用于正常请求边界，同时带入脱离任务通知；false 用于
-     *                        等待/结束检查，不能让无关旧结果唤醒一次新的模型请求
-     * @return 是否确实向历史采用了新通知；false 包括没有后台管理器或暂时没有可用结果
+     * <p>取出的记录先保存在 task.receipts，等模型正常回复后再从后台管理器删除。
+     * 这样，定时任务第一次回复前失败时，仍能把记录放回去，下次再交给模型，不必重跑命令。</p>
+     * @param task 用它的 ID 找出所属结果，并记住这次取出的记录
+     * @param includeDetached true 时也加入“不必等它”的命令结果作参考；
+     *                        false 时只取当前任务必须处理的结果，不让无关结果打断等待
+     * @return 是否向 history 加了新结果；没开后台功能或还没结果时为 false
      */
     private boolean deliverResults(Active task, boolean includeDetached) {
         if (background == null) return false;
@@ -326,14 +329,15 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 等到当前任务至少一条必等结果可采用；不调用模型、不领取其它目标，也不等待所有命令。
+     * 等当前任务的一条或多条后台命令跑完，不请求模型，也不取下一项任务。
      *
-     * <p>必须先记变化版本，再扫描结果：若完成事件恰在扫描后、wait 前到达，版本已经变化，
-     * awaitChange 就不会睡下去。新请求也可能发信号，但只会促使重新检查，不会被此处执行。
-     * 信号本身不携带结果，真实结果仍由 BackgroundManager 保管。</p>
-     * @param task 保持执行位置的当前任务
-     * @throws InterruptedException 消费者等待被中断
-     * @throws IllegalStateException 会话已关闭，不再恢复任务
+     * <p>先记下 inbox 的计数，再查结果；没查到才试着睡下去。如果命令恰好在“查完”和
+     * “睡下去”之间跑完，计数已增加，awaitChange 就立即返回，避免有结果却一直睡着。
+     * 被叫醒只说明要再查一次，结果正文仍在 BackgroundManager。
+     * 新请求也会叫醒线程，但这里只查后台结果，不执行新请求。</p>
+     * @param task 正在等结果的任务；不用等所有命令都结束，取到一批就可以继续
+     * @throws InterruptedException 等待线程被中断
+     * @throws IllegalStateException 会话已退出，不再继续任务
      */
     private void awaitResults(Active task) throws InterruptedException {
         while (!closed) {
@@ -345,17 +349,18 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 将一种可信的执行事件翻译为模型协议消息，是会话历史的唯一写入入口。
+     * 根据事件种类修改 history；父会话的消息添加和替换都在这里完成。
      *
-     * <p>事件表达含义，Message 表达发给模型的格式：新目标、工具结果和 Stop 输入都可能
-     * 使用 USER role，但不能因此把它们当成同一种任务。事件不必异步入队；执行器在消费者
-     * 线程同步回调此方法，也能保持单一写入口。</p>
+     * <p>Request 是新任务，ToolBatch 是工具结果，Continue 是 Stop 说“还没做完”。
+     * 它们发给模型时都可能用 USER role，但不代表它们都是用户新发的请求。
+     * 事件只是告诉这里要加什么消息，不要求另开线程或先排队，AgentLoop 可以直接调用它。</p>
      *
-     * <p>压缩候选替换列表内容而不更换列表对象，使兼容调用方仍看到最新历史。后台通知
-     * 合并末条 USER 是为了适配现有按位置识别最新工具交换的压缩保护，不是协议禁止独立通知。
-     * 合并重建 content 和 Message，不原地改写已有消息块。</p>
-     * @param event 内部组件提供的事件；其中列表已经固定外层结构，不得由生产者事后修改内容
-     * @throws IllegalStateException 会话已关闭，晚到事件不得继续采用
+     * <p>压缩时只换 history 中的内容，不换列表对象，旧 run(messages) 的调用者才看得见变化。
+     * 后台通知尽量加在最后一条 USER 内：若另加 USER，原工具结果不再是末条，
+     * 现有压缩器可能漏掉对最新工具结果的保护。这是当前压缩器需要，不是模型协议硬性要求。
+     * 合并会新建 content 和 Message，不修改旧消息里的块。</p>
+     * @param event 程序生成的请求、模型回复、工具结果等；交给这里后，发送方不要再改其中的内容
+     * @throws IllegalStateException 会话已退出，不能再把稍后返回的结果写进去
      */
     private void apply(SessionEvent event) {
         ensureOpen();
@@ -364,7 +369,7 @@ public final class SessionRuntime implements AutoCloseable {
                     request.context().source() == ExecutionContext.Source.SCHEDULED
                             ? "[Scheduled] " + request.prompt() : request.prompt()));
             case SessionEvent.HistoryPrepared prepared -> {
-                // HistoryPrepared 已复制外层：即便原候选关联 history，clear 也不会把候选一起清空。
+                // 事件里已经复制了列表，所以 clear(history) 不会把接下来要装入的消息也清掉。
                 history.clear();
                 history.addAll(prepared.messages());
             }
@@ -372,7 +377,7 @@ public final class SessionRuntime implements AutoCloseable {
             case SessionEvent.ToolBatch batch -> history.add(Message.userBlocks(batch.results()));
             case SessionEvent.Continue continuation -> history.add(Message.userText(continuation.prompt()));
             case SessionEvent.Notifications notifications -> {
-                // 末条可能是用户 prompt，也可能是工具结果 USER；只加参考文本，不改变原目标。
+                // 最后一条 USER 可能是用户请求，也可能是工具结果；只加参考文字，不改变 task.goal。
                 List<ContentBlock> content = new ArrayList<>();
                 boolean merge = !history.isEmpty() && history.getLast().role() == Role.USER;
                 if (merge) content.addAll(history.getLast().content());
@@ -385,23 +390,26 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 按“是否已经确认收到任务”处理失败，而不是把所有失败都当成可安全重试。
+     * 任务出错后通知调用者，并停掉它不再需要的后台命令。
      *
-     * <p>定时首回复前失败：恢复入口前历史、归还已领取通知，并让投递器退避。其余失败：
-     * 保留真实历史和 IO 进度，不重投业务；已留在历史中的通知释放后台记录。两条路径都会
-     * 清理此任务的必等命令、令结果 future 失败；脱离命令仍由会话拥有，直到会话关闭。</p>
-     * @param task 失败任务，包含来源、首回复标记、历史快照及通知领取凭据
-     * @param failure 保留到结果 future 的原始异常；不是成功工具结果或后台非零退出码本身
+     * <p>定时任务在第一次正常模型回复前出错：恢复添加任务前的消息，把取出的后台结果放回去，
+     * 并让 CronProducer 稍后再试。其它错误则保留实际发生过的消息和文件修改，不从头重跑。
+     * 结果通知若仍在历史里，对应的后台记录就可以删掉，不再占名额。</p>
+     *
+     * <p>只停止这项任务必须等待的命令。明确设置“不必等待”的命令可以继续，到会话退出才停。
+     * 命令返回非零退出码本身通常是交给模型处理的结果，不会直接调用本方法。</p>
+     * @param task 出错的任务，包含是否定时任务、是否收到过模型回复等信息
+     * @param failure 实际异常，原样保存到调用者的结果 future
      */
     private void fail(Active task, Exception failure) {
         if (task.cronId() != null && !task.received) {
-            // 关闭后不再采用任何新历史；未关闭时恢复也走统一的历史事件入口。
+            // 用户退出后就不再改历史；否则通过 apply 放回开始任务前的消息。
             if (!closed) apply(new SessionEvent.HistoryPrepared(task.snapshot));
             if (background != null) background.restore(task.receipts);
             if (!closed) cron.failed(task.cronId());
             else cron.release(task.cronId());
         } else if (background != null) {
-            // 这些通知已保留在失败历史中，不再占据后台容量；当前任务不自动重投。
+            // 通知还留在历史中，可以删除后台记录；不要因此把任务从头执行一遍。
             background.acknowledge(task.receipts);
         }
         if (background != null) background.cancelRequired(task.context().id());
@@ -410,57 +418,62 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 在执行/采用边界复核关闭信号；不能撤销已开始的 IO，但能拒绝后续晚到事件。
-     * @throws IllegalStateException 会话已关闭
+     * 继续处理或修改消息前，检查用户是否已退出；不能还原已经开始的文件写入。
+     * @throws IllegalStateException 用户已退出会话
      */
     private void ensureOpen() { if (closed) throw new IllegalStateException("Session is closed"); }
 
     /**
-     * 一次任务跨模型轮、工具轮及后台等待保留的本地状态。
-     * 只由消费者修改，不能通过工具 JSON 设置。close 只读取 entry 来完成结果通道，
-     * 不接管历史或驱动另一套执行循环。
+     * 保存当前任务已经做到了哪一步。
+     * 请求模型、执行工具和等后台时使用同一个对象，不因等待重新开始任务。
+     * 只有处理线程修改字段；退出线程只读 entry，用它通知调用者任务未完成。
      */
     private static final class Active {
-        /** 原始入口和任务完成通道；不随上下文压缩变化。 */
+        /** 最初取出的请求及结果 future，不随历史压缩变化。 */
         final SessionInbox.Entry entry;
-        /** 仅定时任务保存入口前的外层历史快照，供首回复前投递失败恢复。 */
+        /** 定时任务开始前的历史副本，第一次模型回复前失败时恢复它；普通任务不保存。 */
         final List<Message> snapshot;
-        /** 已注入历史但尚未得到合法正式回复确认的后台完成记录。 */
+        /** 已加进 history、但还没等到模型正常回复的后台结果。 */
         final List<Completion> receipts = new ArrayList<>();
-        /** 入口捕获的用户目标，通知、Stop 和摘要都不能替换它。 */
+        /** 用户最初要做的事，不能被工具结果、后台通知或 Stop 提示换掉。 */
         String goal;
-        /** 本任务入口召回后的 system，跨续跑固定使用。 */
+        /** 基础 system 提示加上这项任务查到的记忆，后面继续用同一份。 */
         String system;
-        /** 未更新 todo 的工具批次数，不是模型请求数或工具调用数。 */
+        /** 自上次 todo 更新或提醒以来的工具批次数，不是工具个数或模型请求数。 */
         int rounds;
-        /** 是否已有首个合法正式回复；决定 cron 失败还能否按未交付处理。 */
+        /** 模型是否正常回复过一次；定时任务在这之后不能再按“还没送到”重试。 */
         boolean received;
         /**
-         * 创建尚未执行的任务状态；只复制定时历史的外层，不深拷贝消息。
-         * @param entry 已领取入口
-         * @param history 采用入口消息之前的历史，随后只通过运行器重建/追加
+         * 记住当前任务，只有定时任务才额外复制开始前的消息列表。
+         * 复制的是列表，不是其中每个 Message，后续不能直接改旧消息的内容。
+         * @param entry 取出的请求及结果 future
+         * @param history 还没加入这项新请求的历史
          */
         Active(SessionInbox.Entry entry, List<Message> history) {
             this.entry = entry;
-            // 只有定时首回复前的交付重试需要恢复，普通任务不额外复制一份长历史。
+            // 只有定时任务在第一次回复前失败才会重试；普通任务不用多存一份长历史。
             snapshot = entry.request().cronId() == null ? List.of() : List.copyOf(history);
         }
-        /** @return 排队前已经固定、子代理沿用的可信执行身份 */
+        /**
+         * @return 程序记录的任务 ID、来源、询问用户的方法，以及会话是否退出的检查方法
+         */
         ExecutionContext context() { return entry.request().context(); }
-        /** @return 定时定义 ID；普通人工任务为 null */
+        /**
+         * @return 定时任务定义的 ID；用户直接提交的任务为 null
+         */
         String cronId() { return entry.request().cronId(); }
     }
 
     /**
-     * 为旧 run(messages) API 提供同步适配，复用 execute，而不是保留第二套推理循环。
+     * 让旧 run(messages) 调用同一个 execute，不再单独写一套模型循环。
      *
-     * <p>直接在调用线程推进，不启动消费者或 cron，不追加空的占位请求。调用方原列表会被
-     * 更新；退出适配器只解绑其唤醒监听器，不关闭 engine，因此后续可以继续使用同一执行器。
-     * 执行错误解包后保留原 LlmException/RuntimeException，不让 future 包装掩盖真实原因。</p>
-     * @param engine 独占使用的旧入口执行器
-     * @param messages 已含当前请求的可变历史，不得并发修改
-     * @throws LlmException 模型或摘要调用失败
-     * @throws RuntimeException 历史非法、工具执行链意外失败或执行器已关闭
+     * <p>直接在调用者线程处理，不开处理线程或定时检查。messages 已有请求，不重复添加。
+     * 处理时会修改原列表。返回时去掉本方法设置的后台通知函数，但不关闭 engine，
+     * 调用者之后还能用它继续这段对话。</p>
+     * @param engine 本次使用的 AgentLoop，不能同时在另一线程运行
+     * @param messages 已含本次请求、可以修改的消息列表
+     * @throws LlmException 模型或摘要失败，从 future 中取出原异常重新抛出
+     * @throws RuntimeException 消息不合法、执行出错或执行器退出，仍抛原异常而不是 future 包装异常
      */
     static void runExisting(AgentLoop engine, List<Message> messages) throws LlmException {
         SessionRuntime runtime = new SessionRuntime(engine, messages, ignored -> { }, ignored -> { });
@@ -470,7 +483,7 @@ public final class SessionRuntime implements AutoCloseable {
             runtime.execute(entry, false);
             entry.result().join();
         } catch (CompletionException wrapped) {
-            // 保留旧 API 的异常对象与类型，不能用 CompletionException 掩盖真实失败。
+            // join 把实际错误包在 CompletionException 中；取出原异常，让调用者仍按原类型处理。
             if (wrapped.getCause() instanceof LlmException failure) throw failure;
             if (wrapped.getCause() instanceof RuntimeException failure) throw failure;
             throw new IllegalStateException(wrapped.getCause());
@@ -482,14 +495,15 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 关闭整个会话，而不是“等待当前任务完成后退出”。可重复调用。
+     * 用户退出 CLI 时停止整个会话，不等当前任务自然做完，也不执行剩余排队任务。
      *
-     * <p>先发布 CLOSED，再停 cron、关闭执行器及所属 shell，随后拒绝排队请求与当前结果
-     * future，最后中断消费者并最多等待两秒。先关闭执行能力再完成 future，是为了避免
-     * 调用者的同步完成回调拖延禁止新工具的时点。</p>
+     * <p>先记下“已退出”，停止定时检查和所有 shell 命令，再通知排队任务和当前任务失败，
+     * 最后中断处理线程，最多等它两秒。先停止执行，再完成 future，
+     * 是因为完成 future 可能立即运行调用者自己的代码，不能让这些代码拖延停止工具。</p>
      *
-     * <p>不排空请求、不保存进程内收件箱、不撤销文件副作用。HTTP 若不响应中断可能稍后
-     * 才返回；执行器和子代理的关闭检查会拒绝后续工具步骤，而非保证底层网络瞬间停止。</p>
+     * <p>重复调用没关系。不保存队列，不还原已经写入的文件。
+     * 网络客户端可能不理会线程中断，稍后才返回；父子 Agent 会在继续请求模型或执行工具前
+     * 检查是否退出，但不能保证把正在进行的网络请求立刻停止。</p>
      */
     @Override
     public void close() {
@@ -499,7 +513,7 @@ public final class SessionRuntime implements AutoCloseable {
             state = State.CLOSED;
         }
         cron.close();
-        // 先禁用执行器并清理命令，再完成队列 future；用户回调不能延迟禁止新工具的时点。
+        // 先停止执行器和命令，再通知 future 的调用者；对方可能立即运行自己的代码，不能拖延停止工具。
         engine.close();
         inbox.close();
         Active running = active;
