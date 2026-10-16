@@ -31,6 +31,8 @@ public class Hooks {
     public static final String PARAM_OUTPUT = "output"; // PostToolUse
     public static final String PARAM_MESSAGES = "messages"; // Stop
     public static final String PARAM_OUTCOME = "outcome";
+    /** Harness 执行上下文，不从工具 input 中提取；权限与子代理沿用此身份。 */
+    public static final String PARAM_CONTEXT = "executionContext";
 
     // 课程同款注册表:事件名 → 回调列表。同名事件按注册顺序追加
     private final Map<String, List<Hook>> registry = new HashMap<>();

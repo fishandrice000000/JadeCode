@@ -1,7 +1,7 @@
 # s12 后续工程方案：统一会话事件与任务生命周期
 
 日期：2026-10-16。
-状态：用户已整体确认并明确要求开始实施；正在实现，尚未完成构建、工程自审或真机验收。现有 s12 的历史工程结果仍见 [原任务单](cron-scheduler.md)，不能将本方案当成已实现能力。
+状态：实现、构建、已有定向回归、离线检查与工程自审 Pass；源码阅读指南已交付，用户学习与独立真机验收待完成。原始 s12 的历史工程结果见 [原任务单](cron-scheduler.md)，不能将原验收记录当成本轮新行为的真机验收。
 
 ## 1. 目标与非目标
 
@@ -93,8 +93,61 @@
 
 ## 8. Git 与当前状态
 
-本重构尚未提交实现。用户已整体确认，按完整可构建能力规划本地检查点；每批完成实现、验证与自审后精确暂存、核对完整 staged diff 并提交。不 push、不改历史。
+设计检查点为 `5461562 记录会话事件化与后台等待的架构决策`，只含 CONTEXT、两份 ADR 和本任务单初版。
+实现作为一笔完整检查点 `统一会话事件消费与后台任务等待`，包含本单后续更新、下列源码、已有断言适配及必要说明，不 push、不改历史。
 
-保留用户已有的 s08/s09/s10 笔记修改和 other-agents-analysis 目录，不自动暂存。当前术语与两份 ADR 为本轮讨论文档，尚未提交。
+精确实现文件：
+
+- README.md
+- docs/jobs/s12/cron-scheduler.md、docs/jobs/s12/session-event-refactor.md
+- docs/notes/s11/background-tasks-review.md、docs/notes/s12/cron-scheduler-review.md（仅添加历史版本提示）
+- docs/notes/s12/session-event-runtime-review.md（新增阅读指南）
+- src/main/java/com/jadecode/Main.java
+- src/main/java/com/jadecode/agent/AgentLoop.java
+- src/main/java/com/jadecode/agent/CronRuntime.java（删除，被通用机制替代）
+- src/main/java/com/jadecode/agent/CronProducer.java、ExecutionContext.java、SessionEvent.java、SessionInbox.java、SessionRuntime.java（均为 agent/ 下新增文件）
+- src/main/java/com/jadecode/cli/ConsoleInput.java（新增）、ReplCommand.java、RunCommand.java
+- src/main/java/com/jadecode/context/ContextCompactor.java（只同步入口捕获的注释）
+- src/main/java/com/jadecode/cron/CronScheduler.java（只同步职责注释，格式与算法未改）
+- src/main/java/com/jadecode/safety/Hooks.java、PermissionGate.java
+- src/main/java/com/jadecode/subagent/SubagentRuntime.java
+- src/main/java/com/jadecode/tools/BackgroundManager.java、BashTool.java、SubagentTool.java、Tool.java
+- src/test/java/com/jadecode/MainTest.java、src/test/java/com/jadecode/safety/PermissionGateTest.java
+
+保留用户已有的 s08/s09/s10 笔记修改和 other-agents-analysis 目录，不暂存。tmp 验证材料、JAR、class 与运行期状态不加入 Git。
 
 讨论依据：[术语表](../../../CONTEXT.md)、[ADR 0001](../../adr/0001-background-task-completion-dependency.md)、[ADR 0002](../../adr/0002-session-event-processing-boundary.md)。
+
+## 9. 实际实现与工程自审
+
+SessionRuntime 的 execute／runTask 是唯一任务执行主干，apply 是历史采用入口。SessionInbox 只存最多 64 项新请求，后台完成正文仍在 BackgroundManager 的有界队列，只发送变化信号；等待时不领取其它任务。普通同步步骤直接返回事件，不为统一形式额外换线程。
+
+AgentLoop 的 request 返回已校验的正式回复；运行器采用、确认定时交付后才调用 executeTools。工具批次完整回灌后才执行 compactAfterBatch。旧 run(messages) 借用同一主干，不启动计时线程，也不在返回时关闭整个执行器。runScheduled 和 CronRuntime 已删除，不保留第二套生产调度。
+
+BackgroundManager 给每条后台命令绑定执行 ID、必等标记与独立 ShellCommand 实例；无需修改 ShellCommand 本身即可按任务取消。collect 领取不等于确认：结果保留拥有权与容量直到正式模型回复；定时首回复前失败可原样归还，不能通过字符串伪造后台事件。
+
+ExecutionContext 通过 Tool 的兼容重载与 hook 参数传递来源；普通工具继续委托原 execute。子代理只传递身份与审批通道，不共享父历史或收件箱。PermissionGate 不读 stdin；ConsoleInput 统一处理任务与带 ID 的审批，run 没有审批时也不多读输入。
+
+最终边界复核补齐了父子共享的只读会话关闭信号：子代理的模型回复晚到、超限错误晚到或审批晚到时，均在新模型／工具步骤前复核。父执行器也在审批返回后复核，防止关闭后才返回的批准启动工具。信号由 Harness 提供，不进入工具 schema；不引入父子共享队列，也不能撤销正在进行的 IO。
+
+**Pass（同一实现者的单独工程自审，不冒称独立审查）**：核对代码、调用方、diff、注释与相关验证，未发现已知阻塞问题。自审修正了“任务快速失败或执行中参数错误可能被 CLI 误报拒收”、关闭时先禁止执行再完成队列 future 的顺序，以及无错误消息时的 cron 告警；同步修正旧入口与线程审批注释。单次 run 的空请求在装配前拒绝，不读取配置或调用模型。
+
+边界：没有新增完整会话恢复、外部 MQ、抢占、无限命令等待或后台输出文件；仍受原命令 120 秒与 Linux 进程组能力约束。不能撤销已发生 IO，不能强制终止所有第三方 HTTP 客户端，也不承诺 SIGKILL／断电／逃离进程组后的清理。终端提示与异步进展可能交错，未引入富终端 UI。未知 ContentBlock、Memory INVALID_RESPONSE 和其它优化保持原边界。
+
+## 10. 实际验证与交接
+
+没有新增 JUnit 方法／文件，没有真实 API 调用，也没有读取 .env、机器认证或密钥。
+
+- `mvn -q -DskipTests compile`：退出 0。
+- 最窄四类回归：AgentLoopTest 18、BashToolTest 7、PermissionGateTest 8、MainTest 9，共 42，全部通过。
+- 扩展已有回归：AgentLoopAutomaticPreparationTest 7、AgentLoopManualCompactionTest 12、AgentLoopReactiveCompactionTest 11、SubagentRuntimeTest 11、SubagentRuntimeCompactionTest 19、MainCompactionAssemblyTest 6、ToolSchemaTest 5、HooksTest 6，共 77，全部通过。
+- 最终执行 `mvn -q clean -Dtest=AgentLoopTest,BashToolTest,PermissionGateTest,MainTest,AgentLoopAutomaticPreparationTest,AgentLoopManualCompactionTest,AgentLoopReactiveCompactionTest,SubagentRuntimeTest,SubagentRuntimeCompactionTest,MainCompactionAssemblyTest,ToolSchemaTest,HooksTest test`：退出 0，12 类／119 条，0 failure、0 error、0 skipped。不是全量回归。
+- 最终 `mvn -q -DskipTests package`：退出 0，生成 target/jadecode.jar；没有用跳过测试替代上面的实际回归。
+- 最后补充单次 run 的空提示装配前拒绝后，定向重跑 MainTest 9 条与 package，均退出 0；`java -jar target/jadecode.jar run ''` 输出“任务描述不能为空”、退出 1，属于预期拒绝路径，没有进入配置装配或真实模型调用。
+- 最终子代理取消围栏修正后，定向重跑 SubagentRuntimeTest、SubagentRuntimeCompactionTest、MainCompactionAssemblyTest、AgentLoopTest、PermissionGateTest，共 62 条，0 failure／error／skipped；随后 package 退出 0。临时 CancelDemo 补验“不响应中断的子代理晚到回复”和“会话关闭后才批准的工具”，均不能产生副作用，子代理 FAILED 恰好一次；编译与运行退出 0。
+- 临时 SessionDemo 以 JDK 21 编译，真实模型被假客户端替代：初版 8 场景、扩展版 12 场景全部退出 0；最后关闭顺序调整后只定向重跑关闭与晚到回复两分支，退出 0，没有重复整个矩阵。
+- 场景包括：两个结果逐批恢复及 FIFO、脱离通知不唤醒、退出码 7 与 1 秒超时、严格布尔参数、模型失败仅取消所属必等命令、关联审批与跨线程人工来源、真实 Main 的定时父子来源与合法空记忆提取、64 项满队列不丢完成结果／cron 保留 pending、5 秒退避不挡人工及确认先于工具、单次 run 不乱读 stdin、确认写盘失败留 lease 并可在新调度器恢复、关闭后模型忽略中断也不能执行晚到工具、退出清理必等与脱离命令。
+- 本轮未出现编译、回归或离线演示失败；一次重复目标的补丁格式被编辑工具拒绝且未修改文件，拆分补丁后继续，不将其作为运行期失败。
+- 真机场景 tmp/s12-event-check 仅准备脚本、发布说明与 RUNBOOK；`sh -n` 退出 0，未启动脚本、未预写任何报告或 release 门闩，真实验收仍由用户执行。
+
+本轮临时源码、class、验证状态及生成物在交付前清理，保留明确用于用户验收的 tmp/s12-event-check。学习入口为 [session-event-runtime-review.md](../../notes/s12/session-event-runtime-review.md)，从 SessionRuntime.execute／runTask／apply 开始。旧指南只添加版本提示，未改写用户答案；本单的工程 Pass 不替代用户理解或 s12 整章验收。

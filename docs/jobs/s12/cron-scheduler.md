@@ -1,6 +1,8 @@
 # s12 工程任务单：到时把 prompt 交给空闲 Agent
 
 来源：本机 `../learn-claude-code/s12_cron_scheduler/README.zh.md`、`code.py`。
+版本提示：本单保留原始 s12 交付与验证事实；当前会话入口已由 [事件化重构](session-event-refactor.md)替代，
+涉及 CronRuntime / runScheduled 的描述按当时实现理解，不能替代当前源码。
 状态：整章实现、构建、已有定向回归、离线闭环与工程自审 Pass；用户源码 Review 和独立真机验收待完成。
 
 ## 1. 需求与流程

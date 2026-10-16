@@ -5,6 +5,7 @@ import java.util.List;
 import java.util.Map;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.jadecode.agent.ExecutionContext;
 import com.jadecode.context.ContextCompactor;
 import com.jadecode.llm.CompleteRequest;
 import com.jadecode.llm.LlmClient;
@@ -181,6 +182,15 @@ public class SubagentRuntime {
      * @throws LlmException 网络 / API 错误,向上抛给调用方决定重试或退出
      */
     public String run(String prompt) throws LlmException {
+        return run(prompt, ExecutionContext.create(ExecutionContext.Source.USER, null));
+    }
+
+    /**
+     * 继承父任务的可信来源与审批通道，历史仍独立。仅传身份，不与父共享收件箱或后台队列。
+     * @param context Harness 执行上下文，模型不能通过 prompt 改写
+     */
+    public String run(String prompt, ExecutionContext context) throws LlmException {
+        java.util.Objects.requireNonNull(context, "executionContext");
         List<Message> messages = new ArrayList<>();
 
         messages.add(Message.userText(prompt));
@@ -197,6 +207,7 @@ public class SubagentRuntime {
 
         try {
             while (turns < MAX_TURNS) {
+                checkSessionOpen(context);
                 // 1. 正式请求之前的自动整理(未注入压缩器时整段跳过,保持旧行为)。
                 //    首次请求、工具结果回灌之后、Stop 续跑之后、补救重试之前都会经过这里。
                 if (compactor != null) {
@@ -219,9 +230,12 @@ public class SubagentRuntime {
                 //    补救摘要、工具与 hooks 的异常都不在此列,不会被当成正式请求超限而补救。
                 ModelResponse response;
                 try {
+                    checkSessionOpen(context);
                     response = client
                             .complete(new CompleteRequest(system, messages, maxTokens, List.copyOf(tools.values())));
                 } catch (LlmException error) {
+                    // 父会话已退出时不因晚到的超限错误再发起摘要补救。
+                    checkSessionOpen(context);
                     // 2.1 恢复分流:命中"上下文过长"的分类、且本次委派还有额度,才值得付一次有损压缩。
                     //     不匹配(认证 / 限流 / 网络)或额度耗尽的异常原样抛出,交给外层统一 END(FAILED)。
                     if (compactor == null || !ContextCompactor.isContextOverflow(error)
@@ -252,6 +266,7 @@ public class SubagentRuntime {
 
                 // 2.4 正式请求成功:额度归零(下一次正式请求又是一次新机会),
                 //     而且只有这一刻才消耗一个子代理轮次。
+                checkSessionOpen(context);
                 reactiveRetries = 0;
                 turns++;
 
@@ -298,6 +313,7 @@ public class SubagentRuntime {
                 boolean compactRequested = false;
 
                 for (ToolUseBlock u : toolCalls) {
+                    checkSessionOpen(context);
                     // 先查本类自己的工具表:子表是父表的子集,父表查得到的 task / todo_write 在这里是未知工具。
                     // 未知工具在此短路,不进任何工具 hook——否则会打出一行"调用过"的假日志
                     Tool tool = tools.get(u.name());
@@ -307,15 +323,18 @@ public class SubagentRuntime {
                     }
 
                     // 已知工具才进 PRE_TOOL_USE:权限闸门与日志都挂在这里,首个非 null 即拦截
-                    String blocked = hooks.trigger(Hooks.PRE_TOOL_USE, Map.of(Hooks.PARAM_BLOCK, u));
+                    String blocked = hooks.trigger(Hooks.PRE_TOOL_USE,
+                            Map.of(Hooks.PARAM_BLOCK, u, Hooks.PARAM_CONTEXT, context));
                     if (blocked != null) {
                         results.add(new ToolResultBlock(u.id(), blocked));
                         continue;
                     }
 
                     // 调用工具获取输出
+                    // 审批答复可能晚到；关闭信号随身份继承，不能只在 while 顶部检查。
+                    checkSessionOpen(context);
                     ObjectNode node = u.input() instanceof ObjectNode o ? o : Json.mapper().createObjectNode();
-                    String output = tool.execute(node);
+                    String output = tool.execute(node, context);
 
                     // 只有"已知工具 + 未被拦截 + 真的执行完了 + 输出精确等于稳定文案"才算请求压缩。
                     // 判定放在执行之后:被拦的 compact 停在上面 continue,根本没有执行;别的工具返回同样
@@ -340,6 +359,7 @@ public class SubagentRuntime {
                 // 8. 闭合之后才处理主动压缩:整批结果都已回灌,分类(纯 compact 整段摘要 / 混合批次先预算
                 //    再摘要旧前缀)交给压缩器,子循环不复制这套策略。
                 if (compactRequested) {
+                    checkSessionOpen(context);
                     List<Message> compacted;
                     try {
                         compacted = compactor.compactAfterBatch(toolCalls, messages, activeRequest);
@@ -363,6 +383,14 @@ public class SubagentRuntime {
             endFailed(e);
             throw e;
         }
+    }
+
+    /**
+     * 子代理没有父收件箱，但必须遵守父会话关闭边界；取消作为 LlmException 走既有一次 FAILED 收尾。
+     * 已在进行中的 IO 不回滚；检查只阻止后续模型／工具步骤，不声称强制终止第三方 HTTP。
+     */
+    private static void checkSessionOpen(ExecutionContext context) throws LlmException {
+        if (context.isCancelled()) throw new LlmException("Parent session is closed");
     }
 
     /**

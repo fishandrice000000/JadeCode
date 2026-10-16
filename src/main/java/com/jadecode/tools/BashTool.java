@@ -6,12 +6,14 @@ import java.util.Map;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.jadecode.agent.ExecutionContext;
 
 /**
  * bash 工具：缺省同步；父循环可显式 run_in_background=true 后先拿启动回执。
  *
  * <p>两条路径都必须先经调用方 PreToolUse，不能因换线程而跳过权限检查。后台命令由
- * BackgroundManager 拥有，父循环收集完成通知；本工具不写历史、不调模型。</p>
+ * BackgroundManager 拥有，运行器收集完成事件；本工具不写历史、不调模型。后台执行方式与
+ * 是否阻止当前任务结束由两个独立参数表达。</p>
  */
 public class BashTool implements Tool {
     private final Path cwd;
@@ -62,15 +64,17 @@ public class BashTool implements Tool {
     @Override
     public String description() {
         return background == null ? "Run a shell command synchronously."
-                : "Run a shell command. Set run_in_background=true only for independent slow commands;"
-                + " returns a background ID, not completion. Results arrive on a later request as task notifications.";
+                : "Run a shell command. run_in_background=true returns an ID immediately, not completion."
+                + " wait_for_completion defaults to true for background commands: the current task waits for"
+                + " their results and resumes automatically. Set it to false only to detach from the task;"
+                + " detached results are later reference notifications. All commands stop when the CLI exits.";
     }
 
     /** @return 有管理器才声明可选 boolean；字符串 \"true\" 不算布尔。 */
     @Override
     public Map<String, String> properties() {
         return background == null ? Map.of("command", "string")
-                : Map.of("command", "string", "run_in_background", "boolean");
+                : Map.of("command", "string", "run_in_background", "boolean", "wait_for_completion", "boolean");
     }
 
     /** @return command 必填；省略后台参数保持同步默认。 */
@@ -86,6 +90,16 @@ public class BashTool implements Tool {
      */
     @Override
     public String execute(ObjectNode input) {
+        // 兼容普通同步调用；后台调用必须走运行器提供可信执行身份的重载。
+        return execute(input, null);
+    }
+
+    /**
+     * 后台路径默认必等，仍立即返回；身份来自 Harness，不允许模型在 input 里伪造所属任务。
+     * 同步路径若显式传 wait_for_completion 则拒绝，避免无效参数让模型误以为改变了执行方式。
+     */
+    @Override
+    public String execute(ObjectNode input, ExecutionContext context) {
         JsonNode command = input.get("command");
         if (command == null) {
             return "Error: Missing required parameter: command";
@@ -98,13 +112,20 @@ public class BashTool implements Tool {
             return "Error: run_in_background must be a boolean";
         }
         boolean asynchronous = requested != null && requested.booleanValue();
+        JsonNode waiting = input.get("wait_for_completion");
+        if (waiting != null && !waiting.isBoolean()) return "Error: wait_for_completion must be a boolean";
+        if (waiting != null && !asynchronous) return "Error: wait_for_completion requires run_in_background=true";
         if (asynchronous && background == null) {
             return "Error: Background execution is not available in this agent";
         }
         if (asynchronous) {
+            if (context == null) return "Error: Background execution requires a Harness task context";
             try {
-                String id = background.start(command.textValue());
-                return "[Background task " + id + " started] The result will be collected on a later request.";
+                boolean required = waiting == null || waiting.booleanValue();
+                String id = background.start(command.textValue(), context, required);
+                return "[Background task " + id + " started] " + (required
+                        ? "The current task must process its result before finishing; it will resume automatically."
+                        : "Detached from the current task. Its result is a later session notification.");
             } catch (IllegalArgumentException | IllegalStateException failure) {
                 return "Error: " + failure.getMessage();
             }

@@ -656,10 +656,10 @@ public final class ContextCompactor {
      * <p>
      * <b>为什么需要它</b>:在 Anthropic 的消息格式里,工具结果也用 {@code role=user} 回灌。
      * 所以循环里的"最后一条 user 消息"常常是工具结果而不是人说的话,压缩消息里的
-     * {@code Current user request} 更不能写错。调用方要在 {@code AgentLoop.run(messages)} 的
-     * <b>入口</b>、任何模型调用与工具结果出现<b>之前</b>捕获一次,存进一个 {@code final} 局部变量,
-     * 之后整个 run 都用这一个——即使 Stop hook 追加了 synthetic user 消息,也不重新提取。
-     * 这也是本轮<b>不</b>新增跨 run 字段、不新增 {@code run(messages, activeRequest)} 重载的原因。
+     * {@code Current user request} 更不能写错。运行器应在任务入口、任何模型调用、工具结果或
+     * 外部通知出现之前捕获一次，并保留在该任务的执行状态中。工具续跑、Stop 注入与后台
+     * 等待恢复都沿用这一个目标；不能把每一次事件消费当成新的用户请求。兼容的
+     * {@code AgentLoop.run(messages)} 也通过同一任务入口捕获。
      * </p>
      *
      * <p>

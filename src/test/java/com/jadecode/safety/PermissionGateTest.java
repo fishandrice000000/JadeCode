@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.jadecode.agent.ExecutionContext;
 import com.jadecode.util.Json;
 
 import org.junit.jupiter.api.Test;
@@ -83,21 +84,24 @@ class PermissionGateTest {
         assertTrue(approval.calls.isEmpty());
     }
 
-    /** ⑤ 默认审批 + 非主线程:直接拒绝并带回理由,不等输入(总计划:非主线程禁交互审批) */
+    /** ⑤ 定时来源即使有可放行通道也不能交互；不再拿线程身份代替来源。 */
     @Test
-    void defaultApprovalRejectsOnNonMainThread() {
-        PermissionGate gate = new PermissionGate(new CommandPolicy(),
-                new PathGuard(new PathResolver(Path.of("").toAbsolutePath()))); // 默认审批
+    void scheduledSourceRejectsWithoutAsking() {
+        RecordingApproval approval = new RecordingApproval();
+        approval.allow = true;
+        PermissionGate gate = gateWith(approval);
+        ExecutionContext context = ExecutionContext.create(ExecutionContext.Source.SCHEDULED, approval);
         AtomicReference<String> result = new AtomicReference<>();
 
         // 预置超时:若实现错误地阻塞在读输入上,测试超时失败而不是永久挂起
         assertTimeoutPreemptively(Duration.ofSeconds(2), () -> {
-            Thread t = new Thread(() -> result.set(gate.check("bash", input("command", "rm foo.txt"))));
+            Thread t = new Thread(() -> result.set(gate.check("bash", input("command", "rm foo.txt"), context)));
             t.setDaemon(true); // 兜底:即使线程卡死也不阻止 JVM 退出
             t.start();
             t.join();
         });
         assertEquals("Potentially destructive command", result.get());
+        assertTrue(approval.calls.isEmpty());
     }
 
     /** ⑥ 文件工具高危路径(/etc):硬拒并带回理由,审批未被调用 */

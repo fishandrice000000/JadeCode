@@ -1,5 +1,8 @@
 # s11：让慢工具等待与 Agent 决策分离
 
+版本提示：本指南保留原 s11 实现与学习记录。当前后台等待语义和会话入口已在 s12 后续重构中调整，
+阅读现有源码请以 [事件化运行指南](../s12/session-event-runtime-review.md) 为入口；下文题号与原文保留，不改写用户答案。
+
 来源：本机课程 `s11_background_tasks/README.zh.md` 与 `code.py`。
 工程任务单：[background-tasks.md](../../jobs/s11/background-tasks.md)。
 本章按新流程完整实现后交接：工程检查范围与实际验证见任务单，用户理解和独立真机验收仍未代办。

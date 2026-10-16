@@ -4,6 +4,7 @@ import java.util.List;
 import java.util.Map;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.jadecode.agent.ExecutionContext;
 import com.jadecode.llm.LlmException;
 import com.jadecode.subagent.SubagentRuntime;
 
@@ -66,6 +67,12 @@ public class SubagentTool implements Tool {
      */
     @Override
     public String execute(ObjectNode input) {
+        return execute(input, ExecutionContext.create(ExecutionContext.Source.USER, null));
+    }
+
+    /** 委派只传可信执行身份；子代理不会因为换线程或调用层次而获得额外审批资格。 */
+    @Override
+    public String execute(ObjectNode input, ExecutionContext context) {
         for (String key : required()) {
             if (input.get(key) == null) {
                 return "Error: Missing required parameter: " + key;
@@ -74,7 +81,7 @@ public class SubagentTool implements Tool {
 
         String prompt = input.get("prompt").asText();
         try {
-            return runtime.run(prompt);
+            return runtime.run(prompt, context);
         } catch (LlmException e) {
             return "Error: " + e.getMessage();
         }

@@ -1,5 +1,8 @@
 # s12：让时间成为 Agent 的任务入口
 
+版本提示：本指南记录 `477b769` 的原始定时接入。当前 `CronRuntime` / `runScheduled` 已由统一会话运行器取代，
+请先阅读 [事件化运行指南](session-event-runtime-review.md)。原题号与内容作为历史保留，不据此要求重复执行旧任务。
+
 工程记录：[cron-scheduler.md](../../jobs/s12/cron-scheduler.md)。
 来源是本机原课程 `s12_cron_scheduler/README.zh.md` 和 `code.py`。
 本章完整实现后交接学习；工程证据与边界见任务单，不替用户完成理解和真实 CLI 验收。

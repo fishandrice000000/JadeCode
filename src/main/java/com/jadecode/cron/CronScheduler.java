@@ -26,7 +26,7 @@ import com.jadecode.util.Json;
 /**
  * s12 时间与交付状态管理：到期先落盘 pending，再交给运行时串行发送 prompt。
  *
- * <p>不创建计时线程、不调用模型或 shell；CronRuntime 负责何时调用 pollDue 和消费。
+ * <p>不创建计时线程、不调用模型或 shell；CronProducer 生产事件，SessionRuntime 统一消费。
  * 同一实例的方法串行保护内存/文件，但不是多进程任务库锁；同一工作区只由一个 CLI 管理。
  * 文件用临时文件原子替换，未 fsync，不承诺断电耐久性或恰好一次交付。</p>
  */
