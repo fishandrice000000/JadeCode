@@ -82,3 +82,23 @@ TerminalDisplay 的输入/输出处理、ConsoleInput.readQuery 的任务与审�
 
 本地提交精确十文件：pom.xml、jade、README.md、TerminalDisplay.java、ConsoleInput.java、ReplCommand.java、RunCommand.java、
 本任务单、cron-scheduler.md 与 session-event-refactor.md。用户旧笔记和研究目录不暂存；不 push、不改历史。
+
+## 7. 后续简化：只用 y/n 审批
+
+用户在终端修复交付后要求取消带 ID 的审批命令，交互只用 y/n。上文保留上一笔提交当时的行为和检查记录，当前行为以下述规则为准：
+
+- 有且只有一份待答申请时，整条输入 y 表示批准，n 或空行拒绝，忽略首尾空白及大小写。
+- 不再生成或展示审批 ID，不保留斜杠审批命令，也不把 yes/no 当作审批回答。
+- 无待答申请时，y/n 仍为普通任务；REPL 中其它文字仍可排队，多行任务中的单独 y 不会被提取来批准。
+- 单次 run 在等审批时只接受上述答复，普通文字提示重新输入；EOF/退出/中断继续拒绝，不改变人工与定时来源的权限判断。
+- 内部直接保存答复 future，并在 finally 比较对象是否仍是当前申请，避免旧等待线程清理后来申请；不为简化界面移除互斥或退出保护。
+
+修改范围为 ConsoleInput、ReplCommand 的说明、README 与本节记录，不新增单元测试、不调用真实模型。
+
+验证：`mvn -q -DskipTests package` 退出 0；临时程序直接调用 ConsoleInput，REPL 的 y/n、大小写、空行及退出拒绝，
+待审批时其它任务与多行正文保留、旧命令不批准、重复申请不覆盖、无审批时 y/n 为普通任务，
+以及 run 的 y/n、空行、EOF 拒绝和无效输入后重答均通过，程序退出 0。未重跑全量或已有 JUnit 测试。
+相关 diff 空白检查通过，临时检查源码和 class 已清理。
+
+**Pass（审批简化自审）**：单独核对修改、调用方及离线结果，没有已知阻塞问题；保留锁、申请对象身份比较与退出拒绝。
+旧验收记录仍保留当时的 ID 命令用法，不作为当前操作指引。精确四文件本地提交，不吸收用户旧笔记、不 push、不改历史。
