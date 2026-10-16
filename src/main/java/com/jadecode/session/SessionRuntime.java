@@ -1,4 +1,4 @@
-package com.jadecode.agent;
+package com.jadecode.session;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -9,19 +9,26 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.function.Consumer;
 
+import com.jadecode.agent.AgentExecutor.Continue;
+import com.jadecode.agent.AgentExecutor.ModelReply;
+import com.jadecode.agent.AgentExecutor.ToolBatch;
+import com.jadecode.agent.AgentExecutor;
+import com.jadecode.context.ContextCompactor;
 import com.jadecode.cron.CronJob;
 import com.jadecode.cron.CronProducer;
+import com.jadecode.cron.CronScheduler;
 import com.jadecode.execution.Approval;
 import com.jadecode.execution.ExecutionContext;
 import com.jadecode.hooks.Hooks;
 import com.jadecode.llm.LlmException;
+import com.jadecode.memory.MemoryManager;
 import com.jadecode.messages.ContentBlock;
 import com.jadecode.messages.Message;
 import com.jadecode.messages.Role;
 import com.jadecode.messages.TextBlock;
+import com.jadecode.messages.ToolExchangeProtocol;
 import com.jadecode.process.BackgroundManager.Completion;
 import com.jadecode.process.BackgroundManager;
-import com.jadecode.safety.PermissionGate;
 
 /**
  * 管理一次 CLI 会话：把收到的任务排好队，一次做完一项，再做下一项。
@@ -32,11 +39,11 @@ import com.jadecode.safety.PermissionGate;
  *
  * <p>阅读顺序：{@link #submit} 把任务放进队列 → {@link #consume} 取出任务 →
  * {@link #execute} 准备这项任务需要的数据 → {@link #runTask} 请求模型并执行工具。
- * 所有模型回复和工具结果都由 {@link #apply} 写入 history；具体怎么请求模型、执行工具和
- * 压缩历史，则交给 {@link AgentLoop}。</p>
+ * 所有模型回复和工具结果都由 apply 的各个重载写入 history；具体怎么请求模型、执行工具和
+ * 压缩历史，则交给 {@link AgentExecutor}。</p>
  *
  * <p>通常只有本类启动的一个线程修改 history。其它线程只往队列放任务，或告诉它
- * “有后台命令跑完了”。旧的 {@link AgentLoop#run(List)} 则直接用调用者线程。
+ * “有后台命令跑完了”。旧的 {@link #run(List)} 则直接用调用者线程。
  * 程序退出后队列和当前历史不会恢复；已经写入的文件不会还原，网络请求也不一定立即停止。</p>
  */
 public final class SessionRuntime implements AutoCloseable {
@@ -54,11 +61,13 @@ public final class SessionRuntime implements AutoCloseable {
         CLOSED
     }
     /** 实际请求模型、执行工具和压缩历史的对象；什么时候调用它，由本类决定。 */
-    private final AgentLoop engine;
+    private final AgentExecutor engine;
+    /** 长期记忆的算法留在 memory；本类决定任务入口与完成后的调用时机。 */
+    private final MemoryManager memory;
     /** 与父 bash 共用的后台命令管理器；没有后台功能时为 null。 */
     private final BackgroundManager background;
-    /** 发给模型的消息列表，只由处理线程修改；压缩时换内容，不换这个列表对象。 */
-    private final List<Message> history;
+    /** 发给模型的消息列表；压缩只换内容。同步 run 临时借用调用者列表，结束后恢复本会话列表。 */
+    private List<Message> history;
     /** 尚未开始的任务在这里排队；后台命令跑完后，也通过它叫醒等待线程。 */
     private final SessionInbox inbox = new SessionInbox();
     /** 检查定时任务是否到期的对象，REPL 会启动它，单次 run 不启动。 */
@@ -77,37 +86,34 @@ public final class SessionRuntime implements AutoCloseable {
     private Thread consumer;
 
     /**
-     * 创建一段空对话，记住要使用的执行器和输出函数。
-     * 不会请求模型或启动线程；调用 start 才开始处理任务，退出时应调用 close。
-     *
-     * @param engine 这次会话使用的 AgentLoop，不可同时交给另一会话使用
-     * @param output 显示进展和回答的函数，不可为 null
-     * @param errors 显示错误的函数，不可为 null
-     * @throws NullPointerException engine 为 null
-     * @see #start(boolean)
-     * @see #close()
+     * 创建不带记忆、后台和定时服务的会话，不启动线程或模型请求。
+     * @param engine 本会话独占使用的执行器，关闭会话时一并标记关闭
+     * @param output 正常进展与结果输出，应尽快返回
+     * @param errors 错误输出，应尽快返回
      */
-    public SessionRuntime(AgentLoop engine, Consumer<String> output, Consumer<String> errors) {
-        this(engine, new ArrayList<>(), output, errors);
+    public SessionRuntime(AgentExecutor engine, Consumer<String> output, Consumer<String> errors) {
+        this(engine, null, null, null, output, errors);
     }
 
     /**
-     * 直接使用给定的消息列表创建会话，供旧的 run(messages) 调用。
-     *
-     * <p>不复制列表，所以追加消息或压缩后，调用者也看得见。使用期间，调用者不能从另一线程
-     * 修改它。这里还设置“后台命令跑完时叫醒本会话”的函数，但不会取结果、启动线程或执行任务。</p>
-     * @param engine 请求模型和执行工具的对象
-     * @param history 已有的、可以修改的消息列表
-     * @param output 显示正常结果的函数
-     * @param errors 显示错误的函数
+     * 接收工厂装配的执行器和服务，取得它们的会话级关闭责任。
+     * 记忆在任务入口召回、真正完成后维护；cron 仅在 start(true) 后轮询。
+     * @param engine 本会话独占使用的执行器，不可同时交给其它会话
+     * @param memory 记忆服务，可为 null；不在构造时请求辅助模型
+     * @param background 与父 bash 共用的进程服务，可为 null；close 停全部命令
+     * @param scheduler 与定时工具共用的调度器，可为 null；本类包装并拥有 CronProducer
+     * @param output 正常结果输出
+     * @param errors 错误输出
      */
-    private SessionRuntime(AgentLoop engine, List<Message> history, Consumer<String> output, Consumer<String> errors) {
+    public SessionRuntime(AgentExecutor engine, MemoryManager memory, BackgroundManager background,
+            CronScheduler scheduler, Consumer<String> output, Consumer<String> errors) {
         this.engine = java.util.Objects.requireNonNull(engine);
-        this.background = engine.background();
-        this.history = history;
+        this.memory = memory;
+        this.background = background;
+        this.history = new ArrayList<>();
         this.output = output;
         this.errors = errors;
-        this.cron = new CronProducer(engine.cronScheduler(), this::publishCron, errors);
+        this.cron = new CronProducer(scheduler, this::publishCron, errors);
         if (background != null) background.onCompletion(inbox::wake);
     }
 
@@ -227,8 +233,8 @@ public final class SessionRuntime implements AutoCloseable {
                 apply(entry.request());
             }
             // 先记住用户请求，再加入后台通知；之后历史即使压缩，仍记着用户原本要做什么。
-            task.goal = engine.activeRequest(history);
-            task.system = engine.taskSystem(task.goal);
+            task.goal = activeRequest(history);
+            task.system = taskSystem(task.goal);
             runTask(task);
         } catch (LlmException | IOException | RuntimeException failure) {
             fail(task, failure);
@@ -239,6 +245,55 @@ public final class SessionRuntime implements AutoCloseable {
             active = null;
             if (!closed) state = State.IDLE;
         }
+    }
+
+    /**
+     * 开始处理任务时，检查消息中的工具调用和结果是否配对，然后记住用户请求。
+     *
+     * <p>用户请求只取这一次。以后 history 末条可能变成工具结果、后台通知或 Stop 提示，
+     * 不能再把那些文字当成用户想做的新任务。压缩和长期记忆都没启用时，不需要请求原文，
+     * 返回 null，但仍检查工具调用配对。</p>
+     * @param messages 已含本次请求的历史；只读取，不修改，也不调用模型或读写文件
+     * @return 本次请求原文；压缩和记忆都未启用时为 null
+     * @throws IllegalArgumentException 调用和结果不配对，或需要请求原文却找不到合法请求
+     * @throws IllegalStateException 会话或执行器已退出
+     */
+    private String activeRequest(List<Message> messages) {
+        ensureOpen();
+        // 先确认执行器仍可用，再检查协议；入口目标只在压缩或记忆需要时提取。
+        boolean needsRequest = engine.usesCompaction() || memory != null;
+        ToolExchangeProtocol.validateHistory(messages);
+        return needsRequest ? ContextCompactor.extractActiveRequest(messages) : null;
+    }
+
+    /**
+     * 在开始一项任务时查一次长期记忆，把查到的内容放进基础 system 提示词。
+     *
+     * <p>没有记忆功能就直接返回原 system。后面即使运行多批工具、等后台或 Stop 要求继续，
+     * 也复用这次返回的字符串，不每次都查记忆。查记忆可能读文件和请求辅助模型，
+     * 失败时怎么处理由 MemoryManager 负责；不把辅助模型的回答加入主对话。</p>
+     * @param activeRequest 用户最初的请求，启用记忆时应已由 activeRequest 方法检查
+     * @return 这项任务接下来一直使用的 system 提示词，不修改消息列表
+     * @throws IllegalStateException 会话或执行器已退出
+     */
+    private String taskSystem(String activeRequest) {
+        ensureOpen();
+        String base = engine.system();
+        return memory == null ? base : memory.prepareSystem(base, activeRequest);
+    }
+
+    /**
+     * 在该等的后台结果都已处理、Stop 也允许结束后，保存并整理长期记忆。
+     *
+     * <p>没有记忆功能就直接返回；有的话可能读写文件或调用辅助模型。
+     * 具体失败处理由 MemoryManager 负责，不能把辅助回复当成主任务回答。
+     * 工具运行到一半或仍在等后台时不能调用，否则可能把没完成的结论当成长期知识。</p>
+     * @param messages 当前已完成任务的历史，只读，不由本方法追加消息
+     * @throws IllegalStateException 会话或执行器已退出
+     */
+    private void finish(List<Message> messages) {
+        ensureOpen();
+        if (memory != null) memory.finishTask(messages);
     }
 
     /**
@@ -264,7 +319,7 @@ public final class SessionRuntime implements AutoCloseable {
         while (!closed) {
             // 1. 请模型继续前，先加入已完成的后台结果；不必等待的命令结果只供参考。
             deliverResults(task, true);
-            SessionEvent.ModelReply reply = engine.request(history, task.goal, task.system, this::apply);
+            ModelReply reply = engine.request(history, task.goal, task.system, this::adoptHistory);
             apply(reply);
             // 模型已正常回答，定时任务就算送到了，不用等工具成功；查记忆或生成摘要不算此次回答。
             if (!task.received) {
@@ -277,12 +332,12 @@ public final class SessionRuntime implements AutoCloseable {
 
             if (!reply.calls().isEmpty()) {
                 // 3. 执行这一批工具，把每个调用的结果一起写入历史；出错也要配齐调用和结果的 ID。
-                SessionEvent.ToolBatch batch = engine.executeTools(reply.calls(), task.context(), task.rounds);
+                ToolBatch batch = engine.executeTools(reply.calls(), task.context(), task.rounds);
                 apply(batch);
                 task.rounds = batch.roundsSinceTodo();
                 if (batch.failure() != null) throw batch.failure();
                 // 这一批 tool_use 都已有 tool_result，现在才能压缩，不会把调用与结果拆开。
-                engine.compactAfterBatch(batch, history, task.goal, this::apply);
+                engine.compactAfterBatch(batch, history, task.goal, this::adoptHistory);
                 continue;
             }
 
@@ -296,13 +351,13 @@ public final class SessionRuntime implements AutoCloseable {
                 state = State.RUNNING;
                 continue;
             }
-            SessionEvent.Continue continuation = engine.stop(history);
+            Continue continuation = engine.stop(history);
             if (continuation != null) {
                 apply(continuation);
                 continue;
             }
             // 4. 该等的结果都已处理，Stop 也没要求继续，才保存长期记忆并给出最终回答。
-            engine.finish(history);
+            finish(history);
             ensureOpen();
             String answer = reply.message().extractText();
             output.accept("[Completed] " + answer);
@@ -327,8 +382,42 @@ public final class SessionRuntime implements AutoCloseable {
         List<Completion> results = background.collect(task.context().id(), includeDetached);
         if (results.isEmpty()) return false;
         task.receipts.addAll(results);
-        apply(new SessionEvent.Notifications(results.stream().map(Completion::notification).toList()));
+        apply(new SessionEvent.Notifications(results.stream().map(SessionRuntime::notification).toList()));
         return true;
+    }
+
+    /** 通知最多保留 500 个 Java 字符，不是 token 或字节。 */
+    private static final int SUMMARY_CHARS = 500;
+
+    /**
+     * 把结果写成准备发给模型的说明文字，不执行命令、不写文件，也不删除记录。
+     *
+     * <p>输出只留前 500 个 Java 字符，并注明原任务、命令、状态和退出码。
+     * 原 bash 调用已经用“已启动”回答过，不能拿同一 tool_use_id 再回一个 tool_result，
+     * 所以这次把文字作为后台完成通知加入消息。</p>
+     * @param result process 提交的完成事实，只读，不执行命令
+     * @return 带 task_notification 标签的文字；截断时说明没有完整输出文件。
+     *         标签中的特殊字符会转义，但不保证命令输出里一定没有误导模型的内容
+     */
+    private static String notification(Completion result) {
+        String summary = result.output().length() > SUMMARY_CHARS ? result.output().substring(0, SUMMARY_CHARS) : result.output();
+        if (result.output().length() > SUMMARY_CHARS || result.truncated()) {
+            summary += "\n[Output truncated; no full output file is retained.]";
+        }
+        return "<task_notification>\n<task_id>" + result.id() + "</task_id>\n<source_run>" + escape(result.owner())
+                + "</source_run>\n<status>" + result.status() + "</status>\n<exit_code>" + result.exitCode()
+                + "</exit_code>\n<command>" + escape(result.command()) + "</command>\n<summary>" + escape(summary)
+                + "</summary>\n</task_notification>";
+    }
+
+    /**
+     * 把文字中的特殊字符写成实体，避免正文里的尖括号被误认成通知标签。
+     * 先替换 {@code &}，免得把后面新生成的实体再替换一次。
+     * @param value 要放进标签的非 null 文字
+     * @return 转义后的文字，只处理标签格式，不判断文字是否可信
+     */
+    private static String escape(String value) {
+        return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
     }
 
     /**
@@ -352,17 +441,44 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 根据事件种类修改 history；父会话的消息添加和替换都在这里完成。
+     * 立即采用压缩器给出的列表；先复制再 clear，候选即使就是原列表也不会被清空。
+     * 调用发生在正式请求之前，失败时已采用的历史按原规则保留。
+     * @param messages 新历史，只复制列表，不修改旧 Message 或其 JSON
+     */
+    private void adoptHistory(List<Message> messages) {
+        apply(new SessionEvent.HistoryPrepared(messages));
+    }
+
+    /** 采用执行器已验证的模型回复，写入历史，不在这里决定任务是否完成。 */
+    private void apply(ModelReply reply) {
+        ensureOpen();
+        history.add(reply.message());
+    }
+
+    /** 整批采用工具结果，意外失败也先补齐 tool_result，再由执行流程抛出异常。 */
+    private void apply(ToolBatch batch) {
+        ensureOpen();
+        history.add(Message.userBlocks(batch.results()));
+    }
+
+    /** 把 Stop 续跑文字留在当前任务历史，不排成新目标。 */
+    private void apply(Continue continuation) {
+        ensureOpen();
+        history.add(Message.userText(continuation.prompt()));
+    }
+
+    /**
+     * 采用会话自身的请求、历史替换和通知事件；执行步骤结果由其它 apply 重载采用。
      *
-     * <p>Request 是新任务，ToolBatch 是工具结果，Continue 是 Stop 说“还没做完”。
+     * <p>Request 是新任务，HistoryPrepared 是整份候选历史，Notifications 是后台事实的文字说明。
      * 它们发给模型时都可能用 USER role，但不代表它们都是用户新发的请求。
-     * 事件只是告诉这里要加什么消息，不要求另开线程或先排队，AgentLoop 可以直接调用它。</p>
+     * 事件只告诉这里要采用什么内容；执行器的 ModelReply/ToolBatch/Continue 由其它 apply 重载采用。</p>
      *
      * <p>压缩时只换 history 中的内容，不换列表对象，旧 run(messages) 的调用者才看得见变化。
      * 后台通知尽量加在最后一条 USER 内：若另加 USER，原工具结果不再是末条，
      * 现有压缩器可能漏掉对最新工具结果的保护。这是当前压缩器需要，不是模型协议硬性要求。
      * 合并会新建 content 和 Message，不修改旧消息里的块。</p>
-     * @param event 程序生成的请求、模型回复、工具结果等；交给这里后，发送方不要再改其中的内容
+     * @param event 程序生成的新请求、整份历史或通知；交出后发送方不要再修改其中内容
      * @throws IllegalStateException 会话已退出，不能再把稍后返回的结果写进去
      */
     private void apply(SessionEvent event) {
@@ -376,9 +492,6 @@ public final class SessionRuntime implements AutoCloseable {
                 history.clear();
                 history.addAll(prepared.messages());
             }
-            case SessionEvent.ModelReply reply -> history.add(reply.message());
-            case SessionEvent.ToolBatch batch -> history.add(Message.userBlocks(batch.results()));
-            case SessionEvent.Continue continuation -> history.add(Message.userText(continuation.prompt()));
             case SessionEvent.Notifications notifications -> {
                 // 最后一条 USER 可能是用户请求，也可能是工具结果；只加参考文字，不改变 task.goal。
                 List<ContentBlock> content = new ArrayList<>();
@@ -468,33 +581,45 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 让旧 run(messages) 调用同一个 execute，不再单独写一套模型循环。
+     * 在调用者线程同步处理已有请求，复用相同的 execute，不启动处理线程或定时轮询。
      *
-     * <p>直接在调用者线程处理，不开处理线程或定时检查。messages 已有请求，不重复添加。
-     * 处理时会修改原列表。返回时去掉本方法设置的后台通知函数，但不关闭 engine，
-     * 调用者之后还能用它继续这段对话。</p>
-     * @param engine 本次使用的 AgentLoop，不能同时在另一线程运行
-     * @param messages 已含本次请求、可以修改的消息列表
-     * @throws LlmException 模型或摘要失败，从 future 中取出原异常重新抛出
-     * @throws RuntimeException 消息不合法、执行出错或执行器退出，仍抛原异常而不是 future 包装异常
+     * <p>临时借用 messages 作为当前历史，因此压缩和失败前的采用结果对调用者立即可见。
+     * finally 恢复本会话原列表，不复制或还原 messages；执行器和服务保持可用，须由所有者关闭。
+     * 此入口仅供尚未 start 的会话使用，调用者不得与其它 run 并发执行。</p>
+     * @param messages 已含本次请求的可修改消息列表，期间不可由其它线程修改
+     * @throws LlmException 模型或摘要失败，取出原异常重新抛出
+     * @throws RuntimeException 非法历史、执行失败、会话已启动或已关闭
      */
-    static void runExisting(AgentLoop engine, List<Message> messages) throws LlmException {
-        SessionRuntime runtime = new SessionRuntime(engine, messages, ignored -> { }, ignored -> { });
-        ExecutionContext context = ExecutionContext.create(ExecutionContext.Source.USER, null, () -> runtime.closed);
+    public void run(List<Message> messages) throws LlmException {
+        ensureOpen();
+        if (consumer != null) throw new IllegalStateException("Session consumer is already started");
+        // 只在这个同步调用内借用列表；正式会话和兼容调用都由同一 active/closed 状态管理。
+        List<Message> ownedHistory = history;
+        history = messages;
+        ExecutionContext context = ExecutionContext.create(ExecutionContext.Source.USER, null, () -> closed);
         SessionInbox.Entry entry = new SessionInbox.Entry(new SessionEvent.Request("", context, null), new CompletableFuture<>());
         try {
-            runtime.execute(entry, false);
+            execute(entry, false);
             entry.result().join();
         } catch (CompletionException wrapped) {
-            // join 把实际错误包在 CompletionException 中；取出原异常，让调用者仍按原类型处理。
+            // join 包装实际异常；保留原类型，旧调用方不需要改错误处理方式。
             if (wrapped.getCause() instanceof LlmException failure) throw failure;
             if (wrapped.getCause() instanceof RuntimeException failure) throw failure;
             throw new IllegalStateException(wrapped.getCause());
         } finally {
-            runtime.closed = true;
-            runtime.inbox.close();
-            if (runtime.background != null) runtime.background.onCompletion(() -> { });
+            history = ownedHistory;
         }
+    }
+
+    /**
+     * 原先直接调用执行器 run 的无服务调用方使用此同步入口。
+     * @param engine 借用的执行器，返回时不关闭，不可并发执行
+     * @param messages 已含请求的可修改历史；失败前已采用的消息仍保留
+     * @throws LlmException 模型或压缩失败，原样抛出
+     * @throws RuntimeException 非法历史、执行失败或执行器已关闭
+     */
+    public static void runExisting(AgentExecutor engine, List<Message> messages) throws LlmException {
+        new SessionRuntime(engine, ignored -> { }, ignored -> { }).run(messages);
     }
 
     /**
@@ -518,6 +643,7 @@ public final class SessionRuntime implements AutoCloseable {
         cron.close();
         // 先停止执行器和命令，再通知 future 的调用者；对方可能立即运行自己的代码，不能拖延停止工具。
         engine.close();
+        if (background != null) background.close();
         inbox.close();
         Active running = active;
         if (running != null) running.entry.result().completeExceptionally(new IllegalStateException("Session closed"));

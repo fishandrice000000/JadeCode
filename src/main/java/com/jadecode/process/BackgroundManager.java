@@ -27,8 +27,6 @@ import java.util.Map;
 public final class BackgroundManager implements AutoCloseable {
     /** 还在运行或结果尚未处理完的命令总数上限，避免一直占内存。 */
     private static final int MAX_PENDING = 32;
-    /** 每条通知最多保留多少个输出字符，按 Java 字符计数，不是 token 或字节数。 */
-    private static final int SUMMARY_CHARS = 500;
     /** 创建对象时确定的工作目录，模型不能通过后台参数换成另一个目录。 */
     private final Path cwd;
     /** 每条命令最多运行多少秒，超过后由 ShellCommand 停止。 */
@@ -253,35 +251,6 @@ public final class BackgroundManager implements AutoCloseable {
      */
     public record Completion(String id, String owner, boolean required, String command,
             String status, Integer exitCode, String output, boolean truncated) {
-        /**
-         * 把结果写成准备发给模型的说明文字，不执行命令、不写文件，也不删除记录。
-         *
-         * <p>输出只留前 500 个 Java 字符，并注明原任务、命令、状态和退出码。
-         * 原 bash 调用已经用“已启动”回答过，不能拿同一 tool_use_id 再回一个 tool_result，
-         * 所以这次把文字作为后台完成通知加入消息。</p>
-         * @return 带 task_notification 标签的文字；截断时说明没有完整输出文件。
-         *         标签中的特殊字符会转义，但不保证命令输出里一定没有误导模型的内容
-         */
-        public String notification() {
-            String summary = output.length() > SUMMARY_CHARS ? output.substring(0, SUMMARY_CHARS) : output;
-            if (output.length() > SUMMARY_CHARS || truncated) {
-                summary += "\n[Output truncated; no full output file is retained.]";
-            }
-            return "<task_notification>\n<task_id>" + id + "</task_id>\n<source_run>" + escape(owner)
-                    + "</source_run>\n<status>" + status + "</status>\n<exit_code>" + exitCode
-                    + "</exit_code>\n<command>" + escape(command) + "</command>\n<summary>" + escape(summary)
-                    + "</summary>\n</task_notification>";
-        }
-    }
-
-    /**
-     * 把文字中的特殊字符写成实体，避免正文里的尖括号被误认成通知标签。
-     * 先替换 {@code &}，免得把后面新生成的实体再替换一次。
-     * @param value 要放进标签的非 null 文字
-     * @return 转义后的文字，只处理标签格式，不判断文字是否可信
-     */
-    private static String escape(String value) {
-        return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
     }
 
     /**

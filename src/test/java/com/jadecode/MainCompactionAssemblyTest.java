@@ -11,7 +11,9 @@ import java.util.Map;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.jadecode.agent.AgentLoop;
+import com.jadecode.agent.AgentExecutor;
+import com.jadecode.bootstrap.JadeCodeFactory;
+import com.jadecode.session.SessionRuntime;
 import com.jadecode.config.AppConfig;
 import com.jadecode.context.CompactionLimits;
 import com.jadecode.context.ContextCompactor;
@@ -40,12 +42,12 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * 生产装配的离线集成测试:证明 {@code Main.buildLoop(config, cwd, client)} 真的把上下文保护接上了。
+ * 生产装配的离线集成测试:证明 {@code JadeCodeFactory.create(config, cwd, client)} 真的把上下文保护接上了。
  *
  * <p>
- * 为什么不手工 new 一个 AgentLoop:那只能证明"循环有能力",不能证明"用户启动 CLI 就获得这份能力"。
+ * 为什么不手工 new 一个 AgentExecutor:那只能证明"循环有能力",不能证明"用户启动 CLI 就获得这份能力"。
  * 这里走<b>真实的公用装配逻辑</b>(只把真实环境换成假配置 + 剧本客户端 + 临时工作区),
- * 于是断言对象是"Main 到底暴露了什么":工具表、system prompt、共享压缩器身份、落盘目录。
+ * 于是断言对象是"工厂到底装配了什么":工具表、system prompt、共享压缩器身份、落盘目录。
  * </p>
  *
  * <p>
@@ -207,7 +209,7 @@ class MainCompactionAssemblyTest {
 
         ScriptedClient client = new ScriptedClient();
         client.parentScript.add(textReply("完成"));
-        AgentLoop loop = Main.buildLoop(config(), ws, client);
+        SessionRuntime loop = JadeCodeFactory.create(config(), ws, client);
 
         List<Message> messages = new ArrayList<>(List.of(Message.userText("你好")));
         loop.run(messages);
@@ -237,7 +239,7 @@ class MainCompactionAssemblyTest {
         ModelResponse compactReply = toolReply("c1", "compact");
         client.parentScript.add(compactReply);
         client.parentScript.add(textReply("完成"));
-        AgentLoop loop = Main.buildLoop(config(), ws, client);
+        SessionRuntime loop = JadeCodeFactory.create(config(), ws, client);
 
         List<Message> messages = new ArrayList<>(List.of(Message.userText("阶段目标")));
         loop.run(messages);
@@ -265,12 +267,12 @@ class MainCompactionAssemblyTest {
     @Test
     void parentAndChildShareTheSameCompactorInstance() throws Exception {
         ScriptedClient client = new ScriptedClient();
-        AgentLoop loop = Main.buildLoop(config(), ws, client);
+        SessionRuntime loop = JadeCodeFactory.create(config(), ws, client);
 
         // 只读反射取私有依赖:身份相等是"共享同一个实例"的直接证据,行为相似不能替代它。
-        ContextCompactor parentCompactor = (ContextCompactor) readField(loop, "compactor");
+        ContextCompactor parentCompactor = (ContextCompactor) readField(readField(loop, "engine"), "compactor");
         @SuppressWarnings("unchecked")
-        Map<String, Tool> tools = (Map<String, Tool>) readField(loop, "tools");
+        Map<String, Tool> tools = (Map<String, Tool>) readField(readField(loop, "engine"), "tools");
         Object runtime = readField(tools.get("task"), "runtime");
         ContextCompactor childCompactor = (ContextCompactor) readField(runtime, "compactor");
 
@@ -289,14 +291,14 @@ class MainCompactionAssemblyTest {
         client.childScript.add(childCompact);
         client.childScript.add(textReply("子结论"));
 
-        AgentLoop loop = Main.buildLoop(config(), ws, client);
+        SessionRuntime loop = JadeCodeFactory.create(config(), ws, client);
         List<String> starts = new ArrayList<>();
         List<Map<String, ?>> ends = new ArrayList<>();
-        loop.hooks().register(Hooks.SUBAGENT_START, params -> {
+        ((AgentExecutor) readField(loop, "engine")).hooks().register(Hooks.SUBAGENT_START, params -> {
             starts.add("start");
             return null;
         });
-        loop.hooks().register(Hooks.SUBAGENT_END, params -> {
+        ((AgentExecutor) readField(loop, "engine")).hooks().register(Hooks.SUBAGENT_END, params -> {
             ends.add(params);
             return null;
         });
@@ -349,7 +351,7 @@ class MainCompactionAssemblyTest {
         ScriptedClient parentClient = new ScriptedClient();
         parentClient.parentScript.add(toolReply("r1", "read_file", "path", "big.txt"));
         parentClient.parentScript.add(textReply("完成"));
-        AgentLoop parentLoop = Main.buildLoop(config(), ws, parentClient);
+        SessionRuntime parentLoop = JadeCodeFactory.create(config(), ws, parentClient);
         List<Message> parentMessages = new ArrayList<>(List.of(Message.userText("读大文件")));
 
         parentLoop.run(parentMessages);
@@ -370,7 +372,7 @@ class MainCompactionAssemblyTest {
         childClient.parentScript.add(textReply("父完成"));
         childClient.childScript.add(toolReply("r1", "read_file", "path", "big.txt"));
         childClient.childScript.add(textReply("子结论"));
-        AgentLoop childLoop = Main.buildLoop(config(), childWs, childClient);
+        SessionRuntime childLoop = JadeCodeFactory.create(config(), childWs, childClient);
         List<Message> childMessages = new ArrayList<>(List.of(Message.userText("委派一次")));
 
         childLoop.run(childMessages);
@@ -397,9 +399,9 @@ class MainCompactionAssemblyTest {
         }
         client.parentScript.add(new LlmException("prompt_too_long: 正式请求超限"));
         client.parentScript.add(textReply("完成"));
-        AgentLoop loop = Main.buildLoop(config(), ws, client);
+        SessionRuntime loop = JadeCodeFactory.create(config(), ws, client);
         List<String> toolEvents = new ArrayList<>();
-        loop.hooks().register(Hooks.POST_TOOL_USE, params -> {
+        ((AgentExecutor) readField(loop, "engine")).hooks().register(Hooks.POST_TOOL_USE, params -> {
             toolEvents.add("post");
             return null;
         });

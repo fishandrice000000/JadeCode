@@ -13,6 +13,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jadecode.context.CompactionLimits;
 import com.jadecode.context.ContextCompactor;
 import com.jadecode.hooks.Hooks;
+import com.jadecode.session.SessionRuntime;
 import com.jadecode.llm.CompleteRequest;
 import com.jadecode.llm.LlmClient;
 import com.jadecode.llm.LlmException;
@@ -53,7 +54,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 工具表里始终注册一个 {@code bash} 假工具,让正式请求天然带工具,和真实装配一致。
  * </p>
  */
-class AgentLoopAutomaticPreparationTest {
+class AgentExecutorAutomaticPreparationTest {
 
     /** 摘要输出额度;只用来断言摘要请求确实来自本测试注入的阈值 */
     private static final int SUMMARY_MAX_TOKENS = 77;
@@ -258,13 +259,13 @@ class AgentLoopAutomaticPreparationTest {
         // 门槛都放大的正常对话:自动整理什么都不该做,尤其不能因为"同列表回填"把会话清空。
         FakeClient client = new FakeClient(events, assistant(new TextBlock("完成")));
         ContextCompactor compactor = new ContextCompactor(client, transcriptDir, toolResultsDir, noOpLimits());
-        AgentLoop loop = new AgentLoop(client, Map.of("bash", new FakeTool("bash", "x")), "test-system", 8000,
+        AgentExecutor loop = new AgentExecutor(client, Map.of("bash", new FakeTool("bash", "x")), "test-system", 8000,
                 new Hooks(), compactor);
         Message opening = Message.userText("你好");
         List<Message> messages = new ArrayList<>(List.of(opening));
         List<Message> callerList = messages;
 
-        loop.run(messages);
+        SessionRuntime.runExisting(loop, messages);
 
         // 正式请求照常发生;一次摘要、一个归档文件都没有。
         assertEquals(1, client.normalRequests.size());
@@ -286,7 +287,7 @@ class AgentLoopAutomaticPreparationTest {
         CompactionLimits limits = limits(200_000, 200_000, 30_000, 2_000, 4, 80_000);
         FakeClient client = new FakeClient(events, assistant(new TextBlock("完成")));
         ContextCompactor compactor = new ContextCompactor(client, transcriptDir, toolResultsDir, limits);
-        AgentLoop loop = new AgentLoop(client, Map.of("bash", new FakeTool("bash", "x")), "test-system", 8000,
+        AgentExecutor loop = new AgentExecutor(client, Map.of("bash", new FakeTool("bash", "x")), "test-system", 8000,
                 new Hooks(), compactor);
         List<Message> messages = new ArrayList<>();
         for (int i = 1; i <= 10; i++) {
@@ -294,7 +295,7 @@ class AgentLoopAutomaticPreparationTest {
         }
         List<Message> callerList = messages;
 
-        loop.run(messages);
+        SessionRuntime.runExisting(loop, messages);
 
         // 正式请求看到的是"最初若干条 + 一条 archive marker":中段被归档,结构仍然合法。
         List<Message> seen = client.normalRequests.getFirst().messages();
@@ -319,13 +320,13 @@ class AgentLoopAutomaticPreparationTest {
         FakeClient client = new FakeClient(events, assistant(new TextBlock("完成")));
         ContextCompactor compactor = new ContextCompactor(client, transcriptDir, toolResultsDir,
                 smallWindowLimits());
-        AgentLoop loop = new AgentLoop(client, Map.of("bash", new FakeTool("bash", "x")), "test-system", 8000,
+        AgentExecutor loop = new AgentExecutor(client, Map.of("bash", new FakeTool("bash", "x")), "test-system", 8000,
                 new Hooks(), compactor);
         List<Message> messages = new ArrayList<>();
         messages.add(Message.userText(filler(4_000)));
         messages.add(Message.userText("继续任务"));
 
-        loop.run(messages);
+        SessionRuntime.runExisting(loop, messages);
 
         assertEquals(List.of("summary", "normal"), events,
                 "首次正式请求之前必须已经完成一次摘要;摘要是独立调用,不算工具轮");
@@ -352,10 +353,10 @@ class AgentLoopAutomaticPreparationTest {
                 assistant(new TextBlock("完成")));
         FakeTool bash = new FakeTool("bash", huge);
         ContextCompactor compactor = new ContextCompactor(client, transcriptDir, toolResultsDir, limits);
-        AgentLoop loop = new AgentLoop(client, Map.of("bash", bash), "test-system", 8000, new Hooks(), compactor);
+        AgentExecutor loop = new AgentExecutor(client, Map.of("bash", bash), "test-system", 8000, new Hooks(), compactor);
         List<Message> messages = new ArrayList<>(List.of(Message.userText("开始")));
 
-        loop.run(messages);
+        SessionRuntime.runExisting(loop, messages);
 
         assertEquals(1, bash.calls, "自动整理不得重跑工具");
         assertEquals(0, client.summaryRequests.size(), "只靠预算转存就够了,不需要摘要");
@@ -405,11 +406,11 @@ class AgentLoopAutomaticPreparationTest {
         });
         ContextCompactor compactor = new ContextCompactor(client, transcriptDir, toolResultsDir,
                 smallWindowLimits());
-        AgentLoop loop = new AgentLoop(client, Map.of("bash", new FakeTool("bash", "x")), "test-system", 8000,
+        AgentExecutor loop = new AgentExecutor(client, Map.of("bash", new FakeTool("bash", "x")), "test-system", 8000,
                 hooks, compactor);
         List<Message> messages = new ArrayList<>(List.of(Message.userText("请修复失败的测试")));
 
-        loop.run(messages);
+        SessionRuntime.runExisting(loop, messages);
 
         // 顺序本身就是要害:第一次正式请求之前没有任何整理(短请求无需整理);
         // 摘要发生在"续跑注入之后、第二次正式请求之前"。
@@ -456,13 +457,13 @@ class AgentLoopAutomaticPreparationTest {
         FakeClient client = new FakeClient(events, assistant(new TextBlock("不该被调用")));
         ContextCompactor compactor = new ContextCompactor(client, transcriptDir, toolResultsDir,
                 smallWindowLimits());
-        AgentLoop loop = new AgentLoop(client, Map.of("bash", new FakeTool("bash", "x")), "test-system", 8000,
+        AgentExecutor loop = new AgentExecutor(client, Map.of("bash", new FakeTool("bash", "x")), "test-system", 8000,
                 new Hooks(), compactor);
         Message old = Message.userText(filler(4_000));
         Message request = Message.userText("继续任务");
         List<Message> messages = new ArrayList<>(List.of(old, request));
 
-        IllegalStateException error = assertThrows(IllegalStateException.class, () -> loop.run(messages));
+        IllegalStateException error = assertThrows(IllegalStateException.class, () -> SessionRuntime.runExisting(loop, messages));
 
         assertNotNull(error.getCause(), "归档失败必须保留 cause");
         assertEquals(0, client.normalRequests.size(), "整理失败后不得发起正式请求");
@@ -482,13 +483,13 @@ class AgentLoopAutomaticPreparationTest {
         client.summaryFailure = boom;
         ContextCompactor compactor = new ContextCompactor(client, transcriptDir, toolResultsDir,
                 smallWindowLimits());
-        AgentLoop loop = new AgentLoop(client, Map.of("bash", new FakeTool("bash", "x")), "test-system", 8000,
+        AgentExecutor loop = new AgentExecutor(client, Map.of("bash", new FakeTool("bash", "x")), "test-system", 8000,
                 new Hooks(), compactor);
         Message old = Message.userText(filler(4_000));
         Message request = Message.userText("继续任务");
         List<Message> messages = new ArrayList<>(List.of(old, request));
 
-        LlmException thrown = assertThrows(LlmException.class, () -> loop.run(messages));
+        LlmException thrown = assertThrows(LlmException.class, () -> SessionRuntime.runExisting(loop, messages));
 
         assertSame(boom, thrown, "摘要异常必须原样传播");
         assertEquals(1, client.summaryRequests.size());

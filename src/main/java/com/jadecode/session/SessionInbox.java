@@ -1,4 +1,4 @@
-package com.jadecode.agent;
+package com.jadecode.session;
 
 import java.util.ArrayDeque;
 import java.util.List;

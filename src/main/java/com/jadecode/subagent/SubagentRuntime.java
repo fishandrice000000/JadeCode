@@ -77,7 +77,7 @@ public class SubagentRuntime {
     /**
      * 子任务压缩消息所用的对象，null 表示不压缩。
      *
-     * <p>Main.buildLoop 把父 Agent 使用的同一个压缩器传进来，所以子 Agent 也能处理
+     * <p>JadeCodeFactory.create 把父 Agent 使用的同一个压缩器传进来，所以子 Agent 也能处理
      * 请求前压缩、compact 工具和上下文超限。共用的是压缩方法及保存目录，
      * 不是消息列表；压缩器里不保存本次任务的 history，子消息仍在每次 run 中新建。</p>
      */

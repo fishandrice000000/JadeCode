@@ -4,9 +4,8 @@ import java.io.IOException;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 
-import com.jadecode.Main;
-import com.jadecode.agent.AgentLoop;
-import com.jadecode.agent.SessionRuntime;
+import com.jadecode.bootstrap.JadeCodeFactory;
+import com.jadecode.session.SessionRuntime;
 
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Parameters;
@@ -40,8 +39,7 @@ public class RunCommand implements Callable<Integer> {
         }
         // 最后才恢复终端；此前先拒绝待答申请、停止会话和命令，让清理过程还能正确显示日志。
         try (TerminalDisplay display = TerminalDisplay.open();
-                AgentLoop loop = Main.buildLoop();
-                SessionRuntime runtime = new SessionRuntime(loop, System.out::println, System.err::println);
+                SessionRuntime runtime = JadeCodeFactory.create(CliHooks::register);
                 ConsoleInput terminal = new ConsoleInput(display)) {
             runtime.start(false);
             terminal.await(runtime.submit(prompt, terminal));

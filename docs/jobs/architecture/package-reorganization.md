@@ -23,7 +23,7 @@ CLI 提供展示 hook → bootstrap.JadeCodeFactory 装配 → session.SessionRu
 
 ## 关闭契约
 
-CLI 拥有 TerminalDisplay 与 ConsoleInput。退出时先拒绝待答审批，再由 session 标记 CLOSED，停止 cron、禁止执行器晚到操作、关闭同步/后台命令、拒绝队列/当前 future、中断并限时等待消费者；最后由 CLI 恢复终端。bootstrap 创建后将执行器、cron/process 的关闭责任交给 session，不建立并行的第二条关闭链。共享 LLM 客户端不新增取消/关闭能力。同步 runExisting 结束只解除临时监听，不关闭借用执行器与服务。
+CLI 拥有 TerminalDisplay 与 ConsoleInput。退出时先拒绝待答审批，再由 session 标记 CLOSED，停止 cron、禁止执行器晚到操作、关闭同步/后台命令、拒绝队列/当前 future、中断并限时等待消费者；最后由 CLI 恢复终端。bootstrap 创建后将执行器、cron/process 的关闭责任交给 session，不建立并行的第二条关闭链。共享 LLM 客户端不新增取消/关闭能力。同步 run 仅在尚未 start 的会话中临时借用调用者历史，返回时恢复会话原列表引用，不关闭服务；runExisting 为无服务旧调用方提供同一会话执行入口，借用执行器而不代关。
 
 ## 实施与本地提交计划
 
@@ -42,9 +42,9 @@ CLI 拥有 TerminalDisplay 与 ConsoleInput。退出时先拒绝待答审批，�
 ## 阶段状态
 
 - 启动核对与方案：完成。
-- A01–A11 实现：待开始。
-- 工程自审与验证：待开始。
-- 本地提交：待开始。
+- A01–A11 实现：完成。
+- 工程自审与验证：Pass（本轮限定范围）；自动化与轻量检查通过。
+- 本地提交：前两批已完成；最终职责拆分代码与本单一起提交，实际 hash 见 Git 日志和最终报告。
 - 用户理解、最终真机验收：待用户完成。
 
 ## 实际验证与结果
@@ -65,3 +65,47 @@ CLI 拥有 TerminalDisplay 与 ConsoleInput。退出时先拒绝待答审批，�
 - 新增 llm.ToolDefinition；构造/读取均深复制完整 ObjectNode。Tool.definition 每次正式请求生成数据快照，实际工具仍由 Tool.execute 执行。父子请求、CompleteRequest、SDK 和原有断言定位已同步。
 - 工程自审：Pass。llm 不再引用 tools，未更改 SDK schema 映射算法；已知根级字段丢失仍保留。
 - `mvn -q -Dtest=AgentLoopTest,SubagentRuntimeTest,ToolSchemaTest,MainCompactionAssemblyTest test`：退出 0，40 tests / 0 failures / 0 errors / 0 skipped；无新增/删除/禁用测试。
+
+### 批次 3：执行器、会话与装配
+
+- 批次 2 已提交：`c06453b`。
+- 工程自审结论：**Pass**。实现后另行核对源码、调用方、迁移 diff、注释、已有测试和字节码依赖；同一 Agent 实现并自审，不是独立审查。无已知阻塞项，不保证绝对无误。
+- 同步兼容 `SessionRuntime.run(messages)` 临时借用调用者列表，在 finally 恢复本会话列表引用；压缩仍只替换借用列表的内容，失败前的历史采用立即可见。不能与 start 或其它同步 run 并发使用。`runExisting(engine, messages)` 供原无服务调用方使用。
+- 请求、工具批次、Stop、后台等待与首次定时确认算法未重写。记忆的 prepareSystem/finishTask 调用迁到 session；memory 服务算法未改。
+
+| 项 | 实际实现与检查结果 |
+| --- | --- |
+| A01 | AgentLoop → agent.AgentExecutor；SessionRuntime/SessionInbox/SessionEvent → session；CronProducer → cron；BackgroundManager/ShellCommand → process；Hooks → hooks；PathResolver → filesystem；ExecutionContext/Approval → execution |
+| A02 | ConsoleInput 实现独立 Approval，PermissionGate 与工具/子代理使用 execution 契约；execution 无运行器/工具/安全策略/LLM 依赖，无 IO 或调度 |
+| A03 | AgentExecutor 只交出嵌套 ModelReply/ToolBatch/Continue；request/compactAfterBatch 用 Consumer<List<Message>> 要求同步采用；无 SessionRuntime/SessionEvent 引用或旧空壳 |
+| A04 | session 拥有 FIFO、父历史、目标、后台等待及完成/失败状态；在原时机调用记忆；cron/process 由工厂直接注入，不经执行器 getter |
+| A05 | CronProducer 的构造、start/canDeliver/pending/received/failed/release/close 为跨包调用面；投递仍用 Predicate<CronJob>；首有效正式回复确认、lease 恢复和 5 秒/3 次退避未改 |
+| A06 | BackgroundManager.start(command, owner, required) 与 runForeground 供 BashTool 调用；collect/acknowledge/restore/hasRequired/cancelRequired/close 供 session 消费；ShellCommand 的构造/run/Result/text 必要入口公开，Running/进程集合仍 private；通知渲染迁入 session |
+| A07 | CLI 资源声明只保留 display → runtime → input，逆序关闭 input → runtime → display。runtime 标记 CLOSED → cron.close → engine.close → background.close → inbox/future 拒绝 → 消费者 interrupt/join(2000)。工厂不建立第二条关闭链；共享 LLM 不新增关闭/强取消 |
+| A08 | llm.ToolDefinition 名称/说明/完整 ObjectNode 数据快照，构造/读取深复制；CompleteRequest 只含定义，真实工具继续执行；SDK 根级字段丢失未修复 |
+| A09 | Hooks 独立；字符串事件、参数表、短路和异常传播保持；CliHooks 集中普通展示，工厂先注册成员/权限再安装展示，无 ToolDispatcher |
+| A10 | JadeCodeFactory.create 统一生产/离线装配，full overload 接收输出及 BiConsumer<Hooks,Path> 展示安装；bootstrap 无 cli 依赖；Main 仅保留 picocli 入口，提示词辅助函数归 bootstrap |
+| A11 | package/import、构造/调用、测试类与反射定位、中文注释、README 和新版架构阅读入口均同步；历史 jobs/notes 与审查材料不批量改写 |
+
+#### 实际验证
+
+所有以下命令退出码均为 0；Maven 测试未新增、删除、禁用或改变行为期望。
+
+| 验证 | 实际结果 |
+| --- | --- |
+| `mvn -q -DskipTests package`（初步接线） | 编译/打包成功，不宣称执行测试 |
+| `mvn -q clean -DskipTests package`（最终源码） | 清理旧类后编译/打包成功，无迁包前遗留类参与 |
+| `mvn -q -Dtest=AgentExecutorTest,MainTest,MainCompactionAssemblyTest test` | 33 tests / 0 failures / 0 errors / 0 skipped |
+| `mvn -q -Dtest=AgentExecutorAutomaticPreparationTest,AgentExecutorManualCompactionTest,AgentExecutorReactiveCompactionTest,SubagentRuntimeTest,SubagentRuntimeCompactionTest,ContextCompactorPreparationTest,ContextCompactorBatchCompactionTest,ReactiveCompactionTest,PermissionGateTest,BashToolTest,HooksTest,ToolExchangeProtocolTest test` | 106 tests / 0 failures / 0 errors / 0 skipped；与上一组不重叠，最终职责拆分共验证 139 个已有测试 |
+| JDK 21 jdeps 对 target/classes 的实际包依赖检查 | agent 无 session 依赖；execution 无 agent/session/tools/safety/llm 依赖；cron/process 无具体会话/执行器依赖；llm 无 tools 依赖；bootstrap 无 cli 依赖；tools/subagent 双向依赖保留 |
+| 44 个迁移关键方法的 Java token 比较 | 排除包/类型归属与明确调用接线后方法体一致；覆盖 session 任务推进/失败、工具批次/Stop、工厂权限/提示词、CLI 展示、cron 与 process 生命周期 |
+| 通知协议核对 | 与旧实现的全部渲染/转义字符串字面量逐字一致；临时纯函数检查验证 500 字符截断、XML 转义、null 退出码和原通知标签 |
+| 临时数据/公开面检查（不运行会话或命令） | ToolDefinition 构造/读取双向深复制，完整根级 schema 保留；ShellCommand 执行入口公开，Running 与进程集合封装 |
+| 既有测试方法清单核对 | 原有 331 个 @Test 方法逐名保留；本轮只按风险运行指定子集，未全量回归 |
+
+#### 保留边界与学习状态
+
+- 不修 SDK schema、路径/命令策略、停止原因、压缩/摘要/预算、持久化发布、cron 表达式/重试或同步输出截断等排除项；未升级依赖或改变配置语义。
+- 未调用真实模型，未运行实际 CLI/Agent 任务做真机验收。定时轮询的真实时序、终端交互、网络晚到与多线程退出竞态未做新的动态故障注入；使用源码等价检查和已有测试限定本轮证据。
+- 新阅读入口：`docs/notes/architecture/package-runtime-review.md`。工程完成不代表用户已理解或已独立真机验收，后两项仍待用户完成。
+- 提交前已核对原有 50 个受保护文件哈希全部一致，新增文档相对链接有效；提交后在对话再核验。临时检查程序/日志在最终报告前清理，本单保留命令和实际结果。

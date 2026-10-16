@@ -32,8 +32,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>
  * 这个入口回答的是"模型主动请求压缩、且整批结果已经闭合之后,这次要牺牲哪些历史"。
  * 它<strong>不</strong>执行工具、<strong>不</strong>触发 hook、<strong>不</strong>回灌结果,也不改动调用方会话;
- * 因此可以脱离 AgentLoop 直接调用:给一段闭合历史 + 本批调用集合,断言它返回什么候选、写了哪些归档、
- * 有没有动输入。循环侧的时机与生命周期由 {@code AgentLoopManualCompactionTest} 覆盖,本文件只固定
+ * 因此可以脱离 AgentExecutor 直接调用:给一段闭合历史 + 本批调用集合,断言它返回什么候选、写了哪些归档、
+ * 有没有动输入。循环侧的时机与生命周期由 {@code AgentExecutorManualCompactionTest} 覆盖,本文件只固定
  * "策略边界"这一半职责。
  * </p>
  *
