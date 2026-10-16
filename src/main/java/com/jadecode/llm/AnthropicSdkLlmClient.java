@@ -18,7 +18,6 @@ import com.jadecode.messages.Role;
 import com.jadecode.messages.TextBlock;
 import com.jadecode.messages.ToolResultBlock;
 import com.jadecode.messages.ToolUseBlock;
-import com.jadecode.tools.Tool;
 
 /**
  * 用官方 Anthropic SDK 实现 {@link LlmClient}。
@@ -127,8 +126,11 @@ public class AnthropicSdkLlmClient implements LlmClient {
         return builder.build();
     }
 
-    /** 工具定义 → SDK 类型:inputSchema 拆成 type / properties / required 三段注入 */
-    private com.anthropic.models.messages.Tool toSdkTool(Tool tool) {
+    /**
+     * 工具数据定义转换为 SDK 类型，不持有可执行 Tool。
+     * 保留原转换范围：只注入 type/properties/required，根级其它 schema 字段仍未映射。
+     */
+    private com.anthropic.models.messages.Tool toSdkTool(ToolDefinition tool) {
         ObjectNode schema = tool.inputSchema();
         // 把 inputSchema 拆成三段:type / properties / required
         com.anthropic.models.messages.Tool.InputSchema.Properties.Builder propsBuilder =

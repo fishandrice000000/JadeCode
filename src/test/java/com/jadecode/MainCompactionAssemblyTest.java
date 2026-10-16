@@ -17,6 +17,7 @@ import com.jadecode.context.CompactionLimits;
 import com.jadecode.context.ContextCompactor;
 import com.jadecode.hooks.Hooks;
 import com.jadecode.llm.CompleteRequest;
+import com.jadecode.llm.ToolDefinition;
 import com.jadecode.llm.LlmClient;
 import com.jadecode.llm.LlmException;
 import com.jadecode.llm.ModelResponse;
@@ -145,7 +146,7 @@ class MainCompactionAssemblyTest {
     }
 
     private static List<String> toolNames(CompleteRequest request) {
-        return request.tools().stream().map(Tool::name).sorted().toList();
+        return request.tools().stream().map(ToolDefinition::name).sorted().toList();
     }
 
     /** 只读反射:取私有依赖,用来证明父子拿到的是同一个实例(不改字段、不新增生产 getter) */

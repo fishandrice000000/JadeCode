@@ -5,6 +5,7 @@ import java.util.Map;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jadecode.execution.ExecutionContext;
+import com.jadecode.llm.ToolDefinition;
 
 /**
  * 模型可以调用的工具。AgentLoop 按 tool_use 中的 name 找到实现，再依次调用 execute。
@@ -15,6 +16,15 @@ import com.jadecode.execution.ExecutionContext;
  * 不能当作工具已经成功。</p>
  */
 public interface Tool {
+    /**
+     * 生成本次模型请求所需的数据快照；真正执行仍由本接口的 execute 完成。
+     * 每次请求重新读取工具说明，保留原来的请求时机，不缓存可变化的工具定义。
+     * @return 名称、说明与完整 schema 的快照，不包含本工具实例或执行回调
+     */
+    default ToolDefinition definition() {
+        return new ToolDefinition(name(), description(), inputSchema());
+    }
+
     /**
      * @return 工具名,如 "bash";模型 tool_use 块的 name 字段用它匹配
      */

@@ -208,7 +208,8 @@ public class SubagentRuntime {
                 try {
                     checkSessionOpen(context);
                     response = client
-                            .complete(new CompleteRequest(system, messages, maxTokens, List.copyOf(tools.values())));
+                            .complete(new CompleteRequest(system, messages, maxTokens,
+                                    tools.values().stream().map(Tool::definition).toList()));
                 } catch (LlmException error) {
                     // 如果用户在等模型时退出，即使现在才返回超限错误，也不要再调用摘要模型。
                     checkSessionOpen(context);

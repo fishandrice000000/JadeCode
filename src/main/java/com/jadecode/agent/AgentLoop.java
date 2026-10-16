@@ -267,7 +267,7 @@ public class AgentLoop implements AutoCloseable {
             try {
                 ensureOpen();
                 response = client.complete(new CompleteRequest(taskSystem, messages, maxTokens,
-                        List.copyOf(tools.values())));
+                        tools.values().stream().map(Tool::definition).toList()));
             } catch (LlmException failure) {
                 // 这里只处理主任务模型请求的错误；用户退出了就不要再请求摘要来尝试重试。
                 ensureOpen();
