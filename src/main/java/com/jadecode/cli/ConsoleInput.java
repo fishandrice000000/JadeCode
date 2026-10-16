@@ -4,6 +4,7 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.util.Locale;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.function.Consumer;
@@ -15,8 +16,8 @@ import com.jadecode.safety.PermissionGate;
  * 统一读取用户在终端输入的任务和批准/拒绝命令，避免两个线程争着读同一个 stdin。
  *
  * <p>处理任务的线程发现某操作需要用户批准时，调用 ask，显示操作内容并等待。
- * 只有创建本对象的终端线程去 readLine；看到 /approve ID 或 /deny ID 后，
- * 才回答对应的申请。不能把用户刚输入的下一项任务当成“同意执行上一条命令”。</p>
+ * 只有创建本对象的终端线程去 readLine；看到 /approve ID、/deny ID，或直接输入的 y/yes/n/no
+ * （空行算拒绝）后，才回答对应的申请。不能把用户刚输入的下一项任务当成“同意执行上一条命令”。</p>
  *
  * <p>REPL 调 readQuery：普通文字返回给 ReplCommand 排队，批准/拒绝命令在这里处理。
  * 单次 run 调 await：只在需要用户批准时读输入，不接收第二项任务。
@@ -67,7 +68,7 @@ public final class ConsoleInput implements PermissionGate.Approval, AutoCloseabl
      * @param toolName 等待批准的工具名
      * @param input 展示给用户的参数，不修改，也不在这里执行
      * @param reason 为什么这个操作要先问用户
-     * @return 只有用户用对应 ID 明确批准才为 true；拒绝、退出、重复申请或等待失败都是 false
+     * @return 用户明确批准时为 true（/approve、y、yes 都算）；拒绝、空行、退出、重复申请或等待失败都是 false
      */
     @Override
     public boolean ask(String toolName, ObjectNode input, String reason) {
@@ -78,7 +79,8 @@ public final class ConsoleInput implements PermissionGate.Approval, AutoCloseabl
             request = new Pending("approval_" + ++counter, new CompletableFuture<>());
             pending = request;
             output.accept("[Permission " + request.id() + "] " + reason + "\n  " + toolName + "(" + input + ")"
-                    + "\n  /approve " + request.id() + " 或 /deny " + request.id());
+                    + "\n  /approve " + request.id() + " 或 /deny " + request.id()
+                    + "（也可直接输入 y 批准 / n 拒绝）");
             notifyAll();
         }
         // 2. 执行线程在这里等，终端线程还能读用户输入；answer 或 close 设置答复后才继续。
@@ -101,9 +103,10 @@ public final class ConsoleInput implements PermissionGate.Approval, AutoCloseabl
      * REPL 每次读一项用户任务时调用，处理批准命令后继续读，直到读到普通任务文字。
      *
      * <p>行尾单个反斜杠表示下一行还属于同一任务。批准命令只在单独输入的一行识别，
-     * 不会把多行任务正文里的一段文字截走。</p>
-     * @return 去掉首尾空白的任务文字；初始空行、q/exit 或输入结束时返回 null，
-     *         并拒绝尚未回答的申请。续行中输入结束则返回已输入的非空正文
+     * 不会把多行任务正文里的一段文字截走。有审批在等待时，y/yes 批准、n/no 或空行拒绝；
+     * 没有审批时，这些文字仍是普通任务，空行也沿用原来的退出行为。</p>
+     * @return 去掉首尾空白的任务文字；q/exit 或输入结束时返回 null，
+     *         并拒绝尚未回答的申请；没有审批时的空行也会退出。续行中输入结束则返回已输入的非空正文
      * @throws IOException 读输入失败，由 CLI 负责停止整个会话
      * @throws IllegalStateException 不是创建本对象的线程调用
      */
@@ -113,9 +116,10 @@ public final class ConsoleInput implements PermissionGate.Approval, AutoCloseabl
             System.out.print("JadeCode >> ");
             System.out.flush();
             String line = reader.readLine();
-            if (line == null || isExit(line)) { close(); return null; }
-            // 批准/拒绝命令在这里处理，不发给模型。普通文字仍可以作为下一项任务排队。
+            if (line == null) { close(); return null; }
+            // 有审批在等时，y/yes/n/no/空行在这里被消化；没有审批时它们仍是普通任务，空行照旧退出。
             if (answer(line)) continue;
+            if (isExit(line)) { close(); return null; }
             StringBuilder query = new StringBuilder();
             while (softBreak(line)) {
                 query.append(line, 0, line.length() - 1).append('\n');
@@ -135,11 +139,12 @@ public final class ConsoleInput implements PermissionGate.Approval, AutoCloseabl
      * 单次 run 等任务做完时调用，只有任务需要用户批准才读取输入，不接受新任务。
      *
      * <p>没申请时，终端线程只在 wait 里等；任务完成或 ask 新建申请时都会叫醒它。
-     * 有申请才读一行，检查 /approve 或 /deny 的 ID。这样普通任务不需要输入时，
+     * 有申请才读一行，按 /approve、/deny 或简写的 y/n 回答。这样普通任务不需要输入时，
      * 不会因为 stdin 已结束就被提前打断。</p>
      *
      * <p>读到 EOF 时拒绝未答申请，继续等执行线程处理后续结果。
-     * 用户输入 q/exit 或空行时则报告取消，由 RunCommand 的 close 停掉会话。</p>
+     * 有审批在等待时，y/yes 批准、n/no 或空行拒绝；没有审批时 q/exit 或空行才报告取消，
+     * 由 RunCommand 的 close 停掉会话。</p>
      * @param task submit 返回的任务结果 future，不在这里重新创建或重试任务
      * @return 最终回答；运行器已经显示过，调用者不用重复打印
      * @throws IOException 有申请时读输入失败
@@ -157,8 +162,9 @@ public final class ConsoleInput implements PermissionGate.Approval, AutoCloseabl
             }
             String line = reader.readLine();
             if (line == null) close();
+            else if (answer(line)) { /* 已按审批回答处理，继续等任务完成 */ }
             else if (isExit(line)) { close(); throw new IllegalStateException("Execution cancelled by user"); }
-            else if (!answer(line)) output.accept("请使用上方带 ID 的 /approve 或 /deny，不接受新任务");
+            else output.accept("请使用 /approve 或 /deny（也可直接输入 y / n），不接受新任务");
         }
         return task.get();
     }
@@ -167,12 +173,14 @@ public final class ConsoleInput implements PermissionGate.Approval, AutoCloseabl
      * 检查这一行是否在回答批准申请；不读输入流，也不提交任务。
      * @param line 已读取的一行文字，不可为 null
      * @return /approve 或 /deny 命令返回 true；即使缺 ID、ID 过期或不匹配也只提示错误，
-     *         不批准、不发给模型。其它文字返回 false，留给上层当作任务
+     *         不批准、不发给模型。简写 y/yes/n/no 只在有审批在等待时生效；
+     *         其它文字（以及没有审批时的 y/n）返回 false，留给上层当作任务
      */
     private boolean answer(String line) {
         String[] parts = line.strip().split("\\s+", 2);
         boolean allow = parts[0].equals("/approve");
-        if (!allow && !parts[0].equals("/deny")) return false;
+        boolean deny = parts[0].equals("/deny");
+        if (!allow && !deny) return answerYesNo(line);
         synchronized (this) {
             if (parts.length != 2 || pending == null || !pending.id().equals(parts[1])) {
                 output.accept("[Permission] No matching pending approval");
@@ -181,6 +189,24 @@ public final class ConsoleInput implements PermissionGate.Approval, AutoCloseabl
                 pending = null;
                 notifyAll();
             }
+        }
+        return true;
+    }
+
+    /**
+     * 处理简写的审批回答。有审批在等待时，y/yes 批准，n/no 或空行拒绝，并消耗这一行；
+     * 没有审批在等待时返回 false，让上层把 y/n 当普通任务、空行按退出处理。
+     */
+    private boolean answerYesNo(String line) {
+        String word = line.strip().toLowerCase(Locale.ROOT);
+        boolean yes = word.equals("y") || word.equals("yes");
+        boolean no = word.equals("n") || word.equals("no") || word.isEmpty();
+        if (!yes && !no) return false;
+        synchronized (this) {
+            if (pending == null) return false;
+            pending.answer().complete(yes);
+            pending = null;
+            notifyAll();
         }
         return true;
     }
