@@ -3,7 +3,7 @@
 来源：本机 `../learn-claude-code/s12_cron_scheduler/README.zh.md`、`code.py`。
 版本提示：本单保留原始 s12 交付与验证事实；当前会话入口已由 [事件化重构](session-event-refactor.md)替代，
 涉及 CronRuntime / runScheduled 的描述按当时实现理解，不能替代当前源码。
-状态：整章实现、构建、已有定向回归、离线闭环与工程自审 Pass；用户源码 Review 和独立真机验收待完成。
+状态：整章实现、构建、已有定向回归、离线闭环与工程自审 Pass。2026-10-16 补充用户真实定时交付记录、获准代跑的 CLI 重启恢复及事件化检查；见 [验收补查](terminal-and-acceptance.md)。下文保留原交付时的验证范围，不代表当前仍未做真机检查；用户源码学习与最终章节确认另记。
 
 ## 1. 需求与流程
 

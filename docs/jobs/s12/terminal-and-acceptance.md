@@ -1,0 +1,84 @@
+# s12 验收补查与终端显示修复
+
+## 1. 用户要求与已有改动
+
+按最新 Git 记录继续：6412a56 已提交直白注释，9334e0b 更新其它模块注释，d40e1f3 恢复 y/yes/n/no 及空行拒绝批准申请。不能重复提交旧任务或丢掉 y/n 行为。
+
+用户提供的真机记录已证明：到期任务自动读写报告、报告 3/2/1 与 search 阻塞、已执行的一次性定义删除、非法分钟被拒，以及定时删除命令被权限检查拒绝。记录尚未展示退出重启后 durable 与非 durable 的差异，也未完成新会话事件化场景。`61 * * * *` 是五段，模型称四段不正确；不把模型解释错误当作 cron 解析器错误。
+
+## 2. 本轮做什么
+
+- 修复颜色、输入提示符出现位置和后台输出黏在输入行的问题；保持任务排队和权限规则不变。
+- 用 JLine 保存并重画正在输入的文字，系统输出显示在其上方；移除启动脚本外层 rlwrap，避免两个输入编辑器互相影响。不做完整终端 UI、流式回复或 s13。
+- 允许修改 pom、jade、cli 的必要代码、Ansi 的必要处理、README 与本任务单；只增加终端所需依赖，不升级现有依赖或改 Java 版本。
+- 保留用户 y/n 简写、带 ID 的 /approve /deny、多行输入、EOF/退出清理及单次 run 的行为。文件/管道运行不输出颜色控制符。
+- 用户补充确认：Enter 提交；粘贴多行不提交，保留为同一条提示；Alt+Enter 手动换行。JLine 编辑时不再用末尾反斜杠触发额外读取，旧 BufferedReader 调用保留兼容。
+- 原 SDK 未知块和 Memory INVALID_RESPONSE 仍按优化项保留，不借机重写模型协议和记忆。
+
+## 3. 如何检查
+
+先构建、查实际调用，再用真实伪终端检查：输入一半时到来的日志、回车后最终提交的文字、颜色、审批与退出。保留已有测试，不新增单元测试；只按风险运行已有相关测试。
+
+用户已明确批准 ChatGPT 代跑 tmp/s12-event-check 并产生真实模型 API 费用。不读取或显示凭据，由 JadeCode 自身加载当前配置；控制调用数量，只做验收所需操作。使用新的临时子目录，保留已有 required.pid 等材料，不把旧产物当新结果。验证必等后台自动继续、后续任务排队、非必等结果不自动调用模型、人工/定时批准差异及退出停止命令。持久恢复另核对原有进程与记录，不与另一 CLI 同时写同一任务文件。
+
+## 4. Git 与完成状态
+
+本轮源码、必要说明和验收记录按实际结果单独本地提交，不 push、不改历史。排除用户已有三份笔记与研究目录；不提交运行结果、密钥、JAR 或临时程序。
+
+## 5. 2026-10-16 实施与检查结果
+
+### 终端修改
+
+新增 TerminalDisplay，只负责终端文字，不改变 SessionRuntime 的排队、后台等待或权限判断。
+使用 JLine 3.30.6 的 reader 与 terminal-jni，shade 时合并实现发现文件；不升级已有依赖。
+真实终端使用同一个 LineReader，System.out/err 的完整日志行经 PrintAboveWriter 显示在输入行上方。
+已有文字和光标由 JLine 恢复，提示符继续表示“可以输入下一项”，不是“当前任务已结束”。
+启动脚本不再套 rlwrap；退出时先停任务、拒绝未答审批，再恢复输出及终端设置。
+
+Enter 提交；支持 bracketed paste 的终端把粘贴内容作为同一条输入，粘贴中的换行不提交；
+Alt+Enter 往输入中加入换行。若终端拦截了该快捷键，需在终端中允许发送 Alt+Enter，
+不能声称应用能识别终端没有发送的按键或粘贴标记。普通文件/管道不显示提示符和 ANSI 控制字符。
+未设置历史文件，只保留进程内输入历史；原有审批简写与显式带 ID 命令均保留。
+
+### 已运行的验证
+
+- `mvn -q -DskipTests package`：退出 0，最终 JAR 重新生成；不以 skipTests 冒称跑过全量测试。
+- 已有 `MainTest,MainCompactionAssemblyTest,PermissionGateTest,BashToolTest` 定向回归：退出 0，30 条，失败/错误/跳过均 0。未新增单元测试。
+- 真实伪终端字节检查：输入一半时 stdout/stderr 到达不丢中文字，青色提示符和灰色 hook 存在；多行粘贴不提前提交；Alt+Enter 换行；末尾反斜杠不强制续读；y/n/空行审批、无审批的普通 y 输入、Ctrl+D 退出均通过。
+- 管道输入检查：正文正常返回，不出现输入提示符或 ANSI 控制码。
+- 临时程序直接调用真实 BashTool：省略 wait_for_completion 默认必等，显式 false 脱离任务，均通过；不让模型是否遵守传参要求影响此项判断。
+- `sh -n jade`、相关 diff 空白检查通过。没有运行全量 Maven 测试，也没有将真实 API 验收称为用户独立执行。
+
+### 获准代跑的真实 CLI
+
+保留用户原有 tmp/s12-event-check/required.pid 等资料，另在 `run-cFoQSU/` 子目录及其 retry、exit-retry 子目录产生本轮报告与 PID。没有修改源码、模型配置、凭据或用户既有业务文件。
+
+| 检查 | 实际结果 |
+| --- | --- |
+| 必等后台自动恢复 | 新任务 bg_0002 明确传 true，出现 Progress/Waiting；解除 retry/required.release 后自动读取报告并 Completed，计数 3/2/1，仍指出 search 阻塞 |
+| 等待期间 FIFO | 等待中提交第二项读文件请求；第一项完成后，第二项才开始并回复“排队任务完成” |
+| 脱离命令通知 | 新会话 bg_0001 明确传 false，可先结束；放行 detached 脚本后空闲会话不主动请求模型，下一项读报告请求收到 completed/exit 0 与原 run_id |
+| 人工审批 | 对故意不存在的文件提出 rm 审批，实际输入 n 后返回 Permission denied；未创建或删除文件 |
+| 退出清理 | exit-retry/closing.pid 的进程 676698 在退出前仍存活；q 后 CLI 退出 0，进程消失；再放行 closing.release，没有产生 closing-report.txt |
+| durable 重启恢复 | 在 tmp/s12-cron-check 重新启动真实 CLI，只调用一次 list_crons：仅有原 durable ID cron_852cf03d，无原非持久 ID cron_dc42835c；随后 q 退出 0 |
+
+首次“省略等待字段”的模型调用实际传了 `wait_for_completion=false`，未完成必等验收，命令随后超时；
+归档中的原始 bash 参数已核对，不归咎于默认值实现，也不把该次算作通过。重测显式 true 后通过，默认值另以真实 BashTool 离线验证。
+诊断时模型还重复调用过 compact，本轮不扩展修改压缩机制。第一次退出检查因命令先超时而没有证明力，已用上表 exit-retry 的存活进程重测。
+
+原 cron_852cf03d 是用户此前登记的未来周期占位，本轮仅核对，没有擅自取消；该目录再次开启 REPL 时仍会恢复它。
+已关闭本轮启动的全部 CLI。验收子目录、报告和真实归档作为现场保留；临时离线 Java/Python 检查程序清理，不提交任何运行产物。
+
+## 6. 工程自审与交接
+
+**Pass（本轮终端修改）**：实现后单独核对源码、调用顺序、实际 diff、已有定向测试及上述交互结果。
+单一输入读取、后台输出重画、UTF-8、颜色、审批文字识别、构造失败恢复输出、退出资源顺序与非终端处理无已知阻塞问题。
+并非独立 Agent 审查，也不保证所有终端、快捷键设置或退出竞态都已覆盖。用户自己终端上的最终视觉效果仍建议启动新 JAR 确认。
+
+用户提供的 cron 主路径加本轮重启及事件化实测，足以认为本次列出的 s12 功能场景通过；
+不是对用户源码理解或全部失败注入的判定。未知 ContentBlock、Memory INVALID_RESPONSE 仍未修复，按既定优化项保留。
+不自动进入 s13，不改写用户答案。阅读终端修复时依次看 ReplCommand.call 的资源顺序、
+TerminalDisplay 的输入/输出处理、ConsoleInput.readQuery 的任务与审批区分即可，不增加一组通用 Java 细节题。
+
+本地提交精确十文件：pom.xml、jade、README.md、TerminalDisplay.java、ConsoleInput.java、ReplCommand.java、RunCommand.java、
+本任务单、cron-scheduler.md 与 session-event-refactor.md。用户旧笔记和研究目录不暂存；不 push、不改历史。

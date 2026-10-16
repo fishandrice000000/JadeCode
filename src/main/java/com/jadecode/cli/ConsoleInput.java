@@ -11,6 +11,7 @@ import java.util.function.Consumer;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jadecode.safety.PermissionGate;
+import com.jadecode.util.Ansi;
 
 /**
  * 统一读取用户在终端输入的任务和批准/拒绝命令，避免两个线程争着读同一个 stdin。
@@ -26,7 +27,9 @@ import com.jadecode.safety.PermissionGate;
 public final class ConsoleInput implements PermissionGate.Approval, AutoCloseable {
     /** 只由 inputOwner 读；执行工具的线程不能自己调用 readLine。 */
     private final BufferedReader reader;
-    /** 显示申请内容和错误的函数；普通的输入提示仍直接打印到 System.out。 */
+    /** CLI 传入的终端读取器；离线检查传 BufferedReader 时为 null。 */
+    private final TerminalDisplay display;
+    /** 显示申请内容和错误的函数；CLI 的输入提示另由 JLine 处理。 */
     private final Consumer<String> output;
     /** 创建本对象的线程，只有它可以读输入；不能用它判断用户或定时任务的权限。 */
     private final Thread inputOwner = Thread.currentThread();
@@ -55,7 +58,18 @@ public final class ConsoleInput implements PermissionGate.Approval, AutoCloseabl
      */
     public ConsoleInput(BufferedReader reader, Consumer<String> output) {
         this.reader = reader;
+        this.display = null;
         this.output = output;
+    }
+
+    /**
+     * CLI 使用同一终端处理输入和后台输出；本类仍决定文字是任务还是批准答复。
+     * @param display 已经创建好的终端，不在本类 close 时关闭，要等任务线程先停止
+     */
+    public ConsoleInput(TerminalDisplay display) {
+        this.reader = null;
+        this.display = java.util.Objects.requireNonNull(display);
+        this.output = System.out::println;
     }
 
     /**
@@ -102,8 +116,10 @@ public final class ConsoleInput implements PermissionGate.Approval, AutoCloseabl
     /**
      * REPL 每次读一项用户任务时调用，处理批准命令后继续读，直到读到普通任务文字。
      *
-     * <p>行尾单个反斜杠表示下一行还属于同一任务。批准命令只在单独输入的一行识别，
-     * 不会把多行任务正文里的一段文字截走。有审批在等待时，y/yes 批准、n/no 或空行拒绝；
+     * <p>真实终端中，Enter 提交，Alt+Enter 换行，粘贴的多行不自动提交。
+     * JLine 一次交来完整文字，不再把末尾反斜杠当作续行指令。没有 JLine 的旧流调用
+     * 保留反斜杠续行。批准命令必须是整条输入，不会截走多行任务中间的一行。
+     * 有审批在等待时，y/yes 批准、n/no 或空行拒绝；
      * 没有审批时，这些文字仍是普通任务，空行也沿用原来的退出行为。</p>
      * @return 去掉首尾空白的任务文字；q/exit 或输入结束时返回 null，
      *         并拒绝尚未回答的申请；没有审批时的空行也会退出。续行中输入结束则返回已输入的非空正文
@@ -113,19 +129,15 @@ public final class ConsoleInput implements PermissionGate.Approval, AutoCloseabl
     public String readQuery() throws IOException {
         requireInputOwner();
         while (true) {
-            System.out.print("JadeCode >> ");
-            System.out.flush();
-            String line = reader.readLine();
+            String line = readLine("JadeCode >> ");
             if (line == null) { close(); return null; }
             // 有审批在等时，y/yes/n/no/空行在这里被消化；没有审批时它们仍是普通任务，空行照旧退出。
             if (answer(line)) continue;
             if (isExit(line)) { close(); return null; }
             StringBuilder query = new StringBuilder();
-            while (softBreak(line)) {
+            while ((display == null || !display.editsInput()) && softBreak(line)) {
                 query.append(line, 0, line.length() - 1).append('\n');
-                System.out.print("> ");
-                System.out.flush();
-                line = reader.readLine();
+                line = readLine("> ");
                 if (line == null) break;
             }
             if (line != null) query.append(line);
@@ -160,7 +172,7 @@ public final class ConsoleInput implements PermissionGate.Approval, AutoCloseabl
                 while (!task.isDone() && pending == null) wait();
                 if (task.isDone()) break;
             }
-            String line = reader.readLine();
+            String line = readLine("允许执行？[y/N] >> ");
             if (line == null) close();
             else if (answer(line)) { /* 已按审批回答处理，继续等任务完成 */ }
             else if (isExit(line)) { close(); throw new IllegalStateException("Execution cancelled by user"); }
@@ -218,6 +230,19 @@ public final class ConsoleInput implements PermissionGate.Approval, AutoCloseabl
      */
     private void requireInputOwner() {
         if (Thread.currentThread() != inputOwner) throw new IllegalStateException("Only the UI input owner may read stdin");
+    }
+
+    /**
+     * 只用一个对象读输入：真实 CLI 交给 JLine，注入 BufferedReader 的旧调用者保持直接读取。
+     * @param prompt 当前要显示的提示，JLine 会在日志输出后重新画出来
+     * @return 一行文字，输入结束为 null
+     * @throws IOException 读取失败
+     */
+    private String readLine(String prompt) throws IOException {
+        if (display != null) return display.readLine(prompt);
+        System.out.print(Ansi.cyan(prompt));
+        System.out.flush();
+        return reader.readLine();
     }
 
     /**

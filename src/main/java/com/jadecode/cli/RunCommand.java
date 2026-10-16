@@ -38,10 +38,11 @@ public class RunCommand implements Callable<Integer> {
             System.err.println("任务描述不能为空");
             return 1;
         }
-        // 返回时反序关闭：拒绝没回答的申请，停止会话和命令，最后再次关闭 AgentLoop。
-        try (AgentLoop loop = Main.buildLoop();
+        // 最后才恢复终端；此前先拒绝待答申请、停止会话和命令，让清理过程还能正确显示日志。
+        try (TerminalDisplay display = TerminalDisplay.open();
+                AgentLoop loop = Main.buildLoop();
                 SessionRuntime runtime = new SessionRuntime(loop, System.out::println, System.err::println);
-                ConsoleInput terminal = new ConsoleInput()) {
+                ConsoleInput terminal = new ConsoleInput(display)) {
             runtime.start(false);
             terminal.await(runtime.submit(prompt, terminal));
             return 0;
