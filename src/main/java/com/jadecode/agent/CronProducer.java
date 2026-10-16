@@ -11,38 +11,40 @@ import com.jadecode.cron.CronJob;
 import com.jadecode.cron.CronScheduler;
 
 /**
- * 定时生产适配器：只负责到期入队、确认和退避，不拥有模型或会话历史。
+ * 每秒检查定时任务，把到期任务加进 SessionRuntime 的队列，不自己调用模型。
  *
- * <p>原工作区格式与 pending/lease 契约保留。收件箱满时归还 lease，不确认交付；
- * 退避只暂停 cron 生产与交付，不让人工请求在退避期间也被阻塞。</p>
+ * <p>调度器取出一项任务时，先在内存标记“正在发送”，防止下一次检查又把它排一遍。
+ * 排队成功还不算模型收到；SessionRuntime 拿到第一次正常模型回复后，才调用 received。
+ * 队列满就去掉“正在发送”标记，下次再试，不丢掉任务。</p>
  *
- * <p>lease 是“本进程已经拿去投递”的临时资格，不等于模型收到任务。生产线程只入队；
- * 消费者拿到首个合法正式回复后才调用 received。首回复前失败允许退避重投；首回复后的
- * 工具失败不能在这里触发整项业务重跑。文件中的 pending 可恢复，但会话收件箱不持久化。</p>
+ * <p>第一次回复前失败，等五秒再试，连续三次则暂停自动发送。
+ * 第一次回复后的工具失败不能让整个任务重做，以免再次写文件或运行命令。
+ * 定时文件和待发送记录保留原格式；排队中的会话请求不保存，程序退出后不会恢复。
+ * 定时任务暂缓执行时，用户直接输入的任务照常排队和执行。</p>
  */
 final class CronProducer implements AutoCloseable {
-    /** 与定时工具共享定义及 pending 状态；旧装配可为 null。 */
+    /** 与定时工具共用的任务记录，包含哪些任务还没送到模型；没有定时功能时为 null。 */
     private final CronScheduler scheduler;
-    /** 非阻塞投递函数，true 只说明入队，不说明模型已收到。 */
+    /** 往会话队列放任务的函数；返回 true 只说明排队成功。 */
     private final Predicate<CronJob> publish;
-    /** 调度诊断输出，不作为模型上下文消息。 */
+    /** 显示定时检查错误的函数，不把这些提示发给模型当作请求。 */
     private final Consumer<String> errors;
-    /** 单一到期检查线程，不承担模型或工具执行。 */
+    /** 定时检查线程，不请求模型或执行工具。 */
     private ScheduledExecutorService timer;
-    /** 以下状态供生产线程与会话消费者共同观察。 */
+    /** 定时检查线程和任务处理线程都要知道是否已经退出。 */
     private volatile boolean closed;
-    /** 此适配器连续首回复前失败次数，是会话级投递熔断计数，不是每项业务的重试次数。 */
+    /** 本会话连续几次在拿到模型第一次回复前失败，不是每项业务各自的重试次数。 */
     private volatile int failures;
-    /** 单调时钟的下一可尝试时点，0 表示未设置退避。 */
+    /** 用 nanoTime 记录下次允许重试的时间，0 表示不用等；不是日期时间戳。 */
     private volatile long nextAttempt;
-    /** 最近一次轮询错误；相同错误不反复刷屏，轮询成功清除。 */
+    /** 最近一次检查的错误原因，便于少重复显示；检查成功后清掉。 */
     private volatile String lastPollError;
 
     /**
-     * 绑定投递适配所需依赖，不读取任务文件、不启动计时或模型。
-     * @param scheduler 定时状态对象；可为 null，表示此装配没有 cron
-     * @param publish 把一个已领取定义包装成会话请求的非阻塞函数
-     * @param errors 诊断回调，不应抛异常或长时间阻塞
+     * 记住定时任务记录、排队函数和错误输出函数，不读文件或启动线程。
+     * @param scheduler 与定时工具共用的调度器；null 表示没有定时功能
+     * @param publish 把选中的任务放进会话队列的函数，必须尽快返回
+     * @param errors 显示错误的函数，不应抛异常或长时间不返回
      */
     CronProducer(CronScheduler scheduler, Predicate<CronJob> publish, Consumer<String> errors) {
         this.scheduler = scheduler;
@@ -51,9 +53,10 @@ final class CronProducer implements AutoCloseable {
     }
 
     /**
-     * REPL 显式启动每秒一次的到期检查；重复调用、无 scheduler 或已关闭时不启动。
-     * 首次检查立即安排在独立 daemon 线程上。本方法不执行任何模型请求，单次 run
-     * 不调用它，因此“装配定时工具”与“运行定时服务”是两件事。
+     * 开始每秒检查一次时间，第一次立即安排检查，线程是 daemon。
+     *
+     * <p>没有调度器、已经启动过或已经退出，就直接返回。这里只运行 poll，
+     * 不会请求模型；单次 run 不调用它，所以即使能创建定时任务，也不代表会一直等待任务到期。</p>
      */
     synchronized void start() {
         if (scheduler == null || timer != null || closed) return;
@@ -66,11 +69,14 @@ final class CronProducer implements AutoCloseable {
     }
 
     /**
-     * 一次定时生产：更新到期 pending → 复核投递门槛 → 领取 lease → 尝试入队。
+     * 检查到期任务，并把能发送的任务逐个排进队列。
      *
-     * <p>队列满立即归还当前 lease 并结束此次检查，下次时钟再试，不忙等；此前已入队项
-     * 保留其 lease。IO/运行异常转为诊断，并暂时阻止交付，直到一次轮询成功清除错误。
-     * 此处不确认模型接收、不修改历史，也不吞掉错误伪装成成功投递。</p>
+     * <p>先让调度器更新哪些任务待发送，再检查是否需要暂停或等五秒。
+     * 取任务时调度器会防止它重复排队；如果队列满，去掉这个标记，让它下次再试，
+     * 然后结束本次检查，不在这里一直等空位。</p>
+     *
+     * <p>读写文件或排队出错就显示原因，暂时不再执行定时任务，直到下一次检查成功。
+     * 此处不修改 history、不调用模型，也不会把仅仅排好队的任务记成已经送到模型。</p>
      */
     private void poll() {
         if (closed) return;
@@ -93,9 +99,9 @@ final class CronProducer implements AutoCloseable {
     }
 
     /**
-     * 检查现在是否允许投递，供生产及“已排队、尚未执行”的复核共用。
-     * @return 未关闭、无轮询错误、未达三次首回复前失败且五秒退避已到期时为 true。
-     *         只读状态，不领取任务或确认 pending
+     * 现在能否继续发送/开始处理定时任务，排队之前和取出执行之前都检查。
+     * @return 尚未退出、最近一次检查没出错、连续失败少于三次，并且五秒等待已经结束时为 true。
+     *         只检查，不取任务，也不修改待发送记录
      */
     boolean canDeliver() {
         return !closed && lastPollError == null && failures < 3
@@ -103,10 +109,12 @@ final class CronProducer implements AutoCloseable {
     }
 
     /**
-     * 执行前确认定义仍存在且 pending，避免排队期间取消的任务仍被执行。
-     * @param id 定时定义 ID，不是当前执行的 run_ ID
-     * @return 同 ID 定义仍待投递时为 true；无 scheduler 或已取消时为 false
-     * @throws IOException 读取定义失败，交由会话按首回复前失败处理
+     * 开始执行前，再查一次定时任务是否还存在、是否仍待发送。
+     *
+     * <p>用户可能在任务排队期间把它取消；那就不能继续执行，也不能把已取消记录重新创建。</p>
+     * @param id 定时任务定义的 ID，不是本次执行的 run_ ID
+     * @return 仍有这项待发送任务时为 true；已取消或没有调度器时为 false
+     * @throws IOException 读取任务记录失败，交给 SessionRuntime 按第一次回复前失败处理
      */
     boolean pending(String id) throws IOException {
         return scheduler != null && scheduler.list().stream()
@@ -114,12 +122,12 @@ final class CronProducer implements AutoCloseable {
     }
 
     /**
-     * 首个合法正式模型回复到达后确认本次投递，并清除连续失败/退避。
+     * 模型第一次正常回答后，把定时任务记为已经送达，并清零连续失败次数。
      *
-     * <p>辅助召回或摘要不算收到任务，工具执行成功也不是此确认的条件。确认保存失败时
-     * 报告诊断，调度器仍保留 pending/lease，避免本进程立即重投并重复副作用；跨重启仍可能
-     * 再次投递，不能据此宣称恰好一次执行。</p>
-     * @param id 已得到首回复的定时定义 ID
+     * <p>查长期记忆和生成摘要的辅助回答不算这次回答，也不等工具成功才记录。
+     * 如果记录写盘失败，就显示错误，保留调度器当前的记录，避免本进程立即重做任务。
+     * 重启后仍可能再发送一次，所以不能承诺业务只执行一次。</p>
+     * @param id 已拿到第一次正常模型回复的定时定义 ID
      */
     void received(String id) {
         failures = 0;
@@ -132,10 +140,11 @@ final class CronProducer implements AutoCloseable {
     }
 
     /**
-     * 记录首个正式回复之前的投递失败：归还 lease、退避五秒，累计三次则暂停自动交付。
-     * 持久 pending 不删除，重启可再次处理。只允许未确认投递走此路径，不能用于补救已运行
-     * 的业务，否则可能重复工具副作用。
-     * @param id 尚未得到首回复的定时定义 ID
+     * 第一次正常模型回复前失败：让调度器可以再次取出它，等五秒，再增加失败计数。
+     *
+     * <p>累计三次会暂停自动发送，但不删文件里的待发送记录，重启后还能处理。
+     * 只能用于模型尚未收到任务的情况；已经执行工具后再走这里，可能重复已有操作。</p>
+     * @param id 尚未拿到第一次正常回复的定时定义 ID
      */
     void failed(String id) {
         release(id);
@@ -145,14 +154,17 @@ final class CronProducer implements AutoCloseable {
     }
 
     /**
-     * 仅归还进程内 lease，不清除持久 pending、不增加失败次数，也不恢复已取消的定义。
-     * @param id 因队列满、关闭、退避等原因未能继续投递的定义 ID
+     * 去掉本进程中“这项任务正在发送”的标记，让以后还能取它。
+     * 不删待发送记录、不增加失败次数，也不会重新创建已取消的任务。
+     * @param id 因队列满、会话退出或暂缓执行而没能继续的定时定义 ID
      */
     void release(String id) { if (scheduler != null) scheduler.restore(id); }
 
     /**
-     * 幂等停止计时生产并尝试中断在途检查；不关闭会话、模型或 shell，不保存会话队列。
-     * 已持久化定义/pending 不删除，由下一次启动的调度器恢复。
+     * 停止定时检查，重复调用也可以，并尝试中断当前检查。
+     *
+     * <p>不停止模型或 shell，不保存会话队列；这些由 SessionRuntime 负责。
+     * 已经保存的定时任务和待发送记录不删除，下次启动时调度器还会读取它们。</p>
      */
     @Override
     public synchronized void close() {

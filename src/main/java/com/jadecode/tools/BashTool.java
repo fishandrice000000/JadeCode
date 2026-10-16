@@ -9,45 +9,50 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jadecode.agent.ExecutionContext;
 
 /**
- * bash 工具：缺省同步；父循环可显式 run_in_background=true 后先拿启动回执。
+ * 把模型给出的 shell 命令交给 ShellCommand 或 BackgroundManager 运行。
  *
- * <p>两条路径都必须先经调用方 PreToolUse，不能因换线程而跳过权限检查。后台命令由
- * BackgroundManager 拥有，运行器收集完成事件；本工具不写历史、不调模型。后台执行方式与
- * 是否阻止当前任务结束由两个独立参数表达。</p>
+ * <p>默认等命令结束再返回。父 Agent 可以设置 run_in_background=true，
+ * 让工具先返回 bg_id，命令继续在后台跑。wait_for_completion 则决定当前任务是否必须
+ * 处理它的结果，默认是 true；工具仍立即返回，只是 SessionRuntime 不能提前宣布任务结束。</p>
+ *
+ * <p>两种方式都要先经过 PreToolUse 检查权限。这里不询问用户、不写 history，也不调用模型。
+ * 当前子代理没有后台结果处理功能，所以只提供同步命令。</p>
  */
 public class BashTool implements Tool {
-    /** 无管理器的同步路径使用的工作目录；有管理器时以管理器绑定目录为准。 */
+    /** 没有管理器时 shell 使用的工作目录，有管理器则用它自己的目录。 */
     private final Path cwd;
-    /** 局部同步 ShellCommand 的最长执行秒数，不是模型等待结果的轮数。 */
+    /** 没有管理器时，每条同步命令的超时秒数。 */
     private final long timeoutSeconds;
-    /** null 表示没有通知接收方，只提供同步能力，例如聚焦子代理。 */
+    /** null 表示只支持同步执行，例如当前的子代理。 */
     private final BackgroundManager background;
 
-    /** 兼容旧装配：当前进程目录、120 秒，仅同步。 */
+    /**
+     * 在当前进程目录执行同步命令，默认最多 120 秒；不提供后台功能，也不立即执行命令。
+     */
     public BashTool() {
         this(120);
     }
 
     /**
-     * 使用当前进程目录创建仅同步工具，不启动命令。
-     * @param timeoutSeconds 每条命令最长执行秒数
-     * @throws IllegalArgumentException 超时不是正数
+     * 使用当前进程目录，只提供同步命令。
+     * @param timeoutSeconds 每条命令最多执行多少秒
+     * @throws IllegalArgumentException 不是正数
      */
     public BashTool(long timeoutSeconds) {
         this(Path.of(""), timeoutSeconds, null);
     }
 
     /**
-     * 显式绑定工作区和默认 120 秒超时，不提供后台能力，供聚焦子代理使用。
-     * @param cwd 子代理 shell 工作目录，不受命令内 cd 对其它调用的影响
+     * 在给定目录提供同步命令，默认 120 秒，供子代理使用。
+     * @param cwd shell 工作目录；某次命令里 cd 不改变其它命令的初始目录
      */
     public BashTool(Path cwd) {
         this(cwd, 120, null);
     }
 
     /**
-     * 父 CLI 装配：同步与后台命令交给同一管理器，退出由 AgentLoop.close 清理。
-     * @param background 必须非 null，须与父循环注入同一个实例
+     * 父 Agent 使用：同步和后台命令都交给同一个管理器，退出时一起停止。
+     * @param background 必须与 SessionRuntime 使用同一对象，才能找到本工具启动的后台命令
      * @throws NullPointerException background 为 null
      */
     public BashTool(BackgroundManager background) {
@@ -55,10 +60,10 @@ public class BashTool implements Tool {
     }
 
     /**
-     * 统一绑定依赖，不启动线程/命令。
-     * @param cwd 无管理器路径的工作目录
-     * @param timeoutSeconds 无管理器路径的正数秒超时
-     * @param background 可选会话命令管理器，有它才声明并支持后台参数
+     * 保存执行命令要用的对象和设置，不启动线程或命令。
+     * @param cwd 没有管理器时，局部 shell 使用的工作目录
+     * @param timeoutSeconds 没有管理器时，每条命令的超时秒数，必须大于零
+     * @param background 可以为 null；提供它时才支持后台命令
      * @throws IllegalArgumentException timeoutSeconds 不是正数
      */
     private BashTool(Path cwd, long timeoutSeconds, BackgroundManager background) {
@@ -76,7 +81,9 @@ public class BashTool implements Tool {
         return "bash";
     }
 
-    /** @return 不向没有接收方的子代理承诺后台通知。 */
+    /**
+     * @return 给模型的用法说明；没有后台管理器时，只告诉模型能执行同步命令
+     */
     @Override
     public String description() {
         return background == null ? "Run a shell command synchronously."
@@ -87,8 +94,8 @@ public class BashTool implements Tool {
     }
 
     /**
-     * 根据装配能力声明模型可见参数，不向无通知接收方的子代理承诺后台执行。
-     * @return command 字符串，以及仅父工具提供的 run_in_background/wait_for_completion 布尔参数
+     * 告诉模型可以传哪些参数。有后台管理器才提供两个后台开关，子代理不提供。
+     * @return command 字符串，以及父工具的 run_in_background/wait_for_completion 布尔参数
      */
     @Override
     public Map<String, String> properties() {
@@ -103,37 +110,36 @@ public class BashTool implements Tool {
     }
 
     /**
-     * 不带任务身份的兼容入口，复用同一参数校验与同步执行实现。
-     * @param input 非 null 的模型参数对象，不修改；command 必须是非空白字符串
-     * @return 同步输出或 Error 文本；即使装配了管理器，显式后台调用仍因缺少可信上下文而拒绝
+     * 旧调用者不传任务信息时使用，直接调用双参数 execute，不单独写一份执行代码。
+     * @param input 非 null 参数对象，不修改；command 必须是非空白字符串
+     * @return 同步输出或 Error 文字；即使有管理器，请求后台也会因没有任务信息而被拒绝
      * @see #execute(ObjectNode, ExecutionContext)
      */
     @Override
     public String execute(ObjectNode input) {
-        // 兼容普通同步调用；后台调用必须走运行器提供可信执行身份的重载。
+        // 普通同步命令不需要任务 ID；后台命令要用双参数版本，程序才能记住它属于谁。
         return execute(input, null);
     }
 
     /**
-     * 后台路径默认必等，仍立即返回；身份来自 Harness，不允许模型在 input 里伪造所属任务。
-     * 同步路径若显式传 wait_for_completion 则拒绝，避免无效参数让模型误以为改变了执行方式。
+     * 检查参数，再同步运行或放到后台，结果由调用者写进 history。
      *
-     * <p>两个维度应分开理解：run_in_background 决定工具调用是否立即返回；
-     * wait_for_completion 决定运行器能否在未处理结果时结束当前任务。默认后台必等，不是在
-     * 本方法里阻塞，而是由 SessionRuntime 稍后进入 WAITING_BACKGROUND 并接结果续跑。
-     * false 表示脱离当前目标，仍受整个 CLI 关闭约束，不能当成长驻服务。</p>
+     * <p>比如模型要后台构建再检查报告：设置 run_in_background=true，
+     * 本方法立即返回 bg_id，模型可以先调用 read_file。wait_for_completion 默认 true，
+     * 表示之后必须处理构建结果才能结束任务。不是在本方法里等，而是 SessionRuntime
+     * 等结果后再次请模型继续。设 false 才表示这项任务不用等，但退出 CLI 时命令仍会停止。</p>
      *
-     * <p>调用前必须已走 PreToolUse；本工具不自行审批，不写会话历史，不调用模型。
-     * command 以及可选参数类型严格检查，字符串 "true"、显式 null 不是合法布尔值。</p>
-     * @param input 非 null 参数对象；command 必填，可选 run_in_background，后台时可选
-     *              wait_for_completion；只读，不修改
-     * @param context Harness 传来的所属身份；同步可为 null，后台必须存在以绑定结果归属
-     * @return 同步路径返回最终输出/错误；后台路径返回 bg_id 启动回执，最终完成通过通知交付。
-     *         参数非法、能力缺失或管理器拒绝启动返回 Error 文本，不伪造成功
+     * <p>只接受真正的 JSON boolean，不接受字符串 "true" 或显式 null。
+     * wait_for_completion 只有后台模式才能传，不能默默忽略它，让模型误以为设置生效。
+     * 调用者必须先做权限检查；这里不再次询问用户，也不请求模型。</p>
+     * @param input 非 null 参数对象，不修改；command 必填，两个开关可选
+     * @param context 程序记录的任务信息；后台必须提供，用来找回所属任务的结果，同步可为 null
+     * @return 同步时为输出或错误；后台时为 bg_id 和启动说明，不代表跑完。
+     *         参数不对、当前 Agent 不支持后台或管理器不能接收时，返回 Error 文字
      */
     @Override
     public String execute(ObjectNode input, ExecutionContext context) {
-        // 1. 先完整校验两个开关再执行，不能“忽略不适用字段”让模型误判命令的等待语义。
+        // 1. 两个开关都检查完再执行；不适用的参数直接报错，不能让模型以为设置已经生效。
         JsonNode command = input.get("command");
         if (command == null) {
             return "Error: Missing required parameter: command";
@@ -153,7 +159,7 @@ public class BashTool implements Tool {
             return "Error: Background execution is not available in this agent";
         }
         if (asynchronous) {
-            // 2. 身份由调用方额外传入，不从 input 获取；后台登记只负责执行，审批已在此前完成。
+            // 2. 所属任务由程序另外传入，不能由模型填写；调用这里前已经检查过权限。
             if (context == null) return "Error: Background execution requires a Harness task context";
             try {
                 boolean required = waiting == null || waiting.booleanValue();
@@ -165,7 +171,7 @@ public class BashTool implements Tool {
                 return "Error: " + failure.getMessage();
             }
         }
-        // 3. 同步命令不会产生第二份完成事件：父工具用会话资源，子代理/旧装配用局部资源。
+        // 3. 同步命令直接返回最终结果，不再发后台通知。有管理器就用它，否则执行后关闭局部 shell。
         if (background != null) {
             return background.runForeground(command.textValue());
         }

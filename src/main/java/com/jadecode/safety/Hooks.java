@@ -6,22 +6,18 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 事件表:harness 的可扩展点。s04 起循环不再直接调用任何检查函数,只触发事件;
- * 内置事件见下方常量,新事件直接 register 新名字即可。
+ * 保存一些在特定时刻要调用的函数，比如执行工具前查权限、执行后显示结果。
  *
- * <p>
- * 注册顺序 = 触发顺序,首个非 null 短路。返回值语义随事件而异:
- * PreToolUse 非 null = 拦截,Stop 非 null = 强制续跑,
- * UserPromptSubmit / PostToolUse / Subagent* 的返回值调用方忽略。
- * </p>
+ * <p>register 把函数加进表，trigger 按加入顺序执行。某函数返回非 null 就不再调用后面的。
+ * PreToolUse 返回文字表示拒绝这次工具调用；Stop 返回文字表示任务还没做完，
+ * 要把这段提示交给模型继续；其它事件的返回文字虽然通常不用，也会使后面的函数不再执行。</p>
  *
- * <p>这里的“事件”是同步扩展点，不是 SessionInbox 的新任务或异步消费者。
- * trigger 在调用者线程依次执行回调，通常用于审批、日志及 Stop 续跑判定；父会话历史采用
- * 仍由 SessionRuntime 负责，子代理维护自己的局部历史。回调应遵守参数只读约定，
- * 不能自行往历史插入消息。</p>
+ * <p>这些函数在调用 trigger 的同一线程执行，不是任务队列，也不自动开线程。
+ * 父 history 由 SessionRuntime 修改，子 Agent 修改自己的消息列表；
+ * hook 只检查参数或显示信息，不应直接给 history 插消息。</p>
  */
 public class Hooks {
-    // 事件名常量(防手滑);事件集合本身是开放的——新事件直接 register 新名字即可
+    // 用常量统一事件名，避免拼错；需要新事件时也可以注册新名字。
     public static final String USER_PROMPT_SUBMIT = "UserPromptSubmit";
     public static final String PRE_TOOL_USE = "PreToolUse";
     public static final String POST_TOOL_USE = "PostToolUse";
@@ -30,49 +26,54 @@ public class Hooks {
     public static final String SUBAGENT_TOOL = "SubagentTool";
     public static final String SUBAGENT_END = "SubagentEnd";
 
-    // 内置事件参数键常量(触发点与回调共用,打错字编译期抓不到,靠常量收敛)
+    // 调用者和 hook 都用这些参数名，免得一边传 block，另一边却按别的名字读取。
     public static final String PARAM_QUERY = "query"; // UserPromptSubmit
     public static final String PARAM_BLOCK = "block"; // PreToolUse / PostToolUse
     public static final String PARAM_OUTPUT = "output"; // PostToolUse
     public static final String PARAM_MESSAGES = "messages"; // Stop
     public static final String PARAM_OUTCOME = "outcome";
     /**
-     * Harness 提供的 ExecutionContext，不从 tool_use.input 中提取，模型不能伪造来源。
-     * 父/子 PreToolUse 依此检查审批；父 PostToolUse 和人工入口也可携带。不是所有事件都含
-     * 此键，例如 Stop 只看历史，不能因日志/hook 使用同一表就假定上下文总存在。
+     * 程序传来的 ExecutionContext，用来判断任务来自用户还是定时器，不从工具 input 读取。
+     *
+     * <p>父子 Agent 执行工具前都会传；父 Agent 执行后和收到用户请求时也可以传。
+     * 不是每个 hook 都有它，例如 Stop 只传消息列表，写函数时不能默认此参数总存在。</p>
      */
     public static final String PARAM_CONTEXT = "executionContext";
 
-    // 课程同款注册表:事件名 → 回调列表。同名事件按注册顺序追加
+    // 每个事件名对应一组函数，按加入顺序保存。
     private final Map<String, List<Hook>> registry = new HashMap<>();
 
-    /** 一个事件回调。参数按名取(各事件的键见上方 PARAM_* 常量) */
+    /**
+     * 一个要在特定时刻运行的函数，按 PARAM_* 名称从参数表读取信息。
+     */
     @FunctionalInterface
     public interface Hook {
         /**
-         * 处理一次事件。各事件的参数与返回值语义:
-         * <ul>
-         * <li>UserPromptSubmit:参数 query:String、生产人工入口的 executionContext;返回值忽略</li>
-         * <li>PreToolUse:参数 block:ToolUseBlock、生产执行入口的 executionContext;
-         * 返回非 null = 拦截(作为 tool_result 回灌)</li>
-         * <li>PostToolUse:参数 block:ToolUseBlock、output:String;返回值忽略</li>
-         * <li>Stop:参数 messages:List&lt;Message&gt;;返回非 null = 强制续跑(作为 user 消息注入)</li>
-         * <li>SubagentStart:参数无;返回值忽略</li>
-         * <li>SubagentTool:参数 block:ToolUseBlock、output:String;返回值忽略</li>
-         * <li>SubagentEnd:参数 output:String、outcome:SubagentOutcome;返回值忽略</li>
-         * </ul>
+         * 处理一次通知。调用者传什么参数、返回文字怎么用，取决于事件名。
          *
-         * @param params 事件参数
-         * @return 拦截 / 强制续跑的文案;放行或无关事件返回 null
+         * <ul>
+         * <li>UserPromptSubmit：query 是用户请求，CLI 还传 executionContext；返回文字不使用。</li>
+         * <li>PreToolUse：block 是 ToolUseBlock，CLI 父子 Agent 还传 executionContext；
+         * 返回文字就阻止工具，把原因作为 tool_result 发给模型。</li>
+         * <li>PostToolUse：block 和 output 是调用及结果，只展示或记录。</li>
+         * <li>Stop：messages 是当前历史；返回文字就让模型继续，不返回则不再要求继续。</li>
+         * <li>SubagentStart：没有参数。</li>
+         * <li>SubagentTool：block 和 output 是子工具调用及结果。</li>
+         * <li>SubagentEnd：output 是最终文字，outcome 是 DONE/STOPPED/FAILED。</li>
+         * </ul>
+         * @param params 当前事件的参数表，只读，不保证每次都有 executionContext
+         * @return 拒绝原因或让模型继续的提示；其它情况返回 null，避免阻止后面的函数
          */
         String run(Map<String, ?> params);
     }
 
     /**
-     * 在装配阶段向指定事件的回调末尾追加，不立即触发。
-     * 注册表不是并发容器，执行开始后不应从其它线程动态改写。
-     * @param event 事件名，开放扩展，但其参数/返回语义须由触发点约定
-     * @param hook 同步回调；顺序影响短路，权限回调应先于“已执行”日志
+     * 把一个函数加在指定事件的最后，之后 trigger 时才执行。
+     *
+     * <p>应在开始任务前注册。这个表不是线程安全的，不要边执行边从其它线程增加函数。
+     * 顺序会影响结果：权限检查要放在“调用了哪个工具”的日志前面，免得被拒绝也显示成执行过。</p>
+     * @param event 事件名，也可以新增名字，但调用者要讲清参数和返回文字的用途
+     * @param hook 要执行的函数，不会立即调用
      */
     public void register(String event, Hook hook) {
         if (!registry.containsKey(event)) {
@@ -82,23 +83,23 @@ public class Hooks {
     }
 
     /**
-     * 在当前线程按注册顺序调用，首个非 null 立即短路，不启动线程或修改历史。
-     * @param event 需要触发的扩展点名称
-     * @param params 该触发点约定的参数，不保证每个事件都有 ExecutionContext
-     * @return 第一个非 null 结果；全为 null 或没有注册回调时为 null，含义由调用点决定
-     * @throws RuntimeException 回调意外失败时原样传播，本表不将失败伪装成放行
+     * 按注册顺序在当前线程执行函数，遇到第一个非 null 返回值就停止。
+     * @param event 这次发生的事件名
+     * @param params 给函数读取的参数，不保证每个事件都有任务信息
+     * @return 第一段非 null 文字；没有函数或全返回 null 时为 null，怎样使用由调用者决定
+     * @throws RuntimeException 某函数意外抛异常，原样交给调用者，不当作检查通过
      */
     public String trigger(String event, Map<String, ?> params) {
         List<Hook> hooks = registry.get(event);
         if (hooks == null) {
-            return null; // 事件从未注册过:没有可触发的 hook,直接放行
+            return null; // 没有为这个事件注册函数，直接返回 null。
         }
         for (Hook hook : hooks) {
             String result = hook.run(params); // lambda 的身体在这里执行
             if (result != null) {
-                return result; // 首个非 null 短路:后面的 hook 不再执行
+                return result; // 已经返回了处理意见，不再运行后面的函数。
             }
         }
-        return null; // 全部返回 null → 放行
+        return null; // 所有函数都没返回处理意见。
     }
 }

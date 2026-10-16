@@ -11,24 +11,23 @@ import com.jadecode.agent.SessionRuntime;
 import picocli.CommandLine.Command;
 
 /**
- * REPL 是人工生产者和唯一终端输入所有者，不再直接启动推理或修改历史。
+ * 反复读用户输入，把新任务交给 SessionRuntime 排队，不在这里请求模型或改 history。
  *
- * <p>消费者执行期间仍可提交后续请求，它们 FIFO 排队；审批答复由 ConsoleInput 关联后
- * 直接交给等待的审批通道，不进入任务队列。q/EOF 是立即关闭会话，不等待队列排空。</p>
+ * <p>模型做任务时，用户仍可输入下一项任务。/approve ID、/deny ID 由 ConsoleInput 处理，
+ * 不会排成新任务。q/exit 或输入结束就退出整个会话，不等剩余排队任务执行。</p>
  */
 @Command(name = "repl", description = "多轮会话:请求排队，行尾反斜杠续行，q/exit 或 Ctrl+D 退出")
 public class ReplCommand implements Callable<Integer> {
     /**
-     * 启动交互会话：UI 线程持续生产人工请求，运行器独立串行消费，并启用定时生产者。
+     * 创建会话和终端读取器，启动任务处理及定时检查，然后不断读用户输入。
      *
-     * <p>submit 不等待任务完成，因此用户可以在当前任务运行/等后台时继续排队。
-     * 审批控制输入由 ConsoleInput 消费，不进入任务队列。正常任务失败由运行器输出，
-     * 这里只报告收件箱拒收，避免把“任务已执行但失败”误报为“未接收”。</p>
-     * @return q/exit/EOF 正常退出为 0，输入 IO 失败为 1；不是每项排队任务的业务成功证明
+     * <p>submit 立即返回，所以循环可以继续读下一项任务。运行中出错由 SessionRuntime 显示；
+     * 这里只额外显示“队列已满或退出，没能排进去”，免得同一个错误显示两遍。</p>
+     * @return 正常退出为 0，读取输入出错为 1；不是每项任务的业务成功结论
      */
     @Override
     public Integer call() {
-        // try-with-resources 按声明逆序关闭：先拒绝待答审批，再停会话，最后幂等关闭执行器。
+        // 资源按声明的反顺序关闭：先拒绝没回答的申请，再停会话，最后再关闭 AgentLoop 也没关系。
         try (AgentLoop loop = Main.buildLoop();
                 SessionRuntime runtime = new SessionRuntime(loop, System.out::println, System.err::println);
                 ConsoleInput terminal = new ConsoleInput()) {
@@ -36,10 +35,10 @@ public class ReplCommand implements Callable<Integer> {
             System.out.println("JadeCode REPL — 输入任务回车提交并排队；q/exit 或 Ctrl+D 退出");
             while (true) {
                 String query = terminal.readQuery();
-                // 退出属于即时 UI 控制，不能排在某个长时间等待的业务目标后面。
+                // 用户要退出就立即返回，不能把退出动作排在当前任务后面。
                 if (query == null) return 0;
                 var result = runtime.submit(query, terminal);
-                // 按失败类型区分拒收与执行失败，不能把“执行得很快但失败”误报成从未接收。
+                // 只额外显示排队失败；任务虽然很快出错，也不能误报为根本没排进去。
                 result.whenComplete((answer, failure) -> {
                     if (failure instanceof RejectedExecutionException) System.err.println("[Rejected] " + failure.getMessage());
                 });

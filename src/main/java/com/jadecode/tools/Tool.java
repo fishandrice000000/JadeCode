@@ -7,16 +7,12 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jadecode.agent.ExecutionContext;
 
 /**
- * 工具接口:模型可调用的函数。每个实现类注册进 {@code Map<String, Tool>} 分发表后,
- * AgentLoop 收到 model 的 tool_use 块按 name 查表、串行执行。
+ * 模型可以调用的工具。AgentLoop 按 tool_use 中的 name 找到实现，再依次调用 execute。
  *
- * <p>实现类契约:</p>
- * <ul>
- *   <li>预期的参数/执行错误返回以 "Error: " 开头的字符串,文案回灌给模型自纠；
- *       意外运行异常不是普通工具失败，父执行器会闭合批次后终止当前任务，不能假装成功;</li>
- *   <li>name 与模型 tool_use 块的 name 字段精确对应,查表靠它;</li>
- *   <li>properties/required 声明的参数须与 execute 实际读取的一致(缺参检查靠 required)。</li>
- * </ul>
+ * <p>每个工具要告诉模型自己的名字、用途、参数和必填字段，实际读取的参数要和说明一致。
+ * 普通参数错误或可预期的执行失败返回 Error 文字，让模型决定是否换方法。
+ * 如果实现意外抛运行异常，父执行器会补上这一批缺失的结果说明，再结束任务，
+ * 不能当作工具已经成功。</p>
  */
 public interface Tool {
     /**
@@ -54,28 +50,26 @@ public interface Tool {
     }
 
     /**
-     * 执行一次工具调用。
-     *
-     * @param input 模型按 schema 传来的参数对象(可能缺参、类型不符,实现自己兜)
-     * @return 成功:结果文本,作为 tool_result 原样回灌给模型;
-     *         预期失败:"Error: ..." 开头的文案，不以异常替代模型可处理的普通错误
+     * 执行模型的一次工具调用，工具实现自己检查缺参和字段类型。
+     * @param input 模型给出的参数对象，字段可能缺失或类型错误
+     * @return 成功时的结果文字，或预期失败时以 Error 开头的说明；
+     *         执行器会用原调用 ID 把它写成 tool_result，加进 history
      */
     String execute(ObjectNode input);
 
     /**
-     * 带 Harness 身份的执行入口，由父/子执行器在通过 PreToolUse 之后同步调用。
+     * 执行工具时，额外传入程序记录的任务信息；父 Agent 和子 Agent 都在检查权限后调用它。
      *
-     * <p>只有后台 bash 和子代理委派等需要关联执行身份的工具覆盖本方法。context 不进入
-     * 工具 schema，不允许模型在 input 中声明自己是人工任务以绕过审批。</p>
+     * <p>后台 bash 需要任务 ID 来保存结果，task 工具需要把任务来源和退出检查传给子代理，
+     * 所以它们重写这个方法。普通工具不需要这些信息，默认直接调用原来的 execute(input)，
+     * 不用为此重写。这里不另开线程、不自动检查权限，也不修改 history。</p>
      *
-     * <p>默认实现只委托单参数 execute，不额外执行权限检查、开线程或写历史。上下文是
-     * Harness 的旁路元数据，不是模型 content 的一部分；结果仍由执行器绑定原 tool_use_id。
-     * 普通工具无需为这次事件化重写实现。预期工具错误遵循 Error 文本契约；意外运行异常
-     * 不是成功结果，父执行器会补齐批次并报告任务失败。</p>
-     * @param input 模型提交的非 null 参数对象，具体字段合法性由实现检查
-     * @param context Harness 提供的真实来源、执行 ID、审批通道与关闭视图；需要这些信息的
-     *                实现自行约束 null，默认实现不读取它
-     * @return 原工具结果，不因为传递身份而改变 tool_result 协议；本方法不自己回灌历史
+     * <p>context 不写进工具参数说明，也不能从模型 input 中读取同名字段代替。
+     * 否则模型只要自称“用户任务”，就可能绕过定时任务不能询问用户的限制。</p>
+     * @param input 模型给出的非 null 参数对象，具体字段由工具自己检查
+     * @param context 程序提供的任务 ID、来源、询问用户的函数和退出检查；
+     *                默认实现不使用它，重写的方法自行规定能否为 null
+     * @return 工具的普通结果文字，仍由执行器配上原 tool_use_id 写进 history
      */
     default String execute(ObjectNode input, ExecutionContext context) {
         return execute(input);
