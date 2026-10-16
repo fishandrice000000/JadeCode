@@ -4,6 +4,7 @@ import java.util.List;
 import java.util.Map;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.jadecode.agent.ExecutionContext;
 
 /**
  * 工具接口:模型可调用的函数。每个实现类注册进 {@code Map<String, Tool>} 分发表后,
@@ -59,4 +60,17 @@ public interface Tool {
      *         失败:"Error: ..." 开头的文案;绝不抛异常
      */
     String execute(ObjectNode input);
+
+    /**
+     * 带 Harness 身份的执行入口；普通工具不需要身份，默认委托原方法。
+     *
+     * <p>只有后台 bash 和子代理委派等需要关联执行身份的工具覆盖本方法。context 不进入
+     * 工具 schema，不允许模型在 input 中声明自己是人工任务以绕过审批。</p>
+     * @param input 模型提交的普通工具参数
+     * @param context Harness 提供的真实来源与执行身份
+     * @return 原工具结果；不因为传递身份而改变 tool_result 协议
+     */
+    default String execute(ObjectNode input, ExecutionContext context) {
+        return execute(input);
+    }
 }

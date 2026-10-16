@@ -35,7 +35,7 @@ src/main/java/com/jadecode/
 ├── memory/           # 工作区记忆：召回 / 提取 / 数量触发整理 / 生命周期装配
 ├── tasks/            # 持久任务图：创建 / 依赖 / 认领 / 完成与解锁，六工具由父循环使用
 ├── cron/             # 定时时间规则、待交付状态与工作区持久化
-└── agent/            # AgentLoop + CronRuntime(REPL 空闲唤醒与回合串行)
+└── agent/            # SessionRuntime(单消费者) + AgentLoop(执行器) + CronProducer(定时入口)
 ```
 
 仓库根 `skills/<name>/SKILL.md` 存放可被 `load_skill` 加载的真实技能:system prompt 只带 name + description 的目录,完整正文仅在模型调用 `load_skill` 后作为 tool_result 进入消息。
@@ -106,11 +106,16 @@ Task System 使用 `.tasks/{id}.json`。先创建取得实际 ID，再增加依�
 `list_tasks` 查看全部进度，`get_task` 读取完整描述。`task` 仍表示子代理委派，不是持久任务创建。
 本章按顺序执行，不保证并发抢单互斥，不自动调度、恢复精确执行断点或证明 completed 工作正确。
 
-Background Tasks 沿用 `bash`，仅父代理增加可选布尔参数 `run_in_background`；省略或 false 仍同步。
-显式 true 先返回 `bg_...` 启动回执，完成后在下一次正式请求前注入 `<task_notification>`，
-不复用原 tool_use_id，不唤醒空闲循环、不自动等待所有命令结束，也不会改 s10 的任务状态。
-REPL 下一条用户输入仍能收通知；退出整场 CLI 会话会清理原命令组，不提供跨重启恢复。
-默认每条命令 120 秒，最多 32 个未收集后台任务；通知正文只保留最多 500 字符摘要并标注截断，
+会话由 `SessionRuntime` 单消费者拥有历史。人工和定时新请求进入有界 FIFO，不插队、不抢占；
+工具批次、Stop 续跑和所属后台结果继续当前任务，不作为新目标排队。普通模型和工具保持同步，
+事件化不引入外部 MQ 或跨进程收件箱恢复；当前执行任务也不是 s10 持久任务图中的条目。
+
+Background Tasks 沿用 `bash`：`run_in_background` 省略或 false 仍同步，true 立即返回 `bg_...`。
+后台路径新增 `wait_for_completion`，默认 true：模型先做其它工作，再等待完成事件自动恢复当前目标；
+等待时不轮询模型、不领取下一任务。false 才明确脱离任务，其结果是下次正常请求的参考通知，不唤醒空闲模型。
+两个参数必须是真实布尔值；同步执行时显式传 wait_for_completion 会被拒绝。
+完成通知不复用原 tool_use_id，也不会改 s10 状态。退出 CLI 会终止本会话全部命令，包括脱离任务的命令。
+默认每条命令 120 秒，最多 32 个运行中或尚未确认接收结果的后台命令；通知只保留最多 500 字符摘要并标注截断，
 没有完整输出文件，需要可靠产物时由命令显式写入工作区。
 当前 shell 生命周期实现面向 Linux，依赖 `/usr/bin/setsid` 与 `/bin/kill`；进程组清理不是沙箱，
 自行另开 session 的程序、SIGKILL 与断电不在保证范围内。课程阅读见 [s11 指南](docs/notes/s11/background-tasks-review.md)。
@@ -122,5 +127,10 @@ REPL 到期入队，在 Agent 空闲时主动发起 `[Scheduled]` 回合；人�
 模型首个合法正式回复表示交付确认，不是业务验收；一次性删除，周期项等待下一次匹配。
 进程停止后不执行、不补跑停机分钟；`run` 只管理定义，不开启常驻调度。需要停机也执行应使用外部调度服务。
 至少一次交付可能在崩溃后重复；确认前失败退避 5 秒，连续三次暂停本会话自动投递，保留 durable 待交付记录。
-定时线程不能读取交互审批；到期任务也不会绕过原权限规则。一个工作区的定时库不支持多个 CLI 并发写入。
-完整学习入口见 [s12 指南](docs/notes/s12/cron-scheduler-review.md)。
+审批按 Harness 标注的任务来源而非线程身份判断；人工任务通过唯一终端输入入口审批，定时任务需要审批时拒绝，
+子代理继承来源。使用 `/approve <实际审批ID>` 或 `/deny <实际审批ID>`，普通排队提示不会被当作批准。
+收件箱最多 64 项新请求；满时明确拒收，定时项保留 pending，后台完成结果不与新请求争抢容量。
+REPL 中 q/EOF 会立即关闭而不是等待队列排空；管道输入执行单项任务宜使用 `run`。
+一个工作区的定时库不支持多个 CLI 并发写入。会话重构已通过工程检查，新增行为的用户真机验收仍待完成。
+当前学习入口见 [事件化运行指南](docs/notes/s12/session-event-runtime-review.md)；
+[原 s12 指南](docs/notes/s12/cron-scheduler-review.md)保留重构前的学习记录。

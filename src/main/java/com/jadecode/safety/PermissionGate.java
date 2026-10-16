@@ -1,21 +1,18 @@
 package com.jadecode.safety;
 
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStreamReader;
-import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.function.Function;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.jadecode.agent.ExecutionContext;
 import com.jadecode.util.Ansi;
 
 /**
  * 权限闸门:三道串联——闸门 1 硬拒表(命中即拒,不询问)、闸门 2 问询表(命中 → 闸门 3 审批)、
- * 闸门 3 审批(控制台 y/N)。
+ * 闸门 3 审批(由统一输入入口提供，不在这里读取 stdin)。
  *
  * <p>
- * fail-closed:EOF、读输入失败、非主线程(后台任务)一律拒绝——宁可不做,不可放开。
+ * fail-closed:没有可信交互来源、没有审批通道或用户拒绝都不执行。线程身份不再代表权限来源。
  * 闸门 1 拒绝时打印红色 [blocked] 行;审批拒绝时把命中理由带回,让模型知道边界在哪。
  * </p>
  */
@@ -24,31 +21,21 @@ public class PermissionGate {
     private final CommandPolicy policy;
     /** 路径分类器(闸门 1/2 的文件规则来源) */
     private final PathGuard guard;
-    /** 闸门 3:审批实现(生产 = 控制台,测试 = 注入假货) */
+    /** 兼容直接调用时的默认审批；生产默认拒绝，由任务上下文显式携带终端通道。 */
     private final Approval approval;
-    /** 构造时的线程:非它请求审批一律拒绝(后台任务不能弹交互) */
-    private final Thread mainThread;
     /** 闸门 1:命中即拒,不询问 */
     private final List<Rule> hardRules;
     /** 闸门 2:命中 → 交给闸门 3 审批 */
     private final List<Rule> askRules;
-    /** 控制台输入只建一个,与 ReplCommand 同款(坑 6) */
-    private final BufferedReader console = new BufferedReader(
-            new InputStreamReader(System.in, StandardCharsets.UTF_8));
 
     /**
-     * 装配用构造:审批 = 真实控制台交互。
+     * 装配用构造：无上下文调用默认拒绝，真实审批通道由任务携带。
      *
      * @param policy 命令策略(闸门 1/2 的 bash 规则来源)
      * @param guard  路径分类器(闸门 1/2 的文件规则来源)
      */
     public PermissionGate(CommandPolicy policy, PathGuard guard) {
-        this.policy = policy;
-        this.guard = guard;
-        this.mainThread = Thread.currentThread();
-        this.approval = this::consoleApproval;
-        this.hardRules = buildHardRules(); // 在构造器里建表:字段初始化器拿不到 policy/guard
-        this.askRules = buildAskRules();
+        this(policy, guard, (name, input, reason) -> false);
     }
 
     /**
@@ -62,7 +49,6 @@ public class PermissionGate {
         this.policy = policy;
         this.guard = guard;
         this.approval = approval;
-        this.mainThread = Thread.currentThread();
         this.hardRules = buildHardRules();
         this.askRules = buildAskRules();
     }
@@ -87,30 +73,6 @@ public class PermissionGate {
                         input -> guard.outsideReason(input.path("path").asText(""))));
     }
 
-    /** 默认审批的实现,方法引用指向它:打印理由与入参,主线程等 y/N,其余一律拒绝 */
-    private boolean consoleApproval(String toolName, ObjectNode input, String reason) {
-        System.out.println("\n" + Ansi.yellow("[permission] " + reason));
-        System.out.println("   Tool: " + toolName + "(" + input + ")");
-
-        // 非主线程:不等输入,直接拒绝(总计划要求,后台任务用)
-        if (Thread.currentThread() != mainThread) {
-            System.out.println("   Denied: interactive approval is only available on the main thread");
-            return false;
-        }
-
-        System.out.print("   Allow? [y/N] ");
-        try {
-            String line = console.readLine();
-            if (line == null) {
-                return false; // EOF:fail-closed
-            }
-            String answer = line.strip().toLowerCase();
-            return answer.equals("y") || answer.equals("yes");
-        } catch (IOException e) {
-            return false; // 读不到输入也 fail-closed
-        }
-    }
-
     /**
      * 三道闸门串联。
      *
@@ -119,6 +81,21 @@ public class PermissionGate {
      * @return null = 放行;非 null = 拒绝理由(调用方回灌给模型)
      */
     public String check(String toolName, ObjectNode input) {
+        return checkWith(toolName, input, approval);
+    }
+
+    /**
+     * 生产执行入口：只允许人工来源使用自身审批通道；定时任务即使携带通道也不能询问。
+     * 硬拒与路径规则仍先运行，绝不会因来源是人工而自动放行。
+     */
+    public String check(String toolName, ObjectNode input, ExecutionContext context) {
+        Approval channel = context != null && !context.isCancelled() && context.source() == ExecutionContext.Source.USER
+                && context.approval() != null ? context.approval() : (name, args, reason) -> false;
+        return checkWith(toolName, input, channel);
+    }
+
+    /** 串联规则和选定审批通道；不依据命令输出或模型自报身份决定权限。 */
+    private String checkWith(String toolName, ObjectNode input, Approval channel) {
         // 闸门 1:查硬拒表;命中 → 打印 + 拒绝(不询问)
         String denied = findReason(hardRules, toolName, input);
         if (denied != null) {
@@ -133,7 +110,7 @@ public class PermissionGate {
         }
 
         // 闸门 3:审批;拒绝时把命中理由带回去,让模型知道边界
-        return approval.ask(toolName, input, reason) ? null : reason;
+        return channel.ask(toolName, input, reason) ? null : reason;
     }
 
     /** 遍历规则表:返回适用该工具且命中的第一条规则的理由;无命中返回 null */
