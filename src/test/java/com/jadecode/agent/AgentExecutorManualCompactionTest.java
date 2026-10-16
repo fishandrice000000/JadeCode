@@ -17,6 +17,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jadecode.context.CompactionLimits;
 import com.jadecode.context.ContextCompactor;
 import com.jadecode.hooks.Hooks;
+import com.jadecode.session.SessionRuntime;
 import com.jadecode.llm.CompleteRequest;
 import com.jadecode.llm.LlmClient;
 import com.jadecode.llm.LlmException;
@@ -43,7 +44,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * AgentLoop 主动压缩(compact 工具)的父循环集成测试。
+ * AgentExecutor 主动压缩(compact 工具)的父循环集成测试。
  *
  * <p>
  * 覆盖的核心 Agent 行为:成功 compact 调用 → 整批结果正常回灌(交换闭合)→ harness 才调用摘要压缩器 →
@@ -51,12 +52,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 假 LlmClient 与 @TempDir,不调用真实 API、不读密钥。
  * </p>
  */
-class AgentLoopManualCompactionTest {
+class AgentExecutorManualCompactionTest {
 
     /** 精简摘要输出额度,用来断言摘要请求确实用了注入值 */
     private static final int SUMMARY_MAX_TOKENS = 77;
 
-    /** 与 AgentLoop.REMINDER_MESSAGE 同文案:用于核对 reminder 是否随整段历史进入摘要与归档 */
+    /** 与 AgentExecutor.REMINDER_MESSAGE 同文案:用于核对 reminder 是否随整段历史进入摘要与归档 */
     private static final String REMINDER = "<reminder>Update your todos.</reminder>";
 
     @TempDir
@@ -276,10 +277,10 @@ class AgentLoopManualCompactionTest {
             closedExchangeVisibleWhenSummarizing.set(closedTailMatches(messages, List.of(use("c1", "compact"))));
             archiveWhenSummarizing.set(archiveLinesUnchecked());
         };
-        AgentLoop loop = new AgentLoop(client, Map.of("compact", new CompactTool()), "test-system", 8000,
+        AgentExecutor loop = new AgentExecutor(client, Map.of("compact", new CompactTool()), "test-system", 8000,
                 new Hooks(), compactor(client));
 
-        loop.run(messages);
+        SessionRuntime.runExisting(loop, messages);
 
         // 摘要调用那一刻的现场:历史里已经是"闭合"的完整交换(assistant 调用 + 对应 tool_result),
         // 说明结果先回灌、压缩动作在闭合之后才发生。
@@ -348,10 +349,10 @@ class AgentLoopManualCompactionTest {
                 closedExchangeVisibleWhenSummarizing.set(closedTailMatches(messages, calls));
                 liveHistoryWhenSummarizing.set(List.copyOf(messages));
             };
-            AgentLoop loop = new AgentLoop(client, Map.of("bash", bash, "compact", new CompactTool()),
+            AgentExecutor loop = new AgentExecutor(client, Map.of("bash", bash, "compact", new CompactTool()),
                     "test-system", 8000, new Hooks(), compactor(client));
 
-            loop.run(messages);
+            SessionRuntime.runExisting(loop, messages);
 
             assertEquals(1, client.summaryRequests.size(), "混合批次也要压缩一次");
             // 普通工具各执行一次;结果顺序与调用顺序一致。
@@ -434,11 +435,11 @@ class AgentLoopManualCompactionTest {
                 assistant(new TextBlock("完成")),
                 assistant(new TextBlock("第二轮的回复")));
         FakeTool bash = new FakeTool("bash", "输出");
-        AgentLoop loop = new AgentLoop(client, Map.of("bash", bash, "compact", new CompactTool()),
+        AgentExecutor loop = new AgentExecutor(client, Map.of("bash", bash, "compact", new CompactTool()),
                 "test-system", 8000, new Hooks(), compactor(client));
         List<Message> messages = new ArrayList<>(List.of(Message.userText("开始")));
 
-        loop.run(messages);
+        SessionRuntime.runExisting(loop, messages);
 
         assertEquals(1, client.summaryRequests.size(), "一批多个成功 compact 只压缩一次");
         assertEquals(1, bash.calls);
@@ -446,7 +447,7 @@ class AgentLoopManualCompactionTest {
 
         // 同一个 loop 第二次 run:标志不残留(没有 compact 调用 → 不再压缩)。
         messages.add(Message.userText("第二个请求"));
-        loop.run(messages);
+        SessionRuntime.runExisting(loop, messages);
 
         assertEquals(1, client.summaryRequests.size(), "第二次 run 不得继承上一轮的压缩请求");
         assertEquals(4, client.normalRequests.size());
@@ -461,11 +462,11 @@ class AgentLoopManualCompactionTest {
                 assistant(new TextBlock("完成")));
         Hooks blockedHooks = new Hooks();
         blockedHooks.register(Hooks.PRE_TOOL_USE, params -> CompactTool.OUTPUT); // 拦截文案 == 稳定输出
-        AgentLoop blockedLoop = new AgentLoop(blockedClient, Map.of("compact", new CompactTool()),
+        AgentExecutor blockedLoop = new AgentExecutor(blockedClient, Map.of("compact", new CompactTool()),
                 "test-system", 8000, blockedHooks, compactor(blockedClient));
         List<Message> blockedMessages = new ArrayList<>(List.of(Message.userText("开始")));
 
-        blockedLoop.run(blockedMessages);
+        SessionRuntime.runExisting(blockedLoop, blockedMessages);
 
         assertEquals(0, blockedClient.summaryRequests.size(), "被拦截的 compact 不得触发压缩");
         assertEquals(CompactTool.OUTPUT, resultsOf(blockedMessages.get(2)).getFirst().content());
@@ -474,24 +475,24 @@ class AgentLoopManualCompactionTest {
         // (b) 别的工具返回与 OUTPUT 完全相同的文案:不触发。
         transcriptDir = workspace.resolve("transcripts-other");
         FakeClient otherClient = new FakeClient(assistant(use("b1", "bash")), assistant(new TextBlock("完成")));
-        AgentLoop otherLoop = new AgentLoop(otherClient,
+        AgentExecutor otherLoop = new AgentExecutor(otherClient,
                 Map.of("bash", new FakeTool("bash", CompactTool.OUTPUT), "compact", new CompactTool()),
                 "test-system", 8000, new Hooks(), compactor(otherClient));
         List<Message> otherMessages = new ArrayList<>(List.of(Message.userText("开始")));
 
-        otherLoop.run(otherMessages);
+        SessionRuntime.runExisting(otherLoop, otherMessages);
 
         assertEquals(0, otherClient.summaryRequests.size(), "普通工具返回同样文案不得误触发");
 
         // (c) compact 名下返回非期望文案:不触发。
         transcriptDir = workspace.resolve("transcripts-wrong-output");
         FakeClient wrongClient = new FakeClient(assistant(use("c1", "compact")), assistant(new TextBlock("完成")));
-        AgentLoop wrongLoop = new AgentLoop(wrongClient,
+        AgentExecutor wrongLoop = new AgentExecutor(wrongClient,
                 Map.of("compact", new FakeTool("compact", "别的输出")), "test-system", 8000, new Hooks(),
                 compactor(wrongClient));
         List<Message> wrongMessages = new ArrayList<>(List.of(Message.userText("开始")));
 
-        wrongLoop.run(wrongMessages);
+        SessionRuntime.runExisting(wrongLoop, wrongMessages);
 
         assertEquals(0, wrongClient.summaryRequests.size(), "输出不匹配时不得触发压缩");
     }
@@ -501,11 +502,11 @@ class AgentLoopManualCompactionTest {
     @Test
     void duplicateCallIdsAreStillRejectedBeforeAnyToolOrSummary() {
         FakeClient client = new FakeClient(assistant(use("dup", "compact"), use("dup", "compact")));
-        AgentLoop loop = new AgentLoop(client, Map.of("compact", new CompactTool()), "test-system", 8000,
+        AgentExecutor loop = new AgentExecutor(client, Map.of("compact", new CompactTool()), "test-system", 8000,
                 new Hooks(), compactor(client));
         List<Message> messages = new ArrayList<>(List.of(Message.userText("开始")));
 
-        assertThrows(IllegalArgumentException.class, () -> loop.run(messages));
+        assertThrows(IllegalArgumentException.class, () -> SessionRuntime.runExisting(loop, messages));
 
         assertEquals(1, messages.size(), "不得留下半截 assistant 消息");
         assertEquals(0, client.summaryRequests.size());
@@ -523,11 +524,11 @@ class AgentLoopManualCompactionTest {
         FakeTool bash = new FakeTool("bash", huge);
         ContextCompactor compactor = new ContextCompactor(client, transcriptDir, toolResultsDir,
                 limits(200, 100, 10)); // 批次门槛 200、单项门槛 100、预览 10
-        AgentLoop loop = new AgentLoop(client, Map.of("bash", bash, "compact", new CompactTool()),
+        AgentExecutor loop = new AgentExecutor(client, Map.of("bash", bash, "compact", new CompactTool()),
                 "test-system", 8000, new Hooks(), compactor);
         List<Message> messages = new ArrayList<>(List.of(Message.userText("开始")));
 
-        loop.run(messages);
+        SessionRuntime.runExisting(loop, messages);
 
         // 新鲜的大结果先落盘为可恢复外壳:文件含完整原文,上下文里只剩路径 + 10 字符预览。
         assertEquals(1, toolResultFileCount());
@@ -562,11 +563,11 @@ class AgentLoopManualCompactionTest {
         Hooks hooks = new Hooks();
         java.util.concurrent.atomic.AtomicBoolean firstStop = new java.util.concurrent.atomic.AtomicBoolean(true);
         hooks.register(Hooks.STOP, params -> firstStop.getAndSet(false) ? "继续执行" : null);
-        AgentLoop loop = new AgentLoop(client, Map.of("compact", new CompactTool()), "test-system", 8000,
+        AgentExecutor loop = new AgentExecutor(client, Map.of("compact", new CompactTool()), "test-system", 8000,
                 hooks, compactor(client));
         List<Message> messages = new ArrayList<>(List.of(Message.userText("开始")));
 
-        loop.run(messages);
+        SessionRuntime.runExisting(loop, messages);
 
         assertEquals(2, client.summaryRequests.size(), "Stop hook 注入后再次 compact 应再压缩一次");
         // 第二次压缩发生在 Stop hook 注入之后:压缩消息里的 Current user request 仍是入口捕获的那句,
@@ -589,29 +590,29 @@ class AgentLoopManualCompactionTest {
     void enabledPathValidatesEntryAndLegacyPathAndConfigErrorsBehaveAsSpecified() throws LlmException {
         // 启用路径:非法入口(空白请求)在第一次模型调用前拒绝。
         FakeClient client = new FakeClient(assistant(new TextBlock("不该被调用")));
-        AgentLoop enabled = new AgentLoop(client, Map.of("compact", new CompactTool()), "test-system", 8000,
+        AgentExecutor enabled = new AgentExecutor(client, Map.of("compact", new CompactTool()), "test-system", 8000,
                 new Hooks(), compactor(client));
         List<Message> blankEntry = new ArrayList<>(List.of(Message.userText("   ")));
-        assertThrows(IllegalArgumentException.class, () -> enabled.run(blankEntry));
+        assertThrows(IllegalArgumentException.class, () -> SessionRuntime.runExisting(enabled, blankEntry));
         assertEquals(0, client.normalRequests.size(), "非法入口不得调用模型");
 
         // 旧路径:五参构造器 + 不含 compact 的工具表 → 保持既有行为(不捕获请求、不压缩)。
         FakeClient legacyClient = new FakeClient(assistant(new TextBlock("旧路径回复")));
-        AgentLoop legacy = new AgentLoop(legacyClient, Map.of("bash", new FakeTool("bash", "x")),
+        AgentExecutor legacy = new AgentExecutor(legacyClient, Map.of("bash", new FakeTool("bash", "x")),
                 "test-system", 8000, new Hooks());
         List<Message> legacyMessages = new ArrayList<>(List.of(Message.userText("旧请求")));
-        legacy.run(legacyMessages);
+        SessionRuntime.runExisting(legacy, legacyMessages);
         assertEquals("旧路径回复", legacyMessages.getLast().extractText());
         assertEquals(0, legacyClient.summaryRequests.size());
 
         // 配置错误:注册了 compact 却没注入压缩器 → 构造时明确拒绝。
         FakeClient misconfigured = new FakeClient();
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
-                () -> new AgentLoop(misconfigured, Map.of("compact", new CompactTool()), "test-system", 8000,
+                () -> new AgentExecutor(misconfigured, Map.of("compact", new CompactTool()), "test-system", 8000,
                         new Hooks()));
         assertTrue(error.getMessage().contains("ContextCompactor"));
         assertThrows(IllegalArgumentException.class,
-                () -> new AgentLoop(misconfigured, Map.of("compact", new CompactTool()), "test-system", 8000,
+                () -> new AgentExecutor(misconfigured, Map.of("compact", new CompactTool()), "test-system", 8000,
                         new Hooks(), null));
     }
 
@@ -623,12 +624,12 @@ class AgentLoopManualCompactionTest {
         Files.writeString(transcriptDir, "占位文件");
         FakeClient archiveFailClient = new FakeClient(assistant(use("c1", "compact")),
                 assistant(new TextBlock("完成")));
-        AgentLoop archiveFailLoop = new AgentLoop(archiveFailClient, Map.of("compact", new CompactTool()),
+        AgentExecutor archiveFailLoop = new AgentExecutor(archiveFailClient, Map.of("compact", new CompactTool()),
                 "test-system", 8000, new Hooks(), compactor(archiveFailClient));
         List<Message> archiveFailMessages = new ArrayList<>(List.of(Message.userText("开始")));
 
         IllegalStateException archiveError = assertThrows(IllegalStateException.class,
-                () -> archiveFailLoop.run(archiveFailMessages));
+                () -> SessionRuntime.runExisting(archiveFailLoop, archiveFailMessages));
 
         assertNotNull(archiveError.getCause());
         assertEquals(0, archiveFailClient.summaryRequests.size(), "归档失败时不得调用摘要");
@@ -642,13 +643,13 @@ class AgentLoopManualCompactionTest {
                 assistant(new TextBlock("不该走到这里")));
         summaryFailClient.summaryFailure = boom;
         FakeTool bash = new FakeTool("bash", "普通输出");
-        AgentLoop summaryFailLoop = new AgentLoop(summaryFailClient,
+        AgentExecutor summaryFailLoop = new AgentExecutor(summaryFailClient,
                 Map.of("bash", bash, "compact", new CompactTool()), "test-system", 8000, new Hooks(),
                 compactor(summaryFailClient));
         List<Message> summaryFailMessages = new ArrayList<>(List.of(Message.userText("开始")));
 
         LlmException thrown = assertThrows(LlmException.class,
-                () -> summaryFailLoop.run(summaryFailMessages));
+                () -> SessionRuntime.runExisting(summaryFailLoop, summaryFailMessages));
 
         assertSame(boom, thrown, "摘要异常必须原样传播");
         assertEquals(1, summaryFailClient.summaryRequests.size());
@@ -685,11 +686,11 @@ class AgentLoopManualCompactionTest {
         FakeTool bash = new FakeTool("bash", huge);
         ContextCompactor compactor = new ContextCompactor(client, transcriptDir, toolResultsDir,
                 limits(200, 100, 10)); // 批次门槛 200、单项门槛 100、预览 10:必然产生落盘候选
-        AgentLoop loop = new AgentLoop(client, Map.of("bash", bash, "compact", new CompactTool()),
+        AgentExecutor loop = new AgentExecutor(client, Map.of("bash", bash, "compact", new CompactTool()),
                 "test-system", 8000, new Hooks(), compactor);
         List<Message> messages = new ArrayList<>(List.of(Message.userText("开始")));
 
-        LlmException thrown = assertThrows(LlmException.class, () -> loop.run(messages));
+        LlmException thrown = assertThrows(LlmException.class, () -> SessionRuntime.runExisting(loop, messages));
 
         assertSame(boom, thrown, "摘要异常必须原样传播");
         assertEquals(1, client.summaryRequests.size(), "恰好一次摘要调用");
@@ -734,12 +735,12 @@ class AgentLoopManualCompactionTest {
                 assistant(new TextBlock("完成")));
         lifecycleClient.onSummary = () -> events.add("summary");
         FakeTool lifecycleBash = new FakeTool("bash", "普通输出");
-        AgentLoop lifecycleLoop = new AgentLoop(lifecycleClient,
+        AgentExecutor lifecycleLoop = new AgentExecutor(lifecycleClient,
                 Map.of("bash", lifecycleBash, "compact", new CompactTool()), "test-system", 8000, hooks,
                 compactor(lifecycleClient));
         List<Message> lifecycleMessages = new ArrayList<>(List.of(Message.userText("开始")));
 
-        lifecycleLoop.run(lifecycleMessages);
+        SessionRuntime.runExisting(lifecycleLoop, lifecycleMessages);
 
         // 摘要排在最后:每个工具都走完 Pre → 执行 → Post,整批生命周期结束后才轮到压缩动作。
         assertEquals(List.of("pre:bash", "post:bash", "pre:compact", "post:compact", "summary"), events,
@@ -766,12 +767,12 @@ class AgentLoopManualCompactionTest {
                 assistant(new TextBlock("完成")));
         blockedClient.onSummary = () -> events.add("summary");
         FakeTool blockedBash = new FakeTool("bash", "不该执行");
-        AgentLoop blockedLoop = new AgentLoop(blockedClient,
+        AgentExecutor blockedLoop = new AgentExecutor(blockedClient,
                 Map.of("bash", blockedBash, "compact", new CompactTool()), "test-system", 8000, blocking,
                 compactor(blockedClient));
         List<Message> blockedMessages = new ArrayList<>(List.of(Message.userText("开始")));
 
-        blockedLoop.run(blockedMessages);
+        SessionRuntime.runExisting(blockedLoop, blockedMessages);
 
         assertEquals(0, blockedBash.calls, "被 PreToolUse 拦截的工具不得执行");
         assertEquals(1, blockedClient.summaryRequests.size(), "被拦普通工具 + 成功 compact 仍是混合批次");
@@ -798,11 +799,11 @@ class AgentLoopManualCompactionTest {
                 assistant(use("c2", "compact")),
                 assistant(use("c3", "compact")), // 这一轮的结果里会追加 reminder
                 assistant(new TextBlock("完成")));
-        AgentLoop loop = new AgentLoop(client, Map.of("compact", new CompactTool()), "test-system", 8000,
+        AgentExecutor loop = new AgentExecutor(client, Map.of("compact", new CompactTool()), "test-system", 8000,
                 new Hooks(), compactor(client));
         List<Message> messages = new ArrayList<>(List.of(Message.userText("开始")));
 
-        loop.run(messages);
+        SessionRuntime.runExisting(loop, messages);
 
         // 三轮都是纯 compact:每轮一次摘要,共 3 次;摘要调用不计入 todo 轮次,正常请求仍是 4 次。
         assertEquals(3, client.summaryRequests.size());

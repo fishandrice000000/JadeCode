@@ -8,7 +8,7 @@ import com.jadecode.execution.ExecutionContext;
 import com.jadecode.llm.ToolDefinition;
 
 /**
- * 模型可以调用的工具。AgentLoop 按 tool_use 中的 name 找到实现，再依次调用 execute。
+ * 模型可以调用的工具。AgentExecutor 按 tool_use 中的 name 找到实现，再依次调用 execute。
  *
  * <p>每个工具要告诉模型自己的名字、用途、参数和必填字段，实际读取的参数要和说明一致。
  * 普通参数错误或可预期的执行失败返回 Error 文字，让模型决定是否换方法。

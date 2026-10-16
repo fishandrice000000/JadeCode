@@ -4,9 +4,8 @@ import java.io.IOException;
 import java.util.concurrent.Callable;
 import java.util.concurrent.RejectedExecutionException;
 
-import com.jadecode.Main;
-import com.jadecode.agent.AgentLoop;
-import com.jadecode.agent.SessionRuntime;
+import com.jadecode.bootstrap.JadeCodeFactory;
+import com.jadecode.session.SessionRuntime;
 
 import picocli.CommandLine.Command;
 
@@ -29,8 +28,7 @@ public class ReplCommand implements Callable<Integer> {
     public Integer call() {
         // 先创建终端，连初始化日志也能正确显示；退出时最后才关闭它，让任务清理日志仍可输出。
         try (TerminalDisplay display = TerminalDisplay.open();
-                AgentLoop loop = Main.buildLoop();
-                SessionRuntime runtime = new SessionRuntime(loop, System.out::println, System.err::println);
+                SessionRuntime runtime = JadeCodeFactory.create(CliHooks::register);
                 ConsoleInput terminal = new ConsoleInput(display)) {
             runtime.start(true);
             System.out.println("JadeCode REPL — Enter 提交，Alt+Enter 换行，支持多行粘贴；q/exit 或 Ctrl+D 退出");

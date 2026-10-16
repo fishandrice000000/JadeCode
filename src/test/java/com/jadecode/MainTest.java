@@ -6,6 +6,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import com.jadecode.cli.RunCommand;
+import com.jadecode.bootstrap.JadeCodeFactory;
 import com.jadecode.skills.SkillLoader;
 
 import org.junit.jupiter.api.Test;
@@ -19,7 +20,7 @@ import static org.junit.jupiter.api.Assertions.*;
 class MainTest {
 
     /**
-     * 提示边界的期望文本:与 Main 里的私有常量必须逐字一致。
+     * 提示边界的期望文本:与 JadeCodeFactory 里的私有常量必须逐字一致。
      *
      * <p>测试里再写一遍是有意的——它把"模型实际看到的那句话"钉成契约;一旦有人改动措辞,
      * 这里会失败并提醒同步更新测试与说明,而不是让父子两处悄悄漂移。</p>
@@ -78,13 +79,13 @@ class MainTest {
                         + "\n\nSkills available:\n- pdf: 处理 PDF\n\n"
                         + "Use load_skill to read the full instructions when a skill applies."
                         + "\n\n" + COMPACT_BOUNDARY,
-                Main.systemPrompt(Path.of("/home/fishandrice"), "- pdf: 处理 PDF"));
+                JadeCodeFactory.systemPrompt(Path.of("/home/fishandrice"), "- pdf: 处理 PDF"));
     }
 
     /** ④b 空技能目录:技能块照常拼出,catalog 位置是 (no skills found);边界句仍在末尾 */
     @Test
     void systemPromptIncludesEmptyCatalog() {
-        String prompt = Main.systemPrompt(Path.of("/tmp"), "(no skills found)");
+        String prompt = JadeCodeFactory.systemPrompt(Path.of("/tmp"), "(no skills found)");
 
         assertTrue(prompt.contains("Skills available:\n(no skills found)\n\n"));
         assertTrue(prompt.contains("Use load_skill to read the full instructions when a skill applies."));
@@ -102,7 +103,7 @@ class MainTest {
         Files.writeString(dir.resolve("SKILL.md"),
                 "---\ndescription: 处理 PDF\n---\n" + body, StandardCharsets.UTF_8);
 
-        String prompt = Main.systemPrompt(ws, new SkillLoader(ws.resolve("skills")).catalog());
+        String prompt = JadeCodeFactory.systemPrompt(ws, new SkillLoader(ws.resolve("skills")).catalog());
 
         assertTrue(prompt.contains("Skills available:\n- pdf: 处理 PDF\n\n"), "目录必须在");
         assertFalse(prompt.contains(body), "完整正文不得进入 system prompt");
@@ -124,14 +125,14 @@ class MainTest {
                 "You are Jade Code, a coding agent at /home/fishandrice."
                         + " Complete the given task, then return a concise final answer."
                         + "\n\n" + COMPACT_BOUNDARY,
-                Main.subSystemPrompt(Path.of("/home/fishandrice")));
+                JadeCodeFactory.subSystemPrompt(Path.of("/home/fishandrice")));
     }
 
     /** ⑦ 提示边界在父、子两份 prompt 里都恰好出现一次(重复拼接会改变提示词语义) */
     @Test
     void compactBoundaryAppearsExactlyOnceInBothPrompts() {
-        assertEquals(1, occurrences(Main.systemPrompt(Path.of("/tmp"), "(no skills found)"), COMPACT_BOUNDARY));
-        assertEquals(1, occurrences(Main.subSystemPrompt(Path.of("/tmp")), COMPACT_BOUNDARY));
+        assertEquals(1, occurrences(JadeCodeFactory.systemPrompt(Path.of("/tmp"), "(no skills found)"), COMPACT_BOUNDARY));
+        assertEquals(1, occurrences(JadeCodeFactory.subSystemPrompt(Path.of("/tmp")), COMPACT_BOUNDARY));
     }
 
     /** 统计 needle 在 text 里出现几次(只用于上面那条断言) */

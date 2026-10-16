@@ -11,6 +11,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jadecode.hooks.Hooks;
+import com.jadecode.session.SessionRuntime;
 import com.jadecode.llm.CompleteRequest;
 import com.jadecode.llm.ModelResponse;
 import com.jadecode.llm.RecordingLlmClient;
@@ -35,7 +36,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-class AgentLoopTest {
+class AgentExecutorTest {
 
     /** 预置脚本并立即跑循环。脚本耗尽时假客户端会抛异常——无限循环的保护伞 */
     private List<Message> runWith(String userText, ModelResponse... script) throws Exception {
@@ -50,10 +51,10 @@ class AgentLoopTest {
     /** 自定义工具表的跑法:reminder 用例需要 bash 与 todo_write 同时在场 */
     private List<Message> runWithTools(String userText, Hooks hooks, Map<String, Tool> tools,
             ModelResponse... script) throws Exception {
-        AgentLoop loop = new AgentLoop(new ScriptedLlmClient(script), tools, "test-system", 8000, hooks);
+        AgentExecutor loop = new AgentExecutor(new ScriptedLlmClient(script), tools, "test-system", 8000, hooks);
         List<Message> messages = new ArrayList<>();
         messages.add(Message.userText(userText));
-        loop.run(messages);
+        SessionRuntime.runExisting(loop, messages);
         return messages;
     }
 
@@ -168,9 +169,9 @@ class AgentLoopTest {
     void requestCarriesInjectedConfig() throws Exception {
         ScriptedLlmClient scripted = new ScriptedLlmClient(assistant(new TextBlock("done")));
         RecordingLlmClient recording = new RecordingLlmClient(scripted);
-        AgentLoop loop = new AgentLoop(recording, Map.of("bash", new BashTool()), "test-system", 8000, new Hooks());
+        AgentExecutor loop = new AgentExecutor(recording, Map.of("bash", new BashTool()), "test-system", 8000, new Hooks());
 
-        loop.run(new ArrayList<>(List.of(Message.userText("hi"))));
+        SessionRuntime.runExisting(loop, new ArrayList<>(List.of(Message.userText("hi"))));
 
         List<CompleteRequest> requests = recording.requests();
         assertEquals(1, requests.size());
@@ -345,12 +346,12 @@ class AgentLoopTest {
 
         SubagentRuntime subagent = new SubagentRuntime(recording,
                 Map.of("bash", new BashTool()), "sub-system", 8000, new Hooks());
-        AgentLoop loop = new AgentLoop(recording, Map.of("task", new SubagentTool(subagent)),
+        AgentExecutor loop = new AgentExecutor(recording, Map.of("task", new SubagentTool(subagent)),
                 "test-system", 8000, new Hooks());
 
         List<Message> messages = new ArrayList<>();
         messages.add(Message.userText("帮我调研"));
-        loop.run(messages);
+        SessionRuntime.runExisting(loop, messages);
 
         // 父历史恰 4 条:user → assistant(task) → user(task_result) → assistant(text)
         assertEquals(4, messages.size());
@@ -386,11 +387,11 @@ class AgentLoopTest {
         RecordingLlmClient recording = new RecordingLlmClient(new ScriptedLlmClient(
                 assistant(skillUse("toolu_1", "pdf")),
                 assistant(new TextBlock("done"))));
-        AgentLoop loop = new AgentLoop(recording, Map.of("load_skill", new LoadSkillTool(loader)),
+        AgentExecutor loop = new AgentExecutor(recording, Map.of("load_skill", new LoadSkillTool(loader)),
                 system, 8000, new Hooks());
 
         List<Message> messages = new ArrayList<>(List.of(Message.userText("按 pdf 技能做")));
-        loop.run(messages);
+        SessionRuntime.runExisting(loop, messages);
 
         // 完整原文(含 frontmatter)作为 tool_result 回灌进 messages
         ToolResultBlock r = (ToolResultBlock) messages.get(2).content().get(0);
@@ -411,14 +412,14 @@ class AgentLoopTest {
     void invalidExistingHistoryIsRejectedBeforeFirstLlmCall() {
         RecordingLlmClient recording = new RecordingLlmClient(
                 new ScriptedLlmClient(assistant(new TextBlock("never"))));
-        AgentLoop loop = new AgentLoop(recording, Map.of("bash", new BashTool()), "test-system", 8000,
+        AgentExecutor loop = new AgentExecutor(recording, Map.of("bash", new BashTool()), "test-system", 8000,
                 new Hooks());
 
         List<Message> messages = new ArrayList<>();
         messages.add(Message.userText("hi"));
         messages.add(Message.userBlocks(List.of(new ToolResultBlock("toolu_stray", "stray"))));
 
-        assertThrows(IllegalArgumentException.class, () -> loop.run(messages));
+        assertThrows(IllegalArgumentException.class, () -> SessionRuntime.runExisting(loop, messages));
         assertTrue(recording.requests().isEmpty(), "非法历史必须在第一次 LLM 调用前被拒绝");
         assertEquals(2, messages.size(), "入口拒绝不得改动历史");
     }
@@ -433,12 +434,12 @@ class AgentLoopTest {
         messages.add(Message.userText("[2 messages archived at /tmp/transcript.jsonl]"));
         messages.add(Message.userText("继续"));
 
-        AgentLoop loop = new AgentLoop(
+        AgentExecutor loop = new AgentExecutor(
                 new ScriptedLlmClient(assistant(toolUse("toolu_new", "bash", "echo hi")),
                         assistant(new TextBlock("done"))),
                 Map.of("bash", new BashTool()), "test-system", 8000, new Hooks());
 
-        loop.run(messages);
+        SessionRuntime.runExisting(loop, messages);
 
         assertEquals("done", messages.getLast().extractText());
         ToolResultBlock r = (ToolResultBlock) messages.get(messages.size() - 2).content().get(0);
@@ -463,7 +464,7 @@ class AgentLoopTest {
                 return "should not run";
             }
         };
-        AgentLoop loop = new AgentLoop(
+        AgentExecutor loop = new AgentExecutor(
                 new ScriptedLlmClient(assistant(toolUse("dup", "bash", "echo one"),
                         toolUse("dup", "bash", "echo two"))),
                 Map.of("bash", countingBash), "test-system", 8000, hooks);
@@ -471,7 +472,7 @@ class AgentLoopTest {
         messages.add(Message.userText("hi"));
 
         IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
-                () -> loop.run(messages));
+                () -> SessionRuntime.runExisting(loop, messages));
 
         assertTrue(thrown.getMessage().contains("dup"));
         assertEquals(1, messages.size(), "不得留下半截 assistant 消息");

@@ -20,8 +20,9 @@
 
 ```
 src/main/java/com/jadecode/
-├── Main              # picocli 入口:run / repl,装配全部组件
-├── cli/              # RunCommand(一次性任务), ReplCommand(交互循环)
+├── Main              # picocli 顶层入口：run / repl
+├── cli/              # run/repl、CliHooks 展示、ConsoleInput 审批与 TerminalDisplay 终端
+├── bootstrap/        # JadeCodeFactory：生产与离线共用的装配入口
 ├── config/           # Env(.env 解析), AppConfig(缺省值与校验)
 ├── util/             # Json(共享 ObjectMapper), Ansi(终端色码)
 ├── messages/         # Message + sealed ContentBlock(text/tool_use/tool_result)
@@ -36,10 +37,11 @@ src/main/java/com/jadecode/
 ├── subagent/         # SubagentRuntime(嵌套循环 + 消息隔离 + 三终态)
 ├── skills/           # SkillDefinition, SkillLoader(catalog 常驻 / 全文按需)
 ├── context/          # ContextCompactor(请求前保护 / 主动压缩 / 超限补救)
-├── memory/           # 工作区记忆：召回 / 提取 / 数量触发整理 / 生命周期装配
+├── memory/           # 工作区记忆：召回 / 提取 / 数量触发整理算法
 ├── tasks/            # 持久任务图：创建 / 依赖 / 认领 / 完成与解锁，六工具由父循环使用
 ├── cron/             # CronProducer 定时生产、时间规则、待交付状态与工作区持久化
-└── agent/            # SessionRuntime(单消费者) + AgentLoop(执行器)
+├── session/          # SessionRuntime(单消费者、历史、记忆时机、服务关闭) / SessionInbox / SessionEvent
+└── agent/            # AgentExecutor(模型请求、工具批次、压缩步骤及嵌套结果)
 ```
 
 仓库根 `skills/<name>/SKILL.md` 存放可被 `load_skill` 加载的真实技能:system prompt 只带 name + description 的目录,完整正文仅在模型调用 `load_skill` 后作为 tool_result 进入消息。
@@ -106,13 +108,21 @@ REPL 中 **Enter 提交、Alt+Enter 换行**；支持 bracketed paste 的终端�
 - [ ] s12:定时交付与持久恢复真机检查通过，事件化场景已获准代跑通过；源码学习与最终章节确认另记
 - [ ] s13–s17:逐章实现(见映射表)
 
-Memory 使用工作区 `.memory/`，每次用户任务入口召回一次，真正结束后提取，新增成功后按数量尝试整理。
+由 `SessionRuntime` 在任务入口和完成处调用 Memory 服务。Memory 使用工作区 `.memory/`，每次用户任务入口召回一次，真正结束后提取，新增成功后按数量尝试整理。
 辅助请求沿用现有客户端，不带工具；记忆维护失败告警，不抹掉已完成的主任务结果。
 子代理不自主维护长期记忆。记忆内容的真伪、长期价值与合并质量依赖模型，格式校验不提供语义保证。
 
 Task System 使用 `.tasks/{id}.json`。先创建取得实际 ID，再增加依赖；认领检查前置条件，完成报告刚解锁任务。
 `list_tasks` 查看全部进度，`get_task` 读取完整描述。`task` 仍表示子代理委派，不是持久任务创建。
 本章按顺序执行，不保证并发抢单互斥，不自动调度、恢复精确执行断点或证明 completed 工作正确。
+
+`bootstrap.JadeCodeFactory` 统一装配生产与离线会话；CLI 安装普通展示 hook，工厂先注册工具成员与权限检查。
+会话关闭时先标记 CLOSED、停止 cron、禁止执行器继续，再关闭同步/后台命令，拒绝 future 并限时等待消费者。
+CLI 先拒绝待答审批，会话清理后最后恢复终端；共享模型客户端没有新增强取消或关闭能力。
+`llm.CompleteRequest` 只携带 `ToolDefinition` 数据快照，完整 schema 在构造与读取时深复制；
+SDK 仍只转换 type/properties/required，根级 additionalProperties 等字段丢失的已知限制尚未修复。
+`Tool`、`ToolSchema` 和包括 `SubagentTool` 在内的适配器仍在 tools；tools/subagent 的双向依赖按本轮裁决保留。
+新版包边界阅读入口见 [架构阅读指南](docs/notes/architecture/package-runtime-review.md)，工程记录见 [A01–A11 任务单](docs/jobs/architecture/package-reorganization.md)。
 
 会话由 `SessionRuntime` 单消费者拥有历史。人工和定时新请求进入有界 FIFO，不插队、不抢占；
 工具批次、Stop 续跑和所属后台结果继续当前任务，不作为新目标排队。普通模型和工具保持同步，
