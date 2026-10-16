@@ -16,7 +16,7 @@ import picocli.CommandLine.Command;
  * <p>模型做任务时，用户仍可输入下一项任务。/approve ID、/deny ID 由 ConsoleInput 处理，
  * 不会排成新任务。q/exit 或输入结束就退出整个会话，不等剩余排队任务执行。</p>
  */
-@Command(name = "repl", description = "多轮会话:请求排队，行尾反斜杠续行，q/exit 或 Ctrl+D 退出")
+@Command(name = "repl", description = "多轮会话:Enter 提交，Alt+Enter 换行，多行粘贴，q/exit 或 Ctrl+D 退出")
 public class ReplCommand implements Callable<Integer> {
     /**
      * 创建会话和终端读取器，启动任务处理及定时检查，然后不断读用户输入。
@@ -27,12 +27,13 @@ public class ReplCommand implements Callable<Integer> {
      */
     @Override
     public Integer call() {
-        // 资源按声明的反顺序关闭：先拒绝没回答的申请，再停会话，最后再关闭 AgentLoop 也没关系。
-        try (AgentLoop loop = Main.buildLoop();
+        // 先创建终端，连初始化日志也能正确显示；退出时最后才关闭它，让任务清理日志仍可输出。
+        try (TerminalDisplay display = TerminalDisplay.open();
+                AgentLoop loop = Main.buildLoop();
                 SessionRuntime runtime = new SessionRuntime(loop, System.out::println, System.err::println);
-                ConsoleInput terminal = new ConsoleInput()) {
+                ConsoleInput terminal = new ConsoleInput(display)) {
             runtime.start(true);
-            System.out.println("JadeCode REPL — 输入任务回车提交并排队；q/exit 或 Ctrl+D 退出");
+            System.out.println("JadeCode REPL — Enter 提交，Alt+Enter 换行，支持多行粘贴；q/exit 或 Ctrl+D 退出");
             while (true) {
                 String query = terminal.readQuery();
                 // 用户要退出就立即返回，不能把退出动作排在当前任务后面。

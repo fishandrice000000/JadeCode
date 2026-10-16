@@ -16,6 +16,7 @@
     <maven.compiler.release>21</maven.compiler.release>
     <maven.compiler.parameters>true</maven.compiler.parameters>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <jline.version>3.30.6</jline.version>
   </properties>
 
   <dependencies>
@@ -45,6 +46,19 @@
       <groupId>info.picocli</groupId>
       <artifactId>picocli</artifactId>
       <version>4.7.6</version>
+    </dependency>
+
+    <!-- 终端输入与重画：后台日志显示在输入行上方，不吃掉用户正在输入的文字。 -->
+    <dependency>
+      <groupId>org.jline</groupId>
+      <artifactId>jline-reader</artifactId>
+      <version>${jline.version}</version>
+    </dependency>
+    <!-- 让 JLine 在真实终端工作；不需要再用外部 rlwrap 包一层。 -->
+    <dependency>
+      <groupId>org.jline</groupId>
+      <artifactId>jline-terminal-jni</artifactId>
+      <version>${jline.version}</version>
     </dependency>
 
     <!-- 日志:anthropic-java 走 SLF4J,必须给一个实现 -->
@@ -121,6 +135,8 @@
             <configuration>
               <finalName>jadecode</finalName>
               <transformers>
+                <!-- 合并终端实现的发现文件，确保打成一个 JAR 后仍能找到 JNI 实现。 -->
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
                   <mainClass>com.jadecode.Main</mainClass>
                 </transformer>
