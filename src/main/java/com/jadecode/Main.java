@@ -270,7 +270,16 @@ public class Main implements Callable<Integer> {
         };
     }
 
-    /** PreToolUse 权限：安全规则不变，审批资格由 Harness 上下文而非执行线程决定。 */
+    /**
+     * 为父/子 PreToolUse 创建权限适配回调，把模型参数与可信执行元数据分开交给安全门。
+     *
+     * <p>工具块的 input 来自模型，只用于检查 command/path；ExecutionContext 来自触发点的
+     * 独立参数，决定是否可向终端询问，不能从 input 中的同名字段恢复。缺失上下文时需询问
+     * 操作按拒绝处理，硬拒规则始终优先。回调返回拒绝文案，执行器负责构造对应 tool_result，
+     * 本方法不执行工具、不直接读终端，也不修改历史。</p>
+     * @param gate 工作区安全策略和审批通道选择器
+     * @return 同步 hook；null 表示规则放行，非 null 带 Permission denied 前缀并阻止执行
+     */
     private static Hooks.Hook permissionHook(PermissionGate gate) {
         return params -> {
             ToolUseBlock u = (ToolUseBlock) params.get(Hooks.PARAM_BLOCK);
