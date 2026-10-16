@@ -13,7 +13,7 @@ import picocli.CommandLine.Command;
 /**
  * 反复读用户输入，把新任务交给 SessionRuntime 排队，不在这里请求模型或改 history。
  *
- * <p>模型做任务时，用户仍可输入下一项任务。/approve ID、/deny ID 由 ConsoleInput 处理，
+ * <p>模型做任务时，用户仍可输入下一项任务。有操作等待批准时，y/n 由 ConsoleInput 处理，
  * 不会排成新任务。q/exit 或输入结束就退出整个会话，不等剩余排队任务执行。</p>
  */
 @Command(name = "repl", description = "多轮会话:Enter 提交，Alt+Enter 换行，多行粘贴，q/exit 或 Ctrl+D 退出")
