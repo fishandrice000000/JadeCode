@@ -7,9 +7,10 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.jadecode.agent.ExecutionContext;
+import com.jadecode.execution.Approval;
+import com.jadecode.execution.ExecutionContext;
+import com.jadecode.filesystem.PathResolver;
 import com.jadecode.util.Json;
-
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -27,7 +28,7 @@ class PermissionGateTest {
     }
 
     /** 记录审批调用:放行/拒绝开关 + 捕获透传参数 */
-    private static class RecordingApproval implements PermissionGate.Approval {
+    private static class RecordingApproval implements Approval {
         boolean allow;
         final List<String[]> calls = new ArrayList<>();
 

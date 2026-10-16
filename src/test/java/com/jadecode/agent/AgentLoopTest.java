@@ -10,6 +10,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.jadecode.hooks.Hooks;
 import com.jadecode.llm.CompleteRequest;
 import com.jadecode.llm.ModelResponse;
 import com.jadecode.llm.RecordingLlmClient;
@@ -20,7 +21,6 @@ import com.jadecode.messages.Role;
 import com.jadecode.messages.TextBlock;
 import com.jadecode.messages.ToolResultBlock;
 import com.jadecode.messages.ToolUseBlock;
-import com.jadecode.safety.Hooks;
 import com.jadecode.skills.SkillLoader;
 import com.jadecode.subagent.SubagentRuntime;
 import com.jadecode.todo.TodoManager;

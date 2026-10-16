@@ -10,6 +10,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.function.Consumer;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.jadecode.execution.Approval;
 import com.jadecode.safety.PermissionGate;
 import com.jadecode.util.Ansi;
 
@@ -24,7 +25,7 @@ import com.jadecode.util.Ansi;
  * 单次 run 调 await：只在需要用户批准时读输入，不接收第二项任务。
  * 本类不判断哪些操作危险，那是 PermissionGate 的工作，也不调用模型或执行命令。</p>
  */
-public final class ConsoleInput implements PermissionGate.Approval, AutoCloseable {
+public final class ConsoleInput implements Approval, AutoCloseable {
     /** 只由 inputOwner 读；执行工具的线程不能自己调用 readLine。 */
     private final BufferedReader reader;
     /** CLI 传入的终端读取器；离线检查传 BufferedReader 时为 null。 */

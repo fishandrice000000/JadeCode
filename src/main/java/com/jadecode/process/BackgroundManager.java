@@ -1,4 +1,4 @@
-package com.jadecode.tools;
+package com.jadecode.process;
 
 import java.nio.file.Path;
 import java.util.ArrayDeque;
@@ -7,7 +7,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-import com.jadecode.agent.ExecutionContext;
 
 /**
  * 运行 shell 命令，并在内存中保存后台命令的结果，等待 Agent 读取。
@@ -86,21 +85,21 @@ public final class BackgroundManager implements AutoCloseable {
      * 这样命令很快跑完或用户同时退出时，都能找到这条命令。线程没能启动就移除 Job、关闭
      * 它的 shell，再抛出异常。返回 ID 时，线程可能还没来得及真正启动 shell 进程。</p>
      * @param command 已经过权限检查的非空白命令
-     * @param context 程序提供的当前任务信息，用任务 ID 记录这条命令属于谁
+     * @param owner 程序提供的当前任务 ID，不从模型参数获取，记录这条命令属于谁
      * @param required 当前任务结束前是否必须让模型看见这条命令的结果
      * @return bg_id，只表示程序接下了这条命令，不表示命令或业务成功
      * @throws IllegalStateException 已退出，或已有 32 项记录尚未删除
      * @throws IllegalArgumentException command 为 null 或空白
-     * @throws NullPointerException context 为 null
+     * @throws NullPointerException owner 为 null
      */
-    public synchronized String start(String command, ExecutionContext context, boolean required) {
+    public synchronized String start(String command, String owner, boolean required) {
         if (command == null || command.isBlank()) throw new IllegalArgumentException("Bash command cannot be empty");
-        java.util.Objects.requireNonNull(context, "executionContext");
+        java.util.Objects.requireNonNull(owner, "owner");
         if (closed || jobs.size() >= MAX_PENDING) {
             throw new IllegalStateException(closed ? "Background session is closed" : "Too many pending background tasks");
         }
         String id = "bg_%04d".formatted(++counter);
-        Job job = new Job(id, context.id(), required, command, new ShellCommand(cwd, timeoutSeconds));
+        Job job = new Job(id, owner, required, command, new ShellCommand(cwd, timeoutSeconds));
         // 先存 Job 再开线程，免得命令很快跑完或用户同时退出时，管理器里还找不到它。
         jobs.put(id, job);
         try {
@@ -118,7 +117,7 @@ public final class BackgroundManager implements AutoCloseable {
      * @param command BashTool 已检查过的命令原文
      * @return 输出或 Error 文字，不修改消息列表
      */
-    String runForeground(String command) { return foreground.run(command).text(); }
+    public String runForeground(String command) { return foreground.run(command).text(); }
 
     /**
      * 后台线程实际执行命令，收集输出后把结果放进 ready。

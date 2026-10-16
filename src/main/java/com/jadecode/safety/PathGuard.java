@@ -4,6 +4,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 
+import com.jadecode.filesystem.PathResolver;
+
 /**
  * 判断一个路径属于哪一类：工作区内、高危目录，还是工作区外。
  *

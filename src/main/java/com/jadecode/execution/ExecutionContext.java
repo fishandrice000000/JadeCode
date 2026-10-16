@@ -1,10 +1,9 @@
-package com.jadecode.agent;
+package com.jadecode.execution;
 
 import java.util.Objects;
 import java.util.UUID;
 import java.util.function.BooleanSupplier;
 
-import com.jadecode.safety.PermissionGate;
 
 /**
  * 记录这项任务由谁发起，以及程序如何处理它的权限和退出。
@@ -21,7 +20,7 @@ import com.jadecode.safety.PermissionGate;
  * @param approval 询问用户的函数，null 表示不能询问
  * @param sessionClosed 检查所属会话是否已退出的函数，由程序提供，不是模型参数
  */
-public record ExecutionContext(String id, Source source, PermissionGate.Approval approval, BooleanSupplier sessionClosed) {
+public record ExecutionContext(String id, Source source, Approval approval, BooleanSupplier sessionClosed) {
     /**
      * 区分用户直接发起和定时触发。后台结果和 Stop 要求继续，都沿用原任务来源。
      */
@@ -58,7 +57,7 @@ public record ExecutionContext(String id, Source source, PermissionGate.Approval
      * @throws IllegalArgumentException id 为 null 或空白
      * @throws NullPointerException source 为 null
      */
-    public ExecutionContext(String id, Source source, PermissionGate.Approval approval) {
+    public ExecutionContext(String id, Source source, Approval approval) {
         this(id, source, approval, () -> false);
     }
 
@@ -69,7 +68,7 @@ public record ExecutionContext(String id, Source source, PermissionGate.Approval
      * @return 新任务的信息，没有父会话退出检查，isCancelled 默认一直为 false
      * @throws NullPointerException source 为 null
      */
-    public static ExecutionContext create(Source source, PermissionGate.Approval approval) {
+    public static ExecutionContext create(Source source, Approval approval) {
         return new ExecutionContext("run_" + UUID.randomUUID(), source, approval);
     }
 
@@ -84,7 +83,7 @@ public record ExecutionContext(String id, Source source, PermissionGate.Approval
      * @return 新任务的信息，工具和子代理沿用它
      * @throws NullPointerException source 或 sessionClosed 为 null
      */
-    public static ExecutionContext create(Source source, PermissionGate.Approval approval, BooleanSupplier sessionClosed) {
+    public static ExecutionContext create(Source source, Approval approval, BooleanSupplier sessionClosed) {
         return new ExecutionContext("run_" + UUID.randomUUID(), source, approval, sessionClosed);
     }
 

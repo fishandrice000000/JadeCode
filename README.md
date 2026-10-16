@@ -26,16 +26,20 @@ src/main/java/com/jadecode/
 ├── util/             # Json(共享 ObjectMapper), Ansi(终端色码)
 ├── messages/         # Message + sealed ContentBlock(text/tool_use/tool_result)
 ├── llm/              # LlmClient 接口 + AnthropicSdkLlmClient(SDK 隔离层)
-├── tools/            # 工具适配 + BackgroundManager(后台 bash / 完成队列) / ShellCommand(进程生命周期)
-├── safety/           # PathResolver, PathGuard, CommandPolicy, PermissionGate, Hooks
+├── tools/            # Tool / ToolSchema 与工具适配器
+├── execution/        # ExecutionContext / Approval：可信来源、审批与取消契约
+├── process/          # BackgroundManager(后台 bash / 完成队列) / ShellCommand(进程生命周期)
+├── filesystem/       # PathResolver：路径解析
+├── safety/           # PathGuard, CommandPolicy, PermissionGate
+├── hooks/            # 字符串事件、参数表和短路 hook
 ├── todo/             # TodoManager(计划表校验与渲染)
 ├── subagent/         # SubagentRuntime(嵌套循环 + 消息隔离 + 三终态)
 ├── skills/           # SkillDefinition, SkillLoader(catalog 常驻 / 全文按需)
 ├── context/          # ContextCompactor(请求前保护 / 主动压缩 / 超限补救)
 ├── memory/           # 工作区记忆：召回 / 提取 / 数量触发整理 / 生命周期装配
 ├── tasks/            # 持久任务图：创建 / 依赖 / 认领 / 完成与解锁，六工具由父循环使用
-├── cron/             # 定时时间规则、待交付状态与工作区持久化
-└── agent/            # SessionRuntime(单消费者) + AgentLoop(执行器) + CronProducer(定时入口)
+├── cron/             # CronProducer 定时生产、时间规则、待交付状态与工作区持久化
+└── agent/            # SessionRuntime(单消费者) + AgentLoop(执行器)
 ```
 
 仓库根 `skills/<name>/SKILL.md` 存放可被 `load_skill` 加载的真实技能:system prompt 只带 name + description 的目录,完整正文仅在模型调用 `load_skill` 后作为 tool_result 进入消息。
@@ -47,14 +51,14 @@ src/main/java/com/jadecode/
 | s01 | Agent Loop | `agent/` `messages/` `llm/` `tools/BashTool` |
 | s02 | Tool Use(分发表) | `tools/`(5 基础工具)+ `safety/PathGuard` |
 | s03 | Permission | `safety/CommandPolicy` `safety/PermissionGate` |
-| s04 | Hooks | `safety/Hooks` |
+| s04 | Hooks | `hooks/Hooks` |
 | s05 | TodoWrite | `todo/` |
 | s06 | Subagent | `subagent/` |
 | s07 | Skill Loading | `skills/` |
 | s08 | Context Compact | `context/` |
 | s09 | Memory | `memory/` |
 | s10 | Task System | `tasks/` |
-| s11 | Background Tasks | `tools/BackgroundManager` |
+| s11 | Background Tasks | `process/BackgroundManager` |
 | s12 | Cron Scheduler | `cron/` |
 | s13 | Agent Teams | `team/` |
 | s14 | MCP Plugin | `mcp/` |

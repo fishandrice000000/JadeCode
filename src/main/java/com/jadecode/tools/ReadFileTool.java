@@ -8,7 +8,7 @@ import java.util.List;
 import java.util.Map;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.jadecode.safety.PathResolver;
+import com.jadecode.filesystem.PathResolver;
 
 /**
  * read_file:按 UTF-8 读文本文件,返回内容(逐行 join);可选 limit 截断行数。

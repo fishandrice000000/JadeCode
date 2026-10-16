@@ -2,6 +2,7 @@ package com.jadecode.agent;
 
 import java.util.List;
 
+import com.jadecode.execution.ExecutionContext;
 import com.jadecode.messages.ContentBlock;
 import com.jadecode.messages.Message;
 import com.jadecode.messages.ToolUseBlock;

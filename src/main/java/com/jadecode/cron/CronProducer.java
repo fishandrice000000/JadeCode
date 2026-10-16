@@ -1,4 +1,4 @@
-package com.jadecode.agent;
+package com.jadecode.cron;
 
 import java.io.IOException;
 import java.util.concurrent.Executors;
@@ -22,7 +22,7 @@ import com.jadecode.cron.CronScheduler;
  * 定时文件和待发送记录保留原格式；排队中的会话请求不保存，程序退出后不会恢复。
  * 定时任务暂缓执行时，用户直接输入的任务照常排队和执行。</p>
  */
-final class CronProducer implements AutoCloseable {
+public final class CronProducer implements AutoCloseable {
     /** 与定时工具共用的任务记录，包含哪些任务还没送到模型；没有定时功能时为 null。 */
     private final CronScheduler scheduler;
     /** 往会话队列放任务的函数；返回 true 只说明排队成功。 */
@@ -46,7 +46,7 @@ final class CronProducer implements AutoCloseable {
      * @param publish 把选中的任务放进会话队列的函数，必须尽快返回
      * @param errors 显示错误的函数，不应抛异常或长时间不返回
      */
-    CronProducer(CronScheduler scheduler, Predicate<CronJob> publish, Consumer<String> errors) {
+    public CronProducer(CronScheduler scheduler, Predicate<CronJob> publish, Consumer<String> errors) {
         this.scheduler = scheduler;
         this.publish = publish;
         this.errors = errors;
@@ -58,7 +58,7 @@ final class CronProducer implements AutoCloseable {
      * <p>没有调度器、已经启动过或已经退出，就直接返回。这里只运行 poll，
      * 不会请求模型；单次 run 不调用它，所以即使能创建定时任务，也不代表会一直等待任务到期。</p>
      */
-    synchronized void start() {
+    public synchronized void start() {
         if (scheduler == null || timer != null || closed) return;
         timer = Executors.newSingleThreadScheduledExecutor(runnable -> {
             Thread thread = new Thread(runnable, "jade-cron-producer");
@@ -103,7 +103,7 @@ final class CronProducer implements AutoCloseable {
      * @return 尚未退出、最近一次检查没出错、连续失败少于三次，并且五秒等待已经结束时为 true。
      *         只检查，不取任务，也不修改待发送记录
      */
-    boolean canDeliver() {
+    public boolean canDeliver() {
         return !closed && lastPollError == null && failures < 3
                 && (nextAttempt == 0 || nextAttempt - System.nanoTime() <= 0);
     }
@@ -116,7 +116,7 @@ final class CronProducer implements AutoCloseable {
      * @return 仍有这项待发送任务时为 true；已取消或没有调度器时为 false
      * @throws IOException 读取任务记录失败，交给 SessionRuntime 按第一次回复前失败处理
      */
-    boolean pending(String id) throws IOException {
+    public boolean pending(String id) throws IOException {
         return scheduler != null && scheduler.list().stream()
                 .anyMatch(job -> job.id().equals(id) && job.pendingDelivery());
     }
@@ -129,7 +129,7 @@ final class CronProducer implements AutoCloseable {
      * 重启后仍可能再发送一次，所以不能承诺业务只执行一次。</p>
      * @param id 已拿到第一次正常模型回复的定时定义 ID
      */
-    void received(String id) {
+    public void received(String id) {
         failures = 0;
         nextAttempt = 0;
         try {
@@ -146,7 +146,7 @@ final class CronProducer implements AutoCloseable {
      * 只能用于模型尚未收到任务的情况；已经执行工具后再走这里，可能重复已有操作。</p>
      * @param id 尚未拿到第一次正常回复的定时定义 ID
      */
-    void failed(String id) {
+    public void failed(String id) {
         release(id);
         failures++;
         nextAttempt = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
@@ -158,7 +158,7 @@ final class CronProducer implements AutoCloseable {
      * 不删待发送记录、不增加失败次数，也不会重新创建已取消的任务。
      * @param id 因队列满、会话退出或暂缓执行而没能继续的定时定义 ID
      */
-    void release(String id) { if (scheduler != null) scheduler.restore(id); }
+    public void release(String id) { if (scheduler != null) scheduler.restore(id); }
 
     /**
      * 停止定时检查，重复调用也可以，并尝试中断当前检查。
