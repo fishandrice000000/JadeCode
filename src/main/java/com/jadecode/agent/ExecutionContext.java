@@ -19,17 +19,41 @@ import com.jadecode.safety.PermissionGate;
  * @param sessionClosed Harness 提供的线程安全只读关闭信号，不由模型设置
  */
 public record ExecutionContext(String id, Source source, PermissionGate.Approval approval, BooleanSupplier sessionClosed) {
-    /** 两种任务入口；后台完成和 Stop 续跑不是新的入口来源。 */
-    public enum Source { USER, SCHEDULED }
+    /**
+     * 两种可信的新任务来源：USER 可携带人工审批通道，SCHEDULED 不允许交互审批。
+     * 后台完成和 Stop 是当前任务的续跑，不创建新的来源；也不能因执行线程改变而变成 USER。
+     */
+    public enum Source {
+        /** 用户直接提交；只有同时携带审批通道且会话未关闭，才可询问用户。 */
+        USER,
+        /** 定时定义到期触发；不能把后续工具/子代理的执行线程当作人工审批资格。 */
+        SCHEDULED
+    }
 
-    /** 在构造边界拒绝缺失身份；模型没有设置这个记录的工具入口。 */
+    /**
+     * 在 Harness 构造边界校验身份完整性，不推断权限或执行安全规则。
+     * @param id 非空白执行 ID，区分同一会话中的不同目标
+     * @param source 非 null 的真实发起来源
+     * @param approval 可选审批通道；即使非 null，SCHEDULED 也不会因此获得交互审批
+     * @param sessionClosed 非 null、线程安全的只读关闭视图
+     * @throws IllegalArgumentException id 缺失或为空白
+     * @throws NullPointerException source 或 sessionClosed 为 null
+     */
     public ExecutionContext {
         if (id == null || id.isBlank()) throw new IllegalArgumentException("Execution ID is required");
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(sessionClosed, "sessionClosed");
     }
 
-    /** 独立调用方的兼容构造：没有父会话关闭信号，也不因此获得审批资格。 */
+    /**
+     * 兼容独立调用方：不绑定父会话关闭信号，其 isCancelled 始终为 false。
+     * 生产会话应使用四参数版本，才能让子代理观察父会话关闭；此默认值不是额外权限。
+     * @param id 非空白执行 ID
+     * @param source 可信任务来源
+     * @param approval 可选审批通道
+     * @throws IllegalArgumentException id 缺失或为空白
+     * @throws NullPointerException source 为 null
+     */
     public ExecutionContext(String id, Source source, PermissionGate.Approval approval) {
         this(id, source, approval, () -> false);
     }
@@ -39,16 +63,28 @@ public record ExecutionContext(String id, Source source, PermissionGate.Approval
      * @param source 发起来源
      * @param approval 可选的人工审批通道
      * @return 只供本次执行使用的上下文
+     * @throws NullPointerException source 为 null
      */
     public static ExecutionContext create(Source source, PermissionGate.Approval approval) {
         return new ExecutionContext("run_" + UUID.randomUUID(), source, approval);
     }
 
-    /** 会话提交入口额外绑定关闭视图；后台结果只记录 ID，不持有或修改这个信号。 */
+    /**
+     * 为会话的新请求分配执行 ID，并绑定可被子代理继承的关闭视图。
+     * 构造不启动线程或 IO；supplier 在查询时读取状态，不是注册的取消回调。
+     * @param source 可信发起来源，不从模型文本推断
+     * @param approval 可选人工审批通道
+     * @param sessionClosed 读取所属会话关闭状态的线程安全函数，例如读取 volatile 标记
+     * @return 带唯一 run_ ID 的上下文；同一任务的工具与子代理传递同一身份
+     * @throws NullPointerException source 或 sessionClosed 为 null
+     */
     public static ExecutionContext create(Source source, PermissionGate.Approval approval, BooleanSupplier sessionClosed) {
         return new ExecutionContext("run_" + UUID.randomUUID(), source, approval, sessionClosed);
     }
 
-    /** 只查询所属会话是否已关闭，不能据此撤销已经开始的文件或命令副作用。 */
+    /**
+     * 查询所属会话是否关闭，供工具/子代理在执行边界拒绝晚到回复或批准。
+     * @return 关闭视图当前值；false 不承诺之后不会关闭，true 也不能撤销已开始的 IO
+     */
     public boolean isCancelled() { return sessionClosed.getAsBoolean(); }
 }

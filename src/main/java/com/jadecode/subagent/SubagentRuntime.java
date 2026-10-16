@@ -149,48 +149,47 @@ public class SubagentRuntime {
     }
 
     /**
-     * 跑一次委派,返回子代理的最终文本。
+     * 兼容独立委派调用，创建无审批通道、无父会话关闭绑定的 USER 身份。
+     * 真正的父工具调用使用双参数重载，避免丢失定时来源或父会话关闭信号。
      *
-     * <p>
-     * <b>整体数据流</b>:新建一份只有一条 user(prompt) 的历史 → 每一轮走"请求前自动整理 →
-     * 正式请求 →(必要时)有限补救 → 执行本批工具 → 结果回灌闭合 → 可选的批次闭合压缩",
-     * 直到模型给出没有 tool_use 的最终文本(先问 Stop hook,它可能强制再跑一轮),或者 30 轮成功回复用完。
-     * </p>
-     *
-     * <p>
-     * <b>轮次的单位</b>:只有"正式请求真正拿到回复"才消耗一轮;失败重试与辅助摘要都不占轮次。
-     * 成功之后即使 Stop hook 强制续跑,也仍然消耗刚拿到的那一轮——所以第 30 次成功回复如果是最终文本,
-     * 就正常 DONE;如果还在调工具,工具照常执行完并闭合,但不会再发第 31 次业务请求,以 STOPPED 收尾。
-     * </p>
-     *
-     * <p>
-     * <b>两个 catch 的分工</b>:内层只包住那一次正式 {@code client.complete},负责"要不要补救";
-     * 外层统一 catch {@link LlmException},负责 END(FAILED) 恰好一次。辅助摘要(prepare / 主动压缩 /
-     * 补救里的摘要调用)、工具执行与 hooks 的失败都不进内层,所以它们不会被误当成"正式请求超限"去补救——
-     * 摘要失败更不该再触发一轮补救。
-     * </p>
-     *
-     * <p>
-     * 生命周期:入口恰好一次 SUBAGENT_START,出口恰好一次 SUBAGENT_END——正常收尾 DONE、
-     * 轮数耗尽 STOPPED、不可恢复的正式请求错误或新增的压缩 IO 失败 FAILED(模型回复内重复调用 ID
-     * 沿用既有 FAILED 契约)。补救成功不是"新起一个子代理",过程中不提前 END。
-     * </p>
-     *
-     * @param prompt 父代理给的子任务描述
-     * @return 子代理最终文本;轮数耗尽时为 "Subagent stopped after 30 turns without a final
-     *         answer."
-     * @throws LlmException 网络 / API 错误,向上抛给调用方决定重试或退出
+     * @param prompt 本次独立子任务描述
+     * @return 子代理最终文本或 30 轮耗尽提示
+     * @throws LlmException 正式模型或压缩辅助请求不可继续
+     * @see #run(String, ExecutionContext)
      */
     public String run(String prompt) throws LlmException {
         return run(prompt, ExecutionContext.create(ExecutionContext.Source.USER, null));
     }
 
     /**
-     * 继承父任务的可信来源与审批通道，历史仍独立。仅传身份，不与父共享收件箱或后台队列。
-     * @param context Harness 执行上下文，模型不能通过 prompt 改写
+     * 在全新历史中同步完成一项委派，继承父身份而不继承父会话调度权。
+     *
+     * <p><b>Agent 数据流：</b>只用 prompt 创建一条 USER → 请求前整理 → 正式模型请求
+     * → 校验本批调用 ID → 同步工具执行 → 整批结果回灌 → 必要的主动压缩，重复直到
+     * 无工具回复且 Stop 放行。父代理只拿最终文本，不接收子历史或中间工具交换。
+     * 当前装配的子 bash 仅同步，不共享父收件箱或后台队列。</p>
+     *
+     * <p><b>目标与权限：</b>prompt 原文固定为子 activeRequest，Stop/工具结果不能替换它。
+     * context 从父执行器传入；定时委派仍无交互审批资格。它提供父会话关闭的只读视图，
+     * 在模型前后、工具前及审批返回后复核；关闭不是回滚，不能撤销已进行的 IO。</p>
+     *
+     * <p><b>轮次与失败：</b>只对成功取得的正式回复计数，最多 30 次；失败重试及辅助摘要
+     * 不占成功轮数，每次正式成功后重置超限补救额度。第 30 次若能结束则 DONE，否则闭合
+     * 已发工具批次后 STOPPED，不再发第 31 次正式请求。内层 catch 只分类正式请求超限；
+     * 辅助压缩失败不能当作正式超限再次补救。LlmException（含关闭）由外层报告一次 FAILED，
+     * 压缩 IO 与重复调用 ID 按各自既有 FAILED 分支传播；不承诺任意自定义 hook/工具的
+     * 运行异常也都已被统一转换成 LlmException。</p>
+     *
+     * @param prompt 父代理提供的子任务描述；启用压缩时须符合其合法请求契约，不修改原字符串
+     * @param context 非 null 的可信来源、审批通道及关闭视图，模型不能通过 prompt 改写
+     * @return 最终文本（空白时使用既有无摘要提示），或轮数耗尽时的 STOPPED 文本
+     * @throws LlmException 模型/辅助摘要失败或父会话已关闭，保留错误交给 SubagentTool 包装
+     * @throws IllegalStateException 压缩归档 IO 等无法继续的运行失败
+     * @throws NullPointerException context 为 null
      */
     public String run(String prompt, ExecutionContext context) throws LlmException {
         java.util.Objects.requireNonNull(context, "executionContext");
+        // 子历史是本次调用的局部状态；只传身份，不借父 history 引用，避免子工具交换污染父协议。
         List<Message> messages = new ArrayList<>();
 
         messages.add(Message.userText(prompt));
@@ -207,6 +206,7 @@ public class SubagentRuntime {
 
         try {
             while (turns < MAX_TURNS) {
+                // 不只依赖线程中断：第三方模型客户端可能忽略中断，但下一执行边界仍应停止。
                 checkSessionOpen(context);
                 // 1. 正式请求之前的自动整理(未注入压缩器时整段跳过,保持旧行为)。
                 //    首次请求、工具结果回灌之后、Stop 续跑之后、补救重试之前都会经过这里。
@@ -388,6 +388,8 @@ public class SubagentRuntime {
     /**
      * 子代理没有父收件箱，但必须遵守父会话关闭边界；取消作为 LlmException 走既有一次 FAILED 收尾。
      * 已在进行中的 IO 不回滚；检查只阻止后续模型／工具步骤，不声称强制终止第三方 HTTP。
+     * @param context 继承的非 null 只读会话关闭视图
+     * @throws LlmException 父会话已经关闭，交由外层 FAILED 分支收尾，不发起摘要补救
      */
     private static void checkSessionOpen(ExecutionContext context) throws LlmException {
         if (context.isCancelled()) throw new LlmException("Parent session is closed");

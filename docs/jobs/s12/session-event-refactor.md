@@ -151,3 +151,18 @@ ExecutionContext 通过 Tool 的兼容重载与 hook 参数传递来源；普通
 - 真机场景 tmp/s12-event-check 仅准备脚本、发布说明与 RUNBOOK；`sh -n` 退出 0，未启动脚本、未预写任何报告或 release 门闩，真实验收仍由用户执行。
 
 本轮临时源码、class、验证状态及生成物在交付前清理，保留明确用于用户验收的 tmp/s12-event-check。学习入口为 [session-event-runtime-review.md](../../notes/s12/session-event-runtime-review.md)，从 SessionRuntime.execute／runTask／apply 开始。旧指南只添加版本提示，未改写用户答案；本单的工程 Pass 不替代用户理解或 s12 整章验收。
+
+## 11. 源码教学注释补齐（2026-10-16）
+
+用户指出事件化重构的 JavaDoc 不够详细，影响初学者阅读。本次只补充/校正注释，不改变行为、API、工具 schema、运行参数或用户答案。
+
+精确范围为 17 个源码文件：agent 下的 AgentLoop、SessionRuntime、SessionEvent、SessionInbox、ExecutionContext、CronProducer；cli 下的 ConsoleInput、ReplCommand、RunCommand；tools 下的 BackgroundManager、BashTool、Tool、SubagentTool；safety 下的 PermissionGate、Hooks；SubagentRuntime 和 Main。另以本节记录维护结果，不纳入其它笔记或研究文件。
+
+- 类说明先给需求、职责边界和阅读主线；非平凡方法补充调用位置、输入输出、前置条件、null/计数语义、历史修改与 IO、副作用及失败/关闭边界。
+- 主流程与关键分支补充行间说明，明确固定目标、完整批次回灌、必等等待、不领取新目标、首回复确认、通知领取/确认/归还、唯一终端读取、来源审批和子代理关闭信号。
+- 校正易误读表述：后台必等不等于 BashTool 阻塞；缺少审批通道只会拒绝需要询问的操作；正常 Error 工具结果与执行链意外异常分开；子代理不对任意自定义运行异常承诺统一 FAILED 收尾。
+- 与本次修改前 HEAD 的 17 份源码逐个做词法对比：跳过注释及非字符串空白后，其余字符（含字符串、字符字面量及文本块）完全一致，确认未混入实现变化。
+- JDK 21 `javadoc -quiet -private -Xdoclint:all,-missing`，以已有 target/jadecode.jar 解析依赖，对上述 17 文件生成文档：最终退出 0，无诊断。首次检查发现转义说明中的裸 `&` 是非法 HTML 实体；改成 `{@code &}` 后通过，并以普通段落替换自定义标签，无需额外标签配置。
+- 范围内 `git diff --check` 通过；本轮没有新增测试、运行 Maven 或调用真实模型。JavaDoc 生成物仅在本轮临时目录检查后清理，不纳入 Git。
+
+**Pass（注释专项工程自审）**：按实际调用方和实现复核说明，未发现本轮注释的已知阻塞问题；不是对全部实现重新做独立 Review，也不替代用户源码学习或真机验收。推荐阅读顺序仍为学习指南中的 SessionRuntime.execute → runTask → apply，再下钻执行器、后台、入口与安全。
