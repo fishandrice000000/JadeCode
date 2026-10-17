@@ -1,5 +1,7 @@
 # A01–A11 包架构调整
 
+> 后续裁决（2026-10-17）：用户指定 PathResolver 改放 `util`。下方首次迁移记录中的 `filesystem` 保留当时事实；当前归属以末尾补充记录和 README 为准。
+
 ## 目标与边界
 
 - 依据用户指定的 `docs/reviews/architecture/ChatGPT/09-package-redesign-implementation-prompt.md` 实施；启动 HEAD：`f15388d24defe210bb7a82d3b53b437bba7dfe7c`。
@@ -109,3 +111,16 @@ CLI 拥有 TerminalDisplay 与 ConsoleInput。退出时先拒绝待答审批，�
 - 未调用真实模型，未运行实际 CLI/Agent 任务做真机验收。定时轮询的真实时序、终端交互、网络晚到与多线程退出竞态未做新的动态故障注入；使用源码等价检查和已有测试限定本轮证据。
 - 新阅读入口：`docs/notes/architecture/package-runtime-review.md`。工程完成不代表用户已理解或已独立真机验收，后两项仍待用户完成。
 - 提交前已核对原有 50 个受保护文件哈希全部一致，新增文档相对链接有效；提交后在对话再核验。临时检查程序/日志在最终报告前清理，本单保留命令和实际结果。
+
+## 2026-10-17 后续调整：PathResolver 迁入 util
+
+用户明确要求将 PathResolver 放入 util。目的为简化当前包组织，路径解析与安全分类的职责继续分开。
+
+- 范围：PathResolver 及已有 PathResolverTest 迁包，工厂、四个文件工具、PathGuard 与三个已有测试的 import，README 与本记录。
+- 契约：解析算法、构造/方法、IO、异常、安全规则和测试场景不变；纠正相关注释中旧 Main 装配位置及把路径解析误写为权限裁决的描述。
+- 验证：清理旧包构建产物，运行 PathResolverTest/PathGuardTest/PermissionGateTest/FileToolsTest 现有定向测试并打包；核对类体、既有场景及保护文件哈希。不新增测试，不调用真实模型。
+- Git：单批精确暂存上述迁移与接线，标题 `将 PathResolver 迁入 util 包`；不纳入原有笔记/研究材料，不 push。
+- 状态：实现完成；工程自审 **Pass（本轮迁包与接线范围）**，构建与定向验证通过；本记录随代码一起本地提交。
+- 实际验证：`mvn -q clean -Dtest=PathResolverTest,PathGuardTest,PermissionGateTest,FileToolsTest package` 退出 0；4 组已有测试共 25 tests / 0 failures / 0 errors / 0 skipped，JAR 打包成功。未新增或改变既有测试场景。
+- 自审证据：PathResolver 与 PathResolverTest 除 package 声明外逐字一致；9 个调用方类体去除注释/import 后 Java token 一致；源码无旧包引用，JAR 包含 util/PathResolver.class 且无原 filesystem 类。
+- 用户已有笔记、研究/审查资料及已提供的架构题单保持原样，51 个受保护文件哈希一致。学习与最终真机验收状态不因这次纯迁包改变。

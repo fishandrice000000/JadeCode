@@ -24,13 +24,12 @@ src/main/java/com/jadecode/
 ├── cli/              # run/repl、CliHooks 展示、ConsoleInput 审批与 TerminalDisplay 终端
 ├── bootstrap/        # JadeCodeFactory：生产与离线共用的装配入口
 ├── config/           # Env(.env 解析), AppConfig(缺省值与校验)
-├── util/             # Json(共享 ObjectMapper), Ansi(终端色码)
+├── util/             # Json(共享 ObjectMapper), Ansi(终端色码), PathResolver(共享路径解析)
 ├── messages/         # Message + sealed ContentBlock(text/tool_use/tool_result)
 ├── llm/              # LlmClient / ToolDefinition(数据快照) + AnthropicSdkLlmClient(SDK 隔离层)
 ├── tools/            # Tool / ToolSchema 与工具适配器
 ├── execution/        # ExecutionContext / Approval：可信来源、审批与取消契约
 ├── process/          # BackgroundManager(后台 bash / 完成队列) / ShellCommand(进程生命周期)
-├── filesystem/       # PathResolver：路径解析
 ├── safety/           # PathGuard, CommandPolicy, PermissionGate
 ├── hooks/            # 字符串事件、参数表和短路 hook
 ├── todo/             # TodoManager(计划表校验与渲染)

@@ -11,7 +11,7 @@ import java.util.Map;
 import java.util.stream.Stream;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.jadecode.filesystem.PathResolver;
+import com.jadecode.util.PathResolver;
 
 /**
  * glob:按 glob 模式在工作区内找文件,输出匹配的相对路径(每行一条,字典序)。
@@ -22,11 +22,11 @@ import com.jadecode.filesystem.PathResolver;
 public class GlobTool implements Tool {
     private static final int MAX_MATCHES = 200;
 
-    /** 工作区根，由 Main 创建时注入；本类不保存全局状态。 */
+    /** 工作区根，由 JadeCodeFactory 装配时注入；本类不保存全局状态。 */
     private final PathResolver resolver;
 
     /**
-     * @param resolver 路径解析器,提供工作区根并负责解析/围栏裁决
+     * @param resolver 共享路径解析器，提供预先确定的工作区根；本工具不负责安全裁决
      */
     public GlobTool(PathResolver resolver) {
         this.resolver = resolver;

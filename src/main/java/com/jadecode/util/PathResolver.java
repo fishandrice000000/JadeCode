@@ -1,4 +1,4 @@
-package com.jadecode.filesystem;
+package com.jadecode.util;
 
 import java.io.IOException;
 import java.nio.file.Files;
