@@ -8,7 +8,7 @@ import java.util.List;
 import java.util.Map;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.jadecode.filesystem.PathResolver;
+import com.jadecode.util.PathResolver;
 
 /**
  * edit_file:在文件里做精确文本替换,只替换第一处匹配。
@@ -21,7 +21,7 @@ public class EditFileTool implements Tool {
     private final PathResolver resolver;
 
     /**
-     * @param resolver 路径解析器，由 Main 创建时注入
+     * @param resolver 路径解析器，由 JadeCodeFactory 装配时注入
      */
     public EditFileTool(PathResolver resolver) {
         this.resolver = resolver;

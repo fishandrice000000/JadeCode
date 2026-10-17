@@ -9,8 +9,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jadecode.execution.Approval;
 import com.jadecode.execution.ExecutionContext;
-import com.jadecode.filesystem.PathResolver;
 import com.jadecode.util.Json;
+import com.jadecode.util.PathResolver;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;

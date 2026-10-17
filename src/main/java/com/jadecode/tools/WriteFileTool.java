@@ -8,20 +8,20 @@ import java.util.List;
 import java.util.Map;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.jadecode.filesystem.PathResolver;
+import com.jadecode.util.PathResolver;
 
 /**
  * write_file:把整段内容写入文件(UTF-8,覆盖式)。
  *
  * <p>父目录不存在会自动创建(createDirectories);写入成功后回给模型
- * 内容字节数与目标路径。路径解析与越界裁决交给 PathResolver。</p>
+ * 内容字节数与目标路径。路径解析交给 PathResolver，正式调用前由安全闸门裁决是否允许访问。</p>
  */
 public class WriteFileTool implements Tool {
     /** 路径解析器:解析目标路径;越界与否由闸门裁决 */
     private final PathResolver resolver;
 
     /**
-     * @param resolver 路径解析器，由 Main 创建时注入
+     * @param resolver 路径解析器，由 JadeCodeFactory 装配时注入
      */
     public WriteFileTool(PathResolver resolver) {
         this.resolver = resolver;

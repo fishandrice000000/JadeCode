@@ -8,12 +8,12 @@ import java.util.List;
 import java.util.Map;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.jadecode.filesystem.PathResolver;
+import com.jadecode.util.PathResolver;
 
 /**
  * read_file:按 UTF-8 读文本文件,返回内容(逐行 join);可选 limit 截断行数。
  *
- * <p>路径解析与越界裁决交给 PathResolver,本工具只按解析结果读文件;
+ * <p>路径解析交给 PathResolver，正式调用前由安全闸门裁决是否允许访问；本工具按解析结果读文件；
  * 读不到(不存在/无权限)回 "Error: ..." 文案。</p>
  */
 public class ReadFileTool implements Tool {
@@ -21,7 +21,7 @@ public class ReadFileTool implements Tool {
     private final PathResolver resolver;
 
     /**
-     * @param resolver 路径解析器，由 Main 创建时注入
+     * @param resolver 路径解析器，由 JadeCodeFactory 装配时注入
      */
     public ReadFileTool(PathResolver resolver) {
         this.resolver = resolver;

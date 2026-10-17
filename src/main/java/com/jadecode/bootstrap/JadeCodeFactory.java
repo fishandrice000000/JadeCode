@@ -14,7 +14,6 @@ import com.jadecode.config.Env;
 import com.jadecode.context.ContextCompactor;
 import com.jadecode.cron.CronScheduler;
 import com.jadecode.execution.ExecutionContext;
-import com.jadecode.filesystem.PathResolver;
 import com.jadecode.hooks.Hooks;
 import com.jadecode.llm.AnthropicSdkLlmClient;
 import com.jadecode.llm.LlmClient;
@@ -43,6 +42,7 @@ import com.jadecode.tools.TodoWriteTool;
 import com.jadecode.tools.Tool;
 import com.jadecode.tools.WriteFileTool;
 import com.jadecode.util.Json;
+import com.jadecode.util.PathResolver;
 
 /**
  * 把配置、工具、安全策略和能力服务装配成一个可运行且可关闭的会话。
