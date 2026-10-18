@@ -74,7 +74,7 @@ public final class ConsoleInput implements Approval, AutoCloseable {
     public ConsoleInput(TerminalDisplay display) {
         this.reader = null;
         this.display = java.util.Objects.requireNonNull(display);
-        this.output = System.out::println;
+        this.output = CliOutput::print;
     }
 
     /**

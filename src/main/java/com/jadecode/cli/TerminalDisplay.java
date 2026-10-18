@@ -16,6 +16,7 @@ import org.jline.reader.impl.DefaultParser;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
 import org.jline.utils.WriterOutputStream;
+import org.jline.utils.InfoCmp.Capability;
 
 import com.jadecode.util.Ansi;
 
@@ -41,8 +42,9 @@ public final class TerminalDisplay implements AutoCloseable {
     /** 没有终端时直接读行，不向日志文件打印输入提示符。 */
     private final BufferedReader plainInput;
     /** hook 和其它模块仍使用 System.out/err，由这里转成输入行上方的输出。 */
-    private final PrintStream routedOut;
-    private final PrintStream routedErr;
+    private final PrintStream routed;
+    /** 颜色只在本次 CLI 中按真实终端设置，退出时恢复原来的显示开关。 */
+    private final boolean previousColors;
     /** 同一会话资源可能被多次 close，第一次才恢复流和终端。 */
     private boolean closed;
 
@@ -62,16 +64,25 @@ public final class TerminalDisplay implements AutoCloseable {
      * @throws IOException 无法创建真实终端
      */
     private TerminalDisplay() throws IOException {
+        previousColors = Ansi.useTerminal(false);
         if (System.console() == null) {
             terminal = null;
             lines = null;
             plainInput = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
-            routedOut = null;
-            routedErr = null;
+            routed = null;
             return;
         }
-        terminal = TerminalBuilder.builder().system(true).encoding(StandardCharsets.UTF_8).dumb(false).build();
         try {
+            terminal = TerminalBuilder.builder().system(true).encoding(StandardCharsets.UTF_8).dumb(false).build();
+        } catch (IOException | RuntimeException failure) {
+            Ansi.useTerminal(previousColors);
+            throw failure;
+        }
+        try {
+            // 颜色看 JLine 识别出的终端，而不是在类首次加载时永久缓存一次 console 判断。
+            // 用户的 NO_COLOR 和 TERM=dumb 仍由 Ansi 尊重；不能为了美化污染重定向输出。
+            Integer colors = terminal.getNumericCapability(Capability.max_colors);
+            Ansi.useTerminal(colors != null && colors > 0);
             // 不因引号没配对就擅自多读一行，也不把用户的 ! 替换成历史命令。
             // 粘贴时的换行保留在缓冲区；历史只存在内存，不设置历史文件。
             DefaultParser parser = new DefaultParser().escapeChars(new char[0]).quoteChars(new char[0])
@@ -79,6 +90,7 @@ public final class TerminalDisplay implements AutoCloseable {
             lines = LineReaderBuilder.builder().terminal(terminal).appName("JadeCode").parser(parser)
                     .option(LineReader.Option.DISABLE_EVENT_EXPANSION, true)
                     .option(LineReader.Option.BRACKETED_PASTE, true).build();
+            lines.setVariable(LineReader.SECONDARY_PROMPT_PATTERN, Ansi.gray("       > "));
             // 终端粘贴会带开始/结束标记，JLine 不把其中的换行当作提交。
             // Alt+Enter 通常编码成 ESC 后跟回车；只往输入缓冲区加换行，不执行 accept-line。
             lines.getWidgets().put("jade-insert-newline", () -> {
@@ -87,14 +99,16 @@ public final class TerminalDisplay implements AutoCloseable {
             });
             lines.getKeyMaps().get(LineReader.MAIN).bind(new Reference("jade-insert-newline"), "\033\r", "\033\n");
             plainInput = null;
-            routedOut = aboveStream(lines);
-            routedErr = aboveStream(lines);
-            System.setOut(routedOut);
-            System.setErr(routedErr);
+            // 交互终端最终只有一块屏幕，用同一个流串行显示 out/err，避免多行回复被另一条日志拆开。
+            // 管道分支不替换这两个流，仍可单独重定向错误。
+            routed = aboveStream(lines);
+            System.setOut(routed);
+            System.setErr(routed);
         } catch (RuntimeException failure) {
             // 创建一半失败也要还原终端设置，不能让返回 shell 后的键盘保持错误模式。
             System.setOut(originalOut);
             System.setErr(originalErr);
+            Ansi.useTerminal(previousColors);
             terminal.close();
             throw failure;
         }
@@ -121,7 +135,7 @@ public final class TerminalDisplay implements AutoCloseable {
         if (closed) throw new IllegalStateException("Terminal is closed");
         if (lines == null) return plainInput.readLine();
         try {
-            return lines.readLine(Ansi.cyan(prompt));
+            return lines.readLine(Ansi.bold(Ansi.cyan(prompt)));
         } catch (EndOfFileException | UserInterruptException exit) {
             return null;
         }
@@ -144,16 +158,18 @@ public final class TerminalDisplay implements AutoCloseable {
     public void close() throws IOException {
         if (closed) return;
         closed = true;
-        if (terminal == null) return;
+        if (terminal == null) {
+            Ansi.useTerminal(previousColors);
+            return;
+        }
         try {
             // 项目正常日志以换行结束；退出时再补换行，让未结束的零散打印也能被 Writer 输出。
-            routedOut.println();
-            routedErr.println();
-            routedOut.flush();
-            routedErr.flush();
+            routed.println();
+            routed.flush();
         } finally {
             System.setOut(originalOut);
             System.setErr(originalErr);
+            Ansi.useTerminal(previousColors);
             terminal.close();
         }
     }
