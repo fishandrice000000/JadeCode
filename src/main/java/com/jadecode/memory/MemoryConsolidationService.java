@@ -102,12 +102,12 @@ public final class MemoryConsolidationService {
         return new ConsolidationResult(Status.APPLIED, before, drafts.size());
     }
 
-    /** 解析完整整库候选；只收 assistant 纯文本 JSON，不能把缺字段条目跳过后继续删旧库。 */
+    /** 只解析 assistant 正文中的完整 JSON，允许伴随协议思考块；缺字段时不能继续删旧库。 */
     private static List<MemoryDraft> replacementDrafts(ModelResponse response) {
         if (response == null || response.message() == null || response.message().role() != Role.ASSISTANT
                 || response.message().content() == null
-                || response.message().content().stream().anyMatch(block -> !(block instanceof TextBlock))) {
-            throw new IllegalArgumentException("整理回复必须是 assistant 纯文本");
+                || !response.message().hasOnlyTextAndThinking()) {
+            throw new IllegalArgumentException("整理回复必须是 assistant 文本（可伴随 thinking）");
         }
         try {
             JsonNode array = Json.mapper().reader().with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)

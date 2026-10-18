@@ -16,4 +16,19 @@ public interface LlmClient {
      * @throws LlmException 调用失败;带 HTTP 状态码(0 表示网络类异常)
      */
     ModelResponse complete(CompleteRequest request) throws LlmException;
+
+    /**
+     * 请求完整响应，同时可把生成中的正文和 thinking 交给本次请求的展示对象。
+     *
+     * <p>默认实现保持旧客户端和测试替身可用，不伪造网络片段；生产 SDK 覆盖此方法。
+     * 方法仍同步返回完整 ModelResponse，不要求 Session 或普通工具全部异步化。
+     * complete/failed 由正式请求的执行器调用，辅助请求继续使用单参数方法。</p>
+     * @param request 本次请求，不在这里修改历史
+     * @param stream 本次请求独占的展示对象；不保存到共享客户端
+     * @return 完整响应；失败不能返回半份消息
+     * @throws LlmException 网络、服务端、流或拼装失败
+     */
+    default ModelResponse complete(CompleteRequest request, ResponseStream stream) throws LlmException {
+        return complete(request);
+    }
 }

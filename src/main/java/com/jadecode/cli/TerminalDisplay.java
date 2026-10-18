@@ -8,15 +8,17 @@ import java.nio.charset.StandardCharsets;
 
 import org.jline.reader.EndOfFileException;
 import org.jline.reader.LineReader;
-import org.jline.reader.LineReaderBuilder;
 import org.jline.reader.PrintAboveWriter;
 import org.jline.reader.Reference;
 import org.jline.reader.UserInterruptException;
 import org.jline.reader.impl.DefaultParser;
+import org.jline.reader.impl.LineReaderImpl;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
 import org.jline.utils.WriterOutputStream;
 import org.jline.utils.InfoCmp.Capability;
+import org.jline.utils.AttributedString;
+import org.jline.utils.Status;
 
 import com.jadecode.util.Ansi;
 
@@ -27,7 +29,10 @@ import com.jadecode.util.Ansi;
  * 显示到输入行上方，再画回提示符和“读取 README”，用户可以接着写，不会丢字或把日志当成输入。
  * REPL 仍能在模型工作时接受下一项任务；提示符表示可以输入，不表示模型已经做完。</p>
  *
- * <p>项目现有 hook、SDK 提示和记忆提示都使用 System.out/err。只在 CLI 会话运行期间，
+ * <p>流式半行显示在底部临时区域，完整行由 CliOutput 写入记录；双方与输入共用 JLine 的锁。
+ * 不支持该区域的终端只显示完整行，不能把一个片段强行打印成一条永久日志。</p>
+ *
+ * <p>项目现有 hook、SDK 提示和记忆提示最终使用 System.out/err。只在 CLI 会话运行期间，
  * 将这两条输出转给同一个 JLine 读取器，避免逐个模块修改打印代码。退出时先恢复输出，
  * 再恢复终端设置；不修改任何 Agent 任务或权限规则。不在真实终端中运行时，保留普通流，
  * 不显示输入提示符或终端控制字符。</p>
@@ -38,7 +43,9 @@ public final class TerminalDisplay implements AutoCloseable {
     private final PrintStream originalErr = System.err;
     /** 真实终端用 JLine，文件/管道输入时这两个字段都为 null。 */
     private final Terminal terminal;
-    private final LineReader lines;
+    private final ScreenReader lines;
+    /** 支持保存光标与滚动区域的终端才有底部预览，管道和简单终端为 null。 */
+    private final Status preview;
     /** 没有终端时直接读行，不向日志文件打印输入提示符。 */
     private final BufferedReader plainInput;
     /** hook 和其它模块仍使用 System.out/err，由这里转成输入行上方的输出。 */
@@ -46,7 +53,7 @@ public final class TerminalDisplay implements AutoCloseable {
     /** 颜色只在本次 CLI 中按真实终端设置，退出时恢复原来的显示开关。 */
     private final boolean previousColors;
     /** 同一会话资源可能被多次 close，第一次才恢复流和终端。 */
-    private boolean closed;
+    private volatile boolean closed;
 
     /**
      * 为一次 CLI 运行准备终端；此时不读取输入，也不启动模型或任务线程。
@@ -68,6 +75,7 @@ public final class TerminalDisplay implements AutoCloseable {
         if (System.console() == null) {
             terminal = null;
             lines = null;
+            preview = null;
             plainInput = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
             routed = null;
             return;
@@ -87,9 +95,16 @@ public final class TerminalDisplay implements AutoCloseable {
             // 粘贴时的换行保留在缓冲区；历史只存在内存，不设置历史文件。
             DefaultParser parser = new DefaultParser().escapeChars(new char[0]).quoteChars(new char[0])
                     .eofOnEscapedNewLine(false);
-            lines = LineReaderBuilder.builder().terminal(terminal).appName("JadeCode").parser(parser)
-                    .option(LineReader.Option.DISABLE_EVENT_EXPANSION, true)
-                    .option(LineReader.Option.BRACKETED_PASTE, true).build();
+            lines = new ScreenReader(terminal);
+            lines.setParser(parser);
+            lines.setOpt(LineReader.Option.DISABLE_EVENT_EXPANSION);
+            lines.setOpt(LineReader.Option.BRACKETED_PASTE);
+            boolean live = terminal.getStringCapability(Capability.change_scroll_region) != null
+                    && terminal.getStringCapability(Capability.save_cursor) != null
+                    && terminal.getStringCapability(Capability.restore_cursor) != null
+                    && terminal.getStringCapability(Capability.cursor_address) != null
+                    && terminal.getHeight() >= 5 && terminal.getWidth() > 0;
+            preview = live ? Status.getStatus(terminal) : null;
             lines.setVariable(LineReader.SECONDARY_PROMPT_PATTERN, Ansi.gray("       > "));
             // 终端粘贴会带开始/结束标记，JLine 不把其中的换行当作提交。
             // Alt+Enter 通常编码成 ESC 后跟回车；只往输入缓冲区加换行，不执行 accept-line。
@@ -104,7 +119,7 @@ public final class TerminalDisplay implements AutoCloseable {
             routed = aboveStream(lines);
             System.setOut(routed);
             System.setErr(routed);
-        } catch (RuntimeException failure) {
+        } catch (IOException | RuntimeException failure) {
             // 创建一半失败也要还原终端设置，不能让返回 shell 后的键盘保持错误模式。
             System.setOut(originalOut);
             System.setErr(originalErr);
@@ -150,6 +165,58 @@ public final class TerminalDisplay implements AutoCloseable {
     }
 
     /**
+     * 在输入区之外实时显示尚未换行的片段，不把每个 token 当成一条永久日志。
+     *
+     * <p>底部只显示当前半行末尾，完整内容仍由 CliOutput 写进上方记录。用 JLine 自己的锁
+     * 同步预览、普通日志和输入重画，避免直接写 ANSI 光标指令破坏用户正在输入的文字。
+     * 终端过小、不支持预览或已退出时不更新；调用方仍会在换行/结束时输出完整正文。</p>
+     * @param label Thinking 或 Reply，由程序决定，不来自模型参数
+     * @param text 当前未换行片段的完整显示副本；不修改历史
+     */
+    void preview(String label, String text) {
+        if (preview == null || closed) return;
+        lines.updateScreen(() -> {
+            if (closed) return;
+            if (terminal.getHeight() < 5) { preview.update(java.util.List.of()); return; }
+            preview.resize(terminal.getSize());
+            // 预览只保留屏幕宽度以内的尾部；上方记录不截断。控制字符不作为光标指令执行。
+            var line = new AttributedString(text.replaceAll("[\\p{Cntrl}\\p{Zl}\\p{Zp}]", " "));
+            int width = Math.max(1, terminal.getWidth() - 1);
+            int length = line.columnLength();
+            preview.update(java.util.List.of(AttributedString.fromAnsi(Ansi.gray("[Leader] [" + label + "] generating…")),
+                    line.columnSubSequence(Math.max(0, length - width), length)));
+        });
+    }
+
+    /** 清掉临时预览；已完成的正文由 CliOutput 保留，不删除任何终端历史。 */
+    void clearPreview() {
+        if (preview == null || closed) return;
+        lines.updateScreen(() -> { if (!closed) preview.update(java.util.List.of()); });
+    }
+
+    /** @return 已关闭时展示对象丢弃晚到片段，不在恢复 shell 后继续画预览 */
+    boolean isClosed() { return closed; }
+
+    /**
+     * 让新增的预览更新使用与 JLine 输入/printAbove 相同的锁。
+     * 只扩展屏幕操作，不改变按键、补全或消息调度；避免自己维护第二套终端锁和光标状态。
+     */
+    private static final class ScreenReader extends LineReaderImpl {
+        /** @param terminal 已创建的唯一终端，不另读 stdin */
+        private ScreenReader(Terminal terminal) throws IOException { super(terminal, "JadeCode"); }
+
+        /** @param update 持有 JLine 锁时执行的短屏幕更新，不得读文件、请求模型或等用户 */
+        private void updateScreen(Runnable update) {
+            lock.lock();
+            try {
+                update.run();
+                if (isReading()) redisplay();
+                getTerminal().flush();
+            } finally { lock.unlock(); }
+        }
+    }
+
+    /**
      * 在任务和命令都已停止后，恢复 System.out/err 及终端设置，重复调用也可以。
      * 不关闭全局 System.in；JLine 的终端负责恢复用户原来的回显和按键设置。
      * @throws IOException 终端设置恢复失败
@@ -163,6 +230,7 @@ public final class TerminalDisplay implements AutoCloseable {
             return;
         }
         try {
+            if (preview != null) lines.updateScreen(preview::close);
             // 项目正常日志以换行结束；退出时再补换行，让未结束的零散打印也能被 Writer 输出。
             routed.println();
             routed.flush();
