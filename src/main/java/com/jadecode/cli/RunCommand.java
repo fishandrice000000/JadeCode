@@ -39,7 +39,7 @@ public class RunCommand implements Callable<Integer> {
         }
         // 最后才恢复终端；此前先拒绝待答申请、停止会话和命令，让清理过程还能正确显示日志。
         try (TerminalDisplay display = TerminalDisplay.open();
-                SessionRuntime runtime = JadeCodeFactory.create(CliHooks::register);
+                SessionRuntime runtime = JadeCodeFactory.create(CliHooks::register, CliOutput::print, CliOutput::error);
                 ConsoleInput terminal = new ConsoleInput(display)) {
             runtime.start(false);
             terminal.await(runtime.submit(prompt, terminal));

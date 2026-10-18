@@ -4,7 +4,6 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -58,6 +57,24 @@ public final class JadeCodeFactory {
     /** 静态装配入口，无需创建工厂实例。 */
     private JadeCodeFactory() { }
 
+    /**
+     * 给每个会话安装展示函数，不让装配代码依赖具体的终端实现。
+     *
+     * <p>队友也会运行工具和维护待办，所以不能只给最终回复加身份。工厂把属于这个 Agent 的
+     * output 一起交给展示代码，工具、计划和轮次统计就能使用同一来源标签。这个接口只负责
+     * 安装显示函数，不执行模型请求、处理权限或修改消息历史。</p>
+     */
+    @FunctionalInterface
+    public interface Presentation {
+        /**
+         * 在任务开始前给一份独立的 Hooks 安装终端展示。
+         * @param hooks 已注册成员与权限检查的会话 Hooks，不改变检查顺序
+         * @param cwd 工作目录，只用来显示，不在这里读取文件
+         * @param output 已带本会话身份的输出函数，传入未上色的完整展示文字
+         */
+        void register(Hooks hooks, Path cwd, Consumer<String> output);
+    }
+
     private static final String BASH_TOOL = "bash";
     private static final String READ_FILE_TOOL = "read_file";
     private static final String WRITE_FILE_TOOL = "write_file";
@@ -82,14 +99,24 @@ public final class JadeCodeFactory {
     /**
      * 读取当前配置并绑定真实客户端，随后复用可注入的创建路径。
      * 构造客户端不发送模型请求；工作区状态存储的读取失败按原规则报告。
-     * @param presentation CLI 提供的普通展示 hook 安装函数，接收表与本次工作目录
+     * @param presentation CLI 提供的普通展示 hook 安装函数，接收表、工作目录与本会话输出
      * @return 尚未 start 的会话；调用者须 close，会话关闭后最后恢复终端
      */
-    public static SessionRuntime create(BiConsumer<Hooks, Path> presentation) {
+    public static SessionRuntime create(Presentation presentation) {
+        return create(presentation, System.out::println, System.err::println);
+    }
+
+    /**
+     * 让 CLI 指定如何显示整条输出，而不是让工厂自己给终端上色。
+     * @param presentation 每份会话展示 hook 的安装方法
+     * @param output 接收完整正常输出的函数，工厂会先附上 Agent 身份
+     * @param errors 接收完整错误输出的函数，不在这里吞掉或改写错误
+     * @return 未启动的生产会话；读取配置，但不会在构造时请求模型
+     */
+    public static SessionRuntime create(Presentation presentation, Consumer<String> output, Consumer<String> errors) {
         AppConfig config = AppConfig.fromEnv(Env.loadDotEnv());
         Path cwd = Path.of("").toAbsolutePath();
-        return create(config, cwd, new AnthropicSdkLlmClient(config),
-                System.out::println, System.err::println, presentation);
+        return create(config, cwd, new AnthropicSdkLlmClient(config), output, errors, presentation);
     }
 
     /**
@@ -100,7 +127,7 @@ public final class JadeCodeFactory {
      * @return 未启动会话，拥有执行器与服务；同步 run 返回不会关闭它
      */
     public static SessionRuntime create(AppConfig config, Path cwd, LlmClient client) {
-        return create(config, cwd, client, ignored -> { }, ignored -> { }, (hooks, path) -> { });
+        return create(config, cwd, client, ignored -> { }, ignored -> { }, (hooks, path, output) -> { });
     }
 
     /**
@@ -119,13 +146,16 @@ public final class JadeCodeFactory {
      * @throws IllegalStateException 绑定存储失败，保留原 IOException 为 cause
      */
     public static SessionRuntime create(AppConfig config, Path cwd, LlmClient client,
-            Consumer<String> output, Consumer<String> errors, BiConsumer<Hooks, Path> presentation) {
+            Consumer<String> output, Consumer<String> errors, Presentation presentation) {
         try {
             TaskStore tasks = new TaskStore(cwd);
             TeamManager team = new TeamManager(cwd, tasks, errors);
-            SessionRuntime leader = assemble(config, cwd, client, output, errors, presentation, team, TeamManager.LEADER, "Leader");
+            SessionRuntime leader = assemble(config, cwd, client,
+                    text -> output.accept("[Leader] " + text), text -> errors.accept("[Leader] " + text),
+                    presentation, team, TeamManager.LEADER, "Leader");
             team.bind(leader, (id, role) -> assemble(config, cwd, client,
-                    text -> output.accept("[Teammate " + id + "] " + text), errors,
+                    text -> output.accept("[Teammate " + id + "] " + text),
+                    text -> errors.accept("[Teammate " + id + "] " + text),
                     presentation, team, id, role));
             leader.onClose(team::close);
             return leader;
@@ -140,7 +170,7 @@ public final class JadeCodeFactory {
      * 角色仅影响工具表、提示与审批方式，不额外复制一份循环实现。
      */
     private static SessionRuntime assemble(AppConfig config, Path cwd, LlmClient client,
-            Consumer<String> output, Consumer<String> errors, BiConsumer<Hooks, Path> presentation,
+            Consumer<String> output, Consumer<String> errors, Presentation presentation,
             TeamManager team, String actor, String role) {
         boolean isLeader = actor.equals(TeamManager.LEADER);
         PathResolver resolver = new PathResolver(cwd);
@@ -220,7 +250,7 @@ public final class JadeCodeFactory {
         // 先查工具成员与权限，再安装 CLI 提供的普通展示；保持 PreToolUse 原有短路顺序。
         hooks.register(Hooks.PRE_TOOL_USE, membershipHook(tools));
         hooks.register(Hooks.PRE_TOOL_USE, permissionHook(gate));
-        presentation.accept(hooks, cwd);
+        presentation.register(hooks, cwd, output);
 
         AgentExecutor engine = new AgentExecutor(client,
                 tools,

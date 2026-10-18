@@ -28,10 +28,10 @@ public class ReplCommand implements Callable<Integer> {
     public Integer call() {
         // 先创建终端，连初始化日志也能正确显示；退出时最后才关闭它，让任务清理日志仍可输出。
         try (TerminalDisplay display = TerminalDisplay.open();
-                SessionRuntime runtime = JadeCodeFactory.create(CliHooks::register);
+                SessionRuntime runtime = JadeCodeFactory.create(CliHooks::register, CliOutput::print, CliOutput::error);
                 ConsoleInput terminal = new ConsoleInput(display)) {
             runtime.start(true);
-            System.out.println("JadeCode REPL — Enter 提交，Alt+Enter 换行，支持多行粘贴；q/exit 或 Ctrl+D 退出");
+            CliOutput.welcome();
             while (true) {
                 String query = terminal.readQuery();
                 // 用户要退出就立即返回，不能把退出动作排在当前任务后面。
@@ -40,7 +40,7 @@ public class ReplCommand implements Callable<Integer> {
                 var result = runtime.submitUser(query, terminal);
                 // 只额外显示排队失败；任务虽然很快出错，也不能误报为根本没排进去。
                 result.whenComplete((answer, failure) -> {
-                    if (failure instanceof RejectedExecutionException) System.err.println("[Rejected] " + failure.getMessage());
+                    if (failure instanceof RejectedExecutionException) CliOutput.error("[Rejected] " + failure.getMessage());
                 });
             }
         } catch (IOException failure) {
