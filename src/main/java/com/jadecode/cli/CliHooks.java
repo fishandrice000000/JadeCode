@@ -1,11 +1,7 @@
 package com.jadecode.cli;
 
 import java.nio.file.Path;
-import java.util.List;
-
 import com.jadecode.hooks.Hooks;
-import com.jadecode.messages.Message;
-import com.jadecode.messages.ToolResultBlock;
 import com.jadecode.messages.ToolUseBlock;
 import com.jadecode.subagent.SubagentOutcome;
 import com.jadecode.util.Ansi;
@@ -33,13 +29,13 @@ public final class CliHooks {
         hooks.register(Hooks.SUBAGENT_START, subagentStartHook());
         hooks.register(Hooks.SUBAGENT_TOOL, subagentToolHook());
         hooks.register(Hooks.SUBAGENT_END, subagentEndHook());
-        hooks.register(Hooks.STOP, summaryHook());
+        hooks.register(Hooks.TURN_END, summaryHook());
     }
 
     /** UserPromptSubmit:记录当前工作目录。返回值调用方忽略 */
     private static Hooks.Hook promptContextHook(Path cwd) {
         return params -> {
-            System.out.println(Ansi.gray("[HOOK] UserPromptSubmit: working in " + cwd));
+            System.out.println(Ansi.gray("[Request] Working in " + cwd));
             return null;
         };
     }
@@ -48,7 +44,7 @@ public final class CliHooks {
     private static Hooks.Hook logCallHook() {
         return params -> {
             ToolUseBlock block = (ToolUseBlock) params.get(Hooks.PARAM_BLOCK);
-            System.out.println(Ansi.gray("[HOOK] " + block.name()));
+            System.out.println(Ansi.gray("[Tool] " + block.name()));
             return null;
         };
     }
@@ -59,7 +55,7 @@ public final class CliHooks {
             ToolUseBlock block = (ToolUseBlock) params.get(Hooks.PARAM_BLOCK);
             String output = (String) params.get(Hooks.PARAM_OUTPUT);
             if (output.length() > 100000) {
-                System.out.println(Ansi.yellow("[HOOK] WARNING: Large output from " + block.name()));
+                System.out.println(Ansi.yellow("[Warning] Large output from " + block.name()));
             }
             return null;
         };
@@ -78,6 +74,9 @@ public final class CliHooks {
             if (block.name().equals(TODO_WRITE_TOOL)) {
                 System.out.println("\n" + Ansi.yellow("## Current Tasks\n" + output));
             }
+            if (block.name().equals("bash") && output.startsWith("[Background task ")) {
+                System.out.println(Ansi.gray("[Background] 1 command submitted"));
+            }
             return null;
         };
     }
@@ -95,7 +94,7 @@ public final class CliHooks {
         return params -> {
             ToolUseBlock block = (ToolUseBlock) params.get(Hooks.PARAM_BLOCK);
             String output = (String) params.get(Hooks.PARAM_OUTPUT);
-            System.out.println(Ansi.gray("  [sub] " + block.name() + ": " + truncate(output, 100)));
+            System.out.println(Ansi.gray("  [Subagent tool] " + block.name() + ": " + truncate(output, 100)));
             return null;
         };
     }
@@ -105,9 +104,9 @@ public final class CliHooks {
         return params -> {
             SubagentOutcome outcome = (SubagentOutcome) params.get(Hooks.PARAM_OUTCOME);
             String banner = switch (outcome) {
-                case DONE -> "[Subagent done]";
-                case STOPPED -> "[Subagent stopped]";
-                case FAILED -> "[Subagent failed]";
+                case DONE -> "[Subagent returned]";
+                case STOPPED -> "[Subagent stopped] Reached the 30-turn limit";
+                case FAILED -> "[Subagent failed] " + params.get(Hooks.PARAM_OUTPUT);
             };
             System.out.println(Ansi.magenta(banner));
             return null;
@@ -119,14 +118,11 @@ public final class CliHooks {
         return s.length() <= max ? s : s.substring(0, max);
     }
 
-    /** Stop:收尾统计(tool_result 计数),恒返回 null = 允许退出 */
+    /** 大轮次结束后展示独立计数；不是 Stop 判定，也不依赖历史中还保留多少结果。 */
     private static Hooks.Hook summaryHook() {
         return params -> {
-            @SuppressWarnings("unchecked")
-            List<Message> messages = (List<Message>) params.get(Hooks.PARAM_MESSAGES);
-            long n = messages.stream().flatMap(m -> m.content().stream())
-                    .filter(b -> b instanceof ToolResultBlock).count();
-            System.out.println(Ansi.gray("[HOOK] Stop: session used " + n + " tool calls"));
+            // 使用本轮独立计数，不从可能已经被压缩的历史反推累计调用次数。
+            System.out.println(Ansi.gray("[Turn] " + params.get(Hooks.PARAM_TOOL_COUNT) + " tool calls in this turn"));
             return null;
         };
     }

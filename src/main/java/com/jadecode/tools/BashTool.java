@@ -92,17 +92,21 @@ public class BashTool implements Tool {
                 : "Run a shell command. run_in_background=true returns an ID immediately, not completion."
                 + " wait_for_completion defaults to true for background commands: the current task waits for"
                 + " their results and resumes automatically. Set it to false only to detach from the task;"
-                + " detached results are later reference notifications. All commands stop when the CLI exits.";
+                + " allow_insertion=false by default defers results until the finishing/waiting phase."
+                + " wake_when_idle=false by default does not start a new turn for detached results."
+                + " Set wake_when_idle=true when a detached result needs an automatic follow-up."
+                + " All commands stop when the CLI exits.";
     }
 
     /**
-     * 告诉模型可以传哪些参数。有后台管理器才提供两个后台开关，子代理不提供。
-     * @return command 字符串，以及父工具的 run_in_background/wait_for_completion 布尔参数
+     * 告诉模型可以传哪些参数。有后台管理器才提供后台模式及三项结果处理设置。
+     * @return command，以及 run_in_background/wait_for_completion/allow_insertion/wake_when_idle
      */
     @Override
     public Map<String, String> properties() {
         return background == null ? Map.of("command", "string")
-                : Map.of("command", "string", "run_in_background", "boolean", "wait_for_completion", "boolean");
+                : Map.of("command", "string", "run_in_background", "boolean", "wait_for_completion", "boolean",
+                        "allow_insertion", "boolean", "wake_when_idle", "boolean");
     }
 
     /** @return command 必填；省略后台参数保持同步默认。 */
@@ -134,14 +138,14 @@ public class BashTool implements Tool {
      * <p>只接受真正的 JSON boolean，不接受字符串 "true" 或显式 null。
      * wait_for_completion 只有后台模式才能传，不能默默忽略它，让模型误以为设置生效。
      * 调用者必须先做权限检查；这里不再次询问用户，也不请求模型。</p>
-     * @param input 非 null 参数对象，不修改；command 必填，两个开关可选
+     * @param input 非 null 参数对象，不修改；command 必填，后台模式及结果处理开关可选
      * @param context 程序记录的任务信息；后台必须提供，用来找回所属任务的结果，同步可为 null
      * @return 同步时为输出或错误；后台时为 bg_id 和启动说明，不代表跑完。
      *         参数不对、当前 Agent 不支持后台或管理器不能接收时，返回 Error 文字
      */
     @Override
     public String execute(ObjectNode input, ExecutionContext context) {
-        // 1. 两个开关都检查完再执行；不适用的参数直接报错，不能让模型以为设置已经生效。
+        // 1. 所有开关都检查完再执行；不适用的参数报错，不能让模型以为设置已经生效。
         JsonNode command = input.get("command");
         if (command == null) {
             return "Error: Missing required parameter: command";
@@ -157,6 +161,10 @@ public class BashTool implements Tool {
         JsonNode waiting = input.get("wait_for_completion");
         if (waiting != null && !waiting.isBoolean()) return "Error: wait_for_completion must be a boolean";
         if (waiting != null && !asynchronous) return "Error: wait_for_completion requires run_in_background=true";
+        for (String flag : List.of("allow_insertion", "wake_when_idle")) {
+            if (input.has(flag) && !input.get(flag).isBoolean()) return "Error: " + flag + " must be a boolean";
+            if (input.has(flag) && !asynchronous) return "Error: " + flag + " requires run_in_background=true";
+        }
         if (asynchronous && background == null) {
             return "Error: Background execution is not available in this agent";
         }
@@ -165,7 +173,8 @@ public class BashTool implements Tool {
             if (context == null) return "Error: Background execution requires a Harness task context";
             try {
                 boolean required = waiting == null || waiting.booleanValue();
-                String id = background.start(command.textValue(), context.id(), required);
+                String id = background.start(command.textValue(), context, required,
+                        input.path("allow_insertion").asBoolean(false), input.path("wake_when_idle").asBoolean(false));
                 return "[Background task " + id + " started] " + (required
                         ? "The current task must process its result before finishing; it will resume automatically."
                         : "Detached from the current task. Its result is a later session notification.");

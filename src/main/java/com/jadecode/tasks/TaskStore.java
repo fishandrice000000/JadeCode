@@ -30,7 +30,8 @@ import com.jadecode.util.Json;
  * <p>主流程是创建 → 加依赖 → 认领 → 完成；读取和列举用于恢复和查看。
  * 与 todo_write 整表替换不同，这里每次只更新一项任务的新版本，模型也不能随意改状态或路径。
  *
- * <p>按顺序执行设计：每次操作先取一份快照统一判断，不是数据库事务或并发锁。
+ * <p>同一工作区的 Team 共享一个实例，公开操作使用实例锁串行读取与更新，
+ * 防止本进程重复认领或丢失更新；这不是数据库事务，也不是跨进程文件锁。
  * 写入用临时文件原子替换，保护旧 JSON 不被普通写入失败截断，但不保证断电后的耐久性，
  * 也不保证多个进程同时认领时的互斥。
  */
@@ -62,7 +63,7 @@ public final class TaskStore {
      * @throws IOException 建目录 / 写入失败或一百次 ID 冲突；普通写入失败清理本次新文件
      * @throws IllegalArgumentException 标题或描述非法，在建库前拒绝
      */
-    public Task create(String subject, String description) throws IOException {
+    public synchronized Task create(String subject, String description) throws IOException {
         if (subject == null || subject.isBlank() || description == null) {
             throw new IllegalArgumentException("subject 必须为非空文本，description 必须为文本");
         }
@@ -98,7 +99,7 @@ public final class TaskStore {
      * @throws IOException 缺文件、链接、坏 JSON 或字段非法；不静默把坏记录当作不存在
      * @throws IllegalArgumentException ID 非法，路径解析前拒绝
      */
-    public Task load(String id) throws IOException {
+    public synchronized Task load(String id) throws IOException {
         requireId(id);
         return readTask(checkedRoot(false).resolve(id + ".json"), id);
     }
@@ -109,7 +110,7 @@ public final class TaskStore {
      * @return 不可修改的任务快照，不代表文件系统并发隔离
      * @throws IOException 库根 / 列举 / 合法命名记录读取失败
      */
-    public List<Task> list() throws IOException {
+    public synchronized List<Task> list() throws IOException {
         // 不跟随链接判断“缺库”：悬空库根是坏配置，应由 checkedRoot 报错，而非伪装成空库。
         if (Files.notExists(taskDir, LinkOption.NOFOLLOW_LINKS)) {
             return List.of();
@@ -137,7 +138,7 @@ public final class TaskStore {
      * @throws IllegalArgumentException 目标不可更新、依赖不存在、自依赖、成环或参数非法
      * @throws IOException 快照读取或原子保存失败
      */
-    public Task updateDependencies(String id, List<String> additions) throws IOException {
+    public synchronized Task updateDependencies(String id, List<String> additions) throws IOException {
         requireId(id);
         if (additions == null || additions.isEmpty()) {
             throw new IllegalArgumentException("addBlockedBy 必须是非空 ID 列表");
@@ -172,7 +173,7 @@ public final class TaskStore {
      * @throws IllegalArgumentException 状态不可认领、前置未完成 / 缺失、owner 非法
      * @throws IOException 读取 / 保存失败
      */
-    public Task claim(String id, String owner) throws IOException {
+    public synchronized Task claim(String id, String owner) throws IOException {
         requireId(id);
         requireOwner(owner);
         Map<String, Task> graph = snapshot();
@@ -201,7 +202,7 @@ public final class TaskStore {
      * @throws IllegalArgumentException 状态或负责者不匹配
      * @throws IOException 快照或保存失败，未发布候选完成状态
      */
-    public Completion complete(String id, String owner) throws IOException {
+    public synchronized Completion complete(String id, String owner) throws IOException {
         requireId(id);
         requireOwner(owner);
         Map<String, Task> graph = snapshot();
@@ -229,6 +230,46 @@ public final class TaskStore {
         // 2. 只发布当前任务一个文件；其它任务的前置 ID 不删除，后续据新状态自然判断为可开始。
         save(completed);
         return result;
+    }
+
+    /**
+     * 保存执行失败或受阻的事实，不把依赖视为满足，也不自动重试任务。
+     * Team 在核对 assignment 后调用这里；owner 必须仍与当前负责者一致。
+     * 输入记录不原地修改，保存失败时抛 IOException，不能向模型宣称成功。
+     * @param id 执行中的任务 ID
+     * @param owner 原负责者
+     * @param status FAILED 或 BLOCKED
+     * @return 已写盘的记录
+     */
+    public synchronized Task stop(String id, String owner, Status status) throws IOException {
+        if (status != Status.FAILED && status != Status.BLOCKED) {
+            throw new IllegalArgumentException("只能登记 failed 或 blocked");
+        }
+        Task task = load(id);
+        if (task.status() != Status.IN_PROGRESS || !owner.equals(task.owner())) {
+            throw new IllegalArgumentException("只能更新原负责者的 in_progress 任务");
+        }
+        Task updated = new Task(id, task.subject(), task.description(), status, owner, task.blockedBy());
+        save(updated);
+        return updated;
+    }
+
+    /**
+     * Leader 明确决定重派，或尚未投递成功而撤销认领时，恢复为 pending。
+     * 不删除历史报告、不执行工程任务；completed 不能重新打开。
+     * @param id 待恢复任务
+     * @param owner 防止误撤销另一个负责者的新认领
+     * @return 已保存的无人认领记录
+     */
+    public synchronized Task release(String id, String owner) throws IOException {
+        Task task = load(id);
+        if (task.status() == Status.PENDING || task.status() == Status.COMPLETED
+                || !owner.equals(task.owner())) {
+            throw new IllegalArgumentException("任务不允许由此负责者恢复");
+        }
+        Task pending = new Task(id, task.subject(), task.description(), Status.PENDING, null, task.blockedBy());
+        save(pending);
+        return pending;
     }
 
     /** 一次操作的本地图；坏记录使操作明确失败，不自动删除或猜测其完成状态。 */

@@ -6,6 +6,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import com.jadecode.execution.ExecutionContext;
 
 
 /**
@@ -16,8 +17,9 @@ import java.util.Map;
  * required=true 表示当前任务做完前必须处理这个结果，不要求命令必须成功；
  * 失败结果也交给模型决定下一步。</p>
  *
- * <p>jobs 保存所有还没处理完的命令记录；ready 只放已经跑完、尚未取走的结果。
- * collect 取走结果后暂不删 jobs，模型正常回答后才 acknowledge 删除。
+ * <p>jobs 保存所有还没处理完的命令记录；ready 暂存已经跑完、尚未排进 Inbox 的结果。
+ * 正式 Session 通过 onResult 收事件，queued 后删除 ready 引用，模型正常回答后才 acknowledge 删除 jobs。
+ * 旧的 collect 调用方式仍可用于没有事件接收方的调用者。
  * 所以命令跑完、结果取出、结果交给模型，是三件不同的事，不能只看进程是否还活着。</p>
  *
  * <p>这些记录总共最多 32 项，每条后台命令有自己的 ShellCommand，任务失败时可以只停自己
@@ -39,6 +41,8 @@ public final class BackgroundManager implements AutoCloseable {
     private final ArrayDeque<Completion> ready = new ArrayDeque<>();
     /** 命令跑完时调用的函数，默认什么也不做；结果仍会保存在 ready 中。 */
     private Runnable listener = () -> { };
+    /** 正式 Session 用它把完成事实排进自己的 Inbox；默认保留旧 collect 调用方式。 */
+    private java.util.function.Consumer<Completion> resultListener = result -> { };
     /** 生成本次会话的 bg_id；重启后重新计数，不保证不同进程的 ID 不同。 */
     private long counter;
     /** 用户退出时设为 true，工作线程之后不能再添加结果；访问要拿锁。 */
@@ -76,6 +80,14 @@ public final class BackgroundManager implements AutoCloseable {
         this.listener = java.util.Objects.requireNonNull(listener);
     }
 
+    /** 安装完成事件生产者；函数只负责排队，不能请求模型或修改 history。 */
+    public synchronized void onResult(java.util.function.Consumer<Completion> listener) {
+        resultListener = java.util.Objects.requireNonNull(listener);
+    }
+
+    /** 结果已排进 Inbox，移除旧待取队列中的同一引用；jobs 仍等模型确认后才删除。 */
+    public synchronized void queued(Completion result) { ready.removeIf(item -> item.id().equals(result.id())); }
+
     /**
      * 记录一条后台命令并启动线程，立即返回 bg_id，不等命令跑完。
      *
@@ -91,13 +103,27 @@ public final class BackgroundManager implements AutoCloseable {
      * @throws NullPointerException owner 为 null
      */
     public synchronized String start(String command, String owner, boolean required) {
+        return start(command, new ExecutionContext(owner, ExecutionContext.Source.USER, null), required, false, false);
+    }
+
+    /**
+     * 启动带通知规则的命令。规则在启动时保存，不能等运行结束才决定原任务是否需要等待。
+     * context 由 Harness 提供，通知唤起新轮次时仍沿用原来源与审批权限，不冒充新的用户授权。
+     * @param required 原轮次是否必须处理结果
+     * @param allowInsertion 工作途中是否可以提前交付
+     * @param wakeWhenIdle 空闲时是否启动一轮结果处理
+     * @return 实际登记的 bg_id，不是成功完成的证明
+     */
+    public synchronized String start(String command, ExecutionContext context, boolean required,
+            boolean allowInsertion, boolean wakeWhenIdle) {
         if (command == null || command.isBlank()) throw new IllegalArgumentException("Bash command cannot be empty");
-        java.util.Objects.requireNonNull(owner, "owner");
+        java.util.Objects.requireNonNull(context, "context");
         if (closed || jobs.size() >= MAX_PENDING) {
             throw new IllegalStateException(closed ? "Background session is closed" : "Too many pending background tasks");
         }
         String id = "bg_%04d".formatted(++counter);
-        Job job = new Job(id, owner, required, command, new ShellCommand(cwd, timeoutSeconds));
+        Job job = new Job(id, context.id(), required, command, new ShellCommand(cwd, timeoutSeconds),
+                allowInsertion, wakeWhenIdle, context);
         // 先存 Job 再开线程，免得命令很快跑完或用户同时退出时，管理器里还找不到它。
         jobs.put(id, job);
         try {
@@ -140,12 +166,20 @@ public final class BackgroundManager implements AutoCloseable {
                     "failed", null, "Error: " + failure.getMessage(), false);
         }
         Runnable signal;
+        java.util.function.Consumer<Completion> publish;
+        Completion event;
         synchronized (this) {
             // 任务失败或用户退出时可能已删掉 Job；现在才返回的结果不要再加回去。
             if (closed || !jobs.containsKey(job.id())) return;
-            ready.addLast(result);
+            // ShellCommand 只报告执行事实；投递设置和可信来源从原始 Job 复制，不能从输出猜。
+            event = new Completion(result.id(), result.owner(), result.required(), result.command(),
+                    result.status(), result.exitCode(), result.output(), result.truncated(),
+                    job.allowInsertion(), job.wakeWhenIdle(), job.context());
+            ready.addLast(event);
             signal = listener;
+            publish = resultListener;
         }
+        publish.accept(event);
         signal.run();
     }
 
@@ -200,15 +234,23 @@ public final class BackgroundManager implements AutoCloseable {
      * 已经删掉的 Job 不再恢复；整个会话退出后也不恢复。</p>
      * @param results 原先 collect 取出的结果，不是模型生成的通知文字
      */
-    public synchronized void restore(List<Completion> results) {
-        if (closed) return;
-        // 从后往前 addFirst：原来取出 [A,B]，放回后仍是 A 在 B 前面。
-        for (int i = results.size() - 1; i >= 0; i--) {
-            Completion result = results.get(i);
-            if (jobs.containsKey(result.id()) && ready.stream().noneMatch(item -> item.id().equals(result.id()))) {
-                ready.addFirst(result);
+    public void restore(List<Completion> results) {
+        List<Completion> restored = new ArrayList<>();
+        java.util.function.Consumer<Completion> publish;
+        synchronized (this) {
+            if (closed) return;
+            // 从后往前 addFirst：原来取出 [A,B]，放回后仍是 A 在 B 前面。
+            for (int i = results.size() - 1; i >= 0; i--) {
+                Completion result = results.get(i);
+                if (jobs.containsKey(result.id()) && ready.stream().noneMatch(item -> item.id().equals(result.id()))) {
+                    ready.addFirst(result);
+                    restored.add(result);
+                }
             }
+            publish = resultListener;
         }
+        // 正式 Session 重新排队的是结果，不是重新启动 shell。不能拿进程锁调用其它组件。
+        for (int i = restored.size() - 1; i >= 0; i--) publish.accept(restored.get(i));
     }
 
     /**
@@ -236,7 +278,8 @@ public final class BackgroundManager implements AutoCloseable {
      * @param command 实际命令原文
      * @param shell 仅这条命令使用的 ShellCommand，不与其它后台命令共用
      */
-    private record Job(String id, String owner, boolean required, String command, ShellCommand shell) { }
+    private record Job(String id, String owner, boolean required, String command, ShellCommand shell,
+            boolean allowInsertion, boolean wakeWhenIdle, ExecutionContext context) { }
 
     /**
      * 后台命令跑完后的记录，保存在内存中，不是会话日志。
@@ -250,7 +293,14 @@ public final class BackgroundManager implements AutoCloseable {
      * @param truncated ShellCommand 是否已截断输出，发通知时也要告知模型
      */
     public record Completion(String id, String owner, boolean required, String command,
-            String status, Integer exitCode, String output, boolean truncated) {
+            String status, Integer exitCode, String output, boolean truncated,
+            boolean allowInsertion, boolean wakeWhenIdle, ExecutionContext context) {
+        /** 旧检查构造的结果沿用旧投递方式；正式工具使用完整构造器。 */
+        public Completion(String id, String owner, boolean required, String command,
+                String status, Integer exitCode, String output, boolean truncated) {
+            this(id, owner, required, command, status, exitCode, output, truncated, false, false,
+                    new ExecutionContext(owner, ExecutionContext.Source.USER, null));
+        }
     }
 
     /**

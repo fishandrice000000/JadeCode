@@ -36,7 +36,8 @@ public class ReplCommand implements Callable<Integer> {
                 String query = terminal.readQuery();
                 // 用户要退出就立即返回，不能把退出动作排在当前任务后面。
                 if (query == null) return 0;
-                var result = runtime.submit(query, terminal);
+                if (query.isBlank()) { runtime.promoteUserBuffer(); continue; }
+                var result = runtime.submitUser(query, terminal);
                 // 只额外显示排队失败；任务虽然很快出错，也不能误报为根本没排进去。
                 result.whenComplete((answer, failure) -> {
                     if (failure instanceof RejectedExecutionException) System.err.println("[Rejected] " + failure.getMessage());

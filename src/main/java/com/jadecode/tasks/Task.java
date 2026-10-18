@@ -15,7 +15,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
  * @param id 存储层分配的稳定任务 ID，不是文件路径
  * @param subject 非空的简短标题
  * @param description 完整工作说明，可以为空字符串但不能为 null
- * @param status pending / in_progress / completed
+ * @param status pending / in_progress / completed / failed / blocked
  * @param owner pending 时为 null，其余状态必须是非空负责者标签，不是登录凭证
  * @param blockedBy 前置任务 ID 列表（不可修改），全部完成才允许认领
  */
@@ -53,6 +53,8 @@ public record Task(String id, String subject, String description, Status status,
     public enum Status {
         @JsonProperty("pending") PENDING,
         @JsonProperty("in_progress") IN_PROGRESS,
-        @JsonProperty("completed") COMPLETED
+        @JsonProperty("completed") COMPLETED,
+        @JsonProperty("failed") FAILED,
+        @JsonProperty("blocked") BLOCKED
     }
 }

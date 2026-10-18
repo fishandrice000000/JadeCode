@@ -14,12 +14,12 @@ public final class Ansi {
     private Ansi() {
     }
 
-    /** 红:闸门 1 硬拒行 [blocked] */
+    /** 红：硬性规则阻止行 [Blocked]。 */
     public static String red(String s) {
         return color("31", s);
     }
 
-    /** 黄:权限询问 [permission] 与大输出提醒 */
+    /** 黄：审批与警告。 */
     public static String yellow(String s) {
         return color("33", s);
     }
@@ -29,12 +29,12 @@ public final class Ansi {
         return color("36", s);
     }
 
-    /** 灰:hook 日志行 [HOOK] */
+    /** 灰：请求、工具调用等普通执行日志。 */
     public static String gray(String s) {
         return color("90", s);
     }
 
-    /** 洋红:子代理委派横幅 [Subagent started] / [Subagent done] */
+    /** 洋红：一次性子代理开始、返回或停止。 */
     public static String magenta(String s) {
         return color("35", s);
     }

@@ -25,6 +25,9 @@ public class Hooks {
     public static final String SUBAGENT_START = "SubagentStart";
     public static final String SUBAGENT_TOOL = "SubagentTool";
     public static final String SUBAGENT_END = "SubagentEnd";
+    /** 大轮次实际结束后用于展示计数，不参与 Stop 是否续跑的决策。 */
+    public static final String TURN_END = "TurnEnd";
+    public static final String PARAM_TOOL_COUNT = "toolCount";
 
     // 调用者和 hook 都用这些参数名，免得一边传 block，另一边却按别的名字读取。
     public static final String PARAM_QUERY = "query"; // UserPromptSubmit
