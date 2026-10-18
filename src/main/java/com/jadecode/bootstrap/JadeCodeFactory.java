@@ -5,6 +5,7 @@ import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jadecode.agent.AgentExecutor;
@@ -16,6 +17,7 @@ import com.jadecode.execution.ExecutionContext;
 import com.jadecode.hooks.Hooks;
 import com.jadecode.llm.AnthropicSdkLlmClient;
 import com.jadecode.llm.LlmClient;
+import com.jadecode.llm.ResponseStream;
 import com.jadecode.memory.MemoryManager;
 import com.jadecode.memory.MemoryStore;
 import com.jadecode.messages.ToolUseBlock;
@@ -114,9 +116,22 @@ public final class JadeCodeFactory {
      * @return 未启动的生产会话；读取配置，但不会在构造时请求模型
      */
     public static SessionRuntime create(Presentation presentation, Consumer<String> output, Consumer<String> errors) {
+        return create(presentation, output, errors, () -> ResponseStream.NONE);
+    }
+
+    /**
+     * CLI 为 Leader 正式请求提供流式展示，不向队友或辅助请求传播这个展示对象。
+     * @param presentation 展示 hook 的安装方法
+     * @param output 完整事件输出
+     * @param errors 错误输出
+     * @param streams 每次 Leader 请求创建新展示对象，不改模型或思考模式
+     * @return 未启动的生产会话，仍通过既有配置加载
+     */
+    public static SessionRuntime create(Presentation presentation, Consumer<String> output, Consumer<String> errors,
+            Supplier<ResponseStream> streams) {
         AppConfig config = AppConfig.fromEnv(Env.loadDotEnv());
         Path cwd = Path.of("").toAbsolutePath();
-        return create(config, cwd, new AnthropicSdkLlmClient(config), output, errors, presentation);
+        return create(config, cwd, new AnthropicSdkLlmClient(config), output, errors, presentation, streams);
     }
 
     /**
@@ -147,16 +162,32 @@ public final class JadeCodeFactory {
      */
     public static SessionRuntime create(AppConfig config, Path cwd, LlmClient client,
             Consumer<String> output, Consumer<String> errors, Presentation presentation) {
+        return create(config, cwd, client, output, errors, presentation, () -> ResponseStream.NONE);
+    }
+
+    /**
+     * 可注入模型的完整装配；请求展示工厂只传给 Leader，不存进共享 LlmClient。
+     * @param config 已提供的配置，不读取凭据
+     * @param cwd 工作区根
+     * @param client 可用假实现或本地 SSE 服务替代的客户端
+     * @param output 正常输出
+     * @param errors 错误输出
+     * @param presentation 展示 hooks 安装方法
+     * @param streams Leader 每次请求的展示工厂
+     * @return 未启动的 Leader，拥有 Team 生命周期
+     */
+    public static SessionRuntime create(AppConfig config, Path cwd, LlmClient client,
+            Consumer<String> output, Consumer<String> errors, Presentation presentation, Supplier<ResponseStream> streams) {
         try {
             TaskStore tasks = new TaskStore(cwd);
             TeamManager team = new TeamManager(cwd, tasks, errors);
             SessionRuntime leader = assemble(config, cwd, client,
                     text -> output.accept("[Leader] " + text), text -> errors.accept("[Leader] " + text),
-                    presentation, team, TeamManager.LEADER, "Leader");
+                    presentation, team, TeamManager.LEADER, "Leader", streams);
             team.bind(leader, (id, role) -> assemble(config, cwd, client,
                     text -> output.accept("[Teammate " + id + "] " + text),
                     text -> errors.accept("[Teammate " + id + "] " + text),
-                    presentation, team, id, role));
+                    presentation, team, id, role, () -> ResponseStream.NONE));
             leader.onClose(team::close);
             return leader;
         } catch (IOException failure) {
@@ -171,7 +202,7 @@ public final class JadeCodeFactory {
      */
     private static SessionRuntime assemble(AppConfig config, Path cwd, LlmClient client,
             Consumer<String> output, Consumer<String> errors, Presentation presentation,
-            TeamManager team, String actor, String role) {
+            TeamManager team, String actor, String role, Supplier<ResponseStream> streams) {
         boolean isLeader = actor.equals(TeamManager.LEADER);
         PathResolver resolver = new PathResolver(cwd);
         PathGuard guard = new PathGuard(resolver);
@@ -258,7 +289,7 @@ public final class JadeCodeFactory {
                         + projectInstructions(cwd),
                 config.maxTokens(),
                 hooks,
-                compactor);
+                compactor, streams);
         // 所有权在这里交给 session；CLI 不再另外关闭 engine/background/cron。
         SessionRuntime runtime = new SessionRuntime(engine, memory, background, cron, output, errors);
         if (!isLeader) runtime.incomingApproval((context, prompt) ->

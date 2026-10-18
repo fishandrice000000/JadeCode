@@ -28,7 +28,8 @@ public class ReplCommand implements Callable<Integer> {
     public Integer call() {
         // 先创建终端，连初始化日志也能正确显示；退出时最后才关闭它，让任务清理日志仍可输出。
         try (TerminalDisplay display = TerminalDisplay.open();
-                SessionRuntime runtime = JadeCodeFactory.create(CliHooks::register, CliOutput::print, CliOutput::error);
+                SessionRuntime runtime = JadeCodeFactory.create(CliHooks::register, CliOutput::print, CliOutput::error,
+                        () -> CliOutput.stream(display));
                 ConsoleInput terminal = new ConsoleInput(display)) {
             runtime.start(true);
             CliOutput.welcome();

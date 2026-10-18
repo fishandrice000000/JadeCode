@@ -437,12 +437,12 @@ public final class SessionRuntime implements AutoCloseable {
             boolean incoming = deliverIncoming(task, true, true);
             if (incoming) {
                 // 模型刚才的回答仍在 history 中，也先显示，不用下一条回答覆盖它。
-                if (!reply.message().extractText().isBlank()) output.accept("[Reply] " + reply.message().extractText());
+                if (!reply.textDisplayed() && !reply.message().extractText().isBlank()) output.accept("[Reply] " + reply.message().extractText());
                 flushNotices(task);
                 continue;
             }
             if (background != null && background.hasRequired(task.context().id())) {
-                if (!reply.message().extractText().isBlank()) output.accept("[Reply] " + reply.message().extractText());
+                if (!reply.textDisplayed() && !reply.message().extractText().isBlank()) output.accept("[Reply] " + reply.message().extractText());
                 state = State.WAITING_BACKGROUND;
                 awaitResults(task);
                 state = State.RUNNING;
@@ -464,14 +464,15 @@ public final class SessionRuntime implements AutoCloseable {
                 if (!pending) { active = null; if (!closed) state = State.IDLE; }
             }
             if (pending) {
-                if (!reply.message().extractText().isBlank()) output.accept("[Reply] " + reply.message().extractText());
+                if (!reply.textDisplayed() && !reply.message().extractText().isBlank()) output.accept("[Reply] " + reply.message().extractText());
                 deliverIncoming(task, true, true);
                 flushNotices(task);
                 continue;
             }
             ensureOpen();
             String answer = reply.message().extractText();
-            output.accept("[Reply] " + answer);
+            // 已流式显示的正文不再重放；未接收过正文片段的旧客户端仍按原方式显示。
+            if (!reply.textDisplayed()) output.accept("[Reply] " + answer);
             engine.hooks().trigger(Hooks.TURN_END, Map.of(Hooks.PARAM_TOOL_COUNT, task.toolCalls));
             task.entry.result().complete(answer);
             task.incomingReceipts.forEach(receipt -> receipt.result().complete(answer));

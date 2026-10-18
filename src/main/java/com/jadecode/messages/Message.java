@@ -60,6 +60,18 @@ public record Message(Role role, List<ContentBlock> content) {
     }
 
     /**
+     * 辅助模型返回 JSON 时允许夹带 thinking，但不能把工具调用或结果当成候选 JSON。
+     *
+     * <p>Memory 仍只用 extractText 解析完整正文；思考里的数组或命令不会被执行或写盘。
+     * 空列表在这里形状合法，随后由各辅助服务自己的 JSON 校验拒绝空正文。</p>
+     * @return content 非 null，且每块都是正文或思考；null 块、工具块均返回 false
+     */
+    public boolean hasOnlyTextAndThinking() {
+        return content != null && content.stream().allMatch(block -> block instanceof TextBlock
+                || block instanceof ThinkingBlock || block instanceof RedactedThinkingBlock);
+    }
+
+    /**
      * 按运行期类型筛选本条消息的 content 块,保持原有顺序。
      *
      * <p>

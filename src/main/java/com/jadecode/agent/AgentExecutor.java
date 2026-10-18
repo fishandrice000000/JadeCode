@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jadecode.context.ContextCompactor;
@@ -13,6 +14,7 @@ import com.jadecode.llm.CompleteRequest;
 import com.jadecode.llm.LlmClient;
 import com.jadecode.llm.LlmException;
 import com.jadecode.llm.ModelResponse;
+import com.jadecode.llm.ResponseStream;
 import com.jadecode.messages.ContentBlock;
 import com.jadecode.messages.Message;
 import com.jadecode.messages.Role;
@@ -49,6 +51,8 @@ public class AgentExecutor implements AutoCloseable {
     private final Hooks hooks;
     /** 压缩器，可以没有；生成较短的消息列表，再由会话运行器写回 history。 */
     private final ContextCompactor compactor;
+    /** 正式请求独占的展示工厂；队友默认不展示，不存到共享客户端。 */
+    private final Supplier<ResponseStream> streams;
     /** 用户退出后禁止晚到回复继续执行；不拥有外部模型客户端或进程服务的关闭责任。 */
     private volatile boolean closed;
 
@@ -84,6 +88,21 @@ public class AgentExecutor implements AutoCloseable {
      */
     public AgentExecutor(LlmClient client, Map<String, Tool> tools, String system, int maxTokens, Hooks hooks,
             ContextCompactor compactor) {
+        this(client, tools, system, maxTokens, hooks, compactor, () -> ResponseStream.NONE);
+    }
+
+    /**
+     * 为正式请求安装展示工厂，工具、权限与压缩仍走原执行流程。
+     * @param client 可与其它 Agent 共享的模型客户端
+     * @param tools 本 Agent 的只读工具表
+     * @param system 基础提示词
+     * @param maxTokens 单次输出 token 上限
+     * @param hooks 权限和展示函数表
+     * @param compactor 压缩器，可为 null；注册 compact 时不可缺少
+     * @param streams 每次请求创建新的展示对象，不展示时返回 ResponseStream.NONE
+     */
+    public AgentExecutor(LlmClient client, Map<String, Tool> tools, String system, int maxTokens, Hooks hooks,
+            ContextCompactor compactor, Supplier<ResponseStream> streams) {
         // 有控制工具却没有处理器会形成假成功，仍在构造时拒绝这种装配。
         if (compactor == null && tools.containsKey(COMPACT_TOOL)) {
             throw new IllegalArgumentException("工具表注册了 " + COMPACT_TOOL
@@ -95,6 +114,7 @@ public class AgentExecutor implements AutoCloseable {
         this.maxTokens = maxTokens;
         this.hooks = hooks;
         this.compactor = compactor;
+        this.streams = java.util.Objects.requireNonNull(streams);
     }
 
     /** @return 原 hook 表；只在开始运行前注册，不因读取而触发 hook。 */
@@ -137,30 +157,45 @@ public class AgentExecutor implements AutoCloseable {
                 if (prepared != messages) adoptHistory.accept(prepared);
             }
 
-            ModelResponse response;
+            ResponseStream display = java.util.Objects.requireNonNull(streams.get());
+            boolean[] textDisplayed = { false };
+            // 回调只更新屏幕，不碰 history；用户退出后不再打印晚到片段。
+            ResponseStream observed = display == ResponseStream.NONE ? display : new ResponseStream() {
+                @Override public void text(String text) {
+                    ensureOpen();
+                    display.text(text);
+                    textDisplayed[0] |= !text.isEmpty();
+                }
+                @Override public void thinking(String text) { ensureOpen(); display.thinking(text); }
+            };
             try {
                 ensureOpen();
-                response = client.complete(new CompleteRequest(taskSystem, messages, maxTokens,
-                        tools.values().stream().map(Tool::definition).toList()));
+                CompleteRequest request = new CompleteRequest(taskSystem, messages, maxTokens,
+                        tools.values().stream().map(Tool::definition).toList());
+                ModelResponse response = observed == ResponseStream.NONE ? client.complete(request)
+                        : client.complete(request, observed);
+                // 完整消息通过角色和工具 ID 校验后才结束预览，返回给 Session 采用。
+                ensureOpen();
+                if (response.message().role() != Role.ASSISTANT) {
+                    throw new IllegalArgumentException("Formal model response must be ASSISTANT");
+                }
+                List<ToolUseBlock> calls = response.message().blocksOfType(ToolUseBlock.class);
+                ToolExchangeProtocol.requireDistinctCallIds(calls);
+                display.complete();
+                return new ModelReply(response.message(), calls, textDisplayed[0]);
             } catch (LlmException failure) {
-                // 这里只处理主任务模型请求的错误；用户退出了就不要再请求摘要来尝试重试。
+                display.failed();
+                // 网络错误不一律重试；仍只对真正的上下文超限使用既有有限补救。
                 ensureOpen();
                 if (compactor == null || !ContextCompactor.isContextOverflow(failure)
                         || retries >= ContextCompactor.MAX_REACTIVE_RETRIES) throw failure;
                 retries++;
                 List<Message> recovered = compactor.reactiveCompact(messages, activeRequest);
                 if (recovered != messages) adoptHistory.accept(recovered);
-                continue;
+            } catch (RuntimeException failure) {
+                display.failed();
+                throw failure;
             }
-
-            // 用户可能在等回答时退出；即使模型现在才回复，也不能接着执行工具。
-            ensureOpen();
-            if (response.message().role() != Role.ASSISTANT) {
-                throw new IllegalArgumentException("Formal model response must be ASSISTANT");
-            }
-            List<ToolUseBlock> calls = response.message().blocksOfType(ToolUseBlock.class);
-            ToolExchangeProtocol.requireDistinctCallIds(calls);
-            return new ModelReply(response.message(), calls);
         }
     }
 
@@ -268,12 +303,16 @@ public class AgentExecutor implements AutoCloseable {
      * @param message AgentExecutor 已检查角色为 ASSISTANT 的消息
      * @param calls 从这条消息取出的工具调用，ID 已检查不重复；没有调用不一定代表任务完成，
      *              还要看是否在等后台结果，以及 Stop 是否要求继续
+     * @param textDisplayed 正文已经通过流式回调展示；Session 仍采用完整消息，但不能重复打印正文
      */
-    public record ModelReply(Message message, List<ToolUseBlock> calls) {
+    public record ModelReply(Message message, List<ToolUseBlock> calls, boolean textDisplayed) {
+        /** 普通非流式调用保持原构造方式，完成时仍由 Session 显示正文。 */
+        public ModelReply(Message message, List<ToolUseBlock> calls) { this(message, calls, false); }
         /**
          * 复制工具调用列表，保持顺序；角色和 ID 由 AgentExecutor 检查，这里不再查。
          * @param message 模型回答
          * @param calls 不能为 null、不能含 null 的调用列表；不复制里面的 JSON
+         * @param textDisplayed 只表示本次响应正文已展示，不表示 thinking 已显示或整个任务已完成
          * @throws NullPointerException calls 或其中元素为 null
          */
         public ModelReply { calls = List.copyOf(calls); }

@@ -145,7 +145,8 @@ public final class MemoryRecallService {
     /**
      * 检查选择回复，而不是从任意自然语言中猜一个数组。
      *
-     * <p>只认 assistant 的纯文本消息与完整 JSON 整数数组；拒绝尾随文本、非整数及目录外索引。
+     * <p>只解析 assistant 正文里的完整 JSON 整数数组；允许伴随 thinking，但不解析思考文字。
+     * 拒绝工具块、尾随文本、非整数及目录外索引。
      * 相同索引去重，保留首次出现顺序；超过五条时只采用前五条，合法空数组仍正常返回空列表。</p>
      *
      * @throws IllegalArgumentException 回复形状 / JSON / 索引非法，使调用方进入明确的降级分支
@@ -153,8 +154,8 @@ public final class MemoryRecallService {
     private static List<Integer> selectedIndices(ModelResponse response, int catalogSize) {
         if (response == null || response.message() == null || response.message().role() != Role.ASSISTANT
                 || response.message().content() == null
-                || response.message().content().stream().anyMatch(block -> !(block instanceof TextBlock))) {
-            throw new IllegalArgumentException("Memory 选择回复不是 assistant 纯文本");
+                || !response.message().hasOnlyTextAndThinking()) {
+            throw new IllegalArgumentException("Memory 选择回复不是 assistant 文本（可伴随 thinking）");
         }
         try {
             // 共享 ObjectMapper 不改全局配置；专用 reader 要求整个回复只有一个 JSON 值。

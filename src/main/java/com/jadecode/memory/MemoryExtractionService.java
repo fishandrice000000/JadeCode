@@ -131,13 +131,14 @@ public final class MemoryExtractionService {
 
     /**
      * 提取辅助模型只允许返回一个完整 JSON 数组，不从解释文字里猜片段。
+     * 允许附带 thinking，但 JSON 只取 TextBlock；思考不作为候选，也不在终端显示。
      * tool_use、错误角色、空回复或尾随 JSON / 文本均视为整体非法；本 helper 不产生文件副作用。
      */
     private static JsonNode candidateArray(ModelResponse response) {
         if (response == null || response.message() == null || response.message().role() != Role.ASSISTANT
                 || response.message().content() == null
-                || response.message().content().stream().anyMatch(block -> !(block instanceof TextBlock))) {
-            throw new IllegalArgumentException("记忆提取回复不是 assistant 纯文本");
+                || !response.message().hasOnlyTextAndThinking()) {
+            throw new IllegalArgumentException("记忆提取回复不是 assistant 文本（可伴随 thinking）");
         }
         try {
             JsonNode value = Json.mapper().reader().with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
