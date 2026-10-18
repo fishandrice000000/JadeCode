@@ -123,7 +123,7 @@ public class PermissionGate {
         // 1. 绝对禁止的操作直接拒绝并说明原因，不能让用户批准绕过。
         String denied = findReason(hardRules, toolName, input);
         if (denied != null) {
-            System.out.println(Ansi.red("[blocked] " + denied));
+            System.out.println(Ansi.red("[Blocked] " + denied));
             return denied;
         }
 

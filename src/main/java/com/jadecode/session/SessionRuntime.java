@@ -31,7 +31,7 @@ import com.jadecode.process.BackgroundManager.Completion;
 import com.jadecode.process.BackgroundManager;
 
 /**
- * 管理一次 CLI 会话：把收到的任务排好队，一次做完一项，再做下一项。
+ * 管理一次 Agent 会话：每次只执行一项工作，在完整工具批次之间接收允许插入的补充。
  *
  * <p>例如，用户要求“构建项目，再检查报告”。构建可以放到后台，模型趁这时读其它文件。
  * 但只要构建结果还没处理，这项任务就没有结束；后来的用户请求或定时任务要继续排队。
@@ -68,11 +68,11 @@ public final class SessionRuntime implements AutoCloseable {
     private final BackgroundManager background;
     /** 发给模型的消息列表；压缩只换内容。同步 run 临时借用调用者列表，结束后恢复本会话列表。 */
     private List<Message> history;
-    /** 尚未开始的任务在这里排队；后台命令跑完后，也通过它叫醒等待线程。 */
+    /** 用户、cron、邮箱与后台事件统一在这里排队，只有消费线程能采用到历史。 */
     private final SessionInbox inbox = new SessionInbox();
     /** 检查定时任务是否到期的对象，REPL 会启动它，单次 run 不启动。 */
     private final CronProducer cron;
-    /** 显示进展、等待提示和最终回答的函数，调用后应尽快正常返回。 */
+    /** 显示回复、接收通知和本轮计数；回复结束不等于所有业务成功。 */
     private final Consumer<String> output;
     /** 显示任务或定时检查错误的函数，不把错误提示当成最终回答。 */
     private final Consumer<String> errors;
@@ -84,6 +84,64 @@ public final class SessionRuntime implements AutoCloseable {
     private volatile Active active;
     /** start 创建的任务处理线程；旧 runExisting 直接用调用者线程。 */
     private Thread consumer;
+    /** 只有 Leader 装配 Team 时安装；关闭父会话先停止全部队友。 */
+    private Runnable closeDependents = () -> { };
+    /** 队友可把需审批操作交给独立辅助请求；Leader 默认保留用户通道。 */
+    private java.util.function.BiFunction<ExecutionContext, String, Approval> incomingApproval = (context, prompt) -> context.approval();
+
+    /** 安装本会话拥有的额外资源清理，不启动它们；须在 start 前调用。 */
+    public synchronized void onClose(Runnable cleanup) { closeDependents = java.util.Objects.requireNonNull(cleanup); }
+
+    /** 工厂在 start 前设置接收任务的审批方式；不改变 source，定时来源仍不能人工审批。 */
+    public void incomingApproval(java.util.function.BiFunction<ExecutionContext, String, Approval> factory) {
+        incomingApproval = java.util.Objects.requireNonNull(factory);
+    }
+
+    /** 是否正处理大轮次；等待后台也算忙，不能把新派工直接当当前工作。 */
+    public boolean isBusy() { return active != null; }
+
+    /** 给提交结果工具检查当前轮次是否仍欠必等后台结果，不把“启动成功”当业务完成。 */
+    public boolean hasRequiredBackground() {
+        Active task = active;
+        return task != null && background != null && background.hasRequired(task.context().id());
+    }
+
+    /**
+     * 真实终端使用：忙时合并用户输入，空闲时保持普通请求提交。
+     * 只改 Inbox，不在 UI 线程改 history。返回的 future 属于整批输入。
+     */
+    public CompletableFuture<String> submitUser(String prompt, Approval approval) {
+        if (!isBusy()) return submit(prompt, approval);
+        if (prompt == null || prompt.isBlank()) return CompletableFuture.failedFuture(new IllegalArgumentException("Empty prompt"));
+        var context = ExecutionContext.create(ExecutionContext.Source.USER, approval, () -> closed);
+        var result = inbox.buffer(prompt, context);
+        return result == null ? CompletableFuture.failedFuture(new RejectedExecutionException("Session inbox is full or closed")) : result;
+    }
+
+    /** 空输入 Enter 只升级待处理原批次，没缓冲则不做事。 */
+    public boolean promoteUserBuffer() { return inbox.promote(); }
+
+    /**
+     * Harness 投递邮箱消息。接收成功仅表示已放进内存 Inbox，不代表模型读过或业务完成。
+     * 权限取自程序提供的 context，不从摘要正文里解析。调用方据返回值清理 pending 文件。
+     */
+    public CompletableFuture<String> receive(SessionEvent.Incoming incoming, ExecutionContext context) {
+        var accepted = tryReceive(incoming, context);
+        return accepted == null ? CompletableFuture.failedFuture(new RejectedExecutionException("Recipient inbox full or closed")) : accepted;
+    }
+
+    /** 返回 null 明确表示未入队，避免把“已接单但执行失败”误判成派工未成功。 */
+    public synchronized CompletableFuture<String> tryReceive(SessionEvent.Incoming incoming, ExecutionContext context) {
+        if (closed) return null;
+        var result = new CompletableFuture<String>();
+        // 已入队的邮件属于接收方，发送者随后退出不能撤回它；仍保留原来源和审批范围。
+        var scoped = new ExecutionContext("run_" + java.util.UUID.randomUUID(), context.source(),
+                incomingApproval.apply(context, incoming.render()), () -> closed);
+        if (!inbox.offer(new SessionInbox.Entry(new SessionEvent.Request(incoming.render(), scoped, null, incoming), result))) {
+            return null;
+        }
+        return result;
+    }
 
     /**
      * 创建不带记忆、后台和定时服务的会话，不启动线程或模型请求。
@@ -114,7 +172,23 @@ public final class SessionRuntime implements AutoCloseable {
         this.output = output;
         this.errors = errors;
         this.cron = new CronProducer(scheduler, this::publishCron, errors);
-        if (background != null) background.onCompletion(inbox::wake);
+        if (background != null) {
+            background.onResult(this::backgroundCompleted);
+            background.onCompletion(inbox::wake);
+        }
+    }
+
+    /**
+     * 后台线程只生产 Inbox 事件，不改 history、不请求模型。
+     * 完成结果带原 run ID 与投递规则；预留后台槽避免普通请求满时丢通知。
+     */
+    private void backgroundCompleted(Completion result) {
+        var origin = result.context();
+        var context = new ExecutionContext("run_" + java.util.UUID.randomUUID(), origin.source(), origin.approval(), () -> closed);
+        var incoming = new SessionEvent.Incoming(result.id(), "background", "session", result.owner(), null,
+                "background", notification(result), null, result.allowInsertion(), result.wakeWhenIdle());
+        var request = new SessionEvent.Request(incoming.render(), context, null, incoming);
+        if (inbox.offerBackground(new SessionInbox.Entry(request, new CompletableFuture<>(), result))) background.queued(result);
     }
 
     /**
@@ -179,17 +253,18 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 从队首取一项任务，等 execute 处理完，再取下一项。
+     * 空闲时按优先级取可唤起的任务，等 execute 处理完，再取下一项。
      *
      * <p>当前任务在等后台构建时，也不会去做下一项任务。普通执行错误由 execute 报告，
-     * 不会丢掉后面排队的请求。会话退出时 take 返回 null；线程被中断时记住中断状态并退出。</p>
+     * 不会丢掉后面排队的请求。没有任务时等 revision 变化，不忙轮询；中断时记住中断状态并退出。</p>
      */
     private void consume() {
         try {
             while (!closed) {
-                SessionInbox.Entry entry = inbox.take();
-                if (entry == null) return;
-                execute(entry, true);
+                long observed = inbox.revision();
+                SessionInbox.Entry entry = inbox.pollIdle();
+                if (entry != null) { execute(entry, true); continue; }
+                inbox.awaitChange(observed);
             }
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
@@ -211,7 +286,13 @@ public final class SessionRuntime implements AutoCloseable {
      *               false 表示旧 run(messages) 已有这条请求，不要再加一次
      */
     private void execute(SessionInbox.Entry entry, boolean append) {
+        execute(entry, append, entry.background() == null ? List.of() : List.of(entry.background()));
+    }
+
+    /** 执行从后台唤起的轮次时，先登记已取出的回执；普通任务传空列表。 */
+    private void execute(SessionInbox.Entry entry, boolean append, List<Completion> initialResults) {
         Active task = new Active(entry, history);
+        task.receipts.addAll(initialResults);
         active = task;
         state = State.RUNNING;
         try {
@@ -223,10 +304,11 @@ public final class SessionRuntime implements AutoCloseable {
                     entry.result().completeExceptionally(new IllegalStateException("Cron delivery deferred or cancelled"));
                     return;
                 }
-                output.accept("[Cron] Delivering " + task.cronId());
+                output.accept("[Cron] Running " + task.cronId());
             }
             if (append) {
-                if (task.context().source() == ExecutionContext.Source.USER) {
+                if (task.context().source() == ExecutionContext.Source.USER
+                        && (entry.request().incoming() == null || entry.request().incoming().kind().equals("user"))) {
                     engine.hooks().trigger(Hooks.USER_PROMPT_SUBMIT,
                             Map.of(Hooks.PARAM_QUERY, entry.request().prompt(), Hooks.PARAM_CONTEXT, task.context()));
                 }
@@ -235,6 +317,14 @@ public final class SessionRuntime implements AutoCloseable {
             // 先记住用户请求，再加入后台通知；之后历史即使压缩，仍记着用户原本要做什么。
             task.goal = activeRequest(history);
             task.system = taskSystem(task.goal);
+            if (entry.request().incoming() != null) {
+                output.accept(entry.request().incoming().kind().equals("background")
+                        ? "[Background] 1 command result received" : "[Incoming] " + entry.request().incoming().summary());
+            }
+            // 新轮次已经由用户/派工/允许唤起的通知启动，此时可顺带加入此前停放的参考消息。
+            deliverIncoming(task, false);
+            // 前一次若优先取了插入式消息，现在再给非插入式参考一次机会，仍不取新派工/新用户任务。
+            deliverIncoming(task, false);
             runTask(task);
         } catch (LlmException | IOException | RuntimeException failure) {
             fail(task, failure);
@@ -318,7 +408,8 @@ public final class SessionRuntime implements AutoCloseable {
     private void runTask(Active task) throws LlmException, InterruptedException {
         while (!closed) {
             // 1. 请模型继续前，先加入已完成的后台结果；不必等待的命令结果只供参考。
-            deliverResults(task, true);
+            deliverIncoming(task, true);
+            flushNotices(task);
             ModelReply reply = engine.request(history, task.goal, task.system, this::adoptHistory);
             apply(reply);
             // 模型已正常回答，定时任务就算送到了，不用等工具成功；查记忆或生成摘要不算此次回答。
@@ -333,6 +424,7 @@ public final class SessionRuntime implements AutoCloseable {
             if (!reply.calls().isEmpty()) {
                 // 3. 执行这一批工具，把每个调用的结果一起写入历史；出错也要配齐调用和结果的 ID。
                 ToolBatch batch = engine.executeTools(reply.calls(), task.context(), task.rounds);
+                task.toolCalls += reply.calls().size();
                 apply(batch);
                 task.rounds = batch.roundsSinceTodo();
                 if (batch.failure() != null) throw batch.failure();
@@ -342,10 +434,15 @@ public final class SessionRuntime implements AutoCloseable {
             }
 
             // 等模型回答时也许又有命令跑完；加入结果后要再问一次，不能还没给它看就宣布结束。
-            if (deliverResults(task, false)) continue;
+            boolean incoming = deliverIncoming(task, true, true);
+            if (incoming) {
+                // 模型刚才的回答仍在 history 中，也先显示，不用下一条回答覆盖它。
+                if (!reply.message().extractText().isBlank()) output.accept("[Reply] " + reply.message().extractText());
+                flushNotices(task);
+                continue;
+            }
             if (background != null && background.hasRequired(task.context().id())) {
-                if (!reply.message().extractText().isBlank()) output.accept("[Progress] " + reply.message().extractText());
-                output.accept("[Waiting] " + task.context().id() + " is waiting for required background results");
+                if (!reply.message().extractText().isBlank()) output.accept("[Reply] " + reply.message().extractText());
                 state = State.WAITING_BACKGROUND;
                 awaitResults(task);
                 state = State.RUNNING;
@@ -359,31 +456,66 @@ public final class SessionRuntime implements AutoCloseable {
             // 4. 该等的结果都已处理，Stop 也没要求继续，才保存长期记忆并给出最终回答。
             finish(history);
             ensureOpen();
+            boolean pending;
+            synchronized (inbox) {
+                // Stop/记忆维护也可能耗时。结束判定必须再查一次，并与入队互斥。
+                // 这之后才到达的消息属于下一轮；已有补充则继续当前轮，不漏掉用户空回车升级。
+                pending = inbox.hasCurrentInput(task.context().id());
+                if (!pending) { active = null; if (!closed) state = State.IDLE; }
+            }
+            if (pending) {
+                if (!reply.message().extractText().isBlank()) output.accept("[Reply] " + reply.message().extractText());
+                deliverIncoming(task, true, true);
+                flushNotices(task);
+                continue;
+            }
+            ensureOpen();
             String answer = reply.message().extractText();
-            output.accept("[Completed] " + answer);
+            output.accept("[Reply] " + answer);
+            engine.hooks().trigger(Hooks.TURN_END, Map.of(Hooks.PARAM_TOOL_COUNT, task.toolCalls));
             task.entry.result().complete(answer);
+            task.incomingReceipts.forEach(receipt -> receipt.result().complete(answer));
             return;
         }
         throw new IllegalStateException("Session is closed");
     }
 
     /**
-     * 取出已经跑完的后台命令，把结果说明加入 history，不等仍在运行的命令。
-     *
-     * <p>取出的记录先保存在 task.receipts，等模型正常回复后再从后台管理器删除。
-     * 这样，定时任务第一次回复前失败时，仍能把记录放回去，下次再交给模型，不必重跑命令。</p>
-     * @param task 用它的 ID 找出所属结果，并记住这次取出的记录
-     * @param includeDetached true 时也加入“不必等它”的命令结果作参考；
-     *                        false 时只取当前任务必须处理的结果，不让无关结果打断等待
-     * @return 是否向 history 加了新结果；没开后台功能或还没结果时为 false
+     * 在完整工具批次之后取外部消息，重建末条 USER，不破坏 tool_use/result 相邻关系。
+     * 用户插入式补充更新本轮目标，避免稍后压缩只保留最初请求而遗漏用户新要求。
+     * 邮箱消息只是带来源的资料，不会把发件人任务偷换成当前任务。
      */
-    private boolean deliverResults(Active task, boolean includeDetached) {
-        if (background == null) return false;
-        List<Completion> results = background.collect(task.context().id(), includeDetached);
-        if (results.isEmpty()) return false;
-        task.receipts.addAll(results);
-        apply(new SessionEvent.Notifications(results.stream().map(SessionRuntime::notification).toList()));
+    private boolean deliverIncoming(Active task, boolean insertionOnly) {
+        return deliverIncoming(task, insertionOnly, false);
+    }
+
+    /** 结束/等待阶段可以接收本轮必等结果，不受禁止提前插入限制。 */
+    private boolean deliverIncoming(Active task, boolean insertionOnly, boolean finishing) {
+        List<SessionInbox.Entry> entries = inbox.drain(insertionOnly, finishing, task.context().id());
+        if (entries.isEmpty()) return false;
+        // 先登记整批回执，哪怕退出发生在采用第一条消息时，也能通知所有发送者失败。
+        task.incomingReceipts.addAll(entries);
+        for (var entry : entries) {
+            var incoming = entry.request().incoming();
+            apply(new SessionEvent.Notifications(List.of(incoming.render())));
+            if (entry.background() != null) task.receipts.add(entry.background());
+            if (incoming.kind().equals("user")) {
+                task.goal = (task.goal == null ? "" : task.goal + "\n\n") + incoming.summary();
+                // 更新目标不改变原任务来源：插入用户文字不能把定时任务升级成人工授权任务。
+            }
+            task.notices.add(entry.background() == null ? "[Incoming] " + incoming.summary()
+                    : "[Background] 1 command result received");
+        }
         return true;
+    }
+
+    /**
+     * 在开始下一次请求前显示通知；若刚有阶段回复，先显示回复再显示 Incoming。
+     * history 的先后顺序不受展示缓冲影响，后台结果只显示数量，不打印内部 bg_id。
+     */
+    private void flushNotices(Active task) {
+        task.notices.forEach(output);
+        task.notices.clear();
     }
 
     /** 通知最多保留 500 个 Java 字符，不是 token 或字节。 */
@@ -425,7 +557,7 @@ public final class SessionRuntime implements AutoCloseable {
      *
      * <p>先记下 inbox 的计数，再查结果；没查到才试着睡下去。如果命令恰好在“查完”和
      * “睡下去”之间跑完，计数已增加，awaitChange 就立即返回，避免有结果却一直睡着。
-     * 被叫醒只说明要再查一次，结果正文仍在 BackgroundManager。
+     * 被叫醒只说明要再查一次，完成事件已经由后台生产者排进 Inbox。
      * 新请求也会叫醒线程，但这里只查后台结果，不执行新请求。</p>
      * @param task 正在等结果的任务；不用等所有命令都结束，取到一批就可以继续
      * @throws InterruptedException 等待线程被中断
@@ -434,7 +566,7 @@ public final class SessionRuntime implements AutoCloseable {
     private void awaitResults(Active task) throws InterruptedException {
         while (!closed) {
             long observed = inbox.revision();
-            if (deliverResults(task, false)) return;
+            if (deliverIncoming(task, true, true)) return;
             inbox.awaitChange(observed);
         }
         throw new IllegalStateException("Session is closed");
@@ -502,6 +634,7 @@ public final class SessionRuntime implements AutoCloseable {
                 if (merge) history.set(history.size() - 1, message);
                 else history.add(message);
             }
+            case SessionEvent.Incoming incoming -> throw new IllegalArgumentException("Incoming 必须先排队，不能跨线程改历史");
         }
     }
 
@@ -529,8 +662,10 @@ public final class SessionRuntime implements AutoCloseable {
             background.acknowledge(task.receipts);
         }
         if (background != null) background.cancelRequired(task.context().id());
+        inbox.discardRequired(task.context().id());
         task.entry.result().completeExceptionally(failure);
-        if (!closed) errors.accept("[Task failed] " + task.context().id() + ": " + failure.getMessage());
+        task.incomingReceipts.forEach(receipt -> receipt.result().completeExceptionally(failure));
+        if (!closed) errors.accept("[Error] " + task.context().id() + ": " + failure.getMessage());
     }
 
     /**
@@ -551,6 +686,12 @@ public final class SessionRuntime implements AutoCloseable {
         final List<Message> snapshot;
         /** 已加进 history、但还没等到模型正常回复的后台结果。 */
         final List<Completion> receipts = new ArrayList<>();
+        /** 已采用的插入消息，随当前大轮次完成其 future，不重复执行原业务。 */
+        final List<SessionInbox.Entry> incomingReceipts = new java.util.concurrent.CopyOnWriteArrayList<>();
+        /** 展示通知暂存到合适位置，避免 Incoming 抢在刚生成的阶段回复前面显示。 */
+        final List<String> notices = new ArrayList<>();
+        /** 当前大轮次模型提出的工具调用个数，包含被拒绝调用，不数子代理内部工具。 */
+        int toolCalls;
         /** 用户最初要做的事，不能被工具结果、后台通知或 Stop 提示换掉。 */
         String goal;
         /** 基础 system 提示加上这项任务查到的记忆，后面继续用同一份。 */
@@ -641,12 +782,18 @@ public final class SessionRuntime implements AutoCloseable {
             state = State.CLOSED;
         }
         cron.close();
+        try { closeDependents.run(); }
+        catch (RuntimeException failure) { errors.accept("[Error] Dependent session cleanup failed: " + failure.getMessage()); }
         // 先停止执行器和命令，再通知 future 的调用者；对方可能立即运行自己的代码，不能拖延停止工具。
         engine.close();
         if (background != null) background.close();
         inbox.close();
         Active running = active;
-        if (running != null) running.entry.result().completeExceptionally(new IllegalStateException("Session closed"));
+        if (running != null) {
+            running.entry.result().completeExceptionally(new IllegalStateException("Session closed"));
+            // 模型网络调用可能不响应中断；已采用的插入批次也不能一直留下 pending future。
+            running.incomingReceipts.forEach(receipt -> receipt.result().completeExceptionally(new IllegalStateException("Session closed")));
+        }
         if (consumer != null && consumer != Thread.currentThread()) {
             consumer.interrupt();
             try {

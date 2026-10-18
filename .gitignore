@@ -9,6 +9,7 @@ dependency-reduced-pom.xml
 .tasks/
 .memory/
 .mailboxes/
+.team/
 .transcripts/
 .task_outputs/
 .worktrees/

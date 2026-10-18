@@ -33,10 +33,15 @@ public final class TaskTools {
      * @throws NullPointerException store 为 null，属于装配错误
      */
     public static List<Tool> forStore(TaskStore store) {
+        return forStore(store, OWNER);
+    }
+
+    /** 身份由装配固定，不让模型在工具参数中冒充另一个负责人。 */
+    public static List<Tool> forStore(TaskStore store, String owner) {
         Objects.requireNonNull(store, "store");
         List<Tool> tools = new ArrayList<>();
         for (Action action : Action.values()) {
-            tools.add(new TaskTool(store, action));
+            tools.add(new TaskTool(store, action, owner));
         }
         return List.copyOf(tools);
     }
@@ -64,11 +69,13 @@ public final class TaskTools {
     private static final class TaskTool implements Tool {
         private final TaskStore store;
         private final Action action;
+        private final String owner;
 
         /** 仅由工厂构造，存储共享、动作固定，无文件或模型副作用。 */
-        private TaskTool(TaskStore store, Action action) {
+        private TaskTool(TaskStore store, Action action, String owner) {
             this.store = store;
             this.action = action;
+            this.owner = owner;
         }
 
         /** @return 本实例精确匹配 tool_use.name 的工具名 */
@@ -162,9 +169,9 @@ public final class TaskTools {
                         }
                         yield catalog;
                     }
-                    case CLAIM -> store.claim(input.get("task_id").textValue(), OWNER);
+                    case CLAIM -> store.claim(input.get("task_id").textValue(), owner);
                     case COMPLETE -> {
-                        var completed = store.complete(input.get("task_id").textValue(), OWNER);
+                        var completed = store.complete(input.get("task_id").textValue(), owner);
                         var reply = Json.mapper().createObjectNode();
                         reply.set("task", Json.mapper().valueToTree(completed.task()));
                         reply.set("newlyUnblocked", Json.mapper().valueToTree(completed.unblocked()));

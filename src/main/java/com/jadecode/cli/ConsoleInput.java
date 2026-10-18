@@ -18,8 +18,9 @@ import com.jadecode.util.Ansi;
  * 统一读取用户在终端输入的任务和批准/拒绝命令，避免两个线程争着读同一个 stdin。
  *
  * <p>处理任务的线程发现某操作需要用户批准时，调用 ask，显示操作内容并等待。
- * 只有创建本对象的终端线程去 readLine；有申请在等待时，输入 y 才同意，n 或空行拒绝。
- * 一次只等待一份申请，不要求用户输入申请 ID。不能把用户刚输入的下一项任务当成“同意执行上一条命令”。</p>
+ * 只有创建本对象的终端线程去 readLine；有申请在等待时，输入 y 才同意，n 才拒绝。
+ * 多份申请排队，一次只展示一份，不要求输入申请 ID。空行不回答审批，
+ * REPL 可以用它升级用户缓冲，不能把下一项任务误当成“同意执行上一条命令”。</p>
  *
  * <p>REPL 调 readQuery：普通文字返回给 ReplCommand 排队，y/n 审批答复在这里处理。
  * 单次 run 调 await：只在需要用户批准时读输入，不接收第二项任务。
@@ -36,6 +37,11 @@ public final class ConsoleInput implements Approval, AutoCloseable {
     private final Thread inputOwner = Thread.currentThread();
     /** 尚未回答的申请，读写要拿锁；一次只支持一份。 */
     private CompletableFuture<Boolean> pending;
+    /** 多个队友同时申请时排队；一次只显示队首，答复不会串到其它申请。 */
+    private final java.util.ArrayDeque<ApprovalRequest> approvals = new java.util.ArrayDeque<>();
+
+    /** 参数复制后展示，防止等待期间调用方修改原 JSON 而批准另一条命令。 */
+    private record ApprovalRequest(String tool, ObjectNode input, String reason, CompletableFuture<Boolean> result) { }
     /** 是否已停止接受用户批准，不表示本类能停止整个会话的所有工具。 */
     private boolean closed;
 
@@ -76,23 +82,22 @@ public final class ConsoleInput implements Approval, AutoCloseable {
      *
      * <p>先在 synchronized 内创建保存答复的 future、显示待批准操作，再松开锁等用户回答。
      * 终端线程才能拿到同一把锁处理用户回答。这里只等结果，绝不自己读取 stdin。
-     * 如果已有另一申请、用户已退出或等待被中断，都按不同意处理。
+     * 已有另一申请时排队；用户已退出或等待被中断则按不同意处理。
      * finally 只清理自己这份申请，不清掉后来新建的申请。</p>
      * @param toolName 等待批准的工具名
      * @param input 展示给用户的参数，不修改，也不在这里执行
      * @param reason 为什么这个操作要先问用户
-     * @return 输入 y 时为 true；n、空行、退出、重复申请或等待失败都是 false，大小写不影响 y/n 判断
+     * @return 输入 y 时为 true；n、退出或等待失败为 false，空行不是审批答复
      */
     @Override
     public boolean ask(String toolName, ObjectNode input, String reason) {
         CompletableFuture<Boolean> request;
         synchronized (this) {
-            // 1. 已有申请没回答就拒绝新申请，不能把旧申请直接覆盖掉。
-            if (closed || pending != null) return false;
+            // 1. 新申请排在队尾；不能覆盖旧申请，也不能同时打印多份让 y/n 对应不清。
+            if (closed) return false;
             request = new CompletableFuture<>();
-            pending = request;
-            output.accept("[Permission] " + reason + "\n  " + toolName + "(" + input + ")"
-                    + "\n  输入 y 批准 / n 拒绝（直接回车默认拒绝）");
+            approvals.addLast(new ApprovalRequest(toolName, input.deepCopy(), reason, request));
+            showNextApproval();
             notifyAll();
         }
         // 2. 执行线程在这里等，终端线程还能读用户输入；answer 或 close 设置答复后才继续。
@@ -105,7 +110,8 @@ public final class ConsoleInput implements Approval, AutoCloseable {
             return false;
         } finally {
             synchronized (this) {
-                if (pending == request) pending = null;
+                approvals.removeIf(item -> item.result() == request);
+                if (pending == request) { pending = null; showNextApproval(); }
                 notifyAll();
             }
         }
@@ -117,10 +123,10 @@ public final class ConsoleInput implements Approval, AutoCloseable {
      * <p>真实终端中，Enter 提交，Alt+Enter 换行，粘贴的多行不自动提交。
      * JLine 一次交来完整文字，不再把末尾反斜杠当作续行指令。没有 JLine 的旧流调用
      * 保留反斜杠续行。y/n 必须是整条输入，不会截走多行任务中间的一行。
-     * 有审批在等待时，y 批准、n 或空行拒绝；
-     * 没有审批时，这些文字仍是普通任务，空行也沿用原来的退出行为。</p>
+     * 有审批在等待时，y 批准、n 拒绝；空行留给 REPL 升级缓冲。
+     * 没有审批时 y/n 仍是普通任务。q/exit 与输入结束才退出。</p>
      * @return 去掉首尾空白的任务文字；q/exit 或输入结束时返回 null，
-     *         并拒绝尚未回答的申请；没有审批时的空行也会退出。续行中输入结束则返回已输入的非空正文
+     *         并拒绝尚未回答的申请；空行返回空串。续行中输入结束则返回已输入的非空正文
      * @throws IOException 读输入失败，由 CLI 负责停止整个会话
      * @throws IllegalStateException 不是创建本对象的线程调用
      */
@@ -129,7 +135,7 @@ public final class ConsoleInput implements Approval, AutoCloseable {
         while (true) {
             String line = readLine("JadeCode >> ");
             if (line == null) { close(); return null; }
-            // 只把整条 y/n/空行当成待答申请的答复；其它任务仍可排队，不会被当作同意执行。
+            // 只有完整的 y/n 可以回答审批，其它输入继续按任务或空回车处理。
             if (answer(line)) continue;
             if (isExit(line)) { close(); return null; }
             StringBuilder query = new StringBuilder();
@@ -140,7 +146,7 @@ public final class ConsoleInput implements Approval, AutoCloseable {
             }
             if (line != null) query.append(line);
             String text = query.toString().strip();
-            if (text.isEmpty()) { close(); return null; }
+            // 空输入交给 REPL 升级缓冲，既不退出，也不默认拒绝待审批操作。
             return text;
         }
     }
@@ -153,7 +159,7 @@ public final class ConsoleInput implements Approval, AutoCloseable {
      * 不会因为 stdin 已结束就被提前打断。</p>
      *
      * <p>读到 EOF 时拒绝未答申请，继续等执行线程处理后续结果。
-     * 有审批在等待时，y 批准、n 或空行拒绝；没有审批时 q/exit 或空行才报告取消，
+     * 有审批在等待时，y 批准、n 拒绝；q/exit 报告取消，空行只提醒继续回答，
      * 由 RunCommand 的 close 停掉会话。</p>
      * @param task submit 返回的任务结果 future，不在这里重新创建或重试任务
      * @return 最终回答；运行器已经显示过，调用者不用重复打印
@@ -170,34 +176,47 @@ public final class ConsoleInput implements Approval, AutoCloseable {
                 while (!task.isDone() && pending == null) wait();
                 if (task.isDone()) break;
             }
-            String line = readLine("允许执行？[y/N] >> ");
+            String line = readLine("允许执行？[y/n] >> ");
             if (line == null) close();
             else if (answer(line)) { /* 已按审批回答处理，继续等任务完成 */ }
             else if (isExit(line)) { close(); throw new IllegalStateException("Execution cancelled by user"); }
-            else output.accept("请输入 y 批准 / n 拒绝（直接回车默认拒绝），此时不接受新任务");
+            else output.accept("请输入 y 批准 / n 拒绝，此时不接受新任务");
         }
         return task.get();
     }
 
     /**
-     * 把整条 y/n 或空行作为当前申请的答复，不读取输入，也不调用模型。
+     * 把整条 y/n 作为当前申请的答复，不读取输入，也不调用模型。
      * 例如粘贴的“y\n继续读取 README”是一条任务，不会拆出第一行批准危险命令。
      * @param line 完整的输入文字，不可为 null；忽略首尾空白与字母大小写
-     * @return 有待答申请且收到 y/n/空行时为 true，表示这条输入已用作答复；
+     * @return 有待答申请且收到 y/n 时为 true，表示这条输入已用作答复；
      *         其它情况为 false，让 REPL 继续按普通任务或退出处理
      */
     private boolean answer(String line) {
         String word = line.strip().toLowerCase(Locale.ROOT);
         boolean yes = word.equals("y");
-        boolean no = word.equals("n") || word.isEmpty();
+        boolean no = word.equals("n");
         if (!yes && !no) return false;
         synchronized (this) {
             if (pending == null) return false;
             pending.complete(yes);
             pending = null;
+            showNextApproval();
             notifyAll();
         }
         return true;
+    }
+
+    /**
+     * 持有本对象锁时展示下一份审批。只有队首可以接受 y/n，其余只保存，不抢终端。
+     * 申请携带调用方/Agent 说明和具体参数；失败或关闭都不会默认批准。
+     */
+    private void showNextApproval() {
+        if (pending != null || approvals.isEmpty() || closed) return;
+        ApprovalRequest next = approvals.removeFirst();
+        pending = next.result();
+        output.accept("[Approval] " + next.reason() + "\n  " + next.tool() + "(" + next.input() + ")"
+                + "\n  输入 y 批准 / n 拒绝");
     }
 
     /**
@@ -232,10 +251,10 @@ public final class ConsoleInput implements Approval, AutoCloseable {
     /**
      * 判断用户是否要求退出，不能把退出动作排在一个长任务后面等着。
      * @param line 非 null 输入行，q/exit 忽略大小写和首尾空白
-     * @return q、exit 或纯空白行为 true；多行任务中间不调用它判断退出
+     * @return q、exit 为 true；空行不是退出，多行任务中间不调用它判断退出
      */
     private static boolean isExit(String line) {
-        return line.strip().equalsIgnoreCase("q") || line.strip().equalsIgnoreCase("exit") || line.isBlank();
+        return line.strip().equalsIgnoreCase("q") || line.strip().equalsIgnoreCase("exit");
     }
 
     /**
@@ -255,6 +274,8 @@ public final class ConsoleInput implements Approval, AutoCloseable {
         closed = true;
         if (pending != null) pending.complete(false);
         pending = null;
+        approvals.forEach(item -> item.result().complete(false));
+        approvals.clear();
         notifyAll();
     }
 }
