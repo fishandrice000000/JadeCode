@@ -129,6 +129,30 @@ public final class ConversationView {
     }
 
     /**
+     * 将单调时钟测得的纳秒排成易读时长。小于一秒保留毫秒，不足一分钟最多一位小数；
+     * 再长拆成天/小时/分钟/秒，不显示无意义的零项，也不把天继续变成年。
+     * 这里只格式化，不重新计时，因而重绘和恢复不会让已结束的耗时增长。
+     */
+    static String duration(long nanos) {
+        long millis = Math.max(0, nanos) / 1_000_000;
+        if (millis < 1000) return millis + "ms";
+        long seconds = millis / 1000;
+        if (millis < 60_000) {
+            long tenths = (millis + 50) / 100;
+            if (tenths < 600) return (tenths % 10 == 0 ? Long.toString(tenths / 10)
+                    : (tenths / 10) + "." + (tenths % 10)) + "s";
+            seconds = 60; // 四舍五入达到一分钟时进位，不显示 60.0s。
+        }
+        var parts = new ArrayList<String>();
+        long[] units = { 86_400, 3600, 60, 1 }; String[] names = { "d", "h", "m", "s" };
+        for (int i = 0; i < units.length; i++) {
+            long amount = seconds / units[i]; seconds %= units[i];
+            if (amount > 0) parts.add(amount + names[i]);
+        }
+        return String.join(" ", parts);
+    }
+
+    /**
      * 排一张消息卡。工具显示参数及结果，思考作为普通文本，其余正文按 Markdown 排版。
      * 折叠只缩短显示预览，Entry 中的原结果完整保留；正常返回也不自动涂成业务成功。
      */
@@ -138,8 +162,9 @@ public final class ConversationView {
                 : entry.status.equals("BLOCKED") || entry.status.equals("INTERRUPTED") || entry.kind.equals("Warning") ? "warning"
                 : entry.kind.equals("User") ? "user" : entry.kind.equals("Thinking") ? "thinking" : "accent";
         String title = (actor.isEmpty() ? "" : actor + " · ") + entry.title;
-        if (!entry.status.isBlank()) title += " · " + entry.status;
-        if (entry.elapsed > 0) title += " · " + entry.elapsed / 1_000_000 + "ms";
+        // RETURNED 仍是内部执行事实，只省略它的常态文字；拒绝、异常、运行中等状态照常保留。
+        if (!entry.status.isBlank() && !(entry.kind.equals("Tool") && entry.status.equals("RETURNED"))) title += " · " + entry.status;
+        if (entry.elapsed > 0) title += " · " + duration(entry.elapsed);
         out.add(header(title, style, width));
         String body = entry.body.toString();
         if (entry.kind.equals("Tool")) {

@@ -2,21 +2,29 @@ package com.jadecode.execution;
 
 /**
  * 运行过程的不可变显示快照。它不携带可执行工具、模型历史或审批权。
- * id 是显示关联编号，不能用它替换 ExecutionContext 的真实任务编号。
+ * id 用于找回要更新的显示记录；整轮计时沿用 ExecutionContext 的运行编号，但不能凭它授予权限。
  * @param actor 工厂绑定的 Agent／子代理显示身份，不取自模型参数
  * @param kind 通知类型，决定其余显示字段的含义
- * @param id 工具或缓冲的显示关联编号；无须关联的状态通知使用空串
+ * @param id 工具/缓冲的显示编号，或整轮计时的运行编号；无须关联的状态通知使用空串
  * @param name 工具名或初始角色名，不参与工具查找
  * @param detail 参数 JSON、结果正文或状态说明，只用于展示
  * @param state 运行事实，例如 RUNNING、RETURNED、BLOCKED；RETURNED 不是业务成功
  * @param inputTokens USAGE 通知中的真实输入用量，其它类型为零
  * @param outputTokens USAGE 通知中的真实输出用量，其它类型为零
+ * @param elapsedNanos 执行线程用单调时钟测得的耗时；零表示未提供，不是历史任务耗时为零
  */
 public record ExecutionNotice(String actor, Kind kind, String id, String name, String detail,
-        String state, long inputTokens, long outputTokens) {
+        String state, long inputTokens, long outputTokens, long elapsedNanos) {
+    /** 旧调用未提供计时，保持原通知构造方式，不伪造耗时。 */
+    public ExecutionNotice(String actor, Kind kind, String id, String name, String detail,
+            String state, long inputTokens, long outputTokens) {
+        this(actor, kind, id, name, detail, state, inputTokens, outputTokens, 0);
+    }
     public enum Kind {
         /** 启动取得的模型限额及来源，不包含认证、思考或完整 HTTP 响应。 */ MODEL,
         /** 会话开始、等待后台、回空闲或关闭；不会请求模型。 */ SESSION,
+        /** 一项大轮次开始处理，id 为真实运行编号，不包括先前排队时间。 */ TURN_START,
+        /** 大轮次结束，含总耗时；name=Reply 才给最终文字卡加总耗时，失败不伪装 DONE。 */ TURN_END,
         /** 同一卡片从排队到真正执行，id 保持不变。 */ TOOL_START,
         /** 工具返回、被阻止或中断；每种结束都需要收尾卡片。 */ TOOL_END,
         /** 完整正式响应报告的输入／输出 token。 */ USAGE,
@@ -31,6 +39,10 @@ public record ExecutionNotice(String actor, Kind kind, String id, String name, S
     }
     /** 工厂绑定真实 Agent 身份，不由模型填写。 */
     public ExecutionNotice actor(String value) {
-        return new ExecutionNotice(value, kind, id, name, detail, state, inputTokens, outputTokens);
+        return new ExecutionNotice(value, kind, id, name, detail, state, inputTokens, outputTokens, elapsedNanos);
+    }
+    /** 补充已测得的处理耗时，不复用 Token 字段存时间，也不改变协议消息。 */
+    public ExecutionNotice timed(long nanos) {
+        return new ExecutionNotice(actor, kind, id, name, detail, state, inputTokens, outputTokens, Math.max(0, nanos));
     }
 }
