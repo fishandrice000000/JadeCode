@@ -1,11 +1,12 @@
 package com.jadecode.cli;
 
-import java.io.IOException;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 
 import com.jadecode.bootstrap.JadeCodeFactory;
 import com.jadecode.session.SessionRuntime;
+import com.jadecode.cli.plain.PlainApproval;
+import com.jadecode.cli.plain.PlainOutput;
 
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Parameters;
@@ -25,7 +26,7 @@ public class RunCommand implements Callable<Integer> {
     /**
      * 先检查任务文字，再创建会话、提交任务并等最终结果，不等未来的定时任务。
      *
-     * <p>ConsoleInput.await 负责必要的批准/拒绝，SessionRuntime 负责显示最终回答。
+     * <p>PlainApproval.await 负责必要的批准/拒绝，SessionRuntime 负责显示最终回答。
      * 方法返回时会关闭资源，所以设置“不必等它”的命令也不能在 CLI 退出后继续运行。</p>
      * @return 任务正常走到结束为 0；请求为空、排队失败、执行失败、输入失败、中断或取消为 1。
      *         0 不代表模型业务判断一定正确；命令失败若被模型正常处理，也可能以 0 结束
@@ -38,10 +39,15 @@ public class RunCommand implements Callable<Integer> {
             return 1;
         }
         // 最后才恢复终端；此前先拒绝待答申请、停止会话和命令，让清理过程还能正确显示日志。
-        try (TerminalDisplay display = TerminalDisplay.open();
-                SessionRuntime runtime = JadeCodeFactory.create(CliHooks::register, CliOutput::print, CliOutput::error,
-                        () -> CliOutput.stream(display));
-                ConsoleInput terminal = new ConsoleInput(display)) {
+        PlainOutput output = new PlainOutput(System.out::println);
+        boolean previousColors = com.jadecode.util.Ansi.useTerminal(false);
+        Thread shutdownHook = null;
+        try (SessionRuntime runtime = JadeCodeFactory.create((hooks, cwd, sink) -> { }, output::message,
+                        System.err::println, output::stream, output);
+                PlainApproval terminal = new PlainApproval()) {
+            // run 没有 TUI 输入循环；SIGINT／SIGTERM 退出 JVM 时也必须停掉会话拥有的命令。
+            shutdownHook = new Thread(() -> { terminal.close(); runtime.close(); }, "jade-run-shutdown");
+            Runtime.getRuntime().addShutdownHook(shutdownHook);
             runtime.start(false);
             terminal.await(runtime.submit(prompt, terminal));
             return 0;
@@ -54,9 +60,15 @@ public class RunCommand implements Callable<Integer> {
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             return 1;
-        } catch (IOException | IllegalStateException failure) {
+        } catch (Exception failure) {
             System.err.println("执行未完成: " + failure.getMessage());
             return 1;
+        } finally {
+            com.jadecode.util.Ansi.useTerminal(previousColors);
+            if (shutdownHook != null) {
+                try { Runtime.getRuntime().removeShutdownHook(shutdownHook); }
+                catch (IllegalStateException exiting) { /* JVM 正在执行关闭钩子。 */ }
+            }
         }
     }
 }

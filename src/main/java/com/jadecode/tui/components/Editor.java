@@ -110,13 +110,17 @@ public final class Editor {
         var lines = new ArrayList<String>(); var positions = new ArrayList<Position>();
         var line = new StringBuilder(); int row = 0, column = 0, offset = 0;
         for (String cluster : DisplayWidth.clusters(text)) {
-            int cells = DisplayWidth.clusterWidth(cluster);
+            // 粘贴正文可能带 Tab。原文仍按 UTF-16 下标编辑和提交，显示时则展开为四个空格；
+            // 必须按展开后的列宽算光标，否则“a\tb”的光标会少走四列，软换行也会算错。
+            // 控制字符也在这里去掉，不等排完行后才清理，以免显示与坐标使用不同的文字。
+            String displayed = DisplayWidth.clean(cluster);
+            int cells = DisplayWidth.width(displayed);
             if (!cluster.equals("\n") && column + cells > columns) {
                 lines.add(line.toString()); line.setLength(0); row++; column = 0;
             }
             positions.add(new Position(offset, row, column));
             if (cluster.equals("\n")) { lines.add(line.toString()); line.setLength(0); row++; column = 0; }
-            else { line.append(cluster); column += cells; }
+            else { line.append(displayed); column += cells; }
             offset += cluster.length();
         }
         lines.add(line.toString()); positions.add(new Position(offset, row, column));
