@@ -38,6 +38,9 @@ public final class TuiState {
     public final ArrayDeque<UiEvent.ApprovalRequested> approvals = new ArrayDeque<>();
     public int approvalChoice = -1;
     public SelectList selector;
+    /** 命令候选只辅助编辑，不与审批／主题选择器共用焦点；Esc 后等下一次编辑再显示。 */
+    public SelectList commands;
+    public boolean commandsDismissed, commandSuggestions = true;
     public String selectorKind = "", theme = "dark", pending = "", pendingKind = "", hint = "";
     public boolean thinkingVisible = true, toolsExpanded, closing;
     public long inputTokens, outputTokens;
