@@ -286,6 +286,8 @@ public class AnthropicSdkLlmClient implements LlmClient {
         ModelResponse.Usage u = usage == null
                 ? null
                 : new ModelResponse.Usage(usage.inputTokens(), usage.outputTokens());
-        return new ModelResponse(Message.assistant(blocks), u);
+        // 保留“为什么停止”，辅助 JSON 回复可能因额度耗尽而截断，不能只看到残缺文本。
+        // 只保存协议字段，不把思考或原始响应放进诊断日志。
+        return new ModelResponse(Message.assistant(blocks), u, message.stopReason().map(reason -> reason.asString()).orElse(""));
     }
 }

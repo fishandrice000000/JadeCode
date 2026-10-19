@@ -264,7 +264,7 @@ public final class JadeCodeFactory {
         TaskStore tasks;
         CronScheduler cron;
         try {
-            memory = isLeader ? new MemoryManager(client, new MemoryStore(cwd)) : null;
+            memory = isLeader ? new MemoryManager(client, new MemoryStore(cwd), settings.memory().extractionMaxOutputTokens()) : null;
             tasks = team.tasks();
             cron = isLeader ? new CronScheduler(cwd) : null;
         } catch (IOException failure) {

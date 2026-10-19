@@ -41,10 +41,12 @@ public final class MemoryExtractionService {
             + "the topic and when it applies. Return only a JSON array of objects with nonempty string "
             + "fields name, type, scope, description, body. type must be user, feedback, project, or reference. "
             + "scope must be persistent for knowledge that should apply later, or current_task for one-off "
-            + "commands and restrictions. Avoid duplicate existing names. Return [] if nothing qualifies.";
+            + "commands and restrictions. Avoid duplicate existing names. Return at most three records; "
+            + "keep each body under 1200 characters. Do not add explanation or Markdown fences. Return [] if nothing qualifies.";
 
     private final LlmClient client;
     private final MemoryStore store;
+    private final int maxOutputTokens;
 
     /**
      * 只注入依赖，不读取配置或调用模型；同一个工作区的召回与提取应使用同一存储规则。
@@ -54,15 +56,27 @@ public final class MemoryExtractionService {
      * @throws NullPointerException 任一依赖为空（调用方装配错误）
      */
     public MemoryExtractionService(LlmClient client, MemoryStore store) {
+        this(client, store, 8000);
+    }
+
+    /**
+     * 指定提取专属输出额度，不要求模型用满，也不改变正式回答的额度。
+     * 提取可能附带 thinking，原先固定 1000 容易只留下残缺候选；额度交给统一配置调整。
+     * 构造无 IO，非法额度立即报错，不能把它当作一次模型提取失败。
+     */
+    public MemoryExtractionService(LlmClient client, MemoryStore store, int maxOutputTokens) {
         this.client = Objects.requireNonNull(client, "client");
         this.store = Objects.requireNonNull(store, "store");
+        if (maxOutputTokens < 1) throw new IllegalArgumentException("记忆提取输出额度必须为正整数");
+        this.maxOutputTokens = maxOutputTokens;
     }
 
     /**
      * 从本轮结束时的历史提取候选，只保存结构完整且 scope=persistent 的新记录。
      *
      * <p>没有纯文本或模型返回合法 [] 时正常返回成功的零新增结果，不创建库。
-     * LlmException 返回 MODEL_FAILED；整体不是合法 assistant 纯文本 JSON 数组返回 INVALID_RESPONSE。
+     * LlmException 返回 MODEL_FAILED；正文不是完整 JSON 数组或服务端报告截断时返回 INVALID_RESPONSE。
+     * 可伴随 thinking，也可外包一层完整 json 围栏，但都不改变候选字段／scope 的保存检查。
      * 个别非法候选、current_task 及文件名冲突计入 ignored，而不是宣称新增成功。</p>
      *
      * <p>文件系统失败不归入模型失败，IOException 向上报告，保存层尝试清理本批新文件。
@@ -94,15 +108,15 @@ public final class MemoryExtractionService {
         ModelResponse response;
         try {
             response = client.complete(new CompleteRequest(EXTRACTION_SYSTEM,
-                    List.of(Message.userText(input)), 1000, List.of()));
+                    List.of(Message.userText(input)), maxOutputTokens, List.of()));
         } catch (LlmException modelFailure) {
-            return new ExtractionResult(Status.MODEL_FAILED, 0, 0);
+            return new ExtractionResult(Status.MODEL_FAILED, 0, 0, FailureReason.REQUEST_FAILED);
         }
         JsonNode candidates;
         try {
             candidates = candidateArray(response);
-        } catch (IllegalArgumentException invalidResponse) {
-            return new ExtractionResult(Status.INVALID_RESPONSE, 0, 0);
+        } catch (InvalidReply invalidResponse) {
+            return new ExtractionResult(Status.INVALID_RESPONSE, 0, 0, invalidResponse.reason);
         }
 
         // 3. 先完成全部结构 / scope 检查，再做任何写入；程序不检查临时词或重新理解正文。
@@ -130,25 +144,36 @@ public final class MemoryExtractionService {
     }
 
     /**
-     * 提取辅助模型只允许返回一个完整 JSON 数组，不从解释文字里猜片段。
+     * 提取辅助模型只允许返回一个完整 JSON 数组，可外包一层 json 代码围栏，不从解释文字里猜片段。
      * 允许附带 thinking，但 JSON 只取 TextBlock；思考不作为候选，也不在终端显示。
      * tool_use、错误角色、空回复或尾随 JSON / 文本均视为整体非法；本 helper 不产生文件副作用。
      */
     private static JsonNode candidateArray(ModelResponse response) {
-        if (response == null || response.message() == null || response.message().role() != Role.ASSISTANT
+        if (response == null || response.message() == null) throw new InvalidReply(FailureReason.MISSING_RESPONSE);
+        // 截断时哪怕恰好形成一段可解析 JSON，也不能据此断言已收齐候选，避免保存半份结果。
+        if (response.stopReason().equals("max_tokens")) throw new InvalidReply(FailureReason.OUTPUT_LIMIT);
+        if (response.stopReason().equals("model_context_window_exceeded")) throw new InvalidReply(FailureReason.CONTEXT_LIMIT);
+        if (response.stopReason().equals("refusal")) throw new InvalidReply(FailureReason.REFUSAL);
+        if (response.message().role() != Role.ASSISTANT
                 || response.message().content() == null
                 || !response.message().hasOnlyTextAndThinking()) {
-            throw new IllegalArgumentException("记忆提取回复不是 assistant 文本（可伴随 thinking）");
+            throw new InvalidReply(FailureReason.INVALID_BLOCKS);
         }
+        String text = response.message().extractText().strip();
+        if (text.isEmpty()) throw new InvalidReply(FailureReason.EMPTY_TEXT);
+        // 只去掉覆盖全文的一层围栏。比如“这里是结果：[...]”仍然拒绝，不能抓取任意数组片段。
+        var fence = java.util.regex.Pattern.compile("(?is)\\A```(?:json)?[ \\t]*\\R(.*)\\R```\\z").matcher(text);
+        if (fence.matches()) text = fence.group(1).strip();
         try {
             JsonNode value = Json.mapper().reader().with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
-                    .readTree(response.message().extractText());
+                    .readTree(text);
             if (value == null || !value.isArray()) {
-                throw new IllegalArgumentException("记忆提取回复不是 JSON 数组");
+                throw new InvalidReply(FailureReason.NOT_ARRAY);
             }
             return value;
         } catch (JsonProcessingException invalidJson) {
-            throw new IllegalArgumentException("记忆提取回复不是完整 JSON", invalidJson);
+            // Jackson 异常可能包含候选正文，不沿异常链携带到界面或日志。
+            throw new InvalidReply(FailureReason.INVALID_JSON);
         }
     }
 
@@ -208,7 +233,27 @@ public final class MemoryExtractionService {
      * @param status 候选生成 / 校验的结果；IO 故障另以异常报告
      * @param stored 保存层确认的新增记录数
      * @param ignored 合法数组中因 scope、结构或名称冲突未新增的候选数
+     * @param reason 固定的失败分类；成功为 NONE，不包含回复正文或异常原文
      */
-    public record ExtractionResult(Status status, int stored, int ignored) {
+    public record ExtractionResult(Status status, int stored, int ignored, FailureReason reason) {
+        public ExtractionResult(Status status, int stored, int ignored) { this(status, stored, ignored, FailureReason.NONE); }
+    }
+
+    /** 供用户辨别辅助能力为何失败；说明均由程序固定生成，不含任何模型／对话正文。 */
+    public enum FailureReason {
+        NONE("无错误"), REQUEST_FAILED("辅助模型请求失败"), MISSING_RESPONSE("模型未返回消息"),
+        INVALID_BLOCKS("回复角色或内容块不符合 JSON 提取要求"), EMPTY_TEXT("回复没有正文，可能只有思考"),
+        OUTPUT_LIMIT("达到输出上限，候选可能被截断，请检查 memory.extractionMaxOutputTokens"),
+        CONTEXT_LIMIT("辅助请求超过模型上下文窗口"), REFUSAL("模型拒绝了辅助提取请求"),
+        NOT_ARRAY("回复顶层不是 JSON 数组"), INVALID_JSON("正文不是完整 JSON，或存在额外说明／尾随数据");
+        private final String description;
+        FailureReason(String description) { this.description = description; }
+        public String description() { return description; }
+    }
+
+    /** 只在解析器内部携带固定失败分类，不携带原回复；由 extract 转成无副作用的结果。 */
+    private static final class InvalidReply extends IllegalArgumentException {
+        private final FailureReason reason;
+        private InvalidReply(FailureReason reason) { super(reason.description()); this.reason = reason; }
     }
 }
