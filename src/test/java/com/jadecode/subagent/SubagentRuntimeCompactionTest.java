@@ -11,6 +11,7 @@ import java.util.Map;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jadecode.context.CompactionLimits;
+import com.jadecode.context.CompactionPolicy;
 import com.jadecode.context.ContextCompactor;
 import com.jadecode.hooks.Hooks;
 import com.jadecode.llm.CompleteRequest;
@@ -359,7 +360,7 @@ class SubagentRuntimeCompactionTest {
         FakeTool bash = new FakeTool("bash", huge);
         Hooks hooks = new Hooks();
         SubagentRuntime runtime = new SubagentRuntime(client, Map.of("bash", bash), "sub-system", 8000, hooks,
-                new ContextCompactor(client, transcriptDir, toolResultsDir, budgetLimits()));
+                new ContextCompactor(client, transcriptDir, toolResultsDir, budgetLimits(), CompactionPolicy.coursePipeline()));
 
         assertEquals("完成", runtime.run("跑一次构建"));
 
@@ -388,7 +389,7 @@ class SubagentRuntimeCompactionTest {
         });
         SubagentRuntime runtime = new SubagentRuntime(client, Map.of("bash", new FakeTool("bash", "x")),
                 "sub-system", 8000, hooks,
-                new ContextCompactor(client, transcriptDir, toolResultsDir, narrowLimits()));
+                new ContextCompactor(client, transcriptDir, toolResultsDir, narrowLimits(), CompactionPolicy.coursePipeline()));
 
         assertEquals("完成", runtime.run("只查一个模块"));
 
@@ -416,7 +417,7 @@ class SubagentRuntimeCompactionTest {
         List<Map<String, ?>> ends = recordEnds(hooks);
         SubagentRuntime runtime = new SubagentRuntime(client,
                 Map.of("compact", new FakeTool("compact", CompactTool.OUTPUT)), "sub-system", 8000, hooks,
-                new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits()));
+                new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits(), CompactionPolicy.coursePipeline()));
 
         assertEquals("完成", runtime.run("阶段一"));
 
@@ -463,7 +464,7 @@ class SubagentRuntimeCompactionTest {
         SubagentRuntime runtime = new SubagentRuntime(client,
                 Map.of("bash", new FakeTool("bash", "普通输出"), "compact", new FakeTool("compact", CompactTool.OUTPUT)),
                 "sub-system", 8000, hooks,
-                new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits()));
+                new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits(), CompactionPolicy.coursePipeline()));
 
         assertEquals("完成", runtime.run("阶段二"));
 
@@ -501,7 +502,7 @@ class SubagentRuntimeCompactionTest {
         blocking.register(Hooks.PRE_TOOL_USE, params -> CompactTool.OUTPUT);
         SubagentRuntime blockedRuntime = new SubagentRuntime(blocked,
                 Map.of("compact", new FakeTool("compact", CompactTool.OUTPUT)), "sub-system", 8000, blocking,
-                new ContextCompactor(blocked, transcriptDir, toolResultsDir, wideLimits()));
+                new ContextCompactor(blocked, transcriptDir, toolResultsDir, wideLimits(), CompactionPolicy.coursePipeline()));
         assertEquals("完成", blockedRuntime.run("被拦"));
         assertEquals(0, blocked.summaryRequests.size(), "被拦截的 compact 不得触发摘要");
         assertFalse(Files.exists(transcriptDir));
@@ -511,7 +512,7 @@ class SubagentRuntimeCompactionTest {
         ScriptedClient fake = new ScriptedClient(new ArrayList<>(), toolReply("b1", "bash"), textReply("完成"));
         SubagentRuntime fakeRuntime = new SubagentRuntime(fake,
                 Map.of("bash", new FakeTool("bash", CompactTool.OUTPUT)), "sub-system", 8000, new Hooks(),
-                new ContextCompactor(fake, transcriptDir, toolResultsDir, wideLimits()));
+                new ContextCompactor(fake, transcriptDir, toolResultsDir, wideLimits(), CompactionPolicy.coursePipeline()));
         assertEquals("完成", fakeRuntime.run("伪成功"));
         assertEquals(0, fake.summaryRequests.size(), "普通工具返回同样文案不得误触发");
 
@@ -523,7 +524,7 @@ class SubagentRuntimeCompactionTest {
         SubagentRuntime resetRuntime = new SubagentRuntime(reset,
                 Map.of("compact", new FakeTool("compact", CompactTool.OUTPUT), "bash", new FakeTool("bash", "输出")),
                 "sub-system", 8000, new Hooks(),
-                new ContextCompactor(reset, transcriptDir, toolResultsDir, wideLimits()));
+                new ContextCompactor(reset, transcriptDir, toolResultsDir, wideLimits(), CompactionPolicy.coursePipeline()));
         assertEquals("完成", resetRuntime.run("两批"));
         assertEquals(1, reset.summaryRequests.size(), "第二批复用上一批的压缩标志会多压一次");
     }
@@ -544,7 +545,7 @@ class SubagentRuntimeCompactionTest {
         FakeTool bash = new FakeTool("bash", "小输出");
         SubagentRuntime runtime = new SubagentRuntime(client, Map.of("bash", bash),
                 "sub-system", 8000, hooks,
-                new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits()));
+                new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits(), CompactionPolicy.coursePipeline()));
 
         assertEquals("搞定", runtime.run("查清楚这个模块"));
 
@@ -588,7 +589,7 @@ class SubagentRuntimeCompactionTest {
         List<Map<String, ?>> ends = recordEnds(hooks);
         SubagentRuntime runtime = new SubagentRuntime(client, Map.of("bash", new FakeTool("bash", "x")),
                 "sub-system", 8000, hooks,
-                new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits()));
+                new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits(), CompactionPolicy.coursePipeline()));
 
         LlmException thrown = assertThrows(LlmException.class, () -> runtime.run("任务"));
 
@@ -614,7 +615,7 @@ class SubagentRuntimeCompactionTest {
         List<Map<String, ?>> retryEnds = recordEnds(retryHooks);
         SubagentRuntime retryRuntime = new SubagentRuntime(retry, Map.of("bash", new FakeTool("bash", "x")),
                 "sub-system", 8000, retryHooks,
-                new ContextCompactor(retry, transcriptDir, toolResultsDir, wideLimits()));
+                new ContextCompactor(retry, transcriptDir, toolResultsDir, wideLimits(), CompactionPolicy.coursePipeline()));
 
         LlmException secondThrown = assertThrows(LlmException.class, () -> retryRuntime.run("任务"));
 
@@ -643,7 +644,7 @@ class SubagentRuntimeCompactionTest {
         List<Map<String, ?>> ends = recordEnds(hooks);
         FakeTool bash = new FakeTool("bash", "小输出");
         SubagentRuntime runtime = new SubagentRuntime(client, Map.of("bash", bash), "sub-system", 8000, hooks,
-                new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits()));
+                new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits(), CompactionPolicy.coursePipeline()));
 
         assertEquals("最终结论", assertDoesNotThrowRun(runtime, "长任务"));
 
@@ -666,7 +667,7 @@ class SubagentRuntimeCompactionTest {
         List<Map<String, ?>> ends = recordEnds(hooks);
         FakeTool bash = new FakeTool("bash", "小输出");
         SubagentRuntime runtime = new SubagentRuntime(client, Map.of("bash", bash), "sub-system", 8000, hooks,
-                new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits()));
+                new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits(), CompactionPolicy.coursePipeline()));
 
         String result = assertDoesNotThrowRun(runtime, "一直调工具");
 
@@ -689,7 +690,7 @@ class SubagentRuntimeCompactionTest {
         List<Map<String, ?>> ends = recordEnds(hooks);
         SubagentRuntime runtime = new SubagentRuntime(client, Map.of("bash", new FakeTool("bash", "x")),
                 "sub-system", 8000, hooks,
-                new ContextCompactor(client, transcriptDir, toolResultsDir, narrowLimits()));
+                new ContextCompactor(client, transcriptDir, toolResultsDir, narrowLimits(), CompactionPolicy.coursePipeline()));
 
         LlmException thrown = assertThrows(LlmException.class, () -> runtime.run(filler(500)));
 
@@ -710,7 +711,7 @@ class SubagentRuntimeCompactionTest {
         List<Map<String, ?>> archiveEnds = recordEnds(archiveHooks);
         SubagentRuntime archiveRuntime = new SubagentRuntime(archiveClient,
                 Map.of("bash", new FakeTool("bash", "x")), "sub-system", 8000, archiveHooks,
-                new ContextCompactor(archiveClient, transcriptDir, toolResultsDir, narrowLimits()));
+                new ContextCompactor(archiveClient, transcriptDir, toolResultsDir, narrowLimits(), CompactionPolicy.coursePipeline()));
 
         IllegalStateException archiveError = assertThrows(IllegalStateException.class,
                 () -> archiveRuntime.run(filler(500)));
@@ -731,7 +732,7 @@ class SubagentRuntimeCompactionTest {
         List<Map<String, ?>> ends = recordEnds(hooks);
         SubagentRuntime runtime = new SubagentRuntime(client, Map.of("bash", new FakeTool("bash", "x")),
                 "sub-system", 8000, hooks,
-                new ContextCompactor(client, transcriptDir, toolResultsDir, narrowLimits()));
+                new ContextCompactor(client, transcriptDir, toolResultsDir, narrowLimits(), CompactionPolicy.coursePipeline()));
 
         LlmException thrown = assertThrows(LlmException.class, () -> runtime.run(filler(500)));
 
@@ -753,7 +754,7 @@ class SubagentRuntimeCompactionTest {
         List<Map<String, ?>> ends = recordEnds(hooks);
         FakeTool compact = new FakeTool("compact", CompactTool.OUTPUT);
         SubagentRuntime runtime = new SubagentRuntime(client, Map.of("compact", compact), "sub-system", 8000, hooks,
-                new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits()));
+                new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits(), CompactionPolicy.coursePipeline()));
 
         LlmException thrown = assertThrows(LlmException.class, () -> runtime.run("阶段"));
 
@@ -776,7 +777,7 @@ class SubagentRuntimeCompactionTest {
         List<Map<String, ?>> retryEnds = recordEnds(retryHooks);
         SubagentRuntime retryRuntime = new SubagentRuntime(retry, Map.of("bash", new FakeTool("bash", "x")),
                 "sub-system", 8000, retryHooks,
-                new ContextCompactor(retry, transcriptDir, toolResultsDir, wideLimits()));
+                new ContextCompactor(retry, transcriptDir, toolResultsDir, wideLimits(), CompactionPolicy.coursePipeline()));
 
         LlmException retryThrown = assertThrows(LlmException.class, () -> retryRuntime.run("任务"));
 
@@ -801,7 +802,7 @@ class SubagentRuntimeCompactionTest {
         List<Map<String, ?>> ends = recordEnds(hooks);
         SubagentRuntime runtime = new SubagentRuntime(client, Map.of("bash", new FakeTool("bash", "x")),
                 "sub-system", 8000, hooks,
-                new ContextCompactor(client, transcriptDir, toolResultsDir, narrowLimits()));
+                new ContextCompactor(client, transcriptDir, toolResultsDir, narrowLimits(), CompactionPolicy.coursePipeline()));
 
         assertEquals("结论甲", runtime.run(goalA));
         assertEquals("结论乙", runtime.run(goalB));
@@ -830,7 +831,7 @@ class SubagentRuntimeCompactionTest {
         List<Map<String, ?>> ends = recordEnds(hooks);
         FakeTool bash = new FakeTool("bash", "不该执行");
         SubagentRuntime runtime = new SubagentRuntime(client, Map.of("bash", bash), "sub-system", 8000, hooks,
-                new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits()));
+                new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits(), CompactionPolicy.coursePipeline()));
 
         IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class, () -> runtime.run("任务"));
 
@@ -849,7 +850,7 @@ class SubagentRuntimeCompactionTest {
         });
         SubagentRuntime unknownRuntime = new SubagentRuntime(unknown, Map.of("bash", new FakeTool("bash", "x")),
                 "sub-system", 8000, unknownHooks,
-                new ContextCompactor(unknown, workspace.resolve("transcripts-unknown"), toolResultsDir, wideLimits()));
+                new ContextCompactor(unknown, workspace.resolve("transcripts-unknown"), toolResultsDir, wideLimits(), CompactionPolicy.coursePipeline()));
 
         assertEquals("完成", assertDoesNotThrowRun(unknownRuntime, "任务"));
 
@@ -872,7 +873,7 @@ class SubagentRuntimeCompactionTest {
         List<Map<String, ?>> ends = recordEnds(hooks);
         SubagentRuntime runtime = new SubagentRuntime(client, Map.of("bash", new FakeTool("bash", "x")),
                 "sub-system", 8000, hooks,
-                new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits()));
+                new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits(), CompactionPolicy.coursePipeline()));
 
         LlmException thrown = assertThrows(LlmException.class, () -> runtime.run("短任务"));
 
@@ -907,7 +908,7 @@ class SubagentRuntimeCompactionTest {
         List<Map<String, ?>> ends = recordEnds(hooks);
         FakeTool bash = new FakeTool("bash", "小输出");
         SubagentRuntime runtime = new SubagentRuntime(client, Map.of("bash", bash), "sub-system", 8000, hooks,
-                new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits()));
+                new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits(), CompactionPolicy.coursePipeline()));
 
         assertEquals("最终结论", assertDoesNotThrowRun(runtime, "两段超限"));
 
@@ -934,7 +935,7 @@ class SubagentRuntimeCompactionTest {
         List<Map<String, ?>> ends = recordEnds(hooks);
         FakeTool compact = new FakeTool("compact", CompactTool.OUTPUT);
         SubagentRuntime runtime = new SubagentRuntime(client, Map.of("compact", compact), "sub-system", 8000, hooks,
-                new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits()));
+                new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits(), CompactionPolicy.coursePipeline()));
 
         IllegalStateException compactError = assertThrows(IllegalStateException.class, () -> runtime.run("阶段"));
 
@@ -959,7 +960,7 @@ class SubagentRuntimeCompactionTest {
         List<Map<String, ?>> retryEnds = recordEnds(retryHooks);
         FakeTool retryBash = new FakeTool("bash", "小输出");
         SubagentRuntime retryRuntime = new SubagentRuntime(retry, Map.of("bash", retryBash), "sub-system", 8000,
-                retryHooks, new ContextCompactor(retry, transcriptDir, toolResultsDir, wideLimits()));
+                retryHooks, new ContextCompactor(retry, transcriptDir, toolResultsDir, wideLimits(), CompactionPolicy.coursePipeline()));
 
         IllegalStateException reactiveError = assertThrows(IllegalStateException.class,
                 () -> retryRuntime.run("任务"));
@@ -997,7 +998,7 @@ class SubagentRuntimeCompactionTest {
         });
         FakeTool compact = new FakeTool("compact", unexpected);
         SubagentRuntime runtime = new SubagentRuntime(client, Map.of("compact", compact), "sub-system", 8000,
-                hooks, new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits()));
+                hooks, new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits(), CompactionPolicy.coursePipeline()));
 
         assertEquals("完成", assertDoesNotThrowRun(runtime, "阶段"));
 

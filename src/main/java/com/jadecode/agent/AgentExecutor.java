@@ -199,9 +199,9 @@ public class AgentExecutor implements AutoCloseable {
                 return new ModelReply(response.message(), calls, textDisplayed[0]);
             } catch (LlmException failure) {
                 display.failed();
-                // 网络错误不一律重试；仍只对真正的上下文超限使用既有有限补救。
+                // 配置关闭就直接暴露本次错误，不额外重试同一历史。开启时也只补救真正的上下文超限。
                 ensureOpen();
-                if (compactor == null || !ContextCompactor.isContextOverflow(failure)
+                if (compactor == null || !compactor.policy().reactiveEnabled() || !ContextCompactor.isContextOverflow(failure)
                         || retries >= ContextCompactor.MAX_REACTIVE_RETRIES) throw failure;
                 retries++;
                 List<Message> recovered = compactor.reactiveCompact(messages, activeRequest);

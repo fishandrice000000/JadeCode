@@ -251,7 +251,7 @@ class MainCompactionAssemblyTest {
         assertTrue(summary.tools().isEmpty(), "摘要请求不得携带工具表");
         assertTrue(summary.system().contains("Summarize the supplied coding-agent conversation as factual state"),
                 "摘要必须走专用事实 prompt");
-        assertEquals(CompactionLimits.courseDefaults().summaryMaxOutputTokens(), summary.maxTokens(),
+        assertEquals(CompactionLimits.defaults().summaryMaxOutputTokens(), summary.maxTokens(),
                 "摘要输出额度来自 CompactionLimits 默认值,而不是配置里的 maxTokens");
         // 下一次正式请求看到压缩后的历史,且当前请求仍是入口那句。
         List<Message> retried = client.formal.get(1).messages();
@@ -400,7 +400,13 @@ class MainCompactionAssemblyTest {
         }
         client.parentScript.add(new LlmException("prompt_too_long: 正式请求超限"));
         client.parentScript.add(textReply("完成"));
-        SessionRuntime loop = JadeCodeFactory.create(config(), ws, client);
+        // 生产默认不再自动补救；本例验证“显式启用后的接线”，而不是偷用机器配置打开它。
+        var defaults = com.jadecode.config.JadeSettings.defaults();
+        var settings = new com.jadecode.config.JadeSettings(defaults.tui(),
+                com.jadecode.context.CompactionPolicy.coursePipeline(), defaults.limits());
+        SessionRuntime loop = JadeCodeFactory.create(config(), ws, client, ignored -> { }, ignored -> { },
+                (hooks, cwd, output) -> { }, () -> com.jadecode.llm.ResponseStream.NONE,
+                com.jadecode.execution.ExecutionObserver.NONE, settings);
         List<String> toolEvents = new ArrayList<>();
         ((AgentExecutor) readField(loop, "engine")).hooks().register(Hooks.POST_TOOL_USE, params -> {
             toolEvents.add("post");

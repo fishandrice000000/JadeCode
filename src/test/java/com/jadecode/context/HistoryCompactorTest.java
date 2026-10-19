@@ -522,7 +522,7 @@ class HistoryCompactorTest {
         // 情形 A:确定性层(fit)能把结果换成可恢复外壳 → 不调用摘要模型。
         RecordingLlmClient shrunken = new RecordingLlmClient(
                 new ScriptedLlmClient(assistant(new TextBlock("不该被调用"))));
-        ContextCompactor fitting = new ContextCompactor(shrunken, transcriptDir, toolResultsDir, small);
+        ContextCompactor fitting = new ContextCompactor(shrunken, transcriptDir, toolResultsDir, small, CompactionPolicy.coursePipeline());
         List<Message> shrinkable = List.of(
                 Message.userText("开始"),
                 Message.assistant(List.of(use("t1"))),
@@ -538,7 +538,7 @@ class HistoryCompactorTest {
         // 情形 B:整段都是普通文本,前三层都动不了 → 第四层整段摘要,且请求不带工具。
         RecordingLlmClient summarized = new RecordingLlmClient(
                 new ScriptedLlmClient(assistant(new TextBlock("真的摘要了"))));
-        ContextCompactor summarizing = new ContextCompactor(summarized, transcriptDir, toolResultsDir, small);
+        ContextCompactor summarizing = new ContextCompactor(summarized, transcriptDir, toolResultsDir, small, CompactionPolicy.coursePipeline());
         List<Message> unsquashable = List.of(
                 Message.userText("开始"),
                 Message.assistant(List.of(new TextBlock("y".repeat(4000)))));

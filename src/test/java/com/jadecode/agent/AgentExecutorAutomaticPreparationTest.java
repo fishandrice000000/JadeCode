@@ -11,6 +11,7 @@ import java.util.Map;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jadecode.context.CompactionLimits;
+import com.jadecode.context.CompactionPolicy;
 import com.jadecode.context.ContextCompactor;
 import com.jadecode.hooks.Hooks;
 import com.jadecode.session.SessionRuntime;
@@ -286,7 +287,7 @@ class AgentExecutorAutomaticPreparationTest {
         // 正是为了证明 prepare 会独立按消息条数调用第二层,这里把字符上限设得远大于实际字符数。
         CompactionLimits limits = limits(200_000, 200_000, 30_000, 2_000, 4, 80_000);
         FakeClient client = new FakeClient(events, assistant(new TextBlock("完成")));
-        ContextCompactor compactor = new ContextCompactor(client, transcriptDir, toolResultsDir, limits);
+        ContextCompactor compactor = new ContextCompactor(client, transcriptDir, toolResultsDir, limits, CompactionPolicy.coursePipeline());
         AgentExecutor loop = new AgentExecutor(client, Map.of("bash", new FakeTool("bash", "x")), "test-system", 8000,
                 new Hooks(), compactor);
         List<Message> messages = new ArrayList<>();

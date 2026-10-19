@@ -232,9 +232,9 @@ public class SubagentRuntime {
                 } catch (LlmException error) {
                     // 如果用户在等模型时退出，即使现在才返回超限错误，也不要再调用摘要模型。
                     checkSessionOpen(context);
-                    // 2.1 恢复分流:命中"上下文过长"的分类、且本次委派还有额度,才值得付一次有损压缩。
+                    // 2.1 恢复分流:配置允许、命中"上下文过长"且本次委派还有额度，才做有损补救。
                     //     不匹配(认证 / 限流 / 网络)或额度耗尽的异常原样抛出,交给外层统一 END(FAILED)。
-                    if (compactor == null || !ContextCompactor.isContextOverflow(error)
+                    if (compactor == null || !compactor.policy().reactiveEnabled() || !ContextCompactor.isContextOverflow(error)
                             || reactiveRetries >= ContextCompactor.MAX_REACTIVE_RETRIES) {
                         throw error;
                     }
