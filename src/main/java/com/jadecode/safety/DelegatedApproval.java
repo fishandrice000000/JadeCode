@@ -58,8 +58,9 @@ public final class DelegatedApproval implements Approval {
             // 先保留原始字节，删除才可恢复；不把文件内容送给模型，避免额外泄漏文件正文。
             byte[] original = Files.readAllBytes(candidate);
             if (original.length > 65536) return user != null && user.ask(toolName, exact, detail);
-            Path backupDir = cwd.resolve(".team").resolve("approval-backups");
-            Files.createDirectories(backupDir);
+            var paths = new com.jadecode.config.WorkspacePaths(cwd);
+            Path backupDir = paths.approvalBackups();
+            paths.directory(backupDir, true);
             Path backup = backupDir.resolve(UUID.randomUUID() + ".bin");
             Files.write(backup, original, StandardOpenOption.CREATE_NEW);
             String data = Json.mapper().writeValueAsString(java.util.Map.of(
@@ -107,6 +108,7 @@ public final class DelegatedApproval implements Approval {
         String name = candidate.getFileName().toString().toLowerCase(java.util.Locale.ROOT);
         if (!candidate.startsWith(cwd) || candidate.equals(cwd) || candidate.startsWith(cwd.resolve(".git"))
                 || candidate.startsWith(cwd.resolve(".ssh")) || candidate.startsWith(cwd.resolve(".team"))
+                || candidate.startsWith(new com.jadecode.config.WorkspacePaths(cwd).root())
                 || name.contains("env") || name.contains("credential") || name.contains("secret")
                 || name.contains("token") || name.contains("key") || name.endsWith(".pem") || name.startsWith("id_")) return null;
         try {

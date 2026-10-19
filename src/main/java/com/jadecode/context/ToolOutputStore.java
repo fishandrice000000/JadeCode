@@ -149,7 +149,11 @@ final class ToolOutputStore {
         // toRealPath 会把符号链接解到最终目标,所以"指向目录外的软链"会在这里被拒。
         try {
             Path realDir = toolResultsDir.toRealPath();
-            Path realFile = path.toRealPath();
+            Path actual = path;
+            Path parent = toolResultsDir.toAbsolutePath().getParent();
+            if (parent != null && parent.getFileName().toString().equals(".jadecode"))
+                actual = new com.jadecode.config.WorkspacePaths(parent.getParent()).legacyRead(path);
+            Path realFile = actual.toRealPath();
             if (!realFile.startsWith(realDir) || !Files.isRegularFile(realFile)) {
                 return null;
             }

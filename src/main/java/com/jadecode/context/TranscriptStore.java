@@ -188,7 +188,11 @@ final class TranscriptStore {
         // toRealPath 会把符号链接解到最终目标,所以"指向目录外的软链"在这里被拒。
         try {
             Path realDir = transcriptDir.toRealPath();
-            Path realFile = path.toRealPath();
+            Path actual = path;
+            Path parent = transcriptDir.toAbsolutePath().getParent();
+            if (parent != null && parent.getFileName().toString().equals(".jadecode"))
+                actual = new com.jadecode.config.WorkspacePaths(parent.getParent()).legacyRead(path);
+            Path realFile = actual.toRealPath();
             return realFile.startsWith(realDir) && Files.isRegularFile(realFile);
         } catch (IOException e) {
             // 解析失败或文件读不到 = 无法判断,当作不可信。

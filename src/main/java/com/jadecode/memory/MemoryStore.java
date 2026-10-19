@@ -31,7 +31,7 @@ import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
  * 具体哪些进入下一次请求由 {@link MemoryRecallService} 决定。本类不判断内容的长期价值，
  * 不用关键词否决记录；只有调用方明确要求新增或替换时才写入，不自动提取、不自动整理。
  *
- * <p>库在注入工作区的 {@code .memory} 目录下，只有一层 Markdown 文件。每次读取都重新扫描，
+ * <p>库在注入工作区的 {@code .jadecode/memory} 目录下，只有一层 Markdown 文件。每次读取都重新扫描，
  * 返回不可修改的列表，不缓存上次的结果。读到的是本次快照，不对其他进程的并发修改提供隔离。
  */
 public final class MemoryStore {
@@ -56,12 +56,12 @@ public final class MemoryStore {
         if (workspaceRoot == null) {
             throw new IllegalArgumentException("workspaceRoot 不能为 null");
         }
-        // 先解析工作区自身的链接，再派生 .memory；比较的是实际路径，不是字符串前缀。
+        // 先解析工作区自身的链接，再派生内部记忆目录；比较实际路径，不是字符串前缀。
         this.workspaceRoot = workspaceRoot.toRealPath();
         if (!Files.readAttributes(this.workspaceRoot, BasicFileAttributes.class).isDirectory()) {
             throw new IOException("Memory 工作区不是目录: " + this.workspaceRoot);
         }
-        this.memoryDir = this.workspaceRoot.resolve(".memory");
+        this.memoryDir = new com.jadecode.config.WorkspacePaths(this.workspaceRoot).memory();
     }
 
     /**
@@ -75,6 +75,7 @@ public final class MemoryStore {
      * @throws IOException 库根非法或真实文件系统读取失败
      */
     public List<MemoryRecord> listRecords() throws IOException {
+        new com.jadecode.config.WorkspacePaths(workspaceRoot).directory(memoryDir, false);
         // 1. 新工作区通常还没有记忆，这是合法状态；notExists 无法判定时继续，让 IO 报错。
         if (Files.notExists(memoryDir)) {
             return List.of();
@@ -141,7 +142,7 @@ public final class MemoryStore {
         }
         if (Files.notExists(memoryDir)) {
             try {
-                Files.createDirectory(memoryDir);
+                new com.jadecode.config.WorkspacePaths(workspaceRoot).directory(memoryDir, true);
             } catch (FileAlreadyExistsException alreadyCreated) {
                 // 别的操作可能刚创建它；继续检查真实根，而不是直接相信新出现的目录 / 链接。
             }
@@ -332,6 +333,7 @@ public final class MemoryStore {
 
     /** 读写共用实际库根围栏；调用方分别决定缺库返回空结果还是显式创建。 */
     private Path checkedRoot() throws IOException {
+        new com.jadecode.config.WorkspacePaths(workspaceRoot).directory(memoryDir, false);
         Path root = memoryDir.toRealPath();
         if (!root.startsWith(workspaceRoot)
                 || !Files.readAttributes(root, BasicFileAttributes.class).isDirectory()) {

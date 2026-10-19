@@ -219,12 +219,14 @@ public final class JadeCodeFactory {
             Consumer<String> output, Consumer<String> errors, Presentation presentation, Supplier<ResponseStream> streams,
             ExecutionObserver observer, JadeSettings settings) {
         try {
-            TaskStore tasks = new TaskStore(cwd);
-            TeamManager team = new TeamManager(cwd, tasks, errors);
-            SessionRuntime leader = assemble(config, cwd, client,
+            Path workspace = cwd.toRealPath();
+            WorkspaceDataMigration.migrate(new com.jadecode.config.WorkspacePaths(workspace));
+            TaskStore tasks = new TaskStore(workspace);
+            TeamManager team = new TeamManager(workspace, tasks, errors);
+            SessionRuntime leader = assemble(config, workspace, client,
                     text -> output.accept("[Leader] " + text), text -> errors.accept("[Leader] " + text),
                     presentation, team, TeamManager.LEADER, "Leader", streams, observer.scoped(TeamManager.LEADER), settings);
-            team.bind(leader, (id, role) -> assemble(config, cwd, client,
+            team.bind(leader, (id, role) -> assemble(config, workspace, client,
                     text -> output.accept("[Teammate " + id + "] " + text),
                     text -> errors.accept("[Teammate " + id + "] " + text),
                     presentation, team, id, role, () -> ResponseStream.NONE, observer.scoped(id), settings));
@@ -258,13 +260,13 @@ public final class JadeCodeFactory {
 
         // 唯一一份生产压缩器:父子共享实例,但各自会话状态仍独立(它不持有 messages / 目标 / 轮数)。
         // 目录只是"整理结果放哪",构造时不建目录、不摘要。
+        var workspacePaths = new com.jadecode.config.WorkspacePaths(cwd);
         ContextCompactor compactor = new ContextCompactor(client,
-                cwd.resolve(".transcripts"),
-                cwd.resolve(".task_outputs").resolve("tool-results"), settings.limits(), settings.compaction());
+                workspacePaths.transcripts(), workspacePaths.toolResults(), settings.limits(), settings.compaction());
 
         // Memory 属于用户任务的跨会话知识；只给父循环接线，不让子任务临时猜测直接写入库。
-        // 这里只保存目录，不创建 .memory 或调用模型；开始处理任务时才查记忆。
-        // TaskStore 记住 cwd/.tasks，模型之后通过六个工具读取、创建和更新任务，不在此自动开工。
+        // 这里只保存目录，不创建记忆库或调用模型；开始处理任务时才查记忆。
+        // TaskStore 绑定 .jadecode/tasks，模型之后通过工具操作，不在此自动开工。
         MemoryManager memory;
         TaskStore tasks;
         CronScheduler cron;

@@ -6,6 +6,7 @@ dependency-reduced-pom.xml
 .env
 
 # 运行时数据目录(agent 工作区产物)
+.jadecode/
 .tasks/
 .memory/
 .mailboxes/

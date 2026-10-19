@@ -92,6 +92,8 @@ public class ReadFileTool implements Tool {
 
         // 2. 读全部行
         try {
+            // 旧邮件/摘要仍保留当时的路径，仅对程序已迁移的位置提供只读兼容。
+            p = new com.jadecode.config.WorkspacePaths(resolver.workspaceReal()).legacyRead(p);
             lines = Files.readAllLines(p, StandardCharsets.UTF_8);
         } catch (IOException e) {
             return "Error: " + e.getMessage();
