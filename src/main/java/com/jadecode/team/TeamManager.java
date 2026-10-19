@@ -63,6 +63,11 @@ public final class TeamManager implements AutoCloseable {
     /** 共享同一存储实例，让 Leader 与队友的状态更新使用同一进程锁。 */
     public TaskStore tasks() { return tasks; }
 
+    /** 常驻队友即使 IDLE 仍是旧会话资源；切换前由 Leader 显式关闭，不暗中丢掉它们。 */
+    public synchronized boolean hasLiveMembers() {
+        return members.values().stream().anyMatch(member -> !member.closed || !member.runtime.isStopped());
+    }
+
     /**
      * 创建没有业务请求的空闲队友，历史不复制 Leader。创建成功后登记名册，等待明确派工。
      * 已关闭成员不占三个常驻名额；新 ID 不能复用旧身份以免接收旧信。

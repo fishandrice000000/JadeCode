@@ -23,7 +23,8 @@ public final class WorkspaceDataMigration {
      * 执行可重复的目录迁移；没有旧数据时不创建 .jadecode。
      * @throws IOException 冲突、链接、锁冲突或移动失败；不启动任何模型或后台任务
      */
-    public static void migrate(WorkspacePaths paths) throws IOException {
+    public static synchronized void migrate(WorkspacePaths paths) throws IOException {
+        // 同 JVM 只开一条迁移锁通道，避免关闭重复通道时影响原有 OS 锁。
         var moves = new ArrayList<>(paths.legacyLocations().entrySet().stream()
                 .filter(e -> Files.exists(e.getKey(), LinkOption.NOFOLLOW_LINKS)).toList());
         // 旧 cron 在异常退出后可能留下临时文件；只识别本程序的固定前缀，不处理其它 dot 文件。

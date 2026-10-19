@@ -8,6 +8,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 import com.jadecode.bootstrap.JadeCodeFactory;
+import com.jadecode.cli.SessionHost;
+import com.jadecode.config.WorkspacePaths;
 import com.jadecode.config.JadeConfigFile;
 import com.jadecode.config.JadeSettings;
 import com.jadecode.cli.tui.bridge.*;
@@ -30,8 +32,13 @@ public final class TuiApplication {
 
     /** 生产入口。创建客户端不等于调用模型；实际提示词仍由用户提交触发。 */
     public int run() {
+        return run((String) null);
+    }
+
+    /** 启动入口与会话内 /resume 共用同一个 Host 和加载器；空串表示打开选择器。 */
+    public int run(String resume) {
         return run(w -> JadeCodeFactory.create((hooks, cwd, output) -> { }, w.output(), w.errors(), w.streams(), w.observer(), w.settings()),
-                JadeConfigFile.defaultPath());
+                JadeConfigFile.defaultPath(), resume);
     }
 
     /**
@@ -43,11 +50,16 @@ public final class TuiApplication {
      * 不表示各项业务任务成功；初始化或显示失败返回 1。</p>
      */
     public int run(SessionFactory factory, Path prefs) {
+        return run(factory, prefs, null);
+    }
+
+    /** 可注入入口；factory 决定如何装配客户端，离线验证可提供假客户端和临时偏好路径。 */
+    public int run(SessionFactory factory, Path prefs, String resume) {
         PrintStream originalOut = System.out, originalErr = System.err;
         var queue = new LinkedBlockingQueue<UiEvent>(); var accepting = new AtomicBoolean(true);
         Consumer<UiEvent> events = event -> { if (accepting.get()) queue.offer(event); };
         var broker = new ApprovalBroker(events);
-        SessionRuntime runtime = null;
+        SessionHost host = null;
         TerminalSession terminal = null;
         InlineRenderer renderer = null;
         Thread shutdownHook = null;
@@ -55,7 +67,6 @@ public final class TuiApplication {
         try {
             // 1. 先确认是真实终端，再读取偏好、装配业务；非 TTY 不会启动一份不可操作的会话。
             terminal = new TerminalSession();
-            var bridge = new ExecutionUiBridge(events);
             var state = new TuiState(); state.directory = Path.of("").toAbsolutePath().normalize().toString();
             var preferences = new TuiPreferences(prefs);
             // 用户显式写错压缩开关时不能只提示“主题读取失败”再偷偷按另一种管线运行。
@@ -65,13 +76,18 @@ public final class TuiApplication {
             // 捕获旧输出必须在 Terminal 建立之后，否则 renderer 会截获自己形成递归。
             var normalRoute = new RoutingPrintStream(events, false); var errorRoute = new RoutingPrintStream(events, true);
             System.setOut(normalRoute); System.setErr(errorRoute);
-            runtime = factory.create(new Wiring(text -> bridge.message(text, false), text -> bridge.message(text, true),
-                    () -> new StreamingAdapter(events), bridge, settings));
-            SessionRuntime session = runtime;
+            // 每份运行时的所有显示通知带同一代次。装配通知先暂存，恢复卡片后再采用。
+            host = new SessionHost(new WorkspacePaths(Path.of("").toRealPath()), generation -> {
+                Consumer<UiEvent> scoped = event -> events.accept(new UiEvent.Scoped(generation, event));
+                var bridge = new ExecutionUiBridge(scoped);
+                return factory.create(new Wiring(text -> bridge.message(text, false), text -> bridge.message(text, true),
+                        () -> new StreamingAdapter(scoped), bridge, settings));
+            }, warning -> events.accept(new UiEvent.Message("System", "Warning", warning, true)));
+            SessionHost sessions = host;
             TerminalSession screen = terminal;
             shutdownHook = new Thread(() -> {
                 broker.close();
-                try { session.close(); }
+                try { sessions.close(); }
                 finally {
                     accepting.set(false); System.setOut(originalOut); System.setErr(originalErr);
                     try { screen.close(); } catch (java.io.IOException ignored) { }
@@ -83,7 +99,7 @@ public final class TuiApplication {
                 if (!closing.compareAndSet(false, true)) return;
                 // close 可能逐个等待队友，不持 UI 锁等待；清理期间仍处理显示通知。
                 Thread.ofVirtual().name("jade-tui-close").start(() -> {
-                    try { session.close(); }
+                    try { sessions.close(); }
                     finally {
                         normalRoute.finish(); errorRoute.finish();
                         try { preferences.awaitWrites(); }
@@ -94,9 +110,10 @@ public final class TuiApplication {
             };
             // 2. 组件和控制器只交给本线程使用。业务线程只能往 queue 放不可变的显示资料。
             renderer = new InlineRenderer(terminal.writer()); var view = new ConversationView();
-            var controller = new TuiController(state, session, broker, renderer, preferences, events, shutdown);
+            var controller = new TuiController(state, sessions, broker, renderer, preferences, events, shutdown);
             var scheduler = new RenderScheduler();
-            session.start(true); terminal.start(input -> events.accept(new UiEvent.Input(input)));
+            terminal.start(input -> events.accept(new UiEvent.Input(input)));
+            controller.resume(resume);
             if (state.hint.isEmpty()) state.hint = "Enter 提交 · Alt+Enter 换行 · /help · 窗口重排可能清除终端滚动历史";
             loadBranch(events, state.directory);
             boolean running = true; long animated = 0;
@@ -129,7 +146,7 @@ public final class TuiApplication {
         } finally {
             // 不关闭全局 System.in。正常路径的 Stopped 已表示业务清理结束；异常路径在此补清理。
             broker.close();
-            try { if (runtime != null) runtime.close(); }
+            try { if (host != null) host.close(); }
             finally {
                 accepting.set(false);
                 try { if (renderer != null) renderer.finish(); }
