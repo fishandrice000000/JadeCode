@@ -317,6 +317,8 @@ public class SubagentRuntime {
                 boolean compactRequested = false;
 
                 for (ToolUseBlock u : toolCalls) {
+                    // 子代理也在实际处理线程计时，与主 Agent 相同，不由 TUI 的事件积压决定耗时。
+                    long toolStarted = System.nanoTime();
                     String displayCall = java.util.UUID.randomUUID().toString();
                     display(com.jadecode.execution.ExecutionNotice.event(com.jadecode.execution.ExecutionNotice.Kind.TOOL_START,
                             displayCall, u.name(), u.input() == null ? "{}" : u.input().toString(), "QUEUED"));
@@ -327,7 +329,7 @@ public class SubagentRuntime {
                     if (tool == null) {
                         results.add(new ToolResultBlock(u.id(), UNKNOWN_TOOL + u.name()));
                         display(com.jadecode.execution.ExecutionNotice.event(com.jadecode.execution.ExecutionNotice.Kind.TOOL_END,
-                                displayCall, u.name(), UNKNOWN_TOOL + u.name(), "NOT_RUN"));
+                                displayCall, u.name(), UNKNOWN_TOOL + u.name(), "NOT_RUN").timed(System.nanoTime() - toolStarted));
                         continue;
                     }
 
@@ -337,7 +339,7 @@ public class SubagentRuntime {
                     if (blocked != null) {
                         results.add(new ToolResultBlock(u.id(), blocked));
                         display(com.jadecode.execution.ExecutionNotice.event(com.jadecode.execution.ExecutionNotice.Kind.TOOL_END,
-                                displayCall, u.name(), blocked, "BLOCKED"));
+                                displayCall, u.name(), blocked, "BLOCKED").timed(System.nanoTime() - toolStarted));
                         continue;
                     }
 
@@ -349,7 +351,7 @@ public class SubagentRuntime {
                             displayCall, u.name(), node.toString(), "RUNNING"));
                     String output = tool.execute(node, context);
                     display(com.jadecode.execution.ExecutionNotice.event(com.jadecode.execution.ExecutionNotice.Kind.TOOL_END,
-                            displayCall, u.name(), output, "RETURNED"));
+                            displayCall, u.name(), output, "RETURNED").timed(System.nanoTime() - toolStarted));
 
                     // 只有"已知工具 + 未被拦截 + 真的执行完了 + 输出精确等于稳定文案"才算请求压缩。
                     // 判定放在执行之后:被拦的 compact 停在上面 continue,根本没有执行;别的工具返回同样

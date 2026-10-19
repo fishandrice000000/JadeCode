@@ -468,6 +468,7 @@ public final class SessionRuntime implements AutoCloseable {
         task.receipts.addAll(initialResults);
         active = task;
         changeState(State.RUNNING);
+        engine.notice(ExecutionNotice.event(ExecutionNotice.Kind.TURN_START, task.context().id(), "", "", "RUNNING"));
         synchronized (inbox) { publishBuffer(); }
         try {
             ensureOpen();
@@ -478,6 +479,7 @@ public final class SessionRuntime implements AutoCloseable {
                 if (!cron.canDeliver() || !cron.pending(task.cronId())) {
                     cron.release(task.cronId());
                     record(JournalEntry.Kind.TURN_FINISHED, List.of(), "delivery_deferred");
+                    turnEnded(task, "SKIPPED", false);
                     entry.result().completeExceptionally(new IllegalStateException("Cron delivery deferred or cancelled"));
                     return;
                 }
@@ -652,6 +654,7 @@ public final class SessionRuntime implements AutoCloseable {
             if (!reply.textDisplayed()) output.accept("[Reply] " + answer);
             engine.hooks().trigger(Hooks.TURN_END, Map.of(Hooks.PARAM_TOOL_COUNT, task.toolCalls));
             record(JournalEntry.Kind.TURN_FINISHED, List.of(), "turn");
+            turnEnded(task, "DONE", !answer.isBlank());
             task.entry.result().complete(answer);
             task.incomingReceipts.forEach(receipt -> receipt.result().complete(answer));
             return;
@@ -889,6 +892,7 @@ public final class SessionRuntime implements AutoCloseable {
             if (background != null) background.close();
         }
         task.entry.result().completeExceptionally(failure);
+        turnEnded(task, "FAILED", false);
         task.incomingReceipts.forEach(receipt -> receipt.result().completeExceptionally(failure));
         if (!closed) errors.accept("[Error] " + task.context().id() + ": " + failure.getMessage());
     }
@@ -908,11 +912,23 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
+     * 最后一次回答与该轮日志已经处理完后，才报告整轮耗时；这不是“模型流结束”的同义词。
+     * 大轮次中的工具、思考、后台等待和记忆维护都使用 Active 开始时的同一计时点。
+     * 只有最终确实有回复文字时才指向 Reply 卡，不把先前阶段回答冒充最终回答。
+     */
+    private void turnEnded(Active task, String outcome, boolean hasReply) {
+        engine.notice(ExecutionNotice.event(ExecutionNotice.Kind.TURN_END, task.context().id(), hasReply ? "Reply" : "", "", outcome)
+                .timed(System.nanoTime() - task.startedNanos));
+    }
+
+    /**
      * 保存当前任务已经做到了哪一步。
      * 请求模型、执行工具和等后台时使用同一个对象，不因等待重新开始任务。
      * 只有处理线程修改字段；退出线程只读 entry，用它通知调用者任务未完成。
      */
     private static final class Active {
+        /** 消费者已经取出任务才创建，故不包含 Inbox 中等待别人做完的排队时间。 */
+        final long startedNanos = System.nanoTime();
         /** 最初取出的请求及结果 future，不随历史压缩变化。 */
         final SessionInbox.Entry entry;
         /** 定时任务开始前的历史副本，第一次模型回复前失败时恢复它；普通任务不保存。 */

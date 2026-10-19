@@ -26,7 +26,7 @@ public final class TuiState {
         public String cacheActor = "";
         public long cacheVersion = -1;
         public List<StyledLine> cached = List.of();
-        public long started = System.nanoTime(), elapsed;
+        public long elapsed;
         Entry(String id, String actor, String kind, String title) { this.id = id; this.actor = actor; this.kind = kind; this.title = title; }
         public void replace(String text) { body.setLength(0); body.append(text); version++; }
     }
@@ -40,6 +40,13 @@ public final class TuiState {
     public final Map<String, List<Entry>> streams = new LinkedHashMap<>();
     public final Map<String, String> actors = new LinkedHashMap<>();
     public final Map<String, String> background = new LinkedHashMap<>();
+    /** 每个 Agent 当前大轮次的显示关联；不保存模型历史，也不据此调度下一项任务。 */
+    private final Map<String, TurnView> turns = new LinkedHashMap<>();
+    private static final class TurnView {
+        final String id;
+        Entry lastReply;
+        TurnView(String id) { this.id = id; }
+    }
     public final ArrayDeque<UiEvent.ApprovalRequested> approvals = new ArrayDeque<>();
     public int approvalChoice = -1;
     public SelectList selector;
@@ -58,6 +65,25 @@ public final class TuiState {
         var entry = new Entry(java.util.UUID.randomUUID().toString(), actor, kind, title);
         entry.replace(body); entries.add(entry); return entry;
     }
+
+    /**
+     * 采用程序输出的整条消息。非流式 Reply 的文字本来就已生成完，先标记 DONE；
+     * 整轮时间仍等 TURN_END 提供，不能在这里根据卡片刚建立的时间算出一个近零耗时。
+     */
+    public void message(UiEvent.Message message) {
+        String kind = message.label().equals("Error") || message.label().equals("Rejected") ? "Error" : message.label();
+        Entry entry = add(message.actor(), kind, message.label(), message.text());
+        if (kind.equals("Reply")) { entry.status = "DONE"; rememberReply(message.actor(), entry); }
+    }
+
+    /** 只关联当前轮次的最后一张文字回复，阶段回复仍在界面中，不会被覆盖。 */
+    private void rememberReply(String actor, Entry entry) {
+        TurnView turn = turns.get(actor);
+        if (turn != null) turn.lastReply = entry;
+    }
+
+    /** 切换/恢复会话时丢弃旧显示关联，不能把新轮次时间标到 HISTORICAL 回复上。 */
+    public void resetTurns() { turns.clear(); }
     /**
      * 追加一次请求的片段。同类连续片段拼在当前块，类型变化时另开一块，以保留思考／正文顺序。
      * request 标识一次显示请求，不是工具调用 ID；新请求不能接到上一请求尚未完成的卡片里。
@@ -67,6 +93,7 @@ public final class TuiState {
         Entry entry;
         if (blocks.isEmpty() || !blocks.getLast().kind.equals(delta.kind())) {
             entry = add("leader", delta.kind(), delta.kind(), ""); entry.status = "STREAMING"; blocks.add(entry);
+            if (delta.kind().equals("Reply")) rememberReply("leader", entry);
         } else entry = blocks.getLast();
         entry.body.append(delta.text()); entry.version++;
     }
@@ -86,10 +113,23 @@ public final class TuiState {
         String actor = notice.actor();
         switch (notice.kind()) {
             case MODEL -> { if (actor.equals("leader")) modelInfo = notice.detail(); }
+            case TURN_START -> turns.put(actor, new TurnView(notice.id()));
+            case TURN_END -> {
+                TurnView turn = turns.get(actor);
+                // 运行编号必须匹配；失败、不含最终正文、或中断流都不能给阶段回复补上假 DONE。
+                if (turn != null && turn.id.equals(notice.id())) {
+                    Entry reply = turn.lastReply;
+                    if (notice.state().equals("DONE") && notice.name().equals("Reply") && reply != null && reply.status.equals("DONE")) {
+                        reply.elapsed = notice.elapsedNanos(); reply.version++;
+                    }
+                    turns.remove(actor);
+                }
+            }
             case SESSION -> {
                 actors.put(actor, notice.state());
                 if (actor.equals("leader") && !notice.detail().isBlank()) model = notice.detail();
                 if (notice.state().equals("CLOSED")) {
+                    turns.remove(actor);
                     // 子代理异常可能没有正常工具结束事件，不能让它的卡片永久显示执行中。
                     tools.values().stream().filter(e -> e.actor.equals(actor) && (e.status.equals("RUNNING") || e.status.equals("QUEUED")))
                             .forEach(e -> { e.status = e.status.equals("QUEUED") ? "NOT_RUN" : "STOP_REQUESTED"; e.version++; });
@@ -102,7 +142,11 @@ public final class TuiState {
                     Entry created = add(actor, "Tool", notice.name(), ""); created.expanded = toolsExpanded; return created;
                 });
                 if (notice.kind() == ExecutionNotice.Kind.TOOL_START) entry.arguments = notice.detail();
-                else { entry.replace(notice.detail()); entry.elapsed = System.nanoTime() - entry.started; }
+                else {
+                    entry.replace(notice.detail());
+                    // 执行线程已经排除了批次排队时间，不能改用界面处理通知的时间差。
+                    entry.elapsed = notice.elapsedNanos();
+                }
                 entry.status = notice.state(); entry.version++;
             }
             case USAGE -> {

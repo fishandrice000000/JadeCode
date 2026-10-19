@@ -19,6 +19,7 @@ public final class HistoryViewMapper {
      */
     public static void restore(TuiState state, RestoredSession restored) {
         state.entries.clear(); state.tools.clear(); state.streams.clear(); state.actors.clear(); state.background.clear();
+        state.resetTurns();
         state.approvals.clear(); state.approvalChoice = -1; state.pending = ""; state.pendingKind = "";
         state.session = null;
         state.model = ""; state.modelInfo = ""; state.actors.put("leader", "IDLE");

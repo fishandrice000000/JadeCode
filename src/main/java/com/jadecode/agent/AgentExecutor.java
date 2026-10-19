@@ -237,10 +237,13 @@ public class AgentExecutor implements AutoCloseable {
                 batchId + "/" + call.id(), call.name(), call.input() == null ? "{}" : call.input().toString(), "QUEUED"));
         int executing = -1;
         boolean attempted = false;
+        long toolStarted = 0;
         try {
             for (ToolUseBlock call : calls) {
                 executing = results.size();
                 attempted = false;
+                // 每把工具开始处理时单独计时，包含其审批等待，不混入前面工具的批次排队时间。
+                toolStarted = System.nanoTime();
                 // 1. 先查是否退出，再查权限；被拒绝或未知的工具，也要返回与调用 ID 对应的结果。
                 ensureOpen();
                 if (context.isCancelled()) throw new IllegalStateException("Parent session is closed");
@@ -248,13 +251,15 @@ public class AgentExecutor implements AutoCloseable {
                         Map.of(Hooks.PARAM_BLOCK, call, Hooks.PARAM_CONTEXT, context));
                 if (blocked != null) {
                     results.add(new ToolResultBlock(call.id(), blocked));
-                    notice(ExecutionNotice.event(ExecutionNotice.Kind.TOOL_END, batchId + "/" + call.id(), call.name(), blocked, "BLOCKED"));
+                    notice(ExecutionNotice.event(ExecutionNotice.Kind.TOOL_END, batchId + "/" + call.id(), call.name(), blocked, "BLOCKED")
+                            .timed(System.nanoTime() - toolStarted));
                     continue;
                 }
                 Tool tool = tools.get(call.name());
                 if (tool == null) {
                     results.add(new ToolResultBlock(call.id(), "Error: Unknown tool: " + call.name()));
-                    notice(ExecutionNotice.event(ExecutionNotice.Kind.TOOL_END, batchId + "/" + call.id(), call.name(), "Unknown tool", "NOT_RUN"));
+                    notice(ExecutionNotice.event(ExecutionNotice.Kind.TOOL_END, batchId + "/" + call.id(), call.name(), "Unknown tool", "NOT_RUN")
+                            .timed(System.nanoTime() - toolStarted));
                     continue;
                 }
                 // 等用户批准可能很久；用户若已退出，即使现在收到批准，也不能再执行工具。
@@ -266,7 +271,8 @@ public class AgentExecutor implements AutoCloseable {
                 String output = tool.execute(input, context);
                 // 先记下工具确实返回的结果，再显示日志，免得日志出错后连执行结果都丢掉。
                 results.add(new ToolResultBlock(call.id(), output));
-                notice(ExecutionNotice.event(ExecutionNotice.Kind.TOOL_END, batchId + "/" + call.id(), call.name(), output, "RETURNED"));
+                notice(ExecutionNotice.event(ExecutionNotice.Kind.TOOL_END, batchId + "/" + call.id(), call.name(), output, "RETURNED")
+                        .timed(System.nanoTime() - toolStarted));
                 usedTodo |= call.name().equals(TODO_TOOL);
                 compact |= call.name().equals(COMPACT_TOOL) && CompactTool.OUTPUT.equals(output);
                 hooks.trigger(Hooks.POST_TOOL_USE,
@@ -279,7 +285,8 @@ public class AgentExecutor implements AutoCloseable {
                 ToolUseBlock unfinished = calls.get(index);
                 notice(ExecutionNotice.event(ExecutionNotice.Kind.TOOL_END, batchId + "/" + unfinished.id(), unfinished.name(),
                         index == executing && attempted ? "未正常取得结果，可能已有副作用：" + unexpected.getMessage() : "批次中断，未执行",
-                        index == executing && attempted ? "ERROR" : "NOT_RUN"));
+                        index == executing && attempted ? "ERROR" : "NOT_RUN")
+                        .timed(index == executing && toolStarted != 0 ? System.nanoTime() - toolStarted : 0));
                 results.add(new ToolResultBlock(calls.get(index).id(),
                         "Error: Tool batch interrupted; this call did not produce a result. The task failed."));
             }

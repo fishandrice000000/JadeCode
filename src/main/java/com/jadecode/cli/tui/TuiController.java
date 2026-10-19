@@ -69,8 +69,7 @@ public final class TuiController {
             case UiEvent.Execution execution -> state.execution(execution.notice());
             case UiEvent.Delta delta -> state.delta(delta);
             case UiEvent.StreamEnd end -> state.end(end);
-            case UiEvent.Message message -> state.add(message.actor(),
-                    message.label().equals("Error") || message.label().equals("Rejected") ? "Error" : message.label(), message.label(), message.text());
+            case UiEvent.Message message -> state.message(message);
             case UiEvent.ApprovalRequested request -> {
                 if (state.closing) approvals.answer(request.id(), false);
                 else { if (state.approvals.isEmpty()) state.approvalChoice = -1; state.approvals.addLast(request); }
