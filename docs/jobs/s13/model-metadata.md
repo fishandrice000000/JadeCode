@@ -4,7 +4,7 @@
 
 用户要求使用模型前取得官方参数并缓存，缺失或查询失败时保留已有保守设置。生产启动读取 AppConfig／config.json → 识别受支持的官方端点 → 读取有效缓存或有时限地查询 → 按字段合并手动覆盖 → 将输出上限交给共享客户端 → 装配原会话。离线注入客户端的工厂入口不联网、不访问用户缓存。
 
-首批适配：Anthropic `GET /v1/models/{id}` 的 max_input_tokens／max_tokens；DeepSeek `GET /models` 中精确匹配模型 ID 的 context_window／max_output_tokens。前者是最大输入，后者总窗口含输入与输出，不能混为一谈。官方资料：
+首批适配：Anthropic `GET /v1/models/{id}` 的 max_input_tokens／max_tokens；DeepSeek `GET /models` 的 context_window／max_output_tokens，先精确匹配模型 ID，再兼容后文列明的官方旧名称。前者是最大输入，后者总窗口含输入与输出，不能混为一谈。官方资料：
 
 - https://platform.claude.com/docs/en/api/models/retrieve
 - https://api-docs.deepseek.com/api/list-models/
@@ -13,7 +13,7 @@
 
 - 仅识别精确官方 HTTPS 主机和已知路径；未知代理／兼容端点直接回退，不能猜测接口或将其密钥转发至另一家厂商。
 - 查询只取元数据，不做生成请求；不自动重试、不跟随重定向；超时、无匹配模型、空字段、网络或缓存故障均不阻止原工作流。过期缓存不冒充当前官方数据。
-- 缓存在用户 `~/.jadecode/cache/model-metadata/`，按端点与模型 ID 分开，保存时间及正整数限额；不保存密钥、对话或原始 HTTP 响应。缓存是优化，写失败仍可用本次查到的值。
+- 缓存在用户 `~/.jadecode/cache/model-metadata/`，按端点与请求模型 ID 分开，保存时间、目录匹配 ID 及正整数限额；不保存密钥、对话或原始 HTTP 响应。缓存是优化，写失败仍可用本次查到的值。
 - config.json 新增 `modelMetadata`：autoDiscover、cacheTtlHours、timeoutMillis，以及 overrides（按精确模型 ID 保存手动限额）。手动值明确是用户配置，不标成官方数据；不得以手动覆盖突破已知官方输出上限。
 - 已知最大输出只压低超限的 max_tokens，不将每次请求放大到模型最大值；覆盖主请求、摘要、记忆和辅助审批的共享客户端。未知则保留各调用方原上限。
 - 字符估算器不等于 tokenizer；本轮不把查到的 token 窗口换算成所谓精确字符上限，也不重构压缩器。现有 compaction.limits 保持为用户策略。
@@ -33,3 +33,18 @@
 - Memory 临时检查加强到 34 个断言通过；已有 MainTest／MainCompactionAssemblyTest／AppConfigTest／AgentExecutorTest 共 38 条测试通过（0 失败、错误、跳过）。`mvn -q -DskipTests package` 退出 0。未新增永久测试，未使用真实凭据或调用真实模型。
 - TUI 终端回归沿用本轮 PTY 与布局检查；真实终端滚轮／复制、线上提取稳定性、真实官方目录及用户独立验收仍待进行。临时验证材料交付前清理。
 - 源码阅读与可选问题见 `docs/notes/s13/model-metadata-review.md`。本地提交仅包含本项实现与说明，不纳入用户原有笔记／ADR 变动，不 push。
+
+## 2026-10-19：补齐官方 DeepSeek 兼容别名
+
+用户用仓库默认 `deepseek-v4-flash` 得到全部未知；代码原先只精确匹配目录 ID。现官方入门文档明确：旧名字 deepseek-v4-flash／deepseek-v4-flash-vision-exp 仍被接受，但实际服务为 deepseek-flash。来源：https://api-docs.deepseek.com/quick_start/agent_integrations/ 。这是上一版发现器的兼容遗漏；仅凭旧提示不能进一步排除目录缺字段的情况。
+
+计划：先匹配精确 ID，找不到时只在 DeepSeek 官方端点使用上述两条有官方依据的别名；数值仍来自实时目录，不硬编码窗口／输出额度。真实请求的 MODEL_ID、凭据、provider 不变，第三方代理不套用。缓存同时保留目录匹配 ID，/model 展示实际参数来源；分别报告目录无模型、目录缺字段与响应形状错误，仍保守回退。
+
+允许修改 ModelMetadataResolver、README 和本任务单／对应阅读说明；不读取实际 .env，不调用真实模型，不新增永久测试。用临时传输替身验证别名、精确匹配优先、缓存、失败回退及未知代理不应用别名，再运行构建和必要的已有定向检查。
+
+### 本次结果
+
+- 实现完成，工程自审 Pass：官方别名仅在官方 DeepSeek 目录中使用；精确记录优先；不修改 AppConfig／MODEL_ID／生成请求；缓存保留实际匹配项并兼容旧记录；无模型、无字段和错误形状分别说明，数值仍来自目录。
+- `mvn -q -DskipTests package` 退出 0；临时传输检查 20 个断言通过；已有 AppConfigTest／MainCompactionAssemblyTest 共 11 条测试通过（0 失败、错误、跳过）。没有新增永久测试或真实 API 调用。
+- 临时检查首次编译因 Env.of 为包可见而失败；仅调整临时检查所在包后完整重跑，未改变产品可见性或放宽配置接口。
+- 用户日志不足以唯一排除“目录本身缺少限额字段”；已确认并修复官方兼容名的匹配遗漏，实际服务商响应仍需用户重启后复核。/model 现会逐行展示具体来源，字段仍缺失时继续明确回退。

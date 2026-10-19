@@ -86,6 +86,9 @@ cp .env.example .env   # 填入 ANTHROPIC_API_KEY(DeepSeek key)
 当前只自动识别 Anthropic／DeepSeek 官方 HTTPS 端点，第三方代理不猜查询接口，也不向其它主机转发凭据。
 参数按端点和模型分开缓存在 `~/.jadecode/cache/model-metadata/`，不存认证或原始响应。
 缺少字段、模型 ID 无匹配、查询／缓存故障时沿用现有预算；过期缓存不冒充当前官方数据。
+DeepSeek 官方目录先匹配精确 ID，再兼容官方声明的旧名称 `deepseek-v4-flash`／
+`deepseek-v4-flash-vision-exp` → `deepseek-flash`；只匹配参数，不改生成请求中的 MODEL_ID。
+参数来源会注明目录匹配名称，目录没有模型与模型存在但缺少限额字段会分别说明。
 TUI 输入 `/model` 查看总窗口、最大输入／输出及来源；`run` 用 `[Model]` 通知显示同一快照。
 需要手动补充时，在 `modelMetadata.overrides` 下按精确模型 ID 写对象，例如：
 
