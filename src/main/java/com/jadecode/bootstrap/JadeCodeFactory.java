@@ -21,6 +21,7 @@ import com.jadecode.hooks.Hooks;
 import com.jadecode.llm.AnthropicSdkLlmClient;
 import com.jadecode.llm.LlmClient;
 import com.jadecode.llm.ResponseStream;
+import com.jadecode.llm.ModelMetadataResolver;
 import com.jadecode.memory.MemoryManager;
 import com.jadecode.memory.MemoryStore;
 import com.jadecode.messages.ToolUseBlock;
@@ -103,7 +104,7 @@ public final class JadeCodeFactory {
 
     /**
      * 读取当前配置并绑定真实客户端，随后复用可注入的创建路径。
-     * 构造客户端不发送模型请求；工作区状态存储的读取失败按原规则报告。
+     * 不发送生成请求；可先有时限地查询官方模型参数。工作区存储读取失败按原规则报告。
      * @param presentation CLI 提供的普通展示 hook 安装函数，接收表、工作目录与本会话输出
      * @return 尚未 start 的会话；调用者须 close，会话关闭后最后恢复终端
      */
@@ -116,7 +117,7 @@ public final class JadeCodeFactory {
      * @param presentation 每份会话展示 hook 的安装方法
      * @param output 接收完整正常输出的函数，工厂会先附上 Agent 身份
      * @param errors 接收完整错误输出的函数，不在这里吞掉或改写错误
-     * @return 未启动的生产会话；读取配置，但不会在构造时请求模型
+     * @return 未启动的生产会话；读取配置／可选模型目录，但不发生成请求
      */
     public static SessionRuntime create(Presentation presentation, Consumer<String> output, Consumer<String> errors) {
         return create(presentation, output, errors, () -> ResponseStream.NONE);
@@ -135,7 +136,7 @@ public final class JadeCodeFactory {
         return create(presentation, output, errors, streams, ExecutionObserver.NONE);
     }
 
-    /** 新前端注入只读观察器；仍从原配置装配模型，构造不发请求。 */
+    /** 新前端注入只读观察器；仍从原配置装配模型，可读取官方目录但不发生成请求。 */
     public static SessionRuntime create(Presentation presentation, Consumer<String> output, Consumer<String> errors,
             Supplier<ResponseStream> streams, ExecutionObserver observer) {
         JadeSettings settings;
@@ -144,12 +145,16 @@ public final class JadeCodeFactory {
         return create(presentation, output, errors, streams, observer, settings);
     }
 
-    /** TUI 已读取统一配置时复用同一快照；模型凭据仍走原配置，构造不发模型请求。 */
+    /** TUI 复用配置快照；启动时可只读查询官方模型目录，查询失败沿用原预算，不发生成请求。 */
     public static SessionRuntime create(Presentation presentation, Consumer<String> output, Consumer<String> errors,
             Supplier<ResponseStream> streams, ExecutionObserver observer, JadeSettings settings) {
         AppConfig config = AppConfig.fromEnv(Env.loadDotEnv());
         Path cwd = Path.of("").toAbsolutePath();
-        return create(config, cwd, new AnthropicSdkLlmClient(config), output, errors, presentation, streams, observer, settings);
+        // 只在生产入口发现一次。可注入客户端的离线入口不会读用户缓存或自行联网。
+        var metadata = new ModelMetadataResolver(ModelMetadataResolver.defaultCacheDirectory()).resolve(config, settings.modelMetadata());
+        observer.publish(com.jadecode.execution.ExecutionNotice.event(
+                com.jadecode.execution.ExecutionNotice.Kind.MODEL, "", config.model(), metadata.describe(), "READY").actor(TeamManager.LEADER));
+        return create(config, cwd, new AnthropicSdkLlmClient(config, metadata), output, errors, presentation, streams, observer, settings);
     }
 
     /**

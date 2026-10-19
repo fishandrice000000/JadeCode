@@ -15,6 +15,7 @@ package com.jadecode.execution;
 public record ExecutionNotice(String actor, Kind kind, String id, String name, String detail,
         String state, long inputTokens, long outputTokens) {
     public enum Kind {
+        /** 启动取得的模型限额及来源，不包含认证、思考或完整 HTTP 响应。 */ MODEL,
         /** 会话开始、等待后台、回空闲或关闭；不会请求模型。 */ SESSION,
         /** 同一卡片从排队到真正执行，id 保持不变。 */ TOOL_START,
         /** 工具返回、被阻止或中断；每种结束都需要收尾卡片。 */ TOOL_END,

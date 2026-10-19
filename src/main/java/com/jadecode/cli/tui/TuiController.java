@@ -110,7 +110,7 @@ public final class TuiController {
             state.commands = null;
             return;
         }
-        if (state.commands == null) state.commands = new SelectList(List.of("/help", "/theme"));
+        if (state.commands == null) state.commands = new SelectList(List.of("/help", "/theme", "/model"));
         if (!state.commands.filter().equals(draft)) state.commands.filter(draft);
     }
 
@@ -147,7 +147,7 @@ public final class TuiController {
         if (prompt.isBlank()) {
             state.hint = runtime.promoteUserBuffer() ? "待发送内容已升级为插入式" : "没有可插入的待发送内容"; return;
         }
-        if (prompt.equals("/theme") || prompt.equals("/help")) { open(prompt); return; }
+        if (prompt.equals("/theme") || prompt.equals("/help") || prompt.equals("/model")) { open(prompt); return; }
         state.add("You", "User", "Request", prompt); state.hint = "";
         // future 在业务线程结束，回调仍只投递显示事件，不能在该线程直接改 TuiState。
         runtime.submitUser(prompt, approvals).whenComplete((answer, failure) -> {
@@ -155,16 +155,19 @@ public final class TuiController {
                 events.accept(new UiEvent.Message("System", "Rejected", failure.getMessage(), true));
         });
     }
-    /** 前端命令只切换输入区域，不把 /help 或 /theme 发给模型，也不清掉原草稿。 */
+    /** 前端命令只改变界面：选择帮助／主题或显示参数快照，不把命令发给模型或请求网络。 */
     private void open(String command) {
         if (command.equals("/theme")) {
             originalTheme = state.theme; state.selectorKind = "Theme"; state.selector = new SelectList(List.of("dark", "light"));
             if (state.theme.equals("light")) state.selector.move(1);
+        } else if (command.equals("/model")) {
+            // 只展示启动时已取得的快照，不把命令发给模型，也不在 UI 线程重新请求网络。
+            state.add("System", "Notice", "Model · " + state.model, state.modelInfo);
         } else {
             state.selectorKind = "Help";
             state.selector = new SelectList(List.of("Enter 提交 · Alt+Enter 换行 · 粘贴后仍需 Enter", "忙时空 Enter：插入待发送缓冲",
-                    "Ctrl+T 显示思考 · Ctrl+O 展开工具 · 左键切换单卡", "Ctrl+C 清草稿，500ms 内再按退出 · 空编辑器 Ctrl+D 退出",
-                    "Esc 关闭选择界面，不取消 Agent · q/exit 是普通提示词", "窗口／主题变化可能清空 scrollback 并重绘", "/theme"));
+                    "Ctrl+T 显示思考 · Ctrl+O 展开工具 · 鼠标滚动／复制由终端处理", "Ctrl+C 清草稿，500ms 内再按退出 · 空编辑器 Ctrl+D 退出",
+                    "Esc 关闭选择界面，不取消 Agent · q/exit 是普通提示词", "窗口／主题变化可能清空 scrollback 并重绘", "/model", "/theme"));
         }
     }
     /**

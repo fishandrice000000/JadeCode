@@ -12,7 +12,7 @@ import com.jadecode.context.CompactionPolicy;
 import com.jadecode.util.Json;
 
 /**
- * 读写统一 config.json，只负责 TUI 与压缩设置，不读取环境凭据。
+ * 读写统一 config.json，负责 TUI、压缩、记忆额度与模型参数发现设置，不读取环境凭据。
  *
  * <p>启动读取一次并验证已知字段；缺失项使用默认值，写错类型或范围则报字段名，不能静默
  * 回退后继续使用意外的压缩方式。保存主题时重新读当前文件，只改 tui.theme，保留其它项。
@@ -73,6 +73,7 @@ public final class JadeConfigFile {
         ObjectNode root = Json.mapper().createObjectNode().put("version", 1);
         root.set("tui", Json.mapper().valueToTree(defaults.tui()));
         root.set("memory", Json.mapper().valueToTree(defaults.memory()));
+        root.set("modelMetadata", Json.mapper().valueToTree(defaults.modelMetadata()));
         ObjectNode compact = Json.mapper().valueToTree(defaults.compaction());
         compact.set("limits", Json.mapper().valueToTree(defaults.limits())); root.set("compaction", compact);
         return root;
@@ -106,7 +107,28 @@ public final class JadeConfigFile {
                 number(l, "snipMaxMessages", a.snipMaxMessages(), 1), number(l, "snipHeadMessages", a.snipHeadMessages(), 0), ratio(l, a.targetRatio()));
         ObjectNode memory = section(root, "memory");
         int extractionTokens = number(memory, "extractionMaxOutputTokens", d.memory().extractionMaxOutputTokens(), 1, "config.memory");
-        return new JadeSettings(tui, policy, limits, new JadeSettings.Memory(extractionTokens));
+        ObjectNode models = section(root, "modelMetadata");
+        var overrides = new java.util.LinkedHashMap<String, com.jadecode.llm.ModelMetadata.Limits>();
+        ObjectNode configured = section(models, "overrides");
+        for (var fields = configured.fields(); fields.hasNext();) {
+            var field = fields.next();
+            String path = "config.modelMetadata.overrides." + field.getKey();
+            if (field.getKey().isBlank() || !(field.getValue() instanceof ObjectNode values))
+                throw new IOException("config.modelMetadata.overrides 必须按非空模型 ID 填写对象");
+            overrides.put(field.getKey(), new com.jadecode.llm.ModelMetadata.Limits(
+                    optionalLimit(values, "contextWindowTokens", path), optionalLimit(values, "maxInputTokens", path),
+                    optionalLimit(values, "maxOutputTokens", path)));
+        }
+        var aModels = d.modelMetadata();
+        var discovery = new JadeSettings.Models(bool(models, "autoDiscover", aModels.autoDiscover(), "config.modelMetadata"),
+                number(models, "cacheTtlHours", aModels.cacheTtlHours(), 1, "config.modelMetadata"),
+                number(models, "timeoutMillis", aModels.timeoutMillis(), 1, "config.modelMetadata"), overrides);
+        return new JadeSettings(tui, policy, limits, new JadeSettings.Memory(extractionTokens), discovery);
+    }
+
+    /** 手动限额允许省略／null 表示未知；其它值必须是可表示的正整数，不能把字符串数字当事实。 */
+    private static Integer optionalLimit(ObjectNode root, String key, String path) throws IOException {
+        return !root.hasNonNull(key) ? null : number(root, key, 1, 1, path);
     }
 
     /** 缺省章节是空对象；显式填成 null／数组等则是错误，不把拼错的配置当作未填写。 */
@@ -117,8 +139,11 @@ public final class JadeConfigFile {
     }
     /** 只接受真正的 JSON boolean；缺省才使用 fallback，null 或字符串不是“未填写”。 */
     private static boolean bool(ObjectNode root, String key, boolean fallback) throws IOException {
+        return bool(root, key, fallback, "config");
+    }
+    private static boolean bool(ObjectNode root, String key, boolean fallback, String section) throws IOException {
         if (!root.has(key)) return fallback;
-        if (!root.get(key).isBoolean()) throw new IOException("config." + key + " 必须是布尔值");
+        if (!root.get(key).isBoolean()) throw new IOException(section + "." + key + " 必须是布尔值");
         return root.get(key).booleanValue();
     }
     /** 限制为可装入 Java int 的整数，避免小数被截断或过大数字溢出后变成负预算。 */

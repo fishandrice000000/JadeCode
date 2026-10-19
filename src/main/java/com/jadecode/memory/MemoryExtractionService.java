@@ -243,7 +243,7 @@ public final class MemoryExtractionService {
     public enum FailureReason {
         NONE("无错误"), REQUEST_FAILED("辅助模型请求失败"), MISSING_RESPONSE("模型未返回消息"),
         INVALID_BLOCKS("回复角色或内容块不符合 JSON 提取要求"), EMPTY_TEXT("回复没有正文，可能只有思考"),
-        OUTPUT_LIMIT("达到输出上限，候选可能被截断，请检查 memory.extractionMaxOutputTokens"),
+        OUTPUT_LIMIT("达到输出上限，候选可能被截断，请检查提取额度与模型最大输出限额"),
         CONTEXT_LIMIT("辅助请求超过模型上下文窗口"), REFUSAL("模型拒绝了辅助提取请求"),
         NOT_ARRAY("回复顶层不是 JSON 数组"), INVALID_JSON("正文不是完整 JSON，或存在额外说明／尾随数据");
         private final String description;

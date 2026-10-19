@@ -48,6 +48,7 @@ public final class TuiState {
     public long missingUsage;
     public boolean usageReported;
     public String model = "", branch = "", directory = "";
+    public String modelInfo = "模型参数未取得；使用已有请求额度与压缩配置。";
 
     /** 增加一条界面消息，不回灌模型历史。 */
     public Entry add(String actor, String kind, String title, String body) {
@@ -81,6 +82,7 @@ public final class TuiState {
     public void execution(ExecutionNotice notice) {
         String actor = notice.actor();
         switch (notice.kind()) {
+            case MODEL -> { if (actor.equals("leader")) modelInfo = notice.detail(); }
             case SESSION -> {
                 actors.put(actor, notice.state());
                 if (actor.equals("leader") && !notice.detail().isBlank()) model = notice.detail();

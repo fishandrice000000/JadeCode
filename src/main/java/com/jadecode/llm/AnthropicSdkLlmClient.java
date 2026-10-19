@@ -39,6 +39,8 @@ public class AnthropicSdkLlmClient implements LlmClient {
     private final AnthropicClient client;
     /** 模型 id,每次请求都带上 */
     private final String model;
+    /** 服务商已知输出上限；未知时不改变各调用方原有额度。 */
+    private final ModelMetadata metadata;
 
     /**
      * 用配置里的 apiKey / baseUrl / model 建客户端;SDK 自动在 baseUrl 后拼 /v1/messages。
@@ -46,11 +48,20 @@ public class AnthropicSdkLlmClient implements LlmClient {
      * @param config 运行期配置(见 {@link AppConfig})
      */
     public AnthropicSdkLlmClient(AppConfig config) {
+        this(config, new ModelMetadata(ModelMetadata.Limits.unknown(), "未提供模型参数，使用原请求额度"));
+    }
+
+    /**
+     * 生产工厂已取得模型参数后创建共享客户端；构造本身不查询目录、不发生成请求。
+     * 所有正式／辅助请求在转 SDK 参数时采用同一输出封顶，不改变用户选择的模型和认证。
+     */
+    public AnthropicSdkLlmClient(AppConfig config, ModelMetadata metadata) {
         this.client = AnthropicOkHttpClient.builder()
                 .apiKey(config.apiKey())
                 .baseUrl(config.baseUrl()) // SDK 自动在 baseUrl 后拼 /v1/messages
                 .build();
         this.model = config.model();
+        this.metadata = java.util.Objects.requireNonNull(metadata, "metadata");
     }
 
     /**
@@ -166,7 +177,7 @@ public class AnthropicSdkLlmClient implements LlmClient {
         com.anthropic.models.messages.MessageCreateParams.Builder builder =
                 com.anthropic.models.messages.MessageCreateParams.builder()
                         .model(model)
-                        .maxTokens(request.maxTokens()) // int 自动宽化为 long
+                        .maxTokens(metadata.capOutput(request.maxTokens())) // 只封顶，不自动扩大请求额度
                         .messages(request.messages().stream().map(this::toMessageParam).toList());
         if (request.system() != null) {
             builder.system(request.system());
