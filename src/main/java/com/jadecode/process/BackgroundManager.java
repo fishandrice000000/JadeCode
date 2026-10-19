@@ -27,6 +27,8 @@ import com.jadecode.execution.ExecutionContext;
  * 退出后内存结果不会恢复。</p>
  */
 public final class BackgroundManager implements AutoCloseable {
+    /** 运行中及未确认接收的结果都属于旧会话；切换会话前必须处理完。 */
+    public synchronized boolean hasPending() { return !jobs.isEmpty(); }
     /** 独立的只读显示通道，不能覆盖用于向 Inbox 投递结果的 resultListener。 */
     private com.jadecode.execution.ExecutionObserver observer = com.jadecode.execution.ExecutionObserver.NONE;
     public void observe(com.jadecode.execution.ExecutionObserver value) { observer = value; }

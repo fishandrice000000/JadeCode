@@ -31,6 +31,10 @@ public final class TuiState {
         public void replace(String text) { body.setLength(0); body.append(text); version++; }
     }
     public final Editor editor = new Editor();
+    public long generation;
+    public boolean loadingResume;
+    public String sessionId = "";
+    public SessionPicker sessionPicker;
     public final List<Entry> entries = new ArrayList<>();
     public final Map<String, Entry> tools = new LinkedHashMap<>();
     public final Map<String, List<Entry>> streams = new LinkedHashMap<>();

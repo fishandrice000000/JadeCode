@@ -3,7 +3,7 @@ package com.jadecode.cli.tui;
 import java.util.List;
 import java.util.function.Consumer;
 import com.jadecode.cli.tui.bridge.ApprovalBroker;
-import com.jadecode.session.SessionRuntime;
+import com.jadecode.cli.SessionHost;
 import com.jadecode.tui.components.SelectList;
 import com.jadecode.tui.core.InlineRenderer;
 import com.jadecode.tui.terminal.InputDecoder.Input;
@@ -14,7 +14,7 @@ import com.jadecode.tui.terminal.InputDecoder.Input;
  */
 public final class TuiController {
     private final TuiState state;
-    private final SessionRuntime runtime;
+    private final SessionHost host;
     private final ApprovalBroker approvals;
     private final InlineRenderer renderer;
     private final TuiPreferences preferences;
@@ -22,15 +22,47 @@ public final class TuiController {
     private final Runnable shutdown;
     private long ctrlC;
     private String originalTheme;
-    public TuiController(TuiState state, SessionRuntime runtime, ApprovalBroker approvals,
+    /** 新运行时装配通知可能先于 SessionOpened 到达，暂存而不是丢掉模型参数通知。 */
+    private final java.util.Map<Long, List<UiEvent>> awaiting = new java.util.LinkedHashMap<>();
+    public TuiController(TuiState state, SessionHost host, ApprovalBroker approvals,
             InlineRenderer renderer, TuiPreferences preferences, Consumer<UiEvent> events, Runnable shutdown) {
-        this.state = state; this.runtime = runtime; this.approvals = approvals; this.renderer = renderer;
+        this.state = state; this.host = host; this.approvals = approvals; this.renderer = renderer;
         this.preferences = preferences; this.events = events; this.shutdown = shutdown;
     }
 
     /** 应用事件；返回 false 表示清理完成，可以结束界面循环。 */
     public boolean accept(UiEvent event) {
         switch (event) {
+            case UiEvent.Scoped scoped -> {
+                if (scoped.generation() == state.generation) return accept(scoped.event());
+                if (scoped.generation() > state.generation)
+                    awaiting.computeIfAbsent(scoped.generation(), ignored -> new java.util.ArrayList<>()).add(scoped.event());
+                // 旧代次事件直接丢弃，不能把旧回复、关闭通知或工具卡接到新会话。
+            }
+            case UiEvent.SessionOpened opened -> {
+                var session = opened.opened();
+                state.generation = session.generation(); state.loadingResume = false;
+                state.selector = null; state.sessionPicker = null;
+                state.sessionId = session.restored().metadata().id();
+                HistoryViewMapper.restore(state, session.restored());
+                for (UiEvent initial : awaiting.getOrDefault(state.generation, List.of())) accept(initial);
+                awaiting.clear();
+                state.add("System", "Notice", "Session", "会话 ID: " + state.sessionId + "\n恢复历史不自动重跑旧任务。Token 用量从本次打开开始统计。");
+                if (!session.restored().metadata().model().equals(session.currentModel()))
+                    state.add("System", "Warning", "Model", "原会话模型: " + session.restored().metadata().model()
+                            + "；当前使用: " + session.currentModel());
+                state.hint = "会话已打开，等待新输入 · /resume 切换 · /help";
+                host.start(state.generation);
+            }
+            case UiEvent.SessionList list -> {
+                state.loadingResume = false; state.selectorKind = "Resume";
+                state.sessionPicker = new SessionPicker(list.sessions()); state.selector = state.sessionPicker.choices();
+                state.hint = list.sessions().isEmpty() ? "当前工作区没有其它可恢复会话；Esc 返回" : "选择会话后恢复；不会重跑旧工具";
+            }
+            case UiEvent.ResumeFailed failed -> {
+                state.loadingResume = false; awaiting.clear();
+                state.hint = failed.message(); state.add("System", "Error", "Resume", failed.message());
+            }
             case UiEvent.Input input -> input(input.input());
             case UiEvent.Execution execution -> state.execution(execution.notice());
             case UiEvent.Delta delta -> state.delta(delta);
@@ -90,7 +122,8 @@ public final class TuiController {
             case "UNDO" -> state.editor.undo();
             case "CTRL_O" -> {
                 state.toolsExpanded = !state.toolsExpanded;
-                state.tools.values().forEach(e -> { e.expanded = state.toolsExpanded; e.version++; });
+                state.entries.stream().filter(e -> e.kind.equals("Tool"))
+                        .forEach(e -> { e.expanded = state.toolsExpanded; e.version++; });
             }
             case "CTRL_T" -> { state.thinkingVisible = !state.thinkingVisible; state.entries.stream().filter(e -> e.kind.equals("Thinking")).forEach(e -> e.expanded = false); }
             case "CLICK" -> click(renderer.hit(input.x(), input.y()));
@@ -110,7 +143,7 @@ public final class TuiController {
             state.commands = null;
             return;
         }
-        if (state.commands == null) state.commands = new SelectList(List.of("/help", "/theme", "/model"));
+        if (state.commands == null) state.commands = new SelectList(List.of("/help", "/theme", "/model", "/resume"));
         if (!state.commands.filter().equals(draft)) state.commands.filter(draft);
     }
 
@@ -143,21 +176,36 @@ public final class TuiController {
      * UI 先保留用户输入供查阅；若业务队列拒收，再另显示拒收原因，不伪称已执行。
      */
     private void submit() {
+        if (state.loadingResume) { state.hint = "正在打开会话，草稿已保留，请稍后提交"; return; }
         String prompt = state.editor.submit();
         if (prompt.isBlank()) {
-            state.hint = runtime.promoteUserBuffer() ? "待发送内容已升级为插入式" : "没有可插入的待发送内容"; return;
+            state.hint = host.hasCurrent() && host.current().promoteUserBuffer() ? "待发送内容已升级为插入式" : "没有可插入的待发送内容"; return;
+        }
+        if (prompt.equals("/resume") || prompt.startsWith("/resume ") || prompt.startsWith("/resume\n") || prompt.startsWith("/resume\t")) {
+            String id = prompt.substring(7).strip();
+            if (id.isEmpty()) open("/resume"); else resume(id);
+            return;
         }
         if (prompt.equals("/theme") || prompt.equals("/help") || prompt.equals("/model")) { open(prompt); return; }
+        if (!host.hasCurrent()) { state.editor.insert(prompt, false); state.hint = "请先 /resume 选择会话，或重启 jade repl 新建会话"; return; }
         state.add("You", "User", "Request", prompt); state.hint = "";
         // future 在业务线程结束，回调仍只投递显示事件，不能在该线程直接改 TuiState。
-        runtime.submitUser(prompt, approvals).whenComplete((answer, failure) -> {
+        long generation = state.generation;
+        host.current().submitUser(prompt, approvals).whenComplete((answer, failure) -> {
             if (failure instanceof java.util.concurrent.RejectedExecutionException)
-                events.accept(new UiEvent.Message("System", "Rejected", failure.getMessage(), true));
+                events.accept(new UiEvent.Scoped(generation, new UiEvent.Message("System", "Rejected", failure.getMessage(), true)));
         });
     }
-    /** 前端命令只改变界面：选择帮助／主题或显示参数快照，不把命令发给模型或请求网络。 */
+    /** 前端命令不交给模型：帮助/主题/参数在本地处理，resume 则让 Host 异步装配目标运行时。 */
     private void open(String command) {
-        if (command.equals("/theme")) {
+        if (state.loadingResume) { state.hint = "正在打开会话，请稍后"; return; }
+        if (command.equals("/resume")) {
+            state.loadingResume = true; state.hint = "正在读取当前工作区的会话列表…";
+            Thread.ofVirtual().name("jade-session-list").start(() -> {
+                try { events.accept(new UiEvent.SessionList(host.list())); }
+                catch (Exception failure) { events.accept(new UiEvent.ResumeFailed(failure.getMessage())); }
+            });
+        } else if (command.equals("/theme")) {
             originalTheme = state.theme; state.selectorKind = "Theme"; state.selector = new SelectList(List.of("dark", "light"));
             if (state.theme.equals("light")) state.selector.move(1);
         } else if (command.equals("/model")) {
@@ -167,7 +215,7 @@ public final class TuiController {
             state.selectorKind = "Help";
             state.selector = new SelectList(List.of("Enter 提交 · Alt+Enter 换行 · 粘贴后仍需 Enter", "忙时空 Enter：插入待发送缓冲",
                     "Ctrl+T 显示思考 · Ctrl+O 展开工具 · 鼠标滚动／复制由终端处理", "Ctrl+C 清草稿，500ms 内再按退出 · 空编辑器 Ctrl+D 退出",
-                    "Esc 关闭选择界面，不取消 Agent · q/exit 是普通提示词", "窗口／主题变化可能清空 scrollback 并重绘", "/model", "/theme"));
+                    "Esc 关闭选择界面，不取消 Agent · q/exit 是普通提示词", "窗口／主题变化可能清空 scrollback 并重绘", "/model", "/theme", "/resume"));
         }
     }
     /**
@@ -176,7 +224,12 @@ public final class TuiController {
      */
     private void selector(Input input) {
         switch (input.key()) {
-            case "ESC" -> { if (state.selectorKind.equals("Theme")) state.theme = originalTheme; state.selector = null; }
+            case "ESC" -> {
+                if (state.selectorKind.equals("Theme")) state.theme = originalTheme;
+                boolean startupPicker = state.selectorKind.equals("Resume") && !host.hasCurrent();
+                state.selector = null; state.sessionPicker = null;
+                if (startupPicker) close();
+            }
             case "UP", "BACKTAB" -> { state.selector.move(-1); previewTheme(); }
             case "DOWN", "TAB" -> { state.selector.move(1); previewTheme(); }
             case "TEXT" -> state.selector.filter(state.selector.filter() + input.text());
@@ -184,7 +237,10 @@ public final class TuiController {
             case "ENTER" -> {
                 String choice = state.selector.selected(); if (choice == null) return;
                 String kind = state.selectorKind; state.selector = null;
-                if (kind.equals("Theme")) {
+                if (kind.equals("Resume")) {
+                    String id = state.sessionPicker.id(choice); state.sessionPicker = null;
+                    resume(id);
+                } else if (kind.equals("Theme")) {
                     state.theme = choice;
                     preferences.saveLater(choice, failed -> {
                         if (failed == null) events.accept(new UiEvent.Message("System", "Theme", "主题已保存：" + choice, false));
@@ -196,6 +252,20 @@ public final class TuiController {
         }
     }
     private void previewTheme() { if (state.selectorKind.equals("Theme") && state.selector.selected() != null) state.theme = state.selector.selected(); }
+
+    /**
+     * 异步打开会话。加载与关闭不占 UI 线程，只有 SessionOpened 回来后才清理旧卡片并启动新会话。
+     * id 为 null 新建，空串打开启动选择器，其他字符串必须通过存储层的 UUID 校验。
+     */
+    public void resume(String id) {
+        if (id != null && id.isEmpty()) { open("/resume"); return; }
+        if (state.loadingResume) { state.hint = "会话正在切换"; return; }
+        state.loadingResume = true; state.hint = id == null ? "正在创建会话…" : "正在恢复会话…";
+        Thread.ofVirtual().name("jade-session-open").start(() -> {
+            try { events.accept(new UiEvent.SessionOpened(host.open(id))); }
+            catch (Exception failure) { events.accept(new UiEvent.ResumeFailed(failure.getMessage())); }
+        });
+    }
     /** 审批独占输入焦点，按钮选择与草稿分开；排队中的另一份申请不能继承选择。 */
     private void approval(Input input) {
         // 新队首必须先真正显示，再允许选择。仅重置 choice 不足以防住上一份申请的连按。

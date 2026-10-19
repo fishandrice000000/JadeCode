@@ -340,6 +340,7 @@ public final class JadeCodeFactory {
                 com.jadecode.execution.ExecutionNotice.Kind.SESSION, "", role, config.model(), "IDLE"));
         // 所有权在这里交给 session；CLI 不再另外关闭 engine/background/cron。
         SessionRuntime runtime = new SessionRuntime(engine, memory, background, cron, output, errors);
+        runtime.historyState(manager, config.model(), isLeader ? team::hasLiveMembers : () -> false);
         if (!isLeader) runtime.incomingApproval((context, prompt) ->
                 new DelegatedApproval(client, cwd, actor, prompt,
                         context.approval() == null ? null : context.approval().forActor(actor), output));

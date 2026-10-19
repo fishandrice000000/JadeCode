@@ -27,6 +27,32 @@ public class TodoManager {
     private static final int MAX_TODO_COUNT = 20;
 
     /**
+     * 导出已经通过 update 校验的实际计划，给会话日志保存；不是重新读取模型的工具参数。
+     * 每次构造新数组，调用者修改返回值不会改当前账本，无磁盘和模型副作用。
+     */
+    public ArrayNode snapshot() {
+        ArrayNode result = com.jadecode.util.Json.mapper().createArrayNode();
+        for (Todo todo : items) result.addObject().put("content", todo.content())
+                .put("status", todo.status().name().toLowerCase(java.util.Locale.ROOT));
+        return result;
+    }
+
+    /**
+     * 加载日志保存的整份计划，不执行 todo_write 工具，也不把 in_progress 当成线程仍在运行。
+     * 先严格检查结构再复用原列表校验；失败时旧计划不变，调用者应拒绝恢复这份日志。
+     * @throws IllegalArgumentException 快照字段或计划约束非法
+     */
+    public void restore(ArrayNode snapshot) {
+        if (snapshot == null) throw new IllegalArgumentException("Todo 快照缺失");
+        for (JsonNode item : snapshot) {
+            if (!item.isObject() || item.size() != 2 || !item.path("content").isTextual() || !item.path("status").isTextual())
+                throw new IllegalArgumentException("Todo 快照字段无效");
+        }
+        String result = update(snapshot.deepCopy());
+        if (result.startsWith("Error:")) throw new IllegalArgumentException(result);
+    }
+
+    /**
      * 以整份新计划替换当前列表(全集,非增量)。
      *
      * <p>

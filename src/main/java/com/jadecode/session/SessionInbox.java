@@ -26,6 +26,9 @@ final class SessionInbox {
     /** 每次 wake 加一；用来判断刚才是否有线程叫我们检查，不代表结果个数。 */
     private long revision;
 
+    /** 切换会话时连不唤起模型的参考通知也不能丢，必须确认整个收件箱为空。 */
+    synchronized boolean isEmpty() { return requests.isEmpty(); }
+
     /**
      * 把一项请求和将来返回答案的对象放在一起。
      * @param request 要执行的请求
