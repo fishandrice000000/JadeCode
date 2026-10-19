@@ -110,8 +110,7 @@ public final class MemoryManager {
             }
             if (extracted.stored() == 0) {
                 if (extracted.ignored() > 0) {
-                    information.accept("[Memory] 未新增记忆，跳过候选 " + extracted.ignored()
-                            + "（可能是临时条目、格式无效或名称已存在）");
+                    information.accept("[Memory] 未新增记忆，跳过候选 " + extracted.ignored());
                 }
                 return;
             }
