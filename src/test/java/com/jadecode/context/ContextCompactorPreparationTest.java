@@ -55,7 +55,7 @@ class ContextCompactorPreparationTest {
         return new ContextCompactor(request -> {
             fail("确定性层已经足够，不应调用摘要模型");
             return null;
-        }, transcriptDir, outputDir, limits);
+        }, transcriptDir, outputDir, limits, CompactionPolicy.coursePipeline());
     }
 
     /** 整体字符判断必须使用 JSON 长度：转义内容与协议字段也占据请求空间。 */

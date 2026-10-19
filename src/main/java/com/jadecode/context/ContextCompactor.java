@@ -17,14 +17,15 @@ import com.jadecode.messages.ToolUseBlock;
 /**
  * 上下文压缩的入口：把太长的消息历史整理短，再交给模型。
  *
- * <p>压缩分四层，按顺序执行。每层由单独的类实现，本类只负责按顺序调用：
+ * <p>默认只进行单条超大结果转存与超阈值摘要。下面这些已有课程策略按固定顺序排列，
+ * 但是否参与自动管线由 {@link CompactionPolicy} 决定，不是每一层都默认执行：
  * <ol>
- * <li>{@link ToolResultBudgetCompactor}：最新一批工具结果太大时，把完整内容存到磁盘，
- * 历史里只留路径和一小段预览。</li>
+ * <li>{@link ToolResultBudgetCompactor}：单条结果太大时转存并保留路径与预览；
+ * 最新批次的合计预算是另一个默认关闭的开关。</li>
  * <li>{@link SnipCompactor}：消息条数太多时，把完整历史归档，中间一段换成一条归档标记。</li>
  * <li>还是超限时，先用 {@link MicroCompactor} 缩短模型已经读过的旧工具结果，
  * 再用 {@link ToolResultFitter} 兜底把最长的结果存盘。</li>
- * <li>只有确定性的整理都不够，才用 {@link HistoryCompactor} 让模型生成摘要
+ * <li>启用的确定性整理仍不能满足总预算时，用 {@link HistoryCompactor} 让模型生成摘要
  * （唯一会额外调用模型的一层）。</li>
  * </ol>
  *
@@ -57,6 +58,8 @@ public final class ContextCompactor {
 
     /** 阈值集合 */
     private final CompactionLimits limits;
+    /** 与阈值独立的固定开关快照；测试可明确选择课程管线，生产默认不启用所有教学策略。 */
+    private final CompactionPolicy policy;
 
     /** 工具结果落盘与预览 */
     private final ToolOutputStore toolOutputStore;
@@ -80,18 +83,18 @@ public final class ContextCompactor {
     private final HistoryCompactor historyCompactor;
 
     /**
-     * 生产装配用课程默认阈值。
+     * 生产默认阈值与默认管线；本类不自己读取全局配置，实际装配可显式注入用户设置。
      *
      * @param client         LLM 客户端,仅摘要层使用
      * @param transcriptDir  transcript 归档目录
      * @param toolResultsDir 工具结果落盘目录
      */
     public ContextCompactor(LlmClient client, Path transcriptDir, Path toolResultsDir) {
-        this(client, transcriptDir, toolResultsDir, CompactionLimits.courseDefaults());
+        this(client, transcriptDir, toolResultsDir, CompactionLimits.defaults(), CompactionPolicy.defaults());
     }
 
     /**
-     * 按注入的依赖组装共享工程能力与五个策略;不引入隐藏全局实例或可变会话状态。
+     * 自定义阈值，仍使用生产默认开关；要启用其它课程层请使用同时传 policy 的重载。
      *
      * @param client         LLM 客户端,仅摘要层使用
      * @param transcriptDir  transcript 归档目录
@@ -99,7 +102,18 @@ public final class ContextCompactor {
      * @param limits         阈值集合(测试注入小阈值)
      */
     public ContextCompactor(LlmClient client, Path transcriptDir, Path toolResultsDir, CompactionLimits limits) {
-        this.limits = limits;
+        this(client, transcriptDir, toolResultsDir, limits, CompactionPolicy.defaults());
+    }
+
+    /**
+     * 同时注入阈值与管线选择；所有会话使用自己的历史，设置本身不可变。
+     * 明确的课程验证传 coursePipeline，生产装配传 config.json 解析出的快照。
+     * 构造不建目录、不摘要；真正选中某个需要 IO 的策略时才写文件或调用模型。
+     */
+    public ContextCompactor(LlmClient client, Path transcriptDir, Path toolResultsDir, CompactionLimits limits,
+            CompactionPolicy policy) {
+        this.limits = java.util.Objects.requireNonNull(limits);
+        this.policy = java.util.Objects.requireNonNull(policy);
         this.toolOutputStore = new ToolOutputStore(toolResultsDir);
         this.transcriptStore = new TranscriptStore(transcriptDir);
         this.toolResultBudgetCompactor = new ToolResultBudgetCompactor(limits, toolOutputStore);
@@ -113,14 +127,17 @@ public final class ContextCompactor {
     public CompactionLimits limits() {
         return limits;
     }
+    /** 固定的开关快照；执行器据此决定是否允许服务端超限后的补救，关闭时不偷偷重试。 */
+    public CompactionPolicy policy() { return policy; }
 
     /* ===================== 总入口 ===================== */
 
     /**
-     * 正式请求模型前调用：按顺序跑完四层压缩，返回可以发给模型的消息列表。
+     * 正式请求模型前调用：只执行启用的策略，返回整理后的消息列表。
      *
-     * <p>前两层每轮都跑（不调用模型）；整理后如果还超过字符上限，就进第三层；
-     * 第三层也压不下去，最后才让模型生成摘要。每层做完都会重新估算长度。
+     * <p>默认先转存单条超大结果，再检查字符总量，超限时直接摘要；不会先剪裁或清理旧结果。
+     * 配置开启课程策略时顺序仍是 budget → snip → micro → fit → 摘要。
+     * 自动摘要也可关闭，此时保留剩余历史；本方法不伪造“已满足后端窗口”的保证。
      *
      * @param messages      当前会话消息
      * @param activeRequest 本次用户请求的原文，会被写进摘要消息的 Current user request 部分
@@ -128,36 +145,19 @@ public final class ContextCompactor {
      * @throws LlmException 生成摘要失败，原样抛出，不装作压缩成功
      */
     public List<Message> prepare(List<Message> messages, String activeRequest) throws LlmException {
-        // 第一层：最新一批工具结果太长时，把完整内容存盘，历史里只留路径和预览；
-        // 存到不超限就停下，不再处理后面的大结果。
-        List<Message> budgetedMessages = toolResultBudget(messages);
+        // 1. 只处理新鲜批次，不遍历旧结果改写缓存前缀。两种预算开关在同一入口分开判断。
+        List<Message> current = toolResultBudget(messages);
+        if (policy.snipEnabled()) current = snipCompact(current);
+        if (smallEnough(current)) return current;
 
-        // 第二层, 将早期消息和近期消息传回, 中间消息归档
-        List<Message> snippedMessages = snipCompact(budgetedMessages);
+        // 2. 这些是可选的课程增强。关掉某项时完全跳过，不写它的转存／归档文件。
+        if (policy.microEnabled()) current = microCompact(current, limits.targetChars());
+        if (smallEnough(current)) return current;
+        if (policy.fitEnabled()) current = fitToolResults(current, limits.targetChars());
+        if (smallEnough(current)) return current;
 
-        // 经过一二层处理, 如果消息仍然过大, 继续压缩
-        if (smallEnough(snippedMessages)) {
-            return snippedMessages;
-        }
-
-        // 第三层 A, 转存已看过的旧结果
-        List<Message> microCompactedMessages = microCompact(snippedMessages, limits.targetChars());
-
-        // 经过第三层 A 处理, 如果消息仍然过大, 继续压缩
-        if (smallEnough(microCompactedMessages)) {
-            return microCompactedMessages;
-        }
-
-        // 第三层 B, 兜底处理, 尝试转存所有之前在第一层未转存的大结果, 直到消息长度不超限
-        List<Message> fittedMessages = fitToolResults(microCompactedMessages, limits.targetChars());
-
-        // 经过第三层 B 处理, 如果消息仍让过大, 交给 LLM 生成摘要
-        if (smallEnough(fittedMessages)) {
-            return fittedMessages;
-        }
-
-        // 第四层, 交给 LLM 生成摘要
-        return compactHistory(fittedMessages, activeRequest);
+        // 3. 摘要仍保护尚未消费的最新工具交换。失败原样传播，不当作整理成功。
+        return policy.autoSummaryEnabled() ? compactHistory(current, activeRequest) : current;
     }
 
     private boolean smallEnough(List<Message> messages) {
@@ -219,13 +219,15 @@ public final class ContextCompactor {
     /* ===================== 第一层:最新结果批次预算 ===================== */
 
     /**
-     * 转发到 {@link ToolResultBudgetCompactor#toolResultBudget}，说明见那个类。
+     * 根据两个独立开关处理单条大结果和最新批次合计预算，默认只启用前者。
+     * 手动混合 compact 批次也复用这里，因此不会绕过用户的转存设置。
      *
      * @param messages 消息列表
      * @return 处理后的列表;无需处理时原样返回入参
      */
     public List<Message> toolResultBudget(List<Message> messages) {
-        return toolResultBudgetCompactor.toolResultBudget(messages);
+        List<Message> current = policy.largeResultEnabled() ? toolResultBudgetCompactor.persistLargeResults(messages) : messages;
+        return policy.batchBudgetEnabled() ? toolResultBudgetCompactor.toolResultBudget(current) : current;
     }
 
     /**

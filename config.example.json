@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "tui": {
+    "theme": "dark",
+    "thinkingVisible": true,
+    "toolsExpanded": false,
+    "commandSuggestions": true
+  },
+  "compaction": {
+    "largeResultEnabled": true,
+    "batchBudgetEnabled": false,
+    "snipEnabled": false,
+    "microEnabled": false,
+    "fitEnabled": false,
+    "autoSummaryEnabled": true,
+    "reactiveEnabled": false,
+    "limits": {
+      "contextCharLimit": 300000,
+      "toolResultBatchCharLimit": 200000,
+      "largeResultCharLimit": 50000,
+      "summaryInputCharLimit": 400000,
+      "keepRecentResults": 5,
+      "keepRecentMessages": 5,
+      "microResultMinChars": 4000,
+      "budgetPreviewChars": 2000,
+      "fitPreviewChars": 2000,
+      "summaryMaxOutputTokens": 8000,
+      "snipMaxMessages": 200,
+      "snipHeadMessages": 3,
+      "targetRatio": 0.8
+    }
+  }
+}

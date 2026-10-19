@@ -11,6 +11,8 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jadecode.agent.AgentExecutor;
 import com.jadecode.config.AppConfig;
 import com.jadecode.config.Env;
+import com.jadecode.config.JadeConfigFile;
+import com.jadecode.config.JadeSettings;
 import com.jadecode.context.ContextCompactor;
 import com.jadecode.cron.CronScheduler;
 import com.jadecode.execution.ExecutionContext;
@@ -136,9 +138,18 @@ public final class JadeCodeFactory {
     /** 新前端注入只读观察器；仍从原配置装配模型，构造不发请求。 */
     public static SessionRuntime create(Presentation presentation, Consumer<String> output, Consumer<String> errors,
             Supplier<ResponseStream> streams, ExecutionObserver observer) {
+        JadeSettings settings;
+        try { settings = new JadeConfigFile(JadeConfigFile.defaultPath()).load(); }
+        catch (IOException invalid) { throw new IllegalStateException("用户配置读取失败：" + invalid.getMessage(), invalid); }
+        return create(presentation, output, errors, streams, observer, settings);
+    }
+
+    /** TUI 已读取统一配置时复用同一快照；模型凭据仍走原配置，构造不发模型请求。 */
+    public static SessionRuntime create(Presentation presentation, Consumer<String> output, Consumer<String> errors,
+            Supplier<ResponseStream> streams, ExecutionObserver observer, JadeSettings settings) {
         AppConfig config = AppConfig.fromEnv(Env.loadDotEnv());
         Path cwd = Path.of("").toAbsolutePath();
-        return create(config, cwd, new AnthropicSdkLlmClient(config), output, errors, presentation, streams, observer);
+        return create(config, cwd, new AnthropicSdkLlmClient(config), output, errors, presentation, streams, observer, settings);
     }
 
     /**
@@ -192,16 +203,26 @@ public final class JadeCodeFactory {
     public static SessionRuntime create(AppConfig config, Path cwd, LlmClient client,
             Consumer<String> output, Consumer<String> errors, Presentation presentation, Supplier<ResponseStream> streams,
             ExecutionObserver observer) {
+        return create(config, cwd, client, output, errors, presentation, streams, observer, JadeSettings.defaults());
+    }
+
+    /**
+     * 所有依赖均可注入的装配。离线验证不读用户 HOME；生产传已验证的配置快照。
+     * Leader、常驻队友及一次性子代理采用同一组开关和阈值，但历史与执行状态仍各自独立。
+     */
+    public static SessionRuntime create(AppConfig config, Path cwd, LlmClient client,
+            Consumer<String> output, Consumer<String> errors, Presentation presentation, Supplier<ResponseStream> streams,
+            ExecutionObserver observer, JadeSettings settings) {
         try {
             TaskStore tasks = new TaskStore(cwd);
             TeamManager team = new TeamManager(cwd, tasks, errors);
             SessionRuntime leader = assemble(config, cwd, client,
                     text -> output.accept("[Leader] " + text), text -> errors.accept("[Leader] " + text),
-                    presentation, team, TeamManager.LEADER, "Leader", streams, observer.scoped(TeamManager.LEADER));
+                    presentation, team, TeamManager.LEADER, "Leader", streams, observer.scoped(TeamManager.LEADER), settings);
             team.bind(leader, (id, role) -> assemble(config, cwd, client,
                     text -> output.accept("[Teammate " + id + "] " + text),
                     text -> errors.accept("[Teammate " + id + "] " + text),
-                    presentation, team, id, role, () -> ResponseStream.NONE, observer.scoped(id)));
+                    presentation, team, id, role, () -> ResponseStream.NONE, observer.scoped(id), settings));
             leader.onClose(team::close);
             return leader;
         } catch (IOException failure) {
@@ -216,7 +237,8 @@ public final class JadeCodeFactory {
      */
     private static SessionRuntime assemble(AppConfig config, Path cwd, LlmClient client,
             Consumer<String> output, Consumer<String> errors, Presentation presentation,
-            TeamManager team, String actor, String role, Supplier<ResponseStream> streams, ExecutionObserver observer) {
+            TeamManager team, String actor, String role, Supplier<ResponseStream> streams, ExecutionObserver observer,
+            JadeSettings settings) {
         boolean isLeader = actor.equals(TeamManager.LEADER);
         PathResolver resolver = new PathResolver(cwd);
         PathGuard guard = new PathGuard(resolver);
@@ -233,7 +255,7 @@ public final class JadeCodeFactory {
         // 目录只是"整理结果放哪",构造时不建目录、不摘要。
         ContextCompactor compactor = new ContextCompactor(client,
                 cwd.resolve(".transcripts"),
-                cwd.resolve(".task_outputs").resolve("tool-results"));
+                cwd.resolve(".task_outputs").resolve("tool-results"), settings.limits(), settings.compaction());
 
         // Memory 属于用户任务的跨会话知识；只给父循环接线，不让子任务临时猜测直接写入库。
         // 这里只保存目录，不创建 .memory 或调用模型；开始处理任务时才查记忆。

@@ -24,7 +24,7 @@ src/main/java/com/jadecode/
 ├── cli/              # repl 的统一 TUI、会话桥接；run 的独立纯文本输出与审批
 ├── tui/              # 通用终端、输入解码、样式行、内联差分、编辑器与 Markdown
 ├── bootstrap/        # JadeCodeFactory：生产与离线共用的装配入口
-├── config/           # Env(.env 解析), AppConfig(缺省值与校验)
+├── config/           # 模型环境配置、统一 config.json 与界面／压缩设置
 ├── util/             # Json(共享 ObjectMapper), Ansi(终端色码), PathResolver(共享路径解析)
 ├── messages/         # Message + sealed ContentBlock(text/tool_use/tool_result)
 ├── llm/              # LlmClient / ToolDefinition(数据快照) + AnthropicSdkLlmClient(SDK 隔离层)
@@ -77,6 +77,22 @@ cp .env.example .env   # 填入 ANTHROPIC_API_KEY(DeepSeek key)
 
 环境变量沿用课程命名:`ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` / `MODEL_ID` / `FALLBACK_MODEL_ID` / `MAX_TOKENS`。
 
+界面与压缩设置统一放在 `~/.jadecode/config/config.json`，完整模板见
+[config.example.json](config.example.json)。缺失字段使用默认值，修改后重启生效，非法布尔值、数值或主题会明确报错。
+配置不包含 API Key，模型和认证仍走上面的环境配置。
+
+`tui` 可设置 `theme`、`thinkingVisible`、`toolsExpanded`、`commandSuggestions`。
+旧 `tui.json` 的主题会先备份再迁入新文件；新主题优先，原文件保留但不再写入。
+`/theme` 只更新 `tui.theme`，不会清除压缩设置或用户其它字段。
+
+默认压缩管线是**单条结果转存 → 超阈值摘要**：`largeResultEnabled` 与 `autoSummaryEnabled` 为 true，
+`batchBudgetEnabled`、`snipEnabled`、`microEnabled`、`fitEnabled`、`reactiveEnabled` 为 false。
+各开关与 `compaction.limits` 的全部阈值均可覆盖；关闭自动摘要不影响显式 `compact`。
+默认总门槛 300,000 字符、单结果 50,000 字符、摘要输入 400,000 字符、摘要最大输出 8,000 token。
+除最后一项外都按 Java 字符数计算，**不是精确 token 或模型窗口保证**，须按实际后端调整。
+默认开关参考指定 Claude Code 快照，不代表已复制其缓存共享、硬阻塞线或服务端上下文机制；
+当前 JadeCode 的 read_file 仍参与普通结果转存，没有引入 Claude Code 的专用读取例外。
+
 ## 运行
 
 ```sh
@@ -93,7 +109,8 @@ JLine 只负责底层终端，不再使用旧 LineReader／PrintAbove／Status �
 消息与工具卡标明 Leader、队友或一次性子代理来源；调用和结果显示在同一卡片。
 工具普通字符串返回显示为 `RETURNED`，不等同于业务成功，也不靠正文是否以 Error 开头推断成败。
 支持 Markdown、基本代码配色、Ctrl+O 全局展开工具、左键展开单卡，以及 Ctrl+T 切换思考显示。
-深浅主题通过 `/theme` 选择，明确确认后保存到 `~/.jadecode/config/tui.json`；`/help` 显示操作说明。
+输入 `/` 会立即在编辑器上方显示命令候选，继续输入筛选、上下选择、Tab 补全、Enter 执行，Esc 收起。
+深浅主题通过 `/theme` 选择，明确确认后保存到统一配置的 `tui.theme`；`/help` 显示操作说明。
 颜色依实际终端支持启用，尊重 `NO_COLOR` 和 `TERM=dumb`；不直接执行正文中的终端控制序列。
 Leader 正式请求的正文和接口返回的 thinking 流式更新消息，不再使用独立底部半行预览。
 `[Thinking]` 只代表接口提供的可读内容，不保证是完整内部推理；未返回时只显示 `[Reply]`。

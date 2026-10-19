@@ -8,6 +8,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 import com.jadecode.bootstrap.JadeCodeFactory;
+import com.jadecode.config.JadeConfigFile;
+import com.jadecode.config.JadeSettings;
 import com.jadecode.cli.tui.bridge.*;
 import com.jadecode.execution.ExecutionObserver;
 import com.jadecode.llm.ResponseStream;
@@ -22,13 +24,14 @@ import com.jadecode.tui.theme.Theme;
  */
 public final class TuiApplication {
     /** 装配用接收者；可注入假会话进行 PTY 验证，不必读取真实凭据或调用付费模型。 */
-    public record Wiring(Consumer<String> output, Consumer<String> errors, Supplier<ResponseStream> streams, ExecutionObserver observer) { }
+    public record Wiring(Consumer<String> output, Consumer<String> errors, Supplier<ResponseStream> streams,
+            ExecutionObserver observer, JadeSettings settings) { }
     @FunctionalInterface public interface SessionFactory { SessionRuntime create(Wiring wiring); }
 
     /** 生产入口。创建客户端不等于调用模型；实际提示词仍由用户提交触发。 */
     public int run() {
-        return run(w -> JadeCodeFactory.create((hooks, cwd, output) -> { }, w.output(), w.errors(), w.streams(), w.observer()),
-                Path.of(System.getProperty("user.home"), ".jadecode", "config", "tui.json"));
+        return run(w -> JadeCodeFactory.create((hooks, cwd, output) -> { }, w.output(), w.errors(), w.streams(), w.observer(), w.settings()),
+                JadeConfigFile.defaultPath());
     }
 
     /**
@@ -55,13 +58,15 @@ public final class TuiApplication {
             var bridge = new ExecutionUiBridge(events);
             var state = new TuiState(); state.directory = Path.of("").toAbsolutePath().normalize().toString();
             var preferences = new TuiPreferences(prefs);
-            try { state.theme = preferences.load(); }
-            catch (java.io.IOException invalid) { state.hint = "主题配置读取失败，暂用 dark：" + invalid.getMessage(); }
+            // 用户显式写错压缩开关时不能只提示“主题读取失败”再偷偷按另一种管线运行。
+            JadeSettings settings = preferences.loadSettings();
+            state.theme = settings.tui().theme(); state.thinkingVisible = settings.tui().thinkingVisible();
+            state.toolsExpanded = settings.tui().toolsExpanded(); state.commandSuggestions = settings.tui().commandSuggestions();
             // 捕获旧输出必须在 Terminal 建立之后，否则 renderer 会截获自己形成递归。
             var normalRoute = new RoutingPrintStream(events, false); var errorRoute = new RoutingPrintStream(events, true);
             System.setOut(normalRoute); System.setErr(errorRoute);
             runtime = factory.create(new Wiring(text -> bridge.message(text, false), text -> bridge.message(text, true),
-                    () -> new StreamingAdapter(events), bridge));
+                    () -> new StreamingAdapter(events), bridge, settings));
             SessionRuntime session = runtime;
             TerminalSession screen = terminal;
             shutdownHook = new Thread(() -> {

@@ -10,10 +10,10 @@ import com.jadecode.messages.Role;
 import com.jadecode.messages.ToolResultBlock;
 
 /**
- * 第一层：控制最新一批工具结果的大小。
+ * 控制最新一批工具结果的大小，提供“单条超限”和“批次合计超限”两种独立入口。
  *
  * <p>只看最后一条 user 消息里的最新结果。总量超预算时，从最大的结果开始存盘，
- * 历史里只留路径和预览，直到回到预算以内。不调模型，内容可以按路径完整取回。
+ * 历史里只留路径和预览，直到回到预算以内或没有可处理的大结果。不调模型，内容可以按路径完整取回。
  * 更早的结果不归它管，那是 {@link MicroCompactor} 和 {@link ToolResultFitter} 的事。
  * 本类不保存会话状态，父子循环可以安全共享同一个实例。
  */
@@ -32,6 +32,29 @@ final class ToolResultBudgetCompactor {
     ToolResultBudgetCompactor(CompactionLimits limits, ToolOutputStore toolOutputStore) {
         this.limits = limits;
         this.toolOutputStore = toolOutputStore;
+    }
+
+    /**
+     * 默认的单条转存：即使整批不到合计预算，只要某个结果超门槛也保存完整正文。
+     * 仅处理末尾 USER 中的新结果，不提前清理旧历史；保留 ID、其它块和消息顺序。
+     * 只有写盘成功才替换，没变化原样返回；不修改任何入参列表或 Message。
+     */
+    List<Message> persistLargeResults(List<Message> messages) {
+        if (messages.isEmpty() || messages.getLast().role() != Role.USER) return messages;
+        Message latest = messages.getLast();
+        List<ContentBlock> content = new ArrayList<>(latest.content());
+        boolean changed = false;
+        for (int i = 0; i < content.size(); i++) {
+            if (!(content.get(i) instanceof ToolResultBlock result)) continue;
+            String replacement = persistLargeOutput(result.toolUseId(), result.content());
+            if (replacement.equals(result.content())) continue;
+            // 新建 block 和外层消息，不对已有的不可变 content 调用 set。
+            content.set(i, new ToolResultBlock(result.toolUseId(), replacement)); changed = true;
+        }
+        if (!changed) return messages;
+        List<Message> result = new ArrayList<>(messages);
+        result.set(result.size() - 1, new Message(latest.role(), List.copyOf(content)));
+        return result;
     }
 
     /**
@@ -131,7 +154,7 @@ final class ToolResultBudgetCompactor {
      * @return 原文，或存盘后的预览外壳
      */
     String persistLargeOutput(String toolUseId, String output) {
-        if (output.length() <= limits.largeResultCharLimit()) {
+        if (output.length() <= limits.largeResultCharLimit() || toolOutputStore.persistedOutputPath(output) != null) {
             return output;
         }
         return toolOutputStore.persistedPreview(toolUseId, output, limits.budgetPreviewChars());
