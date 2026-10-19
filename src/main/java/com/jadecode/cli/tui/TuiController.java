@@ -162,7 +162,7 @@ public final class TuiController {
             if (state.theme.equals("light")) state.selector.move(1);
         } else if (command.equals("/model")) {
             // 只展示启动时已取得的快照，不把命令发给模型，也不在 UI 线程重新请求网络。
-            state.add("System", "Notice", "Model · " + state.model, state.modelInfo);
+            state.add("System", "Model", "Model · " + state.model, state.modelInfo);
         } else {
             state.selectorKind = "Help";
             state.selector = new SelectList(List.of("Enter 提交 · Alt+Enter 换行 · 粘贴后仍需 Enter", "忙时空 Enter：插入待发送缓冲",

@@ -35,7 +35,7 @@ public final class ConversationView {
                 entry.cacheActor = actor;
             }
             if (entry.kind.equals("Thinking") && !(state.thinkingVisible ^ entry.expanded)) {
-                lines.add(StyledLine.of(DisplayWidth.take("  ◇ " + (actor.isEmpty() ? "" : actor + " · ") + "Thinking… (Ctrl+T)", width), "thinking"));
+                lines.add(header("  ◇ " + (actor.isEmpty() ? "" : actor + " · ") + "Thinking… (Ctrl+T)", "thinking", width));
             } else lines.addAll(entry.cached);
             if (entry.kind.equals("Tool") || entry.kind.equals("Thinking"))
                 for (int row = start; row < lines.size(); row++) hits.add(new Frame.Hit(row, 0, width, "entry:" + entry.id));
@@ -123,7 +123,7 @@ public final class ConversationView {
         String title = (actor.isEmpty() ? "" : actor + " · ") + entry.title;
         if (!entry.status.isBlank()) title += " · " + entry.status;
         if (entry.elapsed > 0) title += " · " + entry.elapsed / 1_000_000 + "ms";
-        out.add(StyledLine.of(DisplayWidth.take(title, width), style));
+        out.add(header(title, style, width));
         String body = entry.body.toString();
         if (entry.kind.equals("Tool")) {
             out.add(StyledLine.of(DisplayWidth.take("  " + DisplayWidth.clean(entry.arguments).replace('\n', ' '), width), "muted"));
@@ -134,13 +134,29 @@ public final class ConversationView {
                 if (preview.length() > width * 10) preview = preview.substring(0, Math.min(preview.length(), width * 10));
                 cropped = preview.length() < body.length(); body = preview;
             }
-            var wrapped = StyledLine.wrap(List.of(new Span(body, "normal")), width);
+            // 折叠预览降低对比度，避免很多工具输出抢过模型回答；展开后用普通正文色阅读。
+            // 只改变显示片段的样式，不改正文、工具状态或返回给模型的结果。
+            var wrapped = StyledLine.wrap(List.of(new Span(body, entry.expanded ? "normal" : "muted")), width);
             if (!entry.expanded && wrapped.size() > 10) { wrapped = wrapped.subList(0, 10); cropped = true; }
             out.addAll(wrapped);
             if (cropped) out.add(StyledLine.of(DisplayWidth.take("… Ctrl+O 展开完整结果", width), "muted"));
         } else if (entry.kind.equals("Thinking")) out.addAll(StyledLine.wrap(List.of(new Span(body, "thinking")), width));
+        // 参数快照中的每行都是一个字段。Markdown 会把普通换行合并为空格，不适用于这里。
+        else if (entry.kind.equals("Model")) out.addAll(StyledLine.wrap(List.of(new Span(body, "normal")), width));
         else out.addAll(markdown.render(body, width));
         if (entry.status.equals("INCOMPLETE")) out.add(StyledLine.of(DisplayWidth.take("输出中断：这些片段不是完整响应", width), "error"));
         return List.copyOf(out);
+    }
+
+    /**
+     * 为卡片标题补齐一条淡灰细线，不另占一行。文字保持原有状态色，细线单独使用低对比度。
+     * 先按显示列宽截取标题，再计算剩余空间；中文／emoji 不按 char 计宽，极窄窗口只留标题。
+     * 输入标题先清理控制字符，返回可缓存的显示行，不写终端或修改原条目。
+     */
+    private StyledLine header(String title, String style, int width) {
+        String text = DisplayWidth.take(DisplayWidth.clean(title).replace('\n', ' '), Math.max(1, width));
+        int remaining = width - DisplayWidth.width(text);
+        if (remaining < 3) return StyledLine.of(text, style);
+        return new StyledLine(List.of(new Span(text, style), new Span(" " + "─".repeat(remaining - 1), "separator")));
     }
 }
