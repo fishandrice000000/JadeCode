@@ -34,8 +34,13 @@ public final class MemoryManager {
      * @throws NullPointerException 依赖为空，属于装配错误
      */
     public MemoryManager(LlmClient client, MemoryStore store) {
+        this(client, store, 8000);
+    }
+
+    /** 生产装配传入记忆专属输出额度；构造不调用模型或读取秘密。 */
+    public MemoryManager(LlmClient client, MemoryStore store, int extractionMaxOutputTokens) {
         recall = new MemoryRecallService(client, store);
-        extraction = new MemoryExtractionService(client, store);
+        extraction = new MemoryExtractionService(client, store, extractionMaxOutputTokens);
         consolidation = new MemoryConsolidationService(client, store);
     }
 
@@ -83,7 +88,9 @@ public final class MemoryManager {
             // 1. 此时任务已真正结束。Stop 要求再继续时，循环不会走到这个入口。
             var extracted = extraction.extract(messages);
             if (extracted.status() != MemoryExtractionService.Status.SUCCESS) {
-                System.err.println("[Memory] 提取未完成: " + extracted.status() + "，未写入候选记忆");
+                // reason 是程序定义的说明，不回显模型回复、思考、对话或异常正文。
+                System.err.println("[Memory] 提取未完成: " + extracted.status() + "（" + extracted.reason().description()
+                        + "），未写入候选记忆；主任务结果保留");
                 return;
             }
             if (extracted.stored() == 0) {

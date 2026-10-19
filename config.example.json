@@ -6,6 +6,9 @@
     "toolsExpanded": false,
     "commandSuggestions": true
   },
+  "memory": {
+    "extractionMaxOutputTokens": 8000
+  },
   "compaction": {
     "largeResultEnabled": true,
     "batchBudgetEnabled": false,

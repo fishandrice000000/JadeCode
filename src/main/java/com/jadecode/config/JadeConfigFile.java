@@ -72,6 +72,7 @@ public final class JadeConfigFile {
         JadeSettings defaults = JadeSettings.defaults();
         ObjectNode root = Json.mapper().createObjectNode().put("version", 1);
         root.set("tui", Json.mapper().valueToTree(defaults.tui()));
+        root.set("memory", Json.mapper().valueToTree(defaults.memory()));
         ObjectNode compact = Json.mapper().valueToTree(defaults.compaction());
         compact.set("limits", Json.mapper().valueToTree(defaults.limits())); root.set("compaction", compact);
         return root;
@@ -103,7 +104,9 @@ public final class JadeConfigFile {
                 number(l, "microResultMinChars", a.microResultMinChars(), 1), number(l, "budgetPreviewChars", a.budgetPreviewChars(), 0),
                 number(l, "fitPreviewChars", a.fitPreviewChars(), 0), number(l, "summaryMaxOutputTokens", a.summaryMaxOutputTokens(), 1),
                 number(l, "snipMaxMessages", a.snipMaxMessages(), 1), number(l, "snipHeadMessages", a.snipHeadMessages(), 0), ratio(l, a.targetRatio()));
-        return new JadeSettings(tui, policy, limits);
+        ObjectNode memory = section(root, "memory");
+        int extractionTokens = number(memory, "extractionMaxOutputTokens", d.memory().extractionMaxOutputTokens(), 1, "config.memory");
+        return new JadeSettings(tui, policy, limits, new JadeSettings.Memory(extractionTokens));
     }
 
     /** 缺省章节是空对象；显式填成 null／数组等则是错误，不把拼错的配置当作未填写。 */
@@ -120,10 +123,14 @@ public final class JadeConfigFile {
     }
     /** 限制为可装入 Java int 的整数，避免小数被截断或过大数字溢出后变成负预算。 */
     private static int number(ObjectNode root, String key, int fallback, int minimum) throws IOException {
+        return number(root, key, fallback, minimum, "config.compaction.limits");
+    }
+    /** 不同章节复用数值检查，但错误信息必须指向实际字段，不能一律写成压缩配置。 */
+    private static int number(ObjectNode root, String key, int fallback, int minimum, String section) throws IOException {
         if (!root.has(key)) return fallback;
         JsonNode value = root.get(key);
         if (!value.isIntegralNumber() || !value.canConvertToInt() || value.intValue() < minimum)
-            throw new IOException("config.compaction.limits." + key + " 必须是大于等于 " + minimum + " 的整数");
+            throw new IOException(section + "." + key + " 必须是大于等于 " + minimum + " 的整数");
         return value.intValue();
     }
     /** 目标比例必须有限且严格在 0 与 1 之间，否则不能表示“把历史缩短到多少”。 */
