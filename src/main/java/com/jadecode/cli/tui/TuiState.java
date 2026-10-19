@@ -23,6 +23,7 @@ public final class TuiState {
         public boolean expanded;
         public long version;
         public int cacheWidth = -1;
+        public String cacheActor = "";
         public long cacheVersion = -1;
         public List<StyledLine> cached = List.of();
         public long started = System.nanoTime(), elapsed;
@@ -117,5 +118,21 @@ public final class TuiState {
     }
     public static String actorName(String actor) {
         return actor.equals("leader") ? "Leader" : actor.startsWith("leader/") ? "Leader / " + actor.substring(7) : actor;
+    }
+
+    /**
+     * 仅在存在未关闭的常驻队友时显示 Team 身份。普通 task 子代理的 actor 含斜杠，
+     * 不是 Team 成员；CLOSED 成员仍保留历史，但不让单人会话继续显示 Leader。
+     * 这是展示判断，不创建／关闭 Team，也不改变真实身份和权限。
+     */
+    public boolean teamActive() {
+        return actors.entrySet().stream().anyMatch(e -> e.getKey().startsWith("agent_")
+                && !e.getKey().contains("/") && !e.getValue().equals("CLOSED"));
+    }
+
+    /** 单人模式省略主 Agent 前缀，子代理仍保留自己的名字；实际 actor ID 不被改写。 */
+    public String displayActor(String actor) {
+        if (teamActive()) return actorName(actor);
+        return actor.equals("leader") ? "" : actor.startsWith("leader/") ? actor.substring(7) : actor;
     }
 }
