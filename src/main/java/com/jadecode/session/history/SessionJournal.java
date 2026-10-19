@@ -28,7 +28,7 @@ public final class SessionJournal implements AutoCloseable {
     private final FileLock lock;
     private final Consumer<String> warnings;
     private final Runnable releaseLocal;
-    private SessionMetadata metadata;
+    private volatile SessionMetadata metadata;
     private long sequence;
     private boolean closed, failed, indexWarning;
 
@@ -48,18 +48,43 @@ public final class SessionJournal implements AutoCloseable {
      * @throws IOException 通道关闭、已经失败、序列化或落盘失败
      */
     public synchronized void append(JournalEntry.Kind kind, List<Message> messages, ArrayNode todos, String reason) throws IOException {
+        write(new JournalEntry(SessionMetadata.VERSION, metadata.id(), sequence + 1, Instant.now().toString(), kind, messages, todos, reason));
+    }
+
+    /** 统计线程只写用量事实，不读取或修改会话消费者拥有的 Todo。 */
+    public synchronized void usage(com.jadecode.llm.UsageRecord value) throws IOException {
+        write(new JournalEntry(SessionMetadata.VERSION, metadata.id(), sequence + 1, Instant.now().toString(),
+                JournalEntry.Kind.USAGE, List.of(), null, "usage", value, null, null));
+    }
+
+    /** 名称先可靠写入日志，再更新清单；即使索引更新失败，也能在下次恢复时找回名称。 */
+    public synchronized void rename(String value) throws IOException {
+        write(new JournalEntry(SessionMetadata.VERSION, metadata.id(), sequence + 1, Instant.now().toString(),
+                JournalEntry.Kind.RENAMED, List.of(), null, "rename", null, value, null));
+    }
+
+    /** 只保存会话选择，不记录密钥，也不将更改伪装成用户提示词。 */
+    public synchronized void thinking(com.jadecode.llm.ThinkingSettings value) throws IOException {
+        write(new JournalEntry(SessionMetadata.VERSION, metadata.id(), sequence + 1, Instant.now().toString(),
+                JournalEntry.Kind.THINKING, List.of(), null, "thinking", null, null, value));
+    }
+
+    /** 所有生产者经过同一把锁写完整行；只有历史事件才保存 Todo，避免队友覆盖主会话计划。 */
+    private void write(JournalEntry record) throws IOException {
         if (closed || failed) throw new IOException("会话日志已关闭或发生过写入失败");
         try {
-            String time = Instant.now().toString();
-            var record = new JournalEntry(SessionMetadata.VERSION, metadata.id(), sequence + 1, time, kind, messages, todos, reason);
             ByteBuffer bytes = ByteBuffer.wrap((Json.mapper().writeValueAsString(record) + "\n").getBytes(StandardCharsets.UTF_8));
             if (events.position() + bytes.remaining() > 256_000_000)
                 throw new IOException("会话日志即将超过当前 256 MB 恢复上限，请开启新会话");
             while (bytes.hasRemaining()) events.write(bytes);
             events.force(true);
             sequence++;
-            String prompt = reason.equals("request") && !messages.isEmpty() ? messages.getFirst().extractText() : null;
-            metadata = metadata.updated(prompt, time);
+            String prompt = record.reason().equals("request") && !record.messages().isEmpty() ? record.messages().getFirst().extractText() : null;
+            SessionMetadata next = metadata.updated(prompt, record.time());
+            if (record.kind() == JournalEntry.Kind.USAGE) next = next.withUsage(next.usage().add(record.usage().usage()));
+            if (record.kind() == JournalEntry.Kind.RENAMED) next = next.renamed(record.title());
+            if (record.kind() == JournalEntry.Kind.THINKING) next = next.withThinking(record.thinking());
+            metadata = next;
         } catch (IOException | RuntimeException error) {
             failed = true;
             throw new IOException("会话日志保存失败，后续操作已停止；已执行的工具不会回滚", error);

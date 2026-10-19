@@ -20,8 +20,8 @@ public final class HistoryViewMapper {
     public static void restore(TuiState state, RestoredSession restored) {
         state.entries.clear(); state.tools.clear(); state.streams.clear(); state.actors.clear(); state.background.clear();
         state.approvals.clear(); state.approvalChoice = -1; state.pending = ""; state.pendingKind = "";
-        state.inputTokens = 0; state.outputTokens = 0; state.missingUsage = 0; state.usageReported = false;
-        state.model = ""; state.modelInfo = "当前模型参数尚未取得"; state.actors.put("leader", "IDLE");
+        state.session = null;
+        state.model = ""; state.modelInfo = ""; state.actors.put("leader", "IDLE");
         List<TuiState.Entry> beforeTurn = List.of();
         Map<String, TuiState.Entry> beforeTools = Map.of();
         TuiState.Entry lastUser = null;
@@ -32,7 +32,7 @@ public final class HistoryViewMapper {
                 case TURN_STARTED -> {
                     beforeTurn = List.copyOf(state.entries); beforeTools = Map.copyOf(state.tools); beforeUser = lastUser;
                 }
-                case TURN_FINISHED, TURN_FAILED -> { }
+                case TURN_FINISHED, TURN_FAILED, USAGE, RENAMED, THINKING -> { /* 元数据不画成模型对话。 */ }
                 case APPEND -> {
                     lastModel = entry.messages().getFirst(); lastUser = message(state, lastModel, null);
                 }

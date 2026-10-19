@@ -22,6 +22,9 @@ import com.jadecode.execution.ExecutionContext;
 import com.jadecode.execution.ExecutionNotice;
 import com.jadecode.hooks.Hooks;
 import com.jadecode.llm.LlmException;
+import com.jadecode.llm.LlmClient;
+import com.jadecode.llm.ModelMetadata;
+import com.jadecode.llm.ThinkingSettings;
 import com.jadecode.memory.MemoryManager;
 import com.jadecode.messages.ContentBlock;
 import com.jadecode.messages.Message;
@@ -95,6 +98,72 @@ public final class SessionRuntime implements AutoCloseable {
     private SessionJournal journal;
     private TodoManager todos;
     private String model = "";
+    /** 会话累计用量可由多个 Agent 提交；history 仍然只由本会话消费者采用。 */
+    private SessionUsage usage;
+    private boolean ownsUsage = true;
+    private LlmClient profile;
+    private java.util.concurrent.atomic.AtomicReference<ThinkingSettings> requestThinking =
+            new java.util.concurrent.atomic.AtomicReference<>(ThinkingSettings.DEFAULT);
+    private volatile ContextUsage contextUsage;
+
+    /** 界面读取的纯资料，不包含可修改的消息列表、日志写者、线程或审批授权。 */
+    public record Display(String id, String title, String model, ModelMetadata metadata, ThinkingSettings thinking,
+            String thinkingLabel, List<ThinkingSettings> thinkingChoices, SessionUsage.Snapshot usage, ContextUsage context) {
+        public Display { thinkingChoices = List.copyOf(thinkingChoices); }
+    }
+
+    /**
+     * 工厂为同一用户会话绑定共享账本和本 Agent 独立的设置，构造阶段调用，不启动请求。
+     * @param value Leader、队友和辅助请求共用的账本，记录的是花费，不是共享历史
+     * @param owner 是否由本运行时关闭账本；只有 Leader 为 true，关闭队友不能停掉全队记账
+     * @param client 本 Agent 已装配的客户端，只读取限额/选项，不在这里请求网络
+     * @param thinking 本 Agent 的请求和本地设置操作读取同一个引用，已有请求仍持有自己的快照
+     * @throws IllegalStateException 消费线程已经启动或日志已经安装
+     */
+    public void telemetry(SessionUsage value, boolean owner, LlmClient client,
+            java.util.concurrent.atomic.AtomicReference<ThinkingSettings> thinking) {
+        if (consumer != null || journal != null) throw new IllegalStateException("会话已经启动");
+        usage = java.util.Objects.requireNonNull(value); ownsUsage = owner;
+        profile = java.util.Objects.requireNonNull(client); requestThinking = java.util.Objects.requireNonNull(thinking);
+    }
+
+    /** 只读当前已发布的快照，不读盘、不请求模型；允许 TUI 在自己的线程采用。 */
+    public Display display() {
+        ThinkingSettings setting = requestThinking.get();
+        var metadata = journal == null ? null : journal.metadata();
+        return new Display(sessionId(), metadata == null ? "" : metadata.title(), model,
+                profile == null ? new ModelMetadata(ModelMetadata.Limits.unknown(), "") : profile.metadata(), setting,
+                profile == null ? "默认" : profile.thinkingLabel(setting),
+                profile == null ? List.of(ThinkingSettings.DEFAULT) : profile.thinkingChoices(), usage.snapshot(), contextUsage);
+    }
+
+    /** 只取当前设置，供新队友/一次性子任务在创建时继承；不会改已有队友。 */
+    public ThinkingSettings thinking() { return requestThinking.get(); }
+
+    /**
+     * 用户的本地设置操作：先保存，再供下一次请求读取，不等待当前模型结束或改写其输入。
+     * 不支持的选项明确拒绝；写盘失败和历史写失败一样停止本会话后续操作。
+     */
+    public void changeThinking(ThinkingSettings value) throws IOException {
+        synchronized (historyMonitor) {
+            ensureOpen();
+            if (!display().thinkingChoices().contains(value)) throw new IllegalArgumentException("当前端点或模型不支持该思考设置");
+            try { if (journal != null) journal.thinking(value); }
+            catch (IOException failure) { persistenceError(); throw failure; }
+            requestThinking.set(value);
+        }
+    }
+
+    /** 改名只保存元数据，不插入模型消息、不修改工作区路径；CLI 负责在工作线程调用。 */
+    public void rename(String title) throws IOException {
+        String valid = com.jadecode.session.history.SessionMetadata.validTitle(title);
+        synchronized (historyMonitor) {
+            ensureOpen();
+            if (journal == null) throw new IOException("当前会话未启用持久保存");
+            try { journal.rename(valid); }
+            catch (IOException failure) { persistenceError(); throw failure; }
+        }
+    }
     /** 恢复后的系统说明，不伪装成人类新输入；提醒模型旧运行资源并没有随聊天记录复活。 */
     private String resumeContext = "";
     private volatile boolean persistenceFailed, switching;
@@ -137,6 +206,12 @@ public final class SessionRuntime implements AutoCloseable {
                 + " Do not replay old tool calls to reconstruct history. An unrecorded result does not prove the operation did not execute."
                 + " Internal data moved under .jadecode; read_file supports legacy artifact paths, but shell commands must use current paths.";
         journal = java.util.Objects.requireNonNull(writer);
+        usage.restore(writer, restored.entries());
+        ThinkingSettings saved = restored.metadata().thinking();
+        if (saved != null) {
+            if (display().thinkingChoices().contains(saved)) requestThinking.set(saved);
+            else errors.accept("[Warning] 当前模型不支持原会话思考设置，采用当前配置默认值。");
+        }
     }
 
     /**
@@ -257,6 +332,7 @@ public final class SessionRuntime implements AutoCloseable {
         this.history = new ArrayList<>();
         this.output = output;
         this.errors = errors;
+        this.usage = new SessionUsage(errors);
         this.cron = new CronProducer(scheduler, this::publishCron, errors);
         if (background != null) {
             background.onResult(this::backgroundCompleted);
@@ -689,6 +765,7 @@ public final class SessionRuntime implements AutoCloseable {
     /** 采用执行器已验证的模型回复，写入历史，不在这里决定任务是否完成。 */
     private void apply(ModelReply reply) {
         appendMessage(reply.message(), "reply");
+        contextUsage = ContextUsage.measured(reply.usage(), display().metadata());
     }
 
     /** 整批采用工具结果，意外失败也先补齐 tool_result，再由执行流程抛出异常。 */
@@ -705,6 +782,7 @@ public final class SessionRuntime implements AutoCloseable {
     private void appendMessage(Message message, String reason) {
         synchronized (historyMonitor) {
             ensureOpen(); history.add(message);
+            if (!reason.equals("reply")) contextUsage = null;
             record(JournalEntry.Kind.APPEND, List.of(message), reason);
         }
     }
@@ -718,8 +796,7 @@ public final class SessionRuntime implements AutoCloseable {
             if (journal == null || closed) return;
             try { journal.append(kind, messages, todos == null ? com.jadecode.util.Json.mapper().createArrayNode() : todos.snapshot(), reason); }
             catch (IOException failure) {
-                persistenceFailed = true; cron.close(); engine.close();
-                changeState(State.PERSISTENCE_FAILED);
+                persistenceError();
                 throw new IllegalStateException(failure.getMessage(), failure);
             }
         }
@@ -742,6 +819,7 @@ public final class SessionRuntime implements AutoCloseable {
     private void apply(SessionEvent event) {
         synchronized (historyMonitor) {
             ensureOpen();
+            contextUsage = null;
             switch (event) {
                 case SessionEvent.Request request -> appendMessage(Message.userText(
                         request.context().source() == ExecutionContext.Source.SCHEDULED
@@ -786,6 +864,7 @@ public final class SessionRuntime implements AutoCloseable {
                     // 与 close 共用锁，在锁内再检查，不能在退出后恢复旧列表。
                     if (!closed) {
                         history.clear(); history.addAll(task.snapshot);
+                        contextUsage = null;
                         record(JournalEntry.Kind.REPLACE_HISTORY, history, "rollback");
                     }
                 }
@@ -819,7 +898,13 @@ public final class SessionRuntime implements AutoCloseable {
      * @throws IllegalStateException 用户已退出会话
      */
     private void ensureOpen() {
+        if (usage.failed() && !persistenceFailed && !closed) persistenceError();
         if (closed || persistenceFailed || switching) throw new IllegalStateException("Session is closed, switching or persistence failed");
+    }
+
+    /** 统一停止本会话的新动作；已发生的工具副作用不回滚，内存结果仍留作排查。 */
+    private void persistenceError() {
+        persistenceFailed = true; cron.close(); engine.close(); changeState(State.PERSISTENCE_FAILED);
     }
 
     /**
@@ -953,6 +1038,7 @@ public final class SessionRuntime implements AutoCloseable {
             }
         }
         synchronized (historyMonitor) {
+            if (ownsUsage) usage.close();
             if (journal != null) {
                 try { journal.close(); }
                 catch (IOException failure) { errors.accept("[Error] 会话日志关闭失败: " + failure.getMessage()); }

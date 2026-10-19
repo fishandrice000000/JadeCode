@@ -90,6 +90,13 @@ public class SubagentRuntime {
      * 不是消息列表；压缩器里不保存本次任务的 history，子消息仍在每次 run 中新建。</p>
      */
     private final ContextCompactor compactor;
+    /** 每次 run 开始时取一次父设置，之后独立运行，不随父会话切换强度而改变。 */
+    private java.util.function.Supplier<com.jadecode.llm.ThinkingSettings> thinking = () -> com.jadecode.llm.ThinkingSettings.DEFAULT;
+
+    /** 工厂在使用前安装继承来源；不开始模型请求，也不改变思考显示。 */
+    public void thinking(java.util.function.Supplier<com.jadecode.llm.ThinkingSettings> value) {
+        thinking = java.util.Objects.requireNonNull(value);
+    }
 
     /**
      * 创建不压缩历史的子 Agent，和六参数版本传 compactor=null 相同，不立即执行任务。
@@ -172,9 +179,10 @@ public class SubagentRuntime {
      * @throws NullPointerException context 为 null
      */
     public String run(String prompt, ExecutionContext context) throws LlmException {
+        com.jadecode.llm.ThinkingSettings taskThinking = thinking.get();
         displayId.set(java.util.UUID.randomUUID().toString().substring(0, 8));
         display(com.jadecode.execution.ExecutionNotice.event(com.jadecode.execution.ExecutionNotice.Kind.SESSION, "", "", "", "RUNNING"));
-        try { return runObserved(prompt, context); }
+        try { return runObserved(prompt, context, taskThinking); }
         finally {
             display(com.jadecode.execution.ExecutionNotice.event(com.jadecode.execution.ExecutionNotice.Kind.SESSION, "", "", "", "CLOSED"));
             displayId.remove();
@@ -182,7 +190,7 @@ public class SubagentRuntime {
     }
 
     /** 原子代理主流程；外层只负责显示身份与 finally 收尾，不干涉运行异常。 */
-    private String runObserved(String prompt, ExecutionContext context) throws LlmException {
+    private String runObserved(String prompt, ExecutionContext context, com.jadecode.llm.ThinkingSettings taskThinking) throws LlmException {
         java.util.Objects.requireNonNull(context, "executionContext");
         // 每次 run 都新建子消息列表，不用父 history；父对话中只保留这次 task 的最终结果。
         List<Message> messages = new ArrayList<>();
@@ -228,7 +236,7 @@ public class SubagentRuntime {
                     checkSessionOpen(context);
                     response = client
                             .complete(new CompleteRequest(system, messages, maxTokens,
-                                    tools.values().stream().map(Tool::definition).toList()));
+                                    tools.values().stream().map(Tool::definition).toList(), taskThinking));
                 } catch (LlmException error) {
                     // 如果用户在等模型时退出，即使现在才返回超限错误，也不要再调用摘要模型。
                     checkSessionOpen(context);

@@ -8,6 +8,12 @@ package com.jadecode.llm;
  * 不认底层是 SDK 还是手写 HTTP。</p>
  */
 public interface LlmClient {
+    /** 客户端已经取得的限额；默认不查询网络，离线替身未知时也不伪造限额。 */
+    default ModelMetadata metadata() { return new ModelMetadata(ModelMetadata.Limits.unknown(), ""); }
+    /** 只列确实适配的请求设置；未知后端保留默认，不发送猜测参数。 */
+    default java.util.List<ThinkingSettings> thinkingChoices() { return java.util.List.of(ThinkingSettings.DEFAULT); }
+    /** DEFAULT 是否有已知服务商含义由适配器说明，不由 TUI 按模型名猜测。 */
+    default String thinkingLabel(ThinkingSettings value) { return value == ThinkingSettings.DEFAULT ? "默认" : value.value(); }
     /**
      * 同步调用一次模型。
      *

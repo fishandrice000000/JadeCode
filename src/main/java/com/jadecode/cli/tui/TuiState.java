@@ -48,11 +48,10 @@ public final class TuiState {
     public boolean commandsDismissed, commandSuggestions = true;
     public String selectorKind = "", theme = "dark", pending = "", pendingKind = "", hint = "";
     public boolean thinkingVisible = true, toolsExpanded, closing;
-    public long inputTokens, outputTokens;
-    public long missingUsage;
-    public boolean usageReported;
+    /** 来自会话的只读快照；UI 不累加通知，恢复和重复显示不会再次算花费。 */
+    public com.jadecode.session.SessionRuntime.Display session;
     public String model = "", branch = "", directory = "";
-    public String modelInfo = "模型参数未取得；使用已有请求额度与压缩配置。";
+    public String modelInfo = "";
 
     /** 增加一条界面消息，不回灌模型历史。 */
     public Entry add(String actor, String kind, String title, String body) {
@@ -81,7 +80,7 @@ public final class TuiState {
     /**
      * 采用运行组件发来的事实。这里只记录“已经发生什么”，不据此启动工具或推进任务图。
      * 工具按 Agent 身份加调用编号找回原卡；同名工具甚至相同模型 ID 也不会串到别的 Agent。
-     * 结束状态由执行器提供，不通过结果字符串猜测；token 只累计 Leader 正式请求的已报告值。
+     * 结束状态由执行器提供，不通过结果字符串猜测；用量另从会话账本的快照读取。
      */
     public void execution(ExecutionNotice notice) {
         String actor = notice.actor();
@@ -107,11 +106,7 @@ public final class TuiState {
                 entry.status = notice.state(); entry.version++;
             }
             case USAGE -> {
-                // 队友及辅助请求没有纳入这份口径；“已报告为零”和“没有报告”分别保存。
-                if (actor.equals("leader")) {
-                    if (notice.state().equals("UNREPORTED")) missingUsage++;
-                    else { inputTokens += notice.inputTokens(); outputTokens += notice.outputTokens(); usageReported = true; }
-                }
+                // 兼容旧观察通知，但不在界面里再累计；唯一用量事实归 SessionUsage 所有。
             }
             case COMPACT -> add(actor, "Notice", "Context", notice.detail());
             case BUFFER -> {

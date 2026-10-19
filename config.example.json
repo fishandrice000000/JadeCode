@@ -9,6 +9,9 @@
   "memory": {
     "extractionMaxOutputTokens": 8000
   },
+  "thinking": {
+    "effort": "default"
+  },
   "modelMetadata": {
     "autoDiscover": true,
     "cacheTtlHours": 24,

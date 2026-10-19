@@ -32,6 +32,9 @@ public final class SessionLoader {
         long sequence = 0;
         int start = 0;
         boolean unfinished = false;
+        // 清单可能在某次写盘后未能更新。用日志重建用量，不能把清单总量再加一遍。
+        var usage = new com.jadecode.session.SessionUsage(ignored -> { });
+        SessionMetadata rebuilt = metadata.withUsage(com.jadecode.session.SessionUsage.Totals.empty());
         // 一行只有在换行符也写入后才算完整。UTF-8 错误不能被替换字符悄悄掩盖。
         for (int end = 0; end < bytes.length; end++) {
             if (bytes[end] != '\n') continue;
@@ -46,7 +49,7 @@ public final class SessionLoader {
                 if (!entry.sessionId().equals(metadata.id()) || entry.sequence() != sequence + 1)
                     throw new IllegalArgumentException("日志身份不符或序号不连续");
                 // 只恢复实际快照；用独立临时账本验证，不能部分更新调用者的 TodoManager。
-                new TodoManager().restore(entry.todos());
+                if (!entry.metadataOnly()) new TodoManager().restore(entry.todos());
                 switch (entry.kind()) {
                     case APPEND -> history.add(entry.messages().getFirst());
                     case REPLACE_LAST -> {
@@ -56,8 +59,14 @@ public final class SessionLoader {
                     case REPLACE_HISTORY -> { history.clear(); history.addAll(entry.messages()); }
                     case TURN_STARTED -> unfinished = true;
                     case TURN_FINISHED, TURN_FAILED -> unfinished = false;
+                    case USAGE -> usage.record(entry.usage());
+                    case RENAMED -> rebuilt = rebuilt.renamed(entry.title());
+                    case THINKING -> rebuilt = rebuilt.withThinking(entry.thinking());
                 }
-                todos = entry.todos(); entries.add(entry); sequence++;
+                if (!entry.metadataOnly()) todos = entry.todos();
+                rebuilt = rebuilt.updated(entry.reason().equals("request") && !entry.messages().isEmpty()
+                        ? entry.messages().getFirst().extractText() : null, entry.time());
+                entries.add(entry); sequence++;
             } catch (Exception invalid) {
                 throw new IOException("会话第 " + (sequence + 1) + " 条记录损坏，已保留原文件", invalid);
             }
@@ -71,9 +80,7 @@ public final class SessionLoader {
         if (unfinished) warnings.add("上次大轮次未正常结束；恢复后等待新输入，不自动继续执行。");
         if (!entries.isEmpty()) warnings.add("旧后台进程、队友、排队输入和审批授权未恢复；工作区文件不会回滚。");
         // 清单可能在日志写完之后更新失败。从日志重算标题/更新时间，不让旧索引成为历史事实。
-        SessionMetadata rebuilt = metadata;
-        for (JournalEntry entry : entries) rebuilt = rebuilt.updated(
-                entry.reason().equals("request") && !entry.messages().isEmpty() ? entry.messages().getFirst().extractText() : null, entry.time());
+        rebuilt = rebuilt.withUsage(usage.snapshot().total());
         return new RestoredSession(rebuilt, history, todos, entries, warnings, sequence, start,
                 start != bytes.length, repaired);
     }

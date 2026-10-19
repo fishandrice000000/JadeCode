@@ -41,6 +41,9 @@ public class AnthropicSdkLlmClient implements LlmClient {
     private final String model;
     /** 服务商已知输出上限；未知时不改变各调用方原有额度。 */
     private final ModelMetadata metadata;
+    /** 服务商适配信息仅由配置端点确定；不能把一个兼容代理按模型名字当成官方接口。 */
+    private final boolean deepseek;
+    private final List<ThinkingSettings> thinkingChoices;
 
     /**
      * 用配置里的 apiKey / baseUrl / model 建客户端;SDK 自动在 baseUrl 后拼 /v1/messages。
@@ -62,6 +65,23 @@ public class AnthropicSdkLlmClient implements LlmClient {
                 .build();
         this.model = config.model();
         this.metadata = java.util.Objects.requireNonNull(metadata, "metadata");
+        var endpoint = java.net.URI.create(config.baseUrl());
+        String host = "https".equalsIgnoreCase(endpoint.getScheme()) ? endpoint.getHost() : null;
+        deepseek = "api.deepseek.com".equalsIgnoreCase(host);
+        // 只开放已核实的格式。其它模型保留服务商默认，不发送它可能忽略或拒绝的参数。
+        if (deepseek) thinkingChoices = List.of(ThinkingSettings.DEFAULT, ThinkingSettings.OFF,
+                ThinkingSettings.LOW, ThinkingSettings.HIGH, ThinkingSettings.MAX);
+        else if ("api.anthropic.com".equalsIgnoreCase(host)
+                && (model.startsWith("claude-opus-4-6") || model.startsWith("claude-sonnet-4-6")))
+            thinkingChoices = List.of(ThinkingSettings.DEFAULT, ThinkingSettings.OFF, ThinkingSettings.LOW,
+                    ThinkingSettings.MEDIUM, ThinkingSettings.HIGH, ThinkingSettings.MAX);
+        else thinkingChoices = List.of(ThinkingSettings.DEFAULT);
+    }
+
+    @Override public ModelMetadata metadata() { return metadata; }
+    @Override public List<ThinkingSettings> thinkingChoices() { return thinkingChoices; }
+    @Override public String thinkingLabel(ThinkingSettings value) {
+        return value == ThinkingSettings.DEFAULT && deepseek ? "high" : LlmClient.super.thinkingLabel(value);
     }
 
     /**
@@ -188,6 +208,16 @@ public class AnthropicSdkLlmClient implements LlmClient {
                     .map(com.anthropic.models.messages.ToolUnion::ofTool) // SDK 联合类型,必须再包一层
                     .toList());
         }
+        // 这是实际请求字段，不是提示词，也与 Ctrl+T 是否显示思考无关。
+        // DEFAULT 完全省略，辅助请求保持原行为；SDK 支持追加标准协议字段，无需升级依赖。
+        ThinkingSettings thinking = request.thinking();
+        if (!thinkingChoices.contains(thinking)) throw new IllegalArgumentException("当前端点或模型尚未适配该思考强度");
+        if (thinking != ThinkingSettings.DEFAULT) {
+            String type = thinking == ThinkingSettings.OFF ? "disabled" : deepseek ? "enabled" : "adaptive";
+            builder.putAdditionalBodyProperty("thinking", JsonValue.from(Map.of("type", type)));
+            if (thinking != ThinkingSettings.OFF)
+                builder.putAdditionalBodyProperty("output_config", JsonValue.from(Map.of("effort", thinking.value())));
+        }
         return builder.build();
     }
 
@@ -292,11 +322,13 @@ public class AnthropicSdkLlmClient implements LlmClient {
                 System.err.println("[Warning] Unsupported response block: " + b.type());
             }
         }
-        // 缺少用量不是零 token。保留 null，让界面显示“未报告”而不是虚构实测统计。
+        // 普通输入与缓存读写是分开的协议字段；不得漏掉缓存，也不得把缓存写入明细再加一次。
+        // 缺少整份 usage 仍为 null，状态栏会隐藏无报告值，账本保留缺失事实。
         com.anthropic.models.messages.Usage usage = message._usage().isMissing() || message._usage().isNull() ? null : message.usage();
         ModelResponse.Usage u = usage == null
                 ? null
-                : new ModelResponse.Usage(usage.inputTokens(), usage.outputTokens());
+                : new ModelResponse.Usage(usage.inputTokens(), usage.outputTokens(),
+                        usage.cacheReadInputTokens().orElse(0L), usage.cacheCreationInputTokens().orElse(0L));
         // 保留“为什么停止”，辅助 JSON 回复可能因额度耗尽而截断，不能只看到残缺文本。
         // 只保存协议字段，不把思考或原始响应放进诊断日志。
         return new ModelResponse(Message.assistant(blocks), u, message.stopReason().map(reason -> reason.asString()).orElse(""));

@@ -9,7 +9,13 @@ import java.util.Map;
  * 一次启动采用的非秘密配置快照。前端与运行装配共享它，不在每个请求中反复读配置文件。
  * 模型、认证和 endpoint 继续由 AppConfig 管理，不因统一 UI／压缩设置而搬动凭据。
  */
-public record JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimits limits, Memory memory, Models modelMetadata) {
+public record JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimits limits, Memory memory, Models modelMetadata,
+        com.jadecode.llm.ThinkingSettings thinking) {
+    /** 老配置/离线装配缺少思考设置时不改变服务商默认行为。 */
+    public JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimits limits, Memory memory, Models modelMetadata) {
+        this(tui, compaction, limits, memory, modelMetadata, com.jadecode.llm.ThinkingSettings.DEFAULT);
+    }
+    public JadeSettings { java.util.Objects.requireNonNull(thinking, "thinking"); }
     /** 兼容已有离线装配；未指定记忆设置时使用相同默认值。 */
     public JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimits limits) {
         this(tui, compaction, limits, new Memory(8000));
