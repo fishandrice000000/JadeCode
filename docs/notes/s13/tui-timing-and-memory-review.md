@@ -12,6 +12,9 @@
 3. `execution/ExecutionNotice.timed / actor` → `cli/tui/TuiState.execution / message / delta`：
    只传已经测好的时间，用 Agent 身份及运行编号找到最终回复；阶段回答仍保留，不冒充最终完成。
 4. `ConversationView.duration / entry`：只排版，不重新计时。隐藏 RETURNED 不改变内部执行事实，BLOCKED 等仍显示。
+5. `memory/MemoryManager.finishTask / prepareSystem` → `bootstrap/JadeCodeFactory.assemble` →
+   `cli/tui/bridge/ExecutionUiBridge.message`：记忆服务区分正常通知与真实告警，装配提供带身份的输出函数；
+   不再让成功消息进入 stderr 后被兜底渲染成 System / Warning。
 
 ## T01：模型已经说完，为什么还没取得整轮总时间？
 
@@ -28,6 +31,13 @@
 
 回答：
 
+## T03：为什么记忆维护失败，不等于主任务失败？
+
+模型已正确完成用户请求，但辅助记忆提取返回了非法 JSON。主回答、记忆文件及界面告警应分别怎样处理？
+如果把所有记忆消息都标成 Warning，或把所有记忆失败都静默隐藏，会分别误导用户什么？
+
+回答：
+
 ## 状态
 
-计时已完成工程自审及离线验证。通知分类随后独立交付；真实终端观感仍待用户检查。
+计时和通知分类均已完成工程自审及离线验证；没有新增永久测试或调用真实模型。真实终端观感仍待用户检查。

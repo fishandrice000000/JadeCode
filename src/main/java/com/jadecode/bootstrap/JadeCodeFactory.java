@@ -282,7 +282,8 @@ public final class JadeCodeFactory {
         CronScheduler cron;
         try {
             memory = isLeader ? new MemoryManager(tracked(client, config.model(), actor,
-                    com.jadecode.llm.UsageRecord.Purpose.MEMORY, usage, null), new MemoryStore(cwd), settings.memory().extractionMaxOutputTokens()) : null;
+                    com.jadecode.llm.UsageRecord.Purpose.MEMORY, usage, null), new MemoryStore(cwd), settings.memory().extractionMaxOutputTokens(),
+                    output, errors) : null;
             tasks = team.tasks();
             cron = isLeader ? new CronScheduler(cwd) : null;
         } catch (IOException failure) {
