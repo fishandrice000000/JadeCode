@@ -27,6 +27,13 @@ import com.jadecode.execution.ExecutionContext;
  * 退出后内存结果不会恢复。</p>
  */
 public final class BackgroundManager implements AutoCloseable {
+    /** 独立的只读显示通道，不能覆盖用于向 Inbox 投递结果的 resultListener。 */
+    private com.jadecode.execution.ExecutionObserver observer = com.jadecode.execution.ExecutionObserver.NONE;
+    public void observe(com.jadecode.execution.ExecutionObserver value) { observer = value; }
+    private void display(String id, String state, String detail) {
+        observer.publish(com.jadecode.execution.ExecutionNotice.event(com.jadecode.execution.ExecutionNotice.Kind.BACKGROUND,
+                id, "bash", detail, state));
+    }
     /** 还在运行或结果尚未处理完的命令总数上限，避免一直占内存。 */
     private static final int MAX_PENDING = 32;
     /** 创建对象时确定的工作目录，模型不能通过后台参数换成另一个目录。 */
@@ -126,10 +133,12 @@ public final class BackgroundManager implements AutoCloseable {
                 allowInsertion, wakeWhenIdle, context);
         // 先存 Job 再开线程，免得命令很快跑完或用户同时退出时，管理器里还找不到它。
         jobs.put(id, job);
+        display(id, "RUNNING", "后台命令已登记，不代表执行成功");
         try {
             Thread.ofVirtual().name("jade-" + id).start(() -> run(job));
         } catch (RuntimeException failure) {
             jobs.remove(id);
+            display(id, "ERROR", "未能启动");
             job.shell().close();
             throw failure;
         }
@@ -179,6 +188,7 @@ public final class BackgroundManager implements AutoCloseable {
             signal = listener;
             publish = resultListener;
         }
+        display(event.id(), event.status(), "exit=" + event.exitCode());
         publish.accept(event);
         signal.run();
     }
@@ -267,7 +277,7 @@ public final class BackgroundManager implements AutoCloseable {
             cancelled.forEach(job -> jobs.remove(job.id()));
             ready.removeIf(result -> result.required() && result.owner().equals(owner));
         }
-        cancelled.forEach(job -> job.shell().close());
+        cancelled.forEach(job -> { display(job.id(), "CANCELLED", "所属任务不能继续"); job.shell().close(); });
     }
 
     /**
@@ -321,6 +331,6 @@ public final class BackgroundManager implements AutoCloseable {
             ready.clear();
         }
         foreground.close();
-        active.forEach(job -> job.shell().close());
+        active.forEach(job -> { display(job.id(), "CLOSED", "会话退出"); job.shell().close(); });
     }
 }

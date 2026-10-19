@@ -37,6 +37,14 @@ import com.jadecode.util.Json;
  * 因此用户退出后，子模型即使才返回，也不能继续启动新工具。</p>
  */
 public class SubagentRuntime {
+    /** 每次委派单独的显示身份，绝不替换父任务的 ExecutionContext。 */
+    private final ThreadLocal<String> displayId = new ThreadLocal<>();
+    private com.jadecode.execution.ExecutionObserver observer = com.jadecode.execution.ExecutionObserver.NONE;
+    /** 工厂启动前安装，不改变子代理工具和消息规则。 */
+    public void observe(com.jadecode.execution.ExecutionObserver value) { observer = value; }
+    private void display(com.jadecode.execution.ExecutionNotice notice) {
+        observer.publish(notice.actor("Subagent " + displayId.get()));
+    }
     /** 子代理最多消耗几轮"成功回复";循环正常走完即超限,回 stopped 文案 */
     private static final int MAX_TURNS = 30;
 
@@ -164,6 +172,17 @@ public class SubagentRuntime {
      * @throws NullPointerException context 为 null
      */
     public String run(String prompt, ExecutionContext context) throws LlmException {
+        displayId.set(java.util.UUID.randomUUID().toString().substring(0, 8));
+        display(com.jadecode.execution.ExecutionNotice.event(com.jadecode.execution.ExecutionNotice.Kind.SESSION, "", "", "", "RUNNING"));
+        try { return runObserved(prompt, context); }
+        finally {
+            display(com.jadecode.execution.ExecutionNotice.event(com.jadecode.execution.ExecutionNotice.Kind.SESSION, "", "", "", "CLOSED"));
+            displayId.remove();
+        }
+    }
+
+    /** 原子代理主流程；外层只负责显示身份与 finally 收尾，不干涉运行异常。 */
+    private String runObserved(String prompt, ExecutionContext context) throws LlmException {
         java.util.Objects.requireNonNull(context, "executionContext");
         // 每次 run 都新建子消息列表，不用父 history；父对话中只保留这次 task 的最终结果。
         List<Message> messages = new ArrayList<>();
@@ -290,12 +309,17 @@ public class SubagentRuntime {
                 boolean compactRequested = false;
 
                 for (ToolUseBlock u : toolCalls) {
+                    String displayCall = java.util.UUID.randomUUID().toString();
+                    display(com.jadecode.execution.ExecutionNotice.event(com.jadecode.execution.ExecutionNotice.Kind.TOOL_START,
+                            displayCall, u.name(), u.input() == null ? "{}" : u.input().toString(), "QUEUED"));
                     checkSessionOpen(context);
                     // 先查本类自己的工具表:子表是父表的子集,父表查得到的 task / todo_write 在这里是未知工具。
                     // 未知工具在此短路,不进任何工具 hook——否则会打出一行"调用过"的假日志
                     Tool tool = tools.get(u.name());
                     if (tool == null) {
                         results.add(new ToolResultBlock(u.id(), UNKNOWN_TOOL + u.name()));
+                        display(com.jadecode.execution.ExecutionNotice.event(com.jadecode.execution.ExecutionNotice.Kind.TOOL_END,
+                                displayCall, u.name(), UNKNOWN_TOOL + u.name(), "NOT_RUN"));
                         continue;
                     }
 
@@ -304,6 +328,8 @@ public class SubagentRuntime {
                             Map.of(Hooks.PARAM_BLOCK, u, Hooks.PARAM_CONTEXT, context));
                     if (blocked != null) {
                         results.add(new ToolResultBlock(u.id(), blocked));
+                        display(com.jadecode.execution.ExecutionNotice.event(com.jadecode.execution.ExecutionNotice.Kind.TOOL_END,
+                                displayCall, u.name(), blocked, "BLOCKED"));
                         continue;
                     }
 
@@ -311,7 +337,11 @@ public class SubagentRuntime {
                     // 等用户批准期间也可能退出；执行工具前再检查，不能只在 while 开始时检查。
                     checkSessionOpen(context);
                     ObjectNode node = u.input() instanceof ObjectNode o ? o : Json.mapper().createObjectNode();
+                    display(com.jadecode.execution.ExecutionNotice.event(com.jadecode.execution.ExecutionNotice.Kind.TOOL_START,
+                            displayCall, u.name(), node.toString(), "RUNNING"));
                     String output = tool.execute(node, context);
+                    display(com.jadecode.execution.ExecutionNotice.event(com.jadecode.execution.ExecutionNotice.Kind.TOOL_END,
+                            displayCall, u.name(), output, "RETURNED"));
 
                     // 只有"已知工具 + 未被拦截 + 真的执行完了 + 输出精确等于稳定文案"才算请求压缩。
                     // 判定放在执行之后:被拦的 compact 停在上面 continue,根本没有执行;别的工具返回同样

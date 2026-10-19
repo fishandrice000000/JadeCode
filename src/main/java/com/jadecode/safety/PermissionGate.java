@@ -16,7 +16,7 @@ import com.jadecode.util.Ansi;
  * 都不允许这次需询问的操作。定时任务并非所有工具都不能用，只是不能向用户申请批准。</p>
  *
  * <p>是否用户任务看程序传来的 ExecutionContext，不看执行线程或模型自称的身份。
- * 这里不读 stdin；ConsoleInput 统一读终端。本类也不执行工具，只返回允许或拒绝原因，
+ * 这里不读 stdin；审批适配器统一接收用户答复。本类也不执行工具，只返回允许或拒绝原因，
  * 由执行器把原因放进 tool_result。</p>
  */
 public class PermissionGate {

@@ -281,9 +281,10 @@ public class AnthropicSdkLlmClient implements LlmClient {
                 System.err.println("[Warning] Unsupported response block: " + b.type());
             }
         }
-        com.anthropic.models.messages.Usage usage = message.usage();
+        // 缺少用量不是零 token。保留 null，让界面显示“未报告”而不是虚构实测统计。
+        com.anthropic.models.messages.Usage usage = message._usage().isMissing() || message._usage().isNull() ? null : message.usage();
         ModelResponse.Usage u = usage == null
-                ? new ModelResponse.Usage(0, 0)
+                ? null
                 : new ModelResponse.Usage(usage.inputTokens(), usage.outputTokens());
         return new ModelResponse(Message.assistant(blocks), u);
     }

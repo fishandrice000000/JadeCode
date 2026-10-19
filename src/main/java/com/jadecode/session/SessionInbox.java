@@ -19,6 +19,8 @@ final class SessionInbox {
     private final List<Entry> requests = new ArrayList<>();
     /** 尚未取走的用户缓冲批次；追加和升级都替换这一条，不复制其正文再次入队。 */
     private Entry buffered;
+    /** 只读显示快照；不取走、不升级缓冲，也不暴露 future。调用方须在相同锁内按序发通知。 */
+    synchronized SessionEvent.Incoming bufferedView() { return buffered == null ? null : buffered.request().incoming(); }
     /** 退出后不再收请求，剩余排队任务也不执行。 */
     private boolean closed;
     /** 每次 wake 加一；用来判断刚才是否有线程叫我们检查，不代表结果个数。 */

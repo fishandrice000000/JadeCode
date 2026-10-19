@@ -14,6 +14,7 @@ import com.jadecode.config.Env;
 import com.jadecode.context.ContextCompactor;
 import com.jadecode.cron.CronScheduler;
 import com.jadecode.execution.ExecutionContext;
+import com.jadecode.execution.ExecutionObserver;
 import com.jadecode.hooks.Hooks;
 import com.jadecode.llm.AnthropicSdkLlmClient;
 import com.jadecode.llm.LlmClient;
@@ -52,7 +53,7 @@ import com.jadecode.util.PathResolver;
  * 把配置、工具、安全策略和能力服务装配成一个可运行且可关闭的会话。
  *
  * <p>CLI 与离线检查走同一创建路径；区别是客户端、工作目录和展示 hook 由谁提供。
- * 本类不依赖具体 CLI 类。展示适配通过原 Hooks 协议安装，不额外发明事件系统。
+ * 本类不依赖具体 CLI 类。Hooks 保留权限与续跑语义，流式和只读运行观察另交给前端适配。
  * 工厂创建执行器和 cron/process 后把关闭责任交给 SessionRuntime，终端仍归 CLI。</p>
  */
 public final class JadeCodeFactory {
@@ -129,9 +130,15 @@ public final class JadeCodeFactory {
      */
     public static SessionRuntime create(Presentation presentation, Consumer<String> output, Consumer<String> errors,
             Supplier<ResponseStream> streams) {
+        return create(presentation, output, errors, streams, ExecutionObserver.NONE);
+    }
+
+    /** 新前端注入只读观察器；仍从原配置装配模型，构造不发请求。 */
+    public static SessionRuntime create(Presentation presentation, Consumer<String> output, Consumer<String> errors,
+            Supplier<ResponseStream> streams, ExecutionObserver observer) {
         AppConfig config = AppConfig.fromEnv(Env.loadDotEnv());
         Path cwd = Path.of("").toAbsolutePath();
-        return create(config, cwd, new AnthropicSdkLlmClient(config), output, errors, presentation, streams);
+        return create(config, cwd, new AnthropicSdkLlmClient(config), output, errors, presentation, streams, observer);
     }
 
     /**
@@ -178,16 +185,23 @@ public final class JadeCodeFactory {
      */
     public static SessionRuntime create(AppConfig config, Path cwd, LlmClient client,
             Consumer<String> output, Consumer<String> errors, Presentation presentation, Supplier<ResponseStream> streams) {
+        return create(config, cwd, client, output, errors, presentation, streams, ExecutionObserver.NONE);
+    }
+
+    /** 可注入客户端的观察装配，供离线验证使用；不读取凭据、不改权限 hook 顺序。 */
+    public static SessionRuntime create(AppConfig config, Path cwd, LlmClient client,
+            Consumer<String> output, Consumer<String> errors, Presentation presentation, Supplier<ResponseStream> streams,
+            ExecutionObserver observer) {
         try {
             TaskStore tasks = new TaskStore(cwd);
             TeamManager team = new TeamManager(cwd, tasks, errors);
             SessionRuntime leader = assemble(config, cwd, client,
                     text -> output.accept("[Leader] " + text), text -> errors.accept("[Leader] " + text),
-                    presentation, team, TeamManager.LEADER, "Leader", streams);
+                    presentation, team, TeamManager.LEADER, "Leader", streams, observer.scoped(TeamManager.LEADER));
             team.bind(leader, (id, role) -> assemble(config, cwd, client,
                     text -> output.accept("[Teammate " + id + "] " + text),
                     text -> errors.accept("[Teammate " + id + "] " + text),
-                    presentation, team, id, role, () -> ResponseStream.NONE));
+                    presentation, team, id, role, () -> ResponseStream.NONE, observer.scoped(id)));
             leader.onClose(team::close);
             return leader;
         } catch (IOException failure) {
@@ -202,7 +216,7 @@ public final class JadeCodeFactory {
      */
     private static SessionRuntime assemble(AppConfig config, Path cwd, LlmClient client,
             Consumer<String> output, Consumer<String> errors, Presentation presentation,
-            TeamManager team, String actor, String role, Supplier<ResponseStream> streams) {
+            TeamManager team, String actor, String role, Supplier<ResponseStream> streams, ExecutionObserver observer) {
         boolean isLeader = actor.equals(TeamManager.LEADER);
         PathResolver resolver = new PathResolver(cwd);
         PathGuard guard = new PathGuard(resolver);
@@ -250,12 +264,14 @@ public final class JadeCodeFactory {
         // 子代理同样注入共享压缩器与共享客户端:它能自己整理、自己响应超限,但用的仍是子任务自己的历史
         SubagentRuntime subagentRuntime = new SubagentRuntime(client, subTools, subSystemPrompt(cwd),
                 config.maxTokens(), hooks, compactor);
+        subagentRuntime.observe(observer);
 
         // 原有工具加上六个持久任务工具后超过 Map.of 的十项上限，先用可修改的表逐个添加。
         // 最终 copyOf 后才注册 hooks，运行期不开放修改分发表；子代理表不加入这六把工具。
         // 后台结果只归父会话消费，不能与子代理共用队列；子表仍是同步 bash。
         // 管理器构造无 IO/线程副作用，退出由 SessionRuntime.close 负责。
         BackgroundManager background = new BackgroundManager(cwd);
+        background.observe(observer);
         Map<String, Tool> registered = new LinkedHashMap<>(Map.of(
                 BASH_TOOL, new BashTool(background),
                 READ_FILE_TOOL, new ReadFileTool(resolver),
@@ -290,10 +306,14 @@ public final class JadeCodeFactory {
                 config.maxTokens(),
                 hooks,
                 compactor, streams);
+        engine.observe(observer);
+        observer.publish(com.jadecode.execution.ExecutionNotice.event(
+                com.jadecode.execution.ExecutionNotice.Kind.SESSION, "", role, config.model(), "IDLE"));
         // 所有权在这里交给 session；CLI 不再另外关闭 engine/background/cron。
         SessionRuntime runtime = new SessionRuntime(engine, memory, background, cron, output, errors);
         if (!isLeader) runtime.incomingApproval((context, prompt) ->
-                new DelegatedApproval(client, cwd, actor, prompt, context.approval(), output));
+                new DelegatedApproval(client, cwd, actor, prompt,
+                        context.approval() == null ? null : context.approval().forActor(actor), output));
         return runtime;
     }
 
