@@ -37,6 +37,17 @@ public final class SessionStore {
 
     public SessionStore(WorkspacePaths paths, Consumer<String> warnings) { this.paths = paths; this.warnings = warnings; }
 
+    /**
+     * 名称仅用于查清单，不作为路径。优先精确名称；没有精确项时允许按部分标题筛选。
+     * 重名全部返回，调用方必须让用户选择；这里不偷偷按最近更新时间取第一项。
+     */
+    public List<SessionMetadata> find(String name) throws IOException {
+        String query = SessionMetadata.validTitle(name).toLowerCase(java.util.Locale.ROOT);
+        var all = list();
+        var exact = all.stream().filter(item -> item.title().toLowerCase(java.util.Locale.ROOT).equals(query)).toList();
+        return exact.isEmpty() ? all.stream().filter(item -> item.title().toLowerCase(java.util.Locale.ROOT).contains(query)).toList() : exact;
+    }
+
     /** 列表只读取轻量清单；坏清单报出文件位置，不把原始对话/凭据打印出来。 */
     public List<SessionMetadata> list() throws IOException {
         paths.directory(paths.sessions(), false);

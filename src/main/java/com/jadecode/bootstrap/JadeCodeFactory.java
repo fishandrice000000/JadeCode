@@ -175,7 +175,7 @@ public final class JadeCodeFactory {
      * 后台服务与父 bash 共用，cron 与定时工具共用。构造不启动命令、轮询或模型请求；
      * 路径、技能和存储仍按原构造语义访问工作区。</p>
      * @param config 已加载的模型与输出设置
-     * @param cwd 工作目录，运行文件路径保持 .transcripts/.task_outputs/.memory/.tasks 等现状
+     * @param cwd 工作目录，运行文件统一保存在 .jadecode 下
      * @param client 父子和辅助请求共用的客户端
      * @param output 正常进展与完成输出
      * @param errors 任务与调度错误输出
@@ -223,13 +223,18 @@ public final class JadeCodeFactory {
             WorkspaceDataMigration.migrate(new com.jadecode.config.WorkspacePaths(workspace));
             TaskStore tasks = new TaskStore(workspace);
             TeamManager team = new TeamManager(workspace, tasks, errors);
+            var usage = new com.jadecode.session.SessionUsage(errors);
+            if (!client.thinkingChoices().contains(settings.thinking()))
+                throw new IllegalArgumentException("config.thinking.effort 尚未适配当前端点或模型");
             SessionRuntime leader = assemble(config, workspace, client,
                     text -> output.accept("[Leader] " + text), text -> errors.accept("[Leader] " + text),
-                    presentation, team, TeamManager.LEADER, "Leader", streams, observer.scoped(TeamManager.LEADER), settings);
+                    presentation, team, TeamManager.LEADER, "Leader", streams, observer.scoped(TeamManager.LEADER), settings,
+                    usage, new java.util.concurrent.atomic.AtomicReference<>(settings.thinking()));
             team.bind(leader, (id, role) -> assemble(config, workspace, client,
                     text -> output.accept("[Teammate " + id + "] " + text),
                     text -> errors.accept("[Teammate " + id + "] " + text),
-                    presentation, team, id, role, () -> ResponseStream.NONE, observer.scoped(id), settings));
+                    presentation, team, id, role, () -> ResponseStream.NONE, observer.scoped(id), settings, usage,
+                    new java.util.concurrent.atomic.AtomicReference<>(leader.thinking())));
             leader.onClose(team::close);
             return leader;
         } catch (IOException failure) {
@@ -239,13 +244,14 @@ public final class JadeCodeFactory {
 
     /**
      * 为一个身份装配同一种 SessionRuntime。每份 history、Todo、后台和 Hooks 独立，
-     * 只共享模型客户端、工作目录和受控任务存储；队友不创建 Memory/cron。
+     * 共享底层模型客户端、用量账本、工作目录和受控任务存储；队友不创建 Memory/cron。
      * 角色仅影响工具表、提示与审批方式，不额外复制一份循环实现。
      */
     private static SessionRuntime assemble(AppConfig config, Path cwd, LlmClient client,
             Consumer<String> output, Consumer<String> errors, Presentation presentation,
             TeamManager team, String actor, String role, Supplier<ResponseStream> streams, ExecutionObserver observer,
-            JadeSettings settings) {
+            JadeSettings settings, com.jadecode.session.SessionUsage usage,
+            java.util.concurrent.atomic.AtomicReference<com.jadecode.llm.ThinkingSettings> thinking) {
         boolean isLeader = actor.equals(TeamManager.LEADER);
         PathResolver resolver = new PathResolver(cwd);
         PathGuard guard = new PathGuard(resolver);
@@ -258,10 +264,14 @@ public final class JadeCodeFactory {
 
         Hooks hooks = new Hooks();
 
-        // 唯一一份生产压缩器:父子共享实例,但各自会话状态仍独立(它不持有 messages / 目标 / 轮数)。
+        // 每个常驻 Agent 各有一份压缩器，它与自己的一次性子代理共用；不同历史仍独立。
+        // 压缩器不持有 messages / 目标 / 轮数，摘要用量归持有它的 Agent，汇总仍属同一用户会话。
         // 目录只是"整理结果放哪",构造时不建目录、不摘要。
         var workspacePaths = new com.jadecode.config.WorkspacePaths(cwd);
-        ContextCompactor compactor = new ContextCompactor(client,
+        // 每种用途直接包装同一个底层客户端，不把统计包装叠起来，避免同一次调用重复记账。
+        LlmClient formalClient = tracked(client, config.model(), actor, com.jadecode.llm.UsageRecord.Purpose.FORMAL, usage, thinking::get);
+        LlmClient summaryClient = tracked(client, config.model(), actor, com.jadecode.llm.UsageRecord.Purpose.SUMMARY, usage, null);
+        ContextCompactor compactor = new ContextCompactor(summaryClient,
                 workspacePaths.transcripts(), workspacePaths.toolResults(), settings.limits(), settings.compaction());
 
         // Memory 属于用户任务的跨会话知识；只给父循环接线，不让子任务临时猜测直接写入库。
@@ -271,7 +281,8 @@ public final class JadeCodeFactory {
         TaskStore tasks;
         CronScheduler cron;
         try {
-            memory = isLeader ? new MemoryManager(client, new MemoryStore(cwd), settings.memory().extractionMaxOutputTokens()) : null;
+            memory = isLeader ? new MemoryManager(tracked(client, config.model(), actor,
+                    com.jadecode.llm.UsageRecord.Purpose.MEMORY, usage, null), new MemoryStore(cwd), settings.memory().extractionMaxOutputTokens()) : null;
             tasks = team.tasks();
             cron = isLeader ? new CronScheduler(cwd) : null;
         } catch (IOException failure) {
@@ -290,10 +301,13 @@ public final class JadeCodeFactory {
                 GLOB_TOOL, new GlobTool(resolver),
                 COMPACT_TOOL, new CompactTool());
 
-        // 子代理同样注入共享压缩器与共享客户端:它能自己整理、自己响应超限,但用的仍是子任务自己的历史
-        SubagentRuntime subagentRuntime = new SubagentRuntime(client, subTools, subSystemPrompt(cwd),
+        // 子代理正式请求单独归类；摘要仍由拥有共享压缩器的 Agent 记账，不能漏记或重复记。
+        // 它能自己整理、自己响应超限，但使用的仍是子任务自己的历史。
+        SubagentRuntime subagentRuntime = new SubagentRuntime(tracked(client, config.model(), actor + "/subagent",
+                com.jadecode.llm.UsageRecord.Purpose.SUBAGENT, usage, null), subTools, subSystemPrompt(cwd),
                 config.maxTokens(), hooks, compactor);
         subagentRuntime.observe(observer);
+        subagentRuntime.thinking(thinking::get);
 
         // 原有工具加上六个持久任务工具后超过 Map.of 的十项上限，先用可修改的表逐个添加。
         // 最终 copyOf 后才注册 hooks，运行期不开放修改分发表；子代理表不加入这六把工具。
@@ -328,7 +342,7 @@ public final class JadeCodeFactory {
         hooks.register(Hooks.PRE_TOOL_USE, permissionHook(gate));
         presentation.register(hooks, cwd, output);
 
-        AgentExecutor engine = new AgentExecutor(client,
+        AgentExecutor engine = new AgentExecutor(formalClient,
                 tools,
                 (isLeader ? systemPrompt(cwd, skillLoader.catalog()) : teammatePrompt(cwd, actor, role, skillLoader.catalog()))
                         + projectInstructions(cwd),
@@ -341,10 +355,18 @@ public final class JadeCodeFactory {
         // 所有权在这里交给 session；CLI 不再另外关闭 engine/background/cron。
         SessionRuntime runtime = new SessionRuntime(engine, memory, background, cron, output, errors);
         runtime.historyState(manager, config.model(), isLeader ? team::hasLiveMembers : () -> false);
+        runtime.telemetry(usage, isLeader, formalClient, thinking);
         if (!isLeader) runtime.incomingApproval((context, prompt) ->
-                new DelegatedApproval(client, cwd, actor, prompt,
+                new DelegatedApproval(tracked(client, config.model(), actor,
+                        com.jadecode.llm.UsageRecord.Purpose.APPROVAL, usage, null), cwd, actor, prompt,
                         context.approval() == null ? null : context.approval().forActor(actor), output));
         return runtime;
+    }
+
+    /** 统计身份来自装配，不来自模型参数；辅助调用没有强度覆盖，保持自己的服务商默认。 */
+    private static LlmClient tracked(LlmClient client, String model, String actor, com.jadecode.llm.UsageRecord.Purpose purpose,
+            com.jadecode.session.SessionUsage usage, Supplier<com.jadecode.llm.ThinkingSettings> thinking) {
+        return new com.jadecode.llm.UsageTrackingLlmClient(client, model, actor, purpose, usage::record, usage::ensureOpen, thinking);
     }
 
     /** 仅加载公共项目说明，不复制 Leader 对话；文件读取失败明确阻止装配。 */

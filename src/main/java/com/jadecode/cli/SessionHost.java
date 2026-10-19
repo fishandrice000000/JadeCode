@@ -46,6 +46,24 @@ public final class SessionHost implements AutoCloseable {
         return store.list().stream().filter(item -> !item.id().equals(id)).toList();
     }
 
+    /** 只读取清单，名称重复时由前端展示全部候选，不能替用户猜中某个 UUID。 */
+    public List<SessionMetadata> find(String name) throws IOException { return store.find(name); }
+
+    /** 本地元数据操作仍落在当前运行时；与切换互斥，不把改名写入稍后打开的别的会话。 */
+    public synchronized void rename(String expectedId, String title) throws IOException {
+        if (changing || !current().sessionId().equals(expectedId)) throw new IOException("会话已经切换，未修改另一会话的名称");
+        current().rename(title);
+    }
+
+    /** CLI 在工作线程调用，当前网络响应不受影响，下一次请求采用新值。 */
+    public synchronized void thinking(String expectedId, com.jadecode.llm.ThinkingSettings value) throws IOException {
+        if (changing || !current().sessionId().equals(expectedId)) throw new IOException("会话已经切换，未修改另一会话的设置");
+        current().changeThinking(value);
+    }
+
+    /** 退出后仍可读取已保存身份，不调用已关闭运行时的执行方法。 */
+    public SessionRuntime.Display display() { SessionRuntime runtime = current; return runtime == null ? null : runtime.display(); }
+
     /**
      * 打开指定 UUID；id 为 null 时创建新会话。此方法不 start，UI 安装历史后才启动消费者。
      * 冻结检查包括队列、后台和队友，不会取消正在进行的工作来强行切换。

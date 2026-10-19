@@ -64,6 +64,7 @@ public final class TuiApplication {
         InlineRenderer renderer = null;
         Thread shutdownHook = null;
         String failureMessage = null;
+        var farewellPrinted = new AtomicBoolean();
         try {
             // 1. 先确认是真实终端，再读取偏好、装配业务；非 TTY 不会启动一份不可操作的会话。
             terminal = new TerminalSession();
@@ -91,6 +92,7 @@ public final class TuiApplication {
                 finally {
                     accepting.set(false); System.setOut(originalOut); System.setErr(originalErr);
                     try { screen.close(); } catch (java.io.IOException ignored) { }
+                    farewell(originalOut, sessions, farewellPrinted);
                 }
             }, "jade-tui-shutdown");
             Runtime.getRuntime().addShutdownHook(shutdownHook);
@@ -134,6 +136,8 @@ public final class TuiApplication {
                 if (System.nanoTime() - animated >= 160_000_000L && state.actors.containsValue("RUNNING")) {
                     scheduler.request(); animated = System.nanoTime();
                 }
+                // 仅读取不可变内存快照，不读日志/网络。只有统计或设置真的变化才要求重绘。
+                if (controller.refreshSession()) scheduler.request();
                 if (scheduler.ready(input || !running)) {
                     // 最后一列留给终端，避免写满后自动折行，使光标和点击坐标整体偏移。
                     var context = new RenderContext(Math.max(1, terminal.columns() - 1), terminal.rows(), new Theme(state.theme, terminal.colors()));
@@ -154,6 +158,7 @@ public final class TuiApplication {
                     System.setOut(originalOut); System.setErr(originalErr);
                     try { if (terminal != null) terminal.close(); }
                     catch (java.io.IOException cleanup) { originalErr.println("终端恢复失败：" + cleanup.getMessage()); }
+                    farewell(originalOut, host, farewellPrinted);
                     if (failureMessage != null) originalErr.println(failureMessage);
                     if (shutdownHook != null) {
                         try { Runtime.getRuntime().removeShutdownHook(shutdownHook); }
@@ -162,6 +167,15 @@ public final class TuiApplication {
                 }
             }
         }
+    }
+
+    /** 终端恢复后输出一次身份；启动失败且没有打开会话时不打印无效 ID。 */
+    private static void farewell(PrintStream output, SessionHost host, AtomicBoolean printed) {
+        var session = host == null ? null : host.display();
+        if (session == null || session.id().isBlank() || !printed.compareAndSet(false, true)) return;
+        output.println("\nSession: " + com.jadecode.tui.text.DisplayWidth.clean(session.title()).replace('\n', ' '));
+        output.println("ID: " + session.id());
+        output.println("Resume: ./jade repl --resume " + session.id());
     }
 
     /** 页脚的 Git 元数据异步读取，不走模型 bash 工具，也不阻塞键盘。非仓库不报错。 */

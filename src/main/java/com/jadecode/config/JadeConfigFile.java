@@ -123,7 +123,15 @@ public final class JadeConfigFile {
         var discovery = new JadeSettings.Models(bool(models, "autoDiscover", aModels.autoDiscover(), "config.modelMetadata"),
                 number(models, "cacheTtlHours", aModels.cacheTtlHours(), 1, "config.modelMetadata"),
                 number(models, "timeoutMillis", aModels.timeoutMillis(), 1, "config.modelMetadata"), overrides);
-        return new JadeSettings(tui, policy, limits, new JadeSettings.Memory(extractionTokens), discovery);
+        // 请求模式和界面显隐分开；未填写时不发送额外参数，不改服务商的默认模式。
+        ObjectNode reasoning = section(root, "thinking");
+        com.jadecode.llm.ThinkingSettings thinking = d.thinking();
+        if (reasoning.has("effort")) {
+            if (!reasoning.get("effort").isTextual()) throw new IOException("config.thinking.effort 必须是字符串");
+            try { thinking = com.jadecode.llm.ThinkingSettings.parse(reasoning.get("effort").textValue()); }
+            catch (IllegalArgumentException invalid) { throw new IOException("config.thinking.effort 无效"); }
+        }
+        return new JadeSettings(tui, policy, limits, new JadeSettings.Memory(extractionTokens), discovery, thinking);
     }
 
     /** 手动限额允许省略／null 表示未知；其它值必须是可表示的正整数，不能把字符串数字当事实。 */

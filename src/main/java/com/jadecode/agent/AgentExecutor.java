@@ -192,11 +192,9 @@ public class AgentExecutor implements AutoCloseable {
                 }
                 List<ToolUseBlock> calls = response.message().blocksOfType(ToolUseBlock.class);
                 ToolExchangeProtocol.requireDistinctCallIds(calls);
-                if (response.usage() != null) observer.publish(new ExecutionNotice("", ExecutionNotice.Kind.USAGE,
-                        "", "", "", "REPORTED", response.usage().inputTokens(), response.usage().outputTokens()));
-                else notice(ExecutionNotice.event(ExecutionNotice.Kind.USAGE, "", "", "", "UNREPORTED"));
                 display.complete();
-                return new ModelReply(response.message(), calls, textDisplayed[0]);
+                // 用量已由客户端包装统一保存；这里仅带回本次报告，供 Session 更新自己的占用快照。
+                return new ModelReply(response.message(), calls, textDisplayed[0], response.usage());
             } catch (LlmException failure) {
                 display.failed();
                 // 配置关闭就直接暴露本次错误，不额外重试同一历史。开启时也只补救真正的上下文超限。
@@ -335,8 +333,11 @@ public class AgentExecutor implements AutoCloseable {
      * @param calls 从这条消息取出的工具调用，ID 已检查不重复；没有调用不一定代表任务完成，
      *              还要看是否在等后台结果，以及 Stop 是否要求继续
      * @param textDisplayed 正文已经通过流式回调展示；Session 仍采用完整消息，但不能重复打印正文
+     * @param usage 本次后端报告，供会话估算当前占用；累计用量已由客户端保存，可为 null
      */
-    public record ModelReply(Message message, List<ToolUseBlock> calls, boolean textDisplayed) {
+    public record ModelReply(Message message, List<ToolUseBlock> calls, boolean textDisplayed, ModelResponse.Usage usage) {
+        /** 兼容没有报告用量的旧离线调用，不伪造实际数字。 */
+        public ModelReply(Message message, List<ToolUseBlock> calls, boolean textDisplayed) { this(message, calls, textDisplayed, null); }
         /** 普通非流式调用保持原构造方式，完成时仍由 Session 显示正文。 */
         public ModelReply(Message message, List<ToolUseBlock> calls) { this(message, calls, false); }
         /**

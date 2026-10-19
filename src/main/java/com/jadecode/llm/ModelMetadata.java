@@ -26,12 +26,12 @@ public record ModelMetadata(Limits limits, String source) {
         return limits.maxOutputTokens() == null ? requested : Math.min(requested, limits.maxOutputTokens());
     }
 
-    /** 固定格式展示已知与未知字段；不推断 tokenizer、不把字符估算当作官方 token 数据。 */
+    /** 只展示已知值；来源仍留在元数据供诊断，不把未知占位与预算说明反复塞进 /model。 */
     public String describe() {
-        return "来源：" + source + "\n总上下文窗口：" + value(limits.contextWindowTokens())
-                + "\n最大输入：" + value(limits.maxInputTokens()) + "\n最大输出：" + value(limits.maxOutputTokens())
-                + "\n未知字段沿用已有预算；已知输出上限只用于封顶，不自动放大请求。"
-                + "\n压缩仍使用 config.json 中的字符阈值，不等同于精确 token 计数。";
+        var lines = new java.util.ArrayList<String>();
+        if (limits.contextWindowTokens() != null) lines.add("总上下文窗口：" + limits.contextWindowTokens() + " token");
+        if (limits.maxInputTokens() != null) lines.add("最大输入：" + limits.maxInputTokens() + " token");
+        if (limits.maxOutputTokens() != null) lines.add("最大输出：" + limits.maxOutputTokens() + " token");
+        return String.join("\n", lines);
     }
-    private static String value(Integer value) { return value == null ? "未知" : value + " token"; }
 }

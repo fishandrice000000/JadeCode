@@ -22,6 +22,8 @@ public final class TuiController {
     private final Runnable shutdown;
     private long ctrlC;
     private String originalTheme;
+    /** 元数据选择按用户输入顺序保存，避免较早的 low 写入反而盖过后来确认的 high。 */
+    private java.util.concurrent.CompletableFuture<Void> localWrites = java.util.concurrent.CompletableFuture.completedFuture(null);
     /** 新运行时装配通知可能先于 SessionOpened 到达，暂存而不是丢掉模型参数通知。 */
     private final java.util.Map<Long, List<UiEvent>> awaiting = new java.util.LinkedHashMap<>();
     public TuiController(TuiState state, SessionHost host, ApprovalBroker approvals,
@@ -47,7 +49,7 @@ public final class TuiController {
                 HistoryViewMapper.restore(state, session.restored());
                 for (UiEvent initial : awaiting.getOrDefault(state.generation, List.of())) accept(initial);
                 awaiting.clear();
-                state.add("System", "Notice", "Session", "会话 ID: " + state.sessionId + "\n恢复历史不自动重跑旧任务。Token 用量从本次打开开始统计。");
+                refreshSession();
                 if (!session.restored().metadata().model().equals(session.currentModel()))
                     state.add("System", "Warning", "Model", "原会话模型: " + session.restored().metadata().model()
                             + "；当前使用: " + session.currentModel());
@@ -76,6 +78,18 @@ public final class TuiController {
             case UiEvent.ApprovalRemoved removed -> removeApproval(removed.id());
             case UiEvent.Stopped stopped -> { return false; }
         }
+        return true;
+    }
+
+    /**
+     * 从当前会话读取已发布的统计和设置，不读盘、不等模型，也不访问可修改的 history。
+     * 以真实会话 ID 核对，避免 Host 已切换而 SessionOpened 尚未到达时采用新旧混合快照。
+     * 返回 true 才要求刷新屏幕，空闲时不会为了查询统计不断重画终端。
+     */
+    public boolean refreshSession() {
+        var next = host.display();
+        if (next == null || !next.id().equals(state.sessionId) || next.equals(state.session)) return false;
+        state.session = next; state.model = next.model(); state.modelInfo = next.metadata().describe();
         return true;
     }
 
@@ -143,7 +157,8 @@ public final class TuiController {
             state.commands = null;
             return;
         }
-        if (state.commands == null) state.commands = new SelectList(List.of("/help", "/theme", "/model", "/resume"));
+        if (state.commands == null) state.commands = new SelectList(List.of("/help", "/theme", "/model", "/thinking",
+                "/usage", "/resume", "/rename", "/quit", "/exit"));
         if (!state.commands.filter().equals(draft)) state.commands.filter(draft);
     }
 
@@ -176,17 +191,28 @@ public final class TuiController {
      * UI 先保留用户输入供查阅；若业务队列拒收，再另显示拒收原因，不伪称已执行。
      */
     private void submit() {
+        // 退出是整个 CLI 的本地操作，即使会话正在加载也要能响应，不能交给模型或排到任务队尾。
+        String command = state.editor.text().strip();
+        if (command.equals("/quit") || command.equals("/exit")) { state.editor.submit(); close(); return; }
         if (state.loadingResume) { state.hint = "正在打开会话，草稿已保留，请稍后提交"; return; }
         String prompt = state.editor.submit();
         if (prompt.isBlank()) {
             state.hint = host.hasCurrent() && host.current().promoteUserBuffer() ? "待发送内容已升级为插入式" : "没有可插入的待发送内容"; return;
         }
-        if (prompt.equals("/resume") || prompt.startsWith("/resume ") || prompt.startsWith("/resume\n") || prompt.startsWith("/resume\t")) {
-            String id = prompt.substring(7).strip();
+        if (command.equals("/resume") || command.startsWith("/resume ") || command.startsWith("/resume\n") || command.startsWith("/resume\t")) {
+            String id = command.substring(7).strip();
             if (id.isEmpty()) open("/resume"); else resume(id);
             return;
         }
-        if (prompt.equals("/theme") || prompt.equals("/help") || prompt.equals("/model")) { open(prompt); return; }
+        if (command.startsWith("/rename ") || command.startsWith("/rename\n") || command.startsWith("/rename\t")) {
+            saveLocal("Rename", id -> host.rename(id, command.substring(7).strip()), "会话已命名：" + command.substring(7).strip()); return;
+        }
+        if (command.startsWith("/thinking ")) {
+            try { setThinking(com.jadecode.llm.ThinkingSettings.parse(command.substring(10))); }
+            catch (IllegalArgumentException invalid) { state.hint = invalid.getMessage(); }
+            return;
+        }
+        if (List.of("/theme", "/help", "/model", "/thinking", "/usage", "/rename").contains(command)) { open(command); return; }
         if (!host.hasCurrent()) { state.editor.insert(prompt, false); state.hint = "请先 /resume 选择会话，或重启 jade repl 新建会话"; return; }
         state.add("You", "User", "Request", prompt); state.hint = "";
         // future 在业务线程结束，回调仍只投递显示事件，不能在该线程直接改 TuiState。
@@ -198,6 +224,7 @@ public final class TuiController {
     }
     /** 前端命令不交给模型：帮助/主题/参数在本地处理，resume 则让 Host 异步装配目标运行时。 */
     private void open(String command) {
+        if (command.equals("/quit") || command.equals("/exit")) { close(); return; }
         if (state.loadingResume) { state.hint = "正在打开会话，请稍后"; return; }
         if (command.equals("/resume")) {
             state.loadingResume = true; state.hint = "正在读取当前工作区的会话列表…";
@@ -210,13 +237,56 @@ public final class TuiController {
             if (state.theme.equals("light")) state.selector.move(1);
         } else if (command.equals("/model")) {
             // 只展示启动时已取得的快照，不把命令发给模型，也不在 UI 线程重新请求网络。
-            state.add("System", "Model", "Model · " + state.model, state.modelInfo);
+            refreshSession();
+            state.add("", "Model", state.model + " · " + (state.session == null ? "默认" : state.session.thinkingLabel()), state.modelInfo);
+        } else if (command.equals("/thinking")) {
+            refreshSession();
+            if (state.session == null || state.session.thinkingChoices().size() < 2) {
+                state.hint = "当前端点或模型尚未适配思考强度切换"; return;
+            }
+            state.selectorKind = "Thinking";
+            state.selector = new SelectList(state.session.thinkingChoices().stream().map(com.jadecode.llm.ThinkingSettings::value).toList());
+            state.selector.move(state.session.thinkingChoices().indexOf(state.session.thinking()));
+        } else if (command.equals("/rename")) {
+            if (state.editor.empty()) state.editor.insert("/rename ", false);
+            state.hint = "输入 /rename 新名称；名称只用于查找，不改变会话 UUID 或目录";
+        } else if (command.equals("/usage")) {
+            refreshSession();
+            if (state.session == null) { state.hint = "请先打开会话"; return; }
+            var usage = state.session.usage(); var total = usage.total();
+            StringBuilder body = new StringBuilder("输入：" + ConversationView.tokens(total.inputTokens())
+                    + "\n输出：" + ConversationView.tokens(total.outputTokens())
+                    + "\n已报告请求：" + total.reportedRequests());
+            if (total.missingRequests() > 0) body.append("\n未取得用量的请求：").append(total.missingRequests());
+            usage.byActor().entrySet().stream().sorted(java.util.Map.Entry.comparingByKey()).forEach(entry ->
+                    body.append("\n").append(entry.getKey()).append("：↑").append(ConversationView.tokens(entry.getValue().inputTokens()))
+                            .append(" ↓").append(ConversationView.tokens(entry.getValue().outputTokens())));
+            state.add("System", "Model", "Usage", body.toString());
         } else {
             state.selectorKind = "Help";
             state.selector = new SelectList(List.of("Enter 提交 · Alt+Enter 换行 · 粘贴后仍需 Enter", "忙时空 Enter：插入待发送缓冲",
                     "Ctrl+T 显示思考 · Ctrl+O 展开工具 · 鼠标滚动／复制由终端处理", "Ctrl+C 清草稿，500ms 内再按退出 · 空编辑器 Ctrl+D 退出",
-                    "Esc 关闭选择界面，不取消 Agent · q/exit 是普通提示词", "窗口／主题变化可能清空 scrollback 并重绘", "/model", "/theme", "/resume"));
+                    "Esc 关闭选择界面，不取消 Agent · /quit 或 /exit 退出整个会话", "窗口／主题变化可能清空 scrollback 并重绘",
+                    "/model", "/thinking", "/usage", "/theme", "/resume", "/rename", "/quit", "/exit"));
         }
+    }
+
+    @FunctionalInterface private interface LocalAction { void run(String expectedId) throws Exception; }
+
+    /** 本地元数据写盘在工作线程做；完成后只投递文字，不能从该线程改界面组件。 */
+    private void saveLocal(String label, LocalAction action, String success) {
+        if (!host.hasCurrent() || state.loadingResume) { state.hint = "请先打开会话"; return; }
+        long generation = state.generation;
+        String id = state.sessionId;
+        localWrites = localWrites.handle((value, failure) -> null).thenRunAsync(() -> {
+            try { action.run(id); events.accept(new UiEvent.Scoped(generation, new UiEvent.Message("System", label, success, false))); }
+            catch (Exception failure) { events.accept(new UiEvent.Scoped(generation, new UiEvent.Message("System", "Error", failure.getMessage(), true))); }
+        }, command -> Thread.ofVirtual().name("jade-session-setting").start(command));
+    }
+
+    /** 固定选择交给会话检查和保存，界面不直接改 SDK 或全局配置。 */
+    private void setThinking(com.jadecode.llm.ThinkingSettings value) {
+        saveLocal("Thinking", id -> host.thinking(id, value), "思考设置已保存：" + value.value() + "，从下一次请求生效");
     }
     /**
      * 选择期间，文字只用于筛选，不进入原草稿。主题上下移动只作预览，Esc 恢复原主题；
@@ -246,7 +316,8 @@ public final class TuiController {
                         if (failed == null) events.accept(new UiEvent.Message("System", "Theme", "主题已保存：" + choice, false));
                         else events.accept(new UiEvent.Message("System", "Warning", "本次主题已生效，但保存失败：" + failed.getMessage(), true));
                     });
-                } else if (choice.startsWith("/")) open(choice);
+                } else if (kind.equals("Thinking")) setThinking(com.jadecode.llm.ThinkingSettings.parse(choice));
+                else if (choice.startsWith("/")) open(choice);
             }
             default -> { }
         }
@@ -255,14 +326,28 @@ public final class TuiController {
 
     /**
      * 异步打开会话。加载与关闭不占 UI 线程，只有 SessionOpened 回来后才清理旧卡片并启动新会话。
-     * id 为 null 新建，空串打开启动选择器，其他字符串必须通过存储层的 UUID 校验。
+     * id 为 null 新建，空串打开启动选择器；名称先查清单，重名展示候选，不默认选择第一项。
      */
     public void resume(String id) {
         if (id != null && id.isEmpty()) { open("/resume"); return; }
         if (state.loadingResume) { state.hint = "会话正在切换"; return; }
         state.loadingResume = true; state.hint = id == null ? "正在创建会话…" : "正在恢复会话…";
         Thread.ofVirtual().name("jade-session-open").start(() -> {
-            try { events.accept(new UiEvent.SessionOpened(host.open(id))); }
+            try {
+                String target = id;
+                if (target != null) {
+                    boolean uuid;
+                    try { com.jadecode.session.history.SessionMetadata.requireId(target); uuid = true; }
+                    catch (IllegalArgumentException invalid) { uuid = false; }
+                    if (!uuid) {
+                        var matches = host.find(target);
+                        if (matches.isEmpty()) throw new java.io.IOException("没有匹配该名称的会话");
+                        if (matches.size() > 1) { events.accept(new UiEvent.SessionList(matches)); return; }
+                        target = matches.getFirst().id();
+                    }
+                }
+                events.accept(new UiEvent.SessionOpened(host.open(target)));
+            }
             catch (Exception failure) { events.accept(new UiEvent.ResumeFailed(failure.getMessage())); }
         });
     }
@@ -295,5 +380,10 @@ public final class TuiController {
         boolean first = !state.approvals.isEmpty() && state.approvals.getFirst().id().equals(id);
         state.approvals.removeIf(request -> request.id().equals(id)); if (first) state.approvalChoice = -1;
     }
-    private void close() { state.closing = true; approvals.close(); shutdown.run(); }
+    /** 已提交的本地改名/设置先完成，再关闭日志；不等待业务任务自然做完。 */
+    private void close() {
+        if (state.closing) return;
+        state.closing = true; approvals.close();
+        localWrites.whenComplete((value, failure) -> shutdown.run());
+    }
 }

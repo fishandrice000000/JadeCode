@@ -50,7 +50,7 @@ public final class ConversationView {
         long running = state.background.values().stream().filter(s -> s.equals("RUNNING")).count();
         int tick = (int) (System.nanoTime() / 160_000_000L % 4);
         String spinner = leader.equals("RUNNING") ? "◐◓◑◒".substring(tick, tick + 1) : "○";
-        String status = state.closing ? "Closing…" : spinner + " " + leader + " · background " + running;
+        String status = state.closing ? "Closing…" : spinner + " " + leader + (running == 0 ? "" : " · background " + running);
         String members = state.actors.entrySet().stream().filter(e -> !e.getKey().equals("leader") && !e.getKey().contains("/"))
                 .map(e -> e.getKey() + " " + e.getValue()).collect(java.util.stream.Collectors.joining(" · "));
         lines.add(StyledLine.of(DisplayWidth.take("── " + status + (members.isEmpty() ? "" : " · " + members), width), "accent"));
@@ -99,16 +99,33 @@ public final class ConversationView {
             cursorRow = lines.size() + editor.row(); cursorColumn = editor.column(); lines.addAll(editor.lines());
         }
         if (context.height() < 8) return new Frame(lines.stream().map(l -> l.crop(width)).toList(), cursorRow, Math.min(width, cursorColumn), hits);
-        // 3. 页脚只使用程序实际取得的数据。没有后端用量时明确写“未报告”，不能把字符数当 token。
+        // 3. 页脚使用会话只读快照。没有正数报告就不占一块位置，也不把未知显示为实测零。
         lines.add(StyledLine.of("─".repeat(Math.max(1, width)), "muted"));
-        String usageLabel = state.teamActive() ? "Leader tokens" : "Tokens";
-        String usage = state.usageReported ? usageLabel + " ↑" + state.inputTokens + " ↓" + state.outputTokens : usageLabel + " 未报告";
-        if (state.missingUsage > 0) usage += "（缺 " + state.missingUsage + " 次报告）";
+        var fields = new ArrayList<String>();
+        fields.add(state.model);
+        if (state.session != null) {
+            fields.add(state.session.thinkingLabel());
+            var total = state.session.usage().total();
+            if (total.inputTokens() > 0 || total.outputTokens() > 0)
+                fields.add("Tokens ↑" + tokens(total.inputTokens()) + " ↓" + tokens(total.outputTokens()));
+            // 只有匹配最近历史的主 Agent 报告才有效；队友的独立上下文不占 Leader 窗口。
+            if (state.session.context() != null) fields.add("上下文剩余约 " + state.session.context().remainingPercent() + "%");
+        }
+        fields.add("/help");
         lines.add(StyledLine.of(DisplayWidth.take(state.directory + (state.branch.isBlank() ? "" : " · " + state.branch), width), "muted"));
-        lines.add(StyledLine.of(DisplayWidth.take(state.model + " · " + usage + " · /help", width), "muted"));
+        lines.add(StyledLine.of(DisplayWidth.take(String.join(" · ", fields), width), "muted"));
         if (!state.hint.isBlank()) lines.add(StyledLine.of(DisplayWidth.take(state.hint, width), "warning"));
         // 输入区域必须留在视口内；极小窗口下只显示当前输入附近，不让光标跑到屏幕外。
         return new Frame(lines.stream().map(l -> l.crop(width)).toList(), cursorRow, Math.min(width, cursorColumn), hits);
+    }
+
+    /** 十进制缩写只用于显示，持久化仍存 long 原值；进位后不显示成 1000K。 */
+    static String tokens(long value) {
+        if (value < 1000) return Long.toString(value);
+        String[] units = { "K", "M", "B", "T", "Q" };
+        double number = value / 1000.0; int unit = 0;
+        while (Math.round(number * 10) >= 10_000 && unit < units.length - 1) { number /= 1000; unit++; }
+        return String.format(java.util.Locale.ROOT, "%.1f", number).replaceAll("\\.0$", "") + units[unit];
     }
 
     /**
