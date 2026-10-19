@@ -21,14 +21,15 @@
 ```
 src/main/java/com/jadecode/
 ├── Main              # picocli 顶层入口：run / repl
-├── cli/              # run/repl、CliHooks 展示、ConsoleInput 审批与 TerminalDisplay 终端
+├── cli/              # repl 的统一 TUI、会话桥接；run 的独立纯文本输出与审批
+├── tui/              # 通用终端、输入解码、样式行、内联差分、编辑器与 Markdown
 ├── bootstrap/        # JadeCodeFactory：生产与离线共用的装配入口
 ├── config/           # Env(.env 解析), AppConfig(缺省值与校验)
 ├── util/             # Json(共享 ObjectMapper), Ansi(终端色码), PathResolver(共享路径解析)
 ├── messages/         # Message + sealed ContentBlock(text/tool_use/tool_result)
 ├── llm/              # LlmClient / ToolDefinition(数据快照) + AnthropicSdkLlmClient(SDK 隔离层)
 ├── tools/            # Tool / ToolSchema 与工具适配器
-├── execution/        # ExecutionContext / Approval：可信来源、审批与取消契约
+├── execution/        # 可信任务来源、Approval 审批及只读运行观察
 ├── process/          # BackgroundManager(后台 bash / 完成队列) / ShellCommand(进程生命周期)
 ├── safety/           # PathGuard, CommandPolicy, PermissionGate
 ├── hooks/            # 字符串事件、参数表和短路 hook
@@ -86,17 +87,27 @@ mvn -q test                                 # 单元测试
 ```
 
 REPL 中 **Enter 提交、Alt+Enter 换行**；支持 bracketed paste 的终端中，粘贴的多行文字保留为同一条提示词，粘贴后还要按 Enter 才提交。
-输入编辑和历史由内置 JLine 处理，不再外套 rlwrap。后台日志显示在输入行上方，再恢复提示符及已输入文字；
-提示符表示现在可以输入，不代表 Agent 已经做完。文件/管道运行保持纯文本，不打印颜色或交互提示符。
-会话回复、工具日志和轮次统计统一标明 `[Leader]` 或 `[Teammate agent_…]`；`[Reply]`、`[Plan]` 和 `[Approval]`
-独立分段，工具日志显示简短文件路径或任务对象。回复正文保持原样，不把 Reply 颜色当成任务成功标志。
-颜色依实际终端支持启用；设置 `NO_COLOR` 或 `TERM=dumb` 时不使用色码。
-Leader 正式请求的正文和接口返回的 thinking 支持流式展示：底部预览正在生成的半行，完整行进入上方记录。
+REPL 使用 Pi 风格的主屏内联 TUI：界面线程统一管理消息、工具卡、状态和多行编辑器，
+JLine 只负责底层终端，不再使用旧 LineReader／PrintAbove／Status 组合。旧交互模式没有切换入口。
+`repl` 需要真实终端；脚本、管道和输出重定向使用 `run`，其输出为纯文本，不启动 TUI。
+消息与工具卡标明 Leader、队友或一次性子代理来源；调用和结果显示在同一卡片。
+工具普通字符串返回显示为 `RETURNED`，不等同于业务成功，也不靠正文是否以 Error 开头推断成败。
+支持 Markdown、基本代码配色、Ctrl+O 全局展开工具、左键展开单卡，以及 Ctrl+T 切换思考显示。
+深浅主题通过 `/theme` 选择，明确确认后保存到 `~/.jadecode/config/tui.json`；`/help` 显示操作说明。
+颜色依实际终端支持启用，尊重 `NO_COLOR` 和 `TERM=dumb`；不直接执行正文中的终端控制序列。
+Leader 正式请求的正文和接口返回的 thinking 流式更新消息，不再使用独立底部半行预览。
 `[Thinking]` 只代表接口提供的可读内容，不保证是完整内部推理；未返回时只显示 `[Reply]`。
 队友和一次性子代理不展示 thinking，Memory/摘要/辅助审批也不流式展示；必要思考块仍按协议保留。
-流式结束后不重复打印正文；工具等完整响应和参数校验通过才执行。管道或不支持底部预览的终端按完整行输出。
+流式结束后不重复打印正文；工具等完整响应和参数校验通过才执行。`run` 使用完整回复的文本输出。
 Agent 忙时，连续提交的提示词合并为一份非插入式缓冲；输入区为空时再次按 Enter，
-将同一缓冲批次升级为插入式，不重复投递。审批必须明确输入 y/n，空 Enter 不再默认拒绝。
+将同一缓冲批次升级为插入式，不重复投递。TUI 审批以“同意／拒绝”选项接管输入区并保存草稿，
+两个选项都不默认选中，方向键／Tab 选择后 Enter 确认，也可点击；空 Enter 与 Esc 不作审批答复。
+Ctrl+C 清草稿，500ms 内再次按下退出整个会话；编辑器为空时 Ctrl+D 退出，非空时向前删除。
+Esc 仅关闭选择界面，不提供单轮取消；`q`／`exit` 不再是退出指令。
+窗口尺寸、主题或旧卡片改变而需要重排时，TUI 可能清空终端 scrollback 并重放本次界面记录，
+包括进入 JadeCode 前的 shell 滚动历史；模型历史压缩不会删除界面记录，但不支持退出后的恢复。
+页脚 token 只统计 Leader 正式请求的后端报告，不冒称全会话费用或精确上下文占用。
+架构、验证与未验证范围见 [TUI 任务单](docs/jobs/s13/pi-tui.md)，阅读入口见 [TUI 指南](docs/notes/s13/pi-tui-review.md)。
 
 **JDK 版本隔离**:项目通过 Maven Toolchains 声明编译/测试用 JDK 21(注册表在 `~/.m2/toolchains.xml`,被动生效);Maven 自身和机器上其他 Java 8 项目不受任何影响。运行时同样隔离:`./jade` 脚本只在单次进程内指向 JDK 21。
 
@@ -161,10 +172,10 @@ REPL 到期入队，在 Agent 空闲时主动发起 `[Scheduled]` 回合；人�
 进程停止后不执行、不补跑停机分钟；`run` 只管理定义，不开启常驻调度。需要停机也执行应使用外部调度服务。
 至少一次交付可能在崩溃后重复；确认前失败退避 5 秒，连续三次暂停本会话自动投递，保留 durable 待交付记录。
 审批按 Harness 标注的任务来源而非线程身份判断；人工任务通过唯一终端输入入口审批，定时任务需要审批时拒绝，
-子代理继承来源。有批准申请时，只需输入 y 批准或 n 拒绝（忽略大小写），空 Enter 不作为审批答复，不需要审批命令或 ID。
-没有申请时，y/n 仍是普通任务文字。多行提示词中的批准文字不会被单独取出执行。
+子代理继承来源。TUI 使用明确的同意／拒绝选项，run 需要交互时使用文本 y/n（忽略大小写）；
+空 Enter 均不作为审批答复。多行提示词中的批准文字不会被单独取出执行。
 收件箱最多 64 项新请求；满时明确拒收，定时项保留 pending，后台完成结果不与新请求争抢容量。
-REPL 中 q/EOF 会立即关闭而不是等待队列排空；管道输入执行单项任务宜使用 `run`。
+REPL 退出会关闭会话而不是等待队列排空；非交互执行使用 `run`。
 一个工作区的定时库不支持多个 CLI 并发写入。会话重构已通过工程检查和获准代跑的真实 CLI 场景；
 检查范围、模型未按要求传参的重测及终端修复记录见 [验收补查](docs/jobs/s12/terminal-and-acceptance.md)。
 当前学习入口见 [事件化运行指南](docs/notes/s12/session-event-runtime-review.md)；

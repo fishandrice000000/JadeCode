@@ -54,10 +54,10 @@
       <version>4.7.6</version>
     </dependency>
 
-    <!-- 终端输入与重画：后台日志显示在输入行上方，不吃掉用户正在输入的文字。 -->
+    <!-- JLine 只提供终端、列宽与底层输入；新 TUI 自己编辑和重画，不再依赖旧 LineReader。 -->
     <dependency>
       <groupId>org.jline</groupId>
-      <artifactId>jline-reader</artifactId>
+      <artifactId>jline-terminal</artifactId>
       <version>${jline.version}</version>
     </dependency>
     <!-- 让 JLine 在真实终端工作；不需要再用外部 rlwrap 包一层。 -->
