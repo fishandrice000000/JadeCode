@@ -7,7 +7,7 @@
 
 1. `session/SessionRuntime.execute → runTask → turnEnded`：一轮包含多个模型请求、工具批次、必要等待和记忆维护；
    总用时从处理开始计算，不从第一段回复出现时计算，也不算 Inbox 排队时间。
-2. `agent/AgentExecutor.executeTools`：每把工具单独计时，不把前序工具运行时间算进下一把工具；
+2. `agent/AgentExecutor.executeTools`：批准后才对工具执行单独计时，不把审批等待或前序工具运行时间算进来；
    `subagent/SubagentRuntime.run` 同样提供真实工具耗时。
 3. `execution/ExecutionNotice.timed / actor` → `cli/tui/TuiState.execution / message / delta`：
    只传已经测好的时间，用 Agent 身份及运行编号找到最终回复；阶段回答仍保留，不冒充最终完成。
