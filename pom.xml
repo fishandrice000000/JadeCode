@@ -20,6 +20,12 @@
   </properties>
 
   <dependencies>
+    <!-- TUI 解析 Markdown 为语法树；终端排版由本项目负责，不自行重造 Markdown 解析器。 -->
+    <dependency>
+      <groupId>org.commonmark</groupId>
+      <artifactId>commonmark</artifactId>
+      <version>0.27.1</version>
+    </dependency>
     <!-- LLM 客户端:官方 Anthropic Java SDK(课程用官方 Python SDK 的镜像),baseUrl 指向 DeepSeek /anthropic 端点 -->
     <dependency>
       <groupId>com.anthropic</groupId>
