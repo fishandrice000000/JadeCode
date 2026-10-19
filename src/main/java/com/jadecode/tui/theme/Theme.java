@@ -10,7 +10,7 @@ public record Theme(String name, boolean colors) {
             Map.entry("heading", "1;96"), Map.entry("user", "1;94"), Map.entry("thinking", "90;3"),
             Map.entry("tool", "36"), Map.entry("error", "91"), Map.entry("warning", "93"),
             Map.entry("code", "93"), Map.entry("keyword", "95"), Map.entry("string", "92"),
-            Map.entry("comment", "90;3"), Map.entry("selected", "7"));
+            Map.entry("comment", "90;3"), Map.entry("selected", "7"), Map.entry("separator", "2;90"));
     /** 编码一行并重置样式；无颜色模式完全不产生 SGR 色码。 */
     public String encode(StyledLine line) {
         var out = new StringBuilder();
