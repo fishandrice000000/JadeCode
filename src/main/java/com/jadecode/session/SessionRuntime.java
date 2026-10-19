@@ -19,6 +19,7 @@ import com.jadecode.cron.CronProducer;
 import com.jadecode.cron.CronScheduler;
 import com.jadecode.execution.Approval;
 import com.jadecode.execution.ExecutionContext;
+import com.jadecode.execution.ExecutionNotice;
 import com.jadecode.hooks.Hooks;
 import com.jadecode.llm.LlmException;
 import com.jadecode.memory.MemoryManager;
@@ -114,12 +115,28 @@ public final class SessionRuntime implements AutoCloseable {
         if (!isBusy()) return submit(prompt, approval);
         if (prompt == null || prompt.isBlank()) return CompletableFuture.failedFuture(new IllegalArgumentException("Empty prompt"));
         var context = ExecutionContext.create(ExecutionContext.Source.USER, approval, () -> closed);
-        var result = inbox.buffer(prompt, context);
+        CompletableFuture<String> result;
+        synchronized (inbox) { result = inbox.buffer(prompt, context); publishBuffer(); }
         return result == null ? CompletableFuture.failedFuture(new RejectedExecutionException("Session inbox is full or closed")) : result;
     }
 
     /** 空输入 Enter 只升级待处理原批次，没缓冲则不做事。 */
-    public boolean promoteUserBuffer() { return inbox.promote(); }
+    public boolean promoteUserBuffer() {
+        synchronized (inbox) { boolean changed = inbox.promote(); publishBuffer(); return changed; }
+    }
+
+    /** 复制现有业务缓冲的显示资料，TUI 不保存或消费另一份任务队列。 */
+    private void publishBuffer() {
+        var view = inbox.bufferedView();
+        engine.notice(ExecutionNotice.event(ExecutionNotice.Kind.BUFFER, view == null ? "" : view.id(), "",
+                view == null ? "" : view.summary(), view != null && view.allowInsertion() ? "INSERTION" : "QUEUED"));
+    }
+
+    /** 状态变化来自真实执行路径；失败和关闭也通知，不只依靠正常完成的 TURN_END。 */
+    private void changeState(State next) {
+        state = next;
+        engine.notice(ExecutionNotice.event(ExecutionNotice.Kind.SESSION, "", "", "", next.name()));
+    }
 
     /**
      * Harness 投递邮箱消息。接收成功仅表示已放进内存 Inbox，不代表模型读过或业务完成。
@@ -294,7 +311,8 @@ public final class SessionRuntime implements AutoCloseable {
         Active task = new Active(entry, history);
         task.receipts.addAll(initialResults);
         active = task;
-        state = State.RUNNING;
+        changeState(State.RUNNING);
+        synchronized (inbox) { publishBuffer(); }
         try {
             ensureOpen();
             if (task.cronId() != null) {
@@ -333,7 +351,7 @@ public final class SessionRuntime implements AutoCloseable {
             fail(task, new IllegalStateException("Session execution interrupted", interrupted));
         } finally {
             active = null;
-            if (!closed) state = State.IDLE;
+            if (!closed) changeState(State.IDLE);
         }
     }
 
@@ -443,9 +461,9 @@ public final class SessionRuntime implements AutoCloseable {
             }
             if (background != null && background.hasRequired(task.context().id())) {
                 if (!reply.textDisplayed() && !reply.message().extractText().isBlank()) output.accept("[Reply] " + reply.message().extractText());
-                state = State.WAITING_BACKGROUND;
+                changeState(State.WAITING_BACKGROUND);
                 awaitResults(task);
-                state = State.RUNNING;
+                changeState(State.RUNNING);
                 continue;
             }
             Continue continuation = engine.stop(history);
@@ -461,7 +479,7 @@ public final class SessionRuntime implements AutoCloseable {
                 // Stop/记忆维护也可能耗时。结束判定必须再查一次，并与入队互斥。
                 // 这之后才到达的消息属于下一轮；已有补充则继续当前轮，不漏掉用户空回车升级。
                 pending = inbox.hasCurrentInput(task.context().id());
-                if (!pending) { active = null; if (!closed) state = State.IDLE; }
+                if (!pending) { active = null; if (!closed) changeState(State.IDLE); }
             }
             if (pending) {
                 if (!reply.textDisplayed() && !reply.message().extractText().isBlank()) output.accept("[Reply] " + reply.message().extractText());
@@ -492,7 +510,8 @@ public final class SessionRuntime implements AutoCloseable {
 
     /** 结束/等待阶段可以接收本轮必等结果，不受禁止提前插入限制。 */
     private boolean deliverIncoming(Active task, boolean insertionOnly, boolean finishing) {
-        List<SessionInbox.Entry> entries = inbox.drain(insertionOnly, finishing, task.context().id());
+        List<SessionInbox.Entry> entries;
+        synchronized (inbox) { entries = inbox.drain(insertionOnly, finishing, task.context().id()); publishBuffer(); }
         if (entries.isEmpty()) return false;
         // 先登记整批回执，哪怕退出发生在采用第一条消息时，也能通知所有发送者失败。
         task.incomingReceipts.addAll(entries);
@@ -580,6 +599,7 @@ public final class SessionRuntime implements AutoCloseable {
      */
     private void adoptHistory(List<Message> messages) {
         apply(new SessionEvent.HistoryPrepared(messages));
+        engine.notice(ExecutionNotice.event(ExecutionNotice.Kind.COMPACT, "", "", "模型上下文已整理，界面记录保留", ""));
     }
 
     /** 采用执行器已验证的模型回复，写入历史，不在这里决定任务是否完成。 */
@@ -780,7 +800,7 @@ public final class SessionRuntime implements AutoCloseable {
         synchronized (this) {
             if (closed) return;
             closed = true;
-            state = State.CLOSED;
+            changeState(State.CLOSED);
         }
         cron.close();
         try { closeDependents.run(); }

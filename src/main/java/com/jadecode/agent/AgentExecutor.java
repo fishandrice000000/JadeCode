@@ -9,6 +9,8 @@ import java.util.function.Supplier;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jadecode.context.ContextCompactor;
 import com.jadecode.execution.ExecutionContext;
+import com.jadecode.execution.ExecutionNotice;
+import com.jadecode.execution.ExecutionObserver;
 import com.jadecode.hooks.Hooks;
 import com.jadecode.llm.CompleteRequest;
 import com.jadecode.llm.LlmClient;
@@ -55,6 +57,13 @@ public class AgentExecutor implements AutoCloseable {
     private final Supplier<ResponseStream> streams;
     /** 用户退出后禁止晚到回复继续执行；不拥有外部模型客户端或进程服务的关闭责任。 */
     private volatile boolean closed;
+    /** 只在装配时安装；无前端的旧调用方保持空观察器。 */
+    private ExecutionObserver observer = ExecutionObserver.NONE;
+
+    /** 安装快速、只读的显示接收者，不替换权限 hook。须在会话 start 前调用。 */
+    public void observe(ExecutionObserver value) { observer = java.util.Objects.requireNonNull(value); }
+    /** 会话共用本 Agent 的身份通道；调用只发快照，不授予显示端修改历史的权力。 */
+    public void notice(ExecutionNotice notice) { observer.publish(notice); }
 
     /** 用来识别本批是否调用 todo_write，调用后重新计数，不据此判断任务已完成。 */
     private static final String TODO_TOOL = "todo_write";
@@ -154,7 +163,9 @@ public class AgentExecutor implements AutoCloseable {
             if (compactor != null) {
                 // adoptHistory 会立即把压缩后的消息放回原列表，下面发给模型的就是更新后的历史。
                 List<Message> prepared = compactor.prepare(messages, activeRequest);
-                if (prepared != messages) adoptHistory.accept(prepared);
+                if (prepared != messages) {
+                    adoptHistory.accept(prepared);
+                }
             }
 
             ResponseStream display = java.util.Objects.requireNonNull(streams.get());
@@ -181,6 +192,9 @@ public class AgentExecutor implements AutoCloseable {
                 }
                 List<ToolUseBlock> calls = response.message().blocksOfType(ToolUseBlock.class);
                 ToolExchangeProtocol.requireDistinctCallIds(calls);
+                if (response.usage() != null) observer.publish(new ExecutionNotice("", ExecutionNotice.Kind.USAGE,
+                        "", "", "", "REPORTED", response.usage().inputTokens(), response.usage().outputTokens()));
+                else notice(ExecutionNotice.event(ExecutionNotice.Kind.USAGE, "", "", "", "UNREPORTED"));
                 display.complete();
                 return new ModelReply(response.message(), calls, textDisplayed[0]);
             } catch (LlmException failure) {
@@ -219,8 +233,16 @@ public class AgentExecutor implements AutoCloseable {
         boolean usedTodo = false;
         boolean compact = false;
         RuntimeException failure = null;
+        // 一批内的调用 ID 合法，不代表它在整个会话唯一；再加本批显示编号，避免重复模型 ID 串卡。
+        String batchId = java.util.UUID.randomUUID().toString();
+        for (ToolUseBlock call : calls) notice(ExecutionNotice.event(ExecutionNotice.Kind.TOOL_START,
+                batchId + "/" + call.id(), call.name(), call.input() == null ? "{}" : call.input().toString(), "QUEUED"));
+        int executing = -1;
+        boolean attempted = false;
         try {
             for (ToolUseBlock call : calls) {
+                executing = results.size();
+                attempted = false;
                 // 1. 先查是否退出，再查权限；被拒绝或未知的工具，也要返回与调用 ID 对应的结果。
                 ensureOpen();
                 if (context.isCancelled()) throw new IllegalStateException("Parent session is closed");
@@ -228,20 +250,25 @@ public class AgentExecutor implements AutoCloseable {
                         Map.of(Hooks.PARAM_BLOCK, call, Hooks.PARAM_CONTEXT, context));
                 if (blocked != null) {
                     results.add(new ToolResultBlock(call.id(), blocked));
+                    notice(ExecutionNotice.event(ExecutionNotice.Kind.TOOL_END, batchId + "/" + call.id(), call.name(), blocked, "BLOCKED"));
                     continue;
                 }
                 Tool tool = tools.get(call.name());
                 if (tool == null) {
                     results.add(new ToolResultBlock(call.id(), "Error: Unknown tool: " + call.name()));
+                    notice(ExecutionNotice.event(ExecutionNotice.Kind.TOOL_END, batchId + "/" + call.id(), call.name(), "Unknown tool", "NOT_RUN"));
                     continue;
                 }
                 // 等用户批准可能很久；用户若已退出，即使现在收到批准，也不能再执行工具。
                 ensureOpen();
                 if (context.isCancelled()) throw new IllegalStateException("Parent session is closed");
                 ObjectNode input = call.input() instanceof ObjectNode node ? node : Json.mapper().createObjectNode();
+                notice(ExecutionNotice.event(ExecutionNotice.Kind.TOOL_START, batchId + "/" + call.id(), call.name(), input.toString(), "RUNNING"));
+                attempted = true;
                 String output = tool.execute(input, context);
                 // 先记下工具确实返回的结果，再显示日志，免得日志出错后连执行结果都丢掉。
                 results.add(new ToolResultBlock(call.id(), output));
+                notice(ExecutionNotice.event(ExecutionNotice.Kind.TOOL_END, batchId + "/" + call.id(), call.name(), output, "RETURNED"));
                 usedTodo |= call.name().equals(TODO_TOOL);
                 compact |= call.name().equals(COMPACT_TOOL) && CompactTool.OUTPUT.equals(output);
                 hooks.trigger(Hooks.POST_TOOL_USE,
@@ -251,6 +278,10 @@ public class AgentExecutor implements AutoCloseable {
             // 2. results 中已有前面调用的结果；从下一个没拿到结果的 ID 开始补失败说明。
             failure = unexpected;
             for (int index = results.size(); index < calls.size(); index++) {
+                ToolUseBlock unfinished = calls.get(index);
+                notice(ExecutionNotice.event(ExecutionNotice.Kind.TOOL_END, batchId + "/" + unfinished.id(), unfinished.name(),
+                        index == executing && attempted ? "未正常取得结果，可能已有副作用：" + unexpected.getMessage() : "批次中断，未执行",
+                        index == executing && attempted ? "ERROR" : "NOT_RUN"));
                 results.add(new ToolResultBlock(calls.get(index).id(),
                         "Error: Tool batch interrupted; this call did not produce a result. The task failed."));
             }
