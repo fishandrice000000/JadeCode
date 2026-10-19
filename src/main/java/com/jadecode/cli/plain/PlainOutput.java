@@ -9,6 +9,8 @@ public final class PlainOutput implements ExecutionObserver {
     private final Consumer<String> output;
     public PlainOutput(Consumer<String> output) { this.output = output; }
     @Override public void accept(com.jadecode.execution.ExecutionNotice notice) {
+        if (notice.kind() == com.jadecode.execution.ExecutionNotice.Kind.MODEL)
+            message("[Model] " + notice.name() + "\n" + notice.detail());
         if (notice.kind() == com.jadecode.execution.ExecutionNotice.Kind.TOOL_START && notice.state().equals("RUNNING"))
             output.accept("[" + notice.actor() + "] [Tool] " + notice.name());
     }

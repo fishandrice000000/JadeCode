@@ -82,6 +82,21 @@ cp .env.example .env   # 填入 ANTHROPIC_API_KEY(DeepSeek key)
 配置不包含 API Key，模型和认证仍走上面的环境配置。
 
 `tui` 可设置 `theme`、`thinkingVisible`、`toolsExpanded`、`commandSuggestions`。
+`modelMetadata` 控制启动时的官方参数查询：默认开启，缓存 24 小时，最多等待 2000ms。
+当前只自动识别 Anthropic／DeepSeek 官方 HTTPS 端点，第三方代理不猜查询接口，也不向其它主机转发凭据。
+参数按端点和模型分开缓存在 `~/.jadecode/cache/model-metadata/`，不存认证或原始响应。
+缺少字段、模型 ID 无匹配、查询／缓存故障时沿用现有预算；过期缓存不冒充当前官方数据。
+TUI 输入 `/model` 查看总窗口、最大输入／输出及来源；`run` 用 `[Model]` 通知显示同一快照。
+需要手动补充时，在 `modelMetadata.overrides` 下按精确模型 ID 写对象，例如：
+
+```json
+{"your-exact-model-id": {"contextWindowTokens": 131072, "maxOutputTokens": 8000}}
+```
+
+手动值是用户提供的信息，不标成官方事实；不能扩大已经取得的官方上限。
+已知最大输出对正式、摘要、记忆及审批请求统一封顶，但不会把请求自动提高到最大额度。
+上下文窗口单位是 token，压缩器目前仍按字符估算；本轮不把两者等同，仍保留原压缩阈值。
+
 旧 `tui.json` 的主题会先备份再迁入新文件；新主题优先，原文件保留但不再写入。
 `/theme` 只更新 `tui.theme`，不会清除压缩设置或用户其它字段。
 

@@ -9,6 +9,12 @@
   "memory": {
     "extractionMaxOutputTokens": 8000
   },
+  "modelMetadata": {
+    "autoDiscover": true,
+    "cacheTtlHours": 24,
+    "timeoutMillis": 2000,
+    "overrides": {}
+  },
   "compaction": {
     "largeResultEnabled": true,
     "batchBudgetEnabled": false,
