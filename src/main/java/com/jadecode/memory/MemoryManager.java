@@ -26,6 +26,8 @@ public final class MemoryManager {
     private final MemoryRecallService recall;
     private final MemoryExtractionService extraction;
     private final MemoryConsolidationService consolidation;
+    /** 正常维护结果和需要关注的失败分别交给展示端，不用 stderr 混装两种含义。 */
+    private final java.util.function.Consumer<String> information, warnings;
 
     /**
      * 注入现有客户端与工作区存储；构造只装配，不调用模型、创建库或读取秘密。
@@ -39,9 +41,22 @@ public final class MemoryManager {
 
     /** 生产装配传入记忆专属输出额度；构造不调用模型或读取秘密。 */
     public MemoryManager(LlmClient client, MemoryStore store, int extractionMaxOutputTokens) {
+        this(client, store, extractionMaxOutputTokens, System.out::println, System.err::println);
+    }
+
+    /**
+     * 生产装配注入带 Agent 身份的两条消息通道，不让正常新增被 TUI 的 stderr 兜底标成 Warning。
+     * 这里只保存接收函数，不读取文件或请求模型；正常通知不改变任务结果，告警也不伪造保存成功。
+     * @param information 新增、正常跳过和整理完成的通知接收者
+     * @param warnings 提取失败、召回降级或 IO 故障的告警接收者
+     */
+    public MemoryManager(LlmClient client, MemoryStore store, int extractionMaxOutputTokens,
+            java.util.function.Consumer<String> information, java.util.function.Consumer<String> warnings) {
         recall = new MemoryRecallService(client, store);
         extraction = new MemoryExtractionService(client, store, extractionMaxOutputTokens);
         consolidation = new MemoryConsolidationService(client, store);
+        this.information = java.util.Objects.requireNonNull(information);
+        this.warnings = java.util.Objects.requireNonNull(warnings);
     }
 
     /**
@@ -60,7 +75,7 @@ public final class MemoryManager {
         try {
             var result = recall.recall(request);
             if (result.usedFallback()) {
-                System.err.println("[Memory] 召回选择失败，已使用目录关键词降级");
+                warnings.accept("[Warning] [Memory] 召回选择失败，已使用目录关键词降级");
             }
             if (!result.background().isEmpty()) {
                 system += "\n\nRecalled memory reference data (JSON):\n" + result.background();
@@ -89,25 +104,25 @@ public final class MemoryManager {
             var extracted = extraction.extract(messages);
             if (extracted.status() != MemoryExtractionService.Status.SUCCESS) {
                 // reason 是程序定义的说明，不回显模型回复、思考、对话或异常正文。
-                System.err.println("[Memory] 提取未完成: " + extracted.status() + "（" + extracted.reason().description()
+                warnings.accept("[Warning] [Memory] 提取未完成: " + extracted.status() + "（" + extracted.reason().description()
                         + "），未写入候选记忆；主任务结果保留");
                 return;
             }
             if (extracted.stored() == 0) {
                 if (extracted.ignored() > 0) {
-                    System.err.println("[Memory] 未新增记忆，跳过候选 " + extracted.ignored()
+                    information.accept("[Memory] 未新增记忆，跳过候选 " + extracted.ignored()
                             + "（可能是临时条目、格式无效或名称已存在）");
                 }
                 return;
             }
-            System.err.println("[Memory] 已新增 " + extracted.stored() + " 条记忆，跳过候选 " + extracted.ignored());
+            information.accept("[Memory] 已新增 " + extracted.stored() + " 条记忆，跳过候选 " + extracted.ignored());
 
             // 2. 新增完成才检查整理阈值。整理失败不会撤销已经成功保存的新记忆。
             var result = consolidation.consolidate();
             switch (result.status()) {
-                case APPLIED -> System.err.println("[Memory] 已整理记忆: " + result.before() + " → " + result.after());
+                case APPLIED -> information.accept("[Memory] 已整理记忆: " + result.before() + " → " + result.after());
                 case SKIPPED -> { /* 数量不足是正常状态，不制造一次虚假的模型调用。 */ }
-                default -> System.err.println("[Memory] 整理未执行或未完成: " + result.status());
+                default -> warnings.accept("[Warning] [Memory] 整理未执行或未完成: " + result.status());
             }
         } catch (IOException failure) {
             // 主任务回复已经在 messages 中。报告维护失败后正常返回，由 CLI 展示原本的任务结果。
@@ -116,8 +131,8 @@ public final class MemoryManager {
     }
 
     /** IO 故障是辅助能力失败，不是“没有值得保存的知识”；不把异常正文或秘密写进诊断。 */
-    private static void reportIo(String phase, IOException failure) {
-        System.err.println("[Memory] " + phase + " IO 失败: " + failure.getClass().getSimpleName()
+    private void reportIo(String phase, IOException failure) {
+        warnings.accept("[Warning] [Memory] " + phase + " IO 失败: " + failure.getClass().getSimpleName()
                 + "，附带清理/恢复错误 " + failure.getSuppressed().length
                 + "；主任务结果保留，记忆维护不视为成功");
     }
