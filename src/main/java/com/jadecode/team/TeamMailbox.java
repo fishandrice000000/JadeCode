@@ -19,10 +19,12 @@ import com.jadecode.util.Json;
  */
 public final class TeamMailbox {
     private final Path root;
+    private final com.jadecode.config.WorkspacePaths paths;
 
     /** 绑定本次 Team 的独立目录；构造不建文件，不扫描其它 Team 的历史邮件。 */
     public TeamMailbox(Path workspace) {
-        root = workspace.toAbsolutePath().resolve(".team").resolve("team_" + UUID.randomUUID());
+        paths = new com.jadecode.config.WorkspacePaths(workspace);
+        root = paths.teams().resolve("team_" + UUID.randomUUID());
     }
 
     /**
@@ -36,8 +38,9 @@ public final class TeamMailbox {
                 || body == null || body.isBlank() || body.length() > 200_000) {
             throw new IllegalArgumentException("摘要须为 1–2000 字符，正文须为 1–200000 字符");
         }
-        Files.createDirectories(root.resolve("messages"));
-        Files.createDirectories(root.resolve("pending"));
+        // teams 的祖先也检查，避免 .jadecode 被换成链接后写到工作区外。
+        paths.directory(root.resolve("messages"), true);
+        paths.directory(root.resolve("pending"), true);
         String id = "mail_" + UUID.randomUUID();
         Path path = root.resolve("messages").resolve(id + ".md");
         // CREATE_NEW 保护这份快照；重复提交不能覆盖模型曾经看到的原文。

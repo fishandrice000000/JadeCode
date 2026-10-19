@@ -12,7 +12,7 @@
 | 构建 | Maven 单模块,`mvn package` 产出 `target/jadecode.jar` |
 | LLM 接入 | Anthropic 消息格式 + 可配置 base URL(**DeepSeek /anthropic 端点**,已实测) |
 | 框架 | 无(CLI 形态,不用 Spring Boot) |
-| 持久化 | 文件(与课程一致:`.tasks/` `.memory/` `.mailboxes/` 等) |
+| 持久化 | 工作区 `.jadecode/`，按 tasks / memory / teams 等用途分目录 |
 
 ## 目录结构
 
@@ -166,14 +166,14 @@ Esc 仅关闭选择界面，不提供单轮取消；`q`／`exit` 不再是退出
 - [ ] s13:独立 Session Team、文件邮箱与结果提交已接入；工程验证见任务单，用户学习与真机验收待完成
 - [ ] s14–s17:逐章实现(见映射表)
 
-由 `SessionRuntime` 在任务入口和完成处调用 Memory 服务。Memory 使用工作区 `.memory/`，每次用户任务入口召回一次，真正结束后提取，新增成功后按数量尝试整理。
+由 `SessionRuntime` 在任务入口和完成处调用 Memory 服务。Memory 使用工作区 `.jadecode/memory/`，每次用户任务入口召回一次，真正结束后提取，新增成功后按数量尝试整理。
 辅助请求沿用现有客户端，不带工具；记忆维护失败告警，不抹掉已完成的主任务结果。
 提取额度由 `memory.extractionMaxOutputTokens` 设置（默认 8000 token）。合法 `[]` 不告警；
 格式、空正文、截断和拒答分别显示固定原因，不回显原始对话或思考，也不自动重试。
 完整 JSON 外包一层 json 代码围栏可接受，解释文字夹带数组、尾随内容和截断回复仍拒绝写盘。
 子代理不自主维护长期记忆。记忆内容的真伪、长期价值与合并质量依赖模型，格式校验不提供语义保证。
 
-Task System 使用 `.tasks/{id}.json`。先创建取得实际 ID，再增加依赖；认领检查前置条件，完成报告刚解锁任务。
+Task System 使用 `.jadecode/tasks/{id}.json`。先创建取得实际 ID，再增加依赖；认领检查前置条件，完成报告刚解锁任务。
 `list_tasks` 查看全部进度，`get_task` 读取完整描述。`task` 仍表示子代理委派，不是持久任务创建。
 Team 共享同一 TaskStore，实例锁保护本进程认领与状态更新，不保证多进程文件互斥。
 新增 failed/blocked；只有 completed 满足依赖，Leader 可显式 reopen_task 后重新派工。
@@ -207,7 +207,7 @@ Background Tasks 沿用 `bash`：`run_in_background` 省略或 false 仍同步�
 Cron Scheduler 提供 `schedule_cron`、`list_crons`、`cancel_cron`，仅 Leader 开放，原一次性子代理仍六把工具。
 五段 cron 使用进程本地时间；支持星号、星号步进、数值、区间与列表，星期日为 0，日与星期都受限时取 OR。
 REPL 到期入队，在 Agent 空闲时主动发起 `[Scheduled]` 回合；人工与定时回合串行访问同一历史。
-`recurring` / `durable` 默认 true；持久定义与 pending 状态保存至工作区 `.scheduled_tasks.json`。
+`recurring` / `durable` 默认 true；持久定义与 pending 状态保存至工作区 `.jadecode/cron/jobs.json`。
 模型首个合法正式回复表示交付确认，不是业务验收；一次性删除，周期项等待下一次匹配。
 进程停止后不执行、不补跑停机分钟；`run` 只管理定义，不开启常驻调度。需要停机也执行应使用外部调度服务。
 至少一次交付可能在崩溃后重复；确认前失败退避 5 秒，连续三次暂停本会话自动投递，保留 durable 待交付记录。
@@ -222,8 +222,20 @@ REPL 退出会关闭会话而不是等待队列排空；非交互执行使用 `r
 [原 s12 指南](docs/notes/s12/cron-scheduler-review.md)保留重构前的学习记录。
 
 Team 使用 `spawn_teammate`、`assign_task`、`send_message`、`submit_task_result` 等工具，
-最多三个常驻队友；模型提供短摘要与长正文，`.team/<team-id>/messages/` 保存正文，
+最多三个常驻队友；模型提供短摘要与长正文，`.jadecode/teams/<team-id>/messages/` 保存正文，
 `pending/` 仅保存待投递记录。队友报告默认可以插入并唤起 Leader，普通进度默认不唤起。
 队友启用独立压缩与后台，不启用 Memory/cron；工具层弱隔离不是文件系统沙箱。
 请在存活的 REPL 中进行异步 Team 协作；`run` 在 Leader 本轮回复后退出，会关闭尚未结束的队友和命令。
 工程任务见 [s13 任务单](docs/jobs/s13/agent-teams.md)，学习入口见 [s13 阅读指南](docs/notes/s13/agent-teams-review.md)。
+
+## 工作区运行数据
+
+JadeCode 自己的运行数据统一保存在工作区 `.jadecode/`：tasks、memory、teams、transcripts、
+tool-results、approvals/backups 与 cron。压缩归档与工具输出仍按原用途保存，不改变命令工作目录。
+机器级 `~/.jadecode/config/config.json` 和模型参数缓存不搬进工作区，`.env`、Git、IDE 和外部 Agent 配置也不移动。
+
+升级后首次装配会迁移明确识别的旧数据位置，请先退出该工作区的旧版 JadeCode。
+迁移先检查冲突与软链，不覆盖新位置，不改历史正文；中途失败保留已经移动的数据，后续可继续。
+read_file 对已迁移的旧正文路径提供只读兼容，普通写入和 bash 命令不会自动重定向。
+新旧两处同时有数据或旧数据包含软链时停止并报错，需要人工确认，不能自动合并。
+迁移不扫描其它工作区、不恢复旧执行现场，也不删除无法识别的文件。

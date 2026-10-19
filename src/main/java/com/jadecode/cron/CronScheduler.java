@@ -56,7 +56,7 @@ public final class CronScheduler {
     public CronScheduler(Path workspace, Clock clock) throws IOException {
         this.workspace = workspace.toRealPath();
         if (!Files.isDirectory(this.workspace)) throw new IOException("Cron workspace must be a directory");
-        this.file = this.workspace.resolve(".scheduled_tasks.json");
+        this.file = new com.jadecode.config.WorkspacePaths(this.workspace).cronFile();
         this.clock = java.util.Objects.requireNonNull(clock);
     }
 
@@ -230,9 +230,10 @@ public final class CronScheduler {
     private void commit(Map<String, CronJob> next) throws IOException {
         ArrayNode encoded = payload(next);
         if (!encoded.equals(payload(jobs))) {
+            new com.jadecode.config.WorkspacePaths(workspace).directory(file.getParent(), true);
             checkFile();
             String json = Json.mapper().writerWithDefaultPrettyPrinter().writeValueAsString(encoded);
-            Path temporary = Files.createTempFile(workspace, ".scheduled-tasks-", ".tmp");
+            Path temporary = Files.createTempFile(file.getParent(), "jobs-", ".tmp");
             IOException original = null;
             try {
                 Files.writeString(temporary, json, StandardCharsets.UTF_8);
@@ -254,6 +255,7 @@ public final class CronScheduler {
 
     /** 拒绝软链、悬空链接和目录型状态文件；不承诺阻止恶意并发替换路径的竞态。 */
     private void checkFile() throws IOException {
+        new com.jadecode.config.WorkspacePaths(workspace).directory(file.getParent(), false);
         if (Files.exists(file, LinkOption.NOFOLLOW_LINKS) && !Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) {
             throw new IOException("Cron state must be a regular non-symlink file: " + file);
         }

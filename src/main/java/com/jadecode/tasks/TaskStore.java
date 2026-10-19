@@ -40,7 +40,7 @@ public final class TaskStore {
     private final Path taskDir;
 
     /**
-     * 绑定现有工作区，构造无写盘、无网络；只有创建任务时才创建 .tasks。
+     * 绑定现有工作区，构造无写盘、无网络；只有创建任务时才创建 .jadecode/tasks。
      * @param workspaceRoot 实际工作区，不能为 null 或不存在
      * @throws IOException 工作区不能解析或不是目录
      */
@@ -52,7 +52,7 @@ public final class TaskStore {
         if (!Files.isDirectory(this.workspaceRoot)) {
             throw new IOException("Task 工作区不是目录");
         }
-        taskDir = this.workspaceRoot.resolve(".tasks");
+        taskDir = new com.jadecode.config.WorkspacePaths(this.workspaceRoot).tasks();
     }
 
     /**
@@ -111,6 +111,7 @@ public final class TaskStore {
      * @throws IOException 库根 / 列举 / 合法命名记录读取失败
      */
     public synchronized List<Task> list() throws IOException {
+        new com.jadecode.config.WorkspacePaths(workspaceRoot).directory(taskDir, false);
         // 不跟随链接判断“缺库”：悬空库根是坏配置，应由 checkedRoot 报错，而非伪装成空库。
         if (Files.notExists(taskDir, LinkOption.NOFOLLOW_LINKS)) {
             return List.of();
@@ -352,15 +353,9 @@ public final class TaskStore {
         return task;
     }
 
-    /** 缺库仅在 create 路径创建；库根链接可指向工作区内目录，但绝不能逃出工作区。 */
+    /** 缺库仅在 create 路径创建；逐级拒绝内部目录链接，包含新增的 .jadecode 父目录。 */
     private Path checkedRoot(boolean create) throws IOException {
-        if (create && Files.notExists(taskDir, LinkOption.NOFOLLOW_LINKS)) {
-            try {
-                Files.createDirectory(taskDir);
-            } catch (FileAlreadyExistsException createdElsewhere) {
-                // 仍需解析并检查新出现的对象，不能相信 exists 就表示安全目录。
-            }
-        }
+        new com.jadecode.config.WorkspacePaths(workspaceRoot).directory(taskDir, create);
         Path root = taskDir.toRealPath();
         if (!root.startsWith(workspaceRoot) || !Files.isDirectory(root)) {
             throw new IOException("Task 库根不是工作区内目录");
