@@ -19,7 +19,9 @@ public record Theme(String name, boolean colors) {
                 String code = DARK.getOrDefault(span.style(), "39");
                 if (name.equals("light")) code = code.replace("96", "36").replace("94", "34")
                         .replace("91", "31").replace("93", "33").replace("95", "35").replace("92", "32");
-                out.append("\033[").append(code).append('m');
+                // SGR 会一直生效，设置普通前景色不会取消上一段的反色或粗体。
+                // 每段先清掉旧属性再应用自己的样式，避免“同意”选中后“拒绝”也亮起来。
+                out.append("\033[0;").append(code).append('m');
             }
             out.append(span.text());
         }

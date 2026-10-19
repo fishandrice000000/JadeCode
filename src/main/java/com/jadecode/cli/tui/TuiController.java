@@ -60,12 +60,16 @@ public final class TuiController {
             long now = System.nanoTime();
             if (ctrlC != 0 && now - ctrlC < 500_000_000L) { close(); return; }
             ctrlC = now;
-            if (state.approvals.isEmpty() && state.selector == null) state.editor.clear();
+            if (state.approvals.isEmpty() && state.selector == null) {
+                state.editor.clear(); state.commands = null; state.commandsDismissed = false;
+            }
             state.hint = "再次 Ctrl+C（500ms 内）退出整个会话；Esc 不取消 Agent"; return;
         }
         // 审批盖住选择器，选择器盖住编辑器：被盖住的草稿仍保存，但不会收到这一按键。
         if (!state.approvals.isEmpty()) { approval(input); return; }
         if (state.selector != null) { selector(input); return; }
+        // 候选出现时，文字仍输入原草稿；只有选择／补全按键被候选接收。
+        if (state.commands != null && commandInput(input)) return;
         switch (key) {
             case "TEXT" -> state.editor.insert(input.text(), false);
             case "PASTE" -> state.editor.insert(input.text(), true);
@@ -90,10 +94,47 @@ public final class TuiController {
             }
             case "CTRL_T" -> { state.thinkingVisible = !state.thinkingVisible; state.entries.stream().filter(e -> e.kind.equals("Thinking")).forEach(e -> e.expanded = false); }
             case "CLICK" -> click(renderer.hit(input.x(), input.y()));
-            case "TAB" -> { if (state.editor.text().startsWith("/")) { state.selectorKind = "Commands"; state.selector = new SelectList(List.of("/help", "/theme")); state.selector.filter(state.editor.text()); } }
+            case "TAB" -> { }
             case "ESC" -> state.hint = "Esc 仅关闭选择界面；本版不支持单轮取消";
             default -> { }
         }
+        if (List.of("TEXT", "PASTE", "BACKSPACE", "DELETE", "CTRL_D", "CLEAR", "KILL_END", "DELETE_WORD", "UNDO").contains(key))
+            state.commandsDismissed = false;
+        refreshCommands();
+    }
+
+    /** 只对单行、无空格的斜杠命令提供候选；普通任务或多行粘贴不会误入命令选择。 */
+    private void refreshCommands() {
+        String draft = state.editor.text();
+        if (!state.commandSuggestions || state.commandsDismissed || !draft.startsWith("/") || draft.codePoints().anyMatch(Character::isWhitespace)) {
+            state.commands = null;
+            return;
+        }
+        if (state.commands == null) state.commands = new SelectList(List.of("/help", "/theme"));
+        if (!state.commands.filter().equals(draft)) state.commands.filter(draft);
+    }
+
+    /**
+     * 候选列表不保存另一份正文。Tab 只把选中命令补回编辑器；Enter 才清掉命令草稿并执行。
+     * 返回 true 表示本按键已经处理，不再让编辑器浏览历史或把 `/` 发给模型。
+     */
+    private boolean commandInput(Input input) {
+        switch (input.key()) {
+            case "UP" -> state.commands.move(-1);
+            case "DOWN" -> state.commands.move(1);
+            case "ESC" -> { state.commands = null; state.commandsDismissed = true; }
+            case "TAB", "ENTER" -> {
+                String command = state.commands.selected();
+                if (command == null) return false;
+                if (input.key().equals("TAB")) {
+                    state.editor.clear(); state.editor.insert(command, false); refreshCommands();
+                } else {
+                    state.editor.submit(); state.commands = null; open(command);
+                }
+            }
+            default -> { return false; }
+        }
+        return true;
     }
 
     /**
@@ -146,7 +187,7 @@ public final class TuiController {
                         if (failed == null) events.accept(new UiEvent.Message("System", "Theme", "主题已保存：" + choice, false));
                         else events.accept(new UiEvent.Message("System", "Warning", "本次主题已生效，但保存失败：" + failed.getMessage(), true));
                     });
-                } else if (choice.startsWith("/")) { if (kind.equals("Commands")) state.editor.submit(); open(choice); }
+                } else if (choice.startsWith("/")) open(choice);
             }
             default -> { }
         }

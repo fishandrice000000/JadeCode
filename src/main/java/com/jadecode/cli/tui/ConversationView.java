@@ -60,15 +60,18 @@ public final class ConversationView {
             List<StyledLine> details = StyledLine.wrap(List.of(new Span(request.reason() + "\n" + request.arguments(), "normal")), width);
             lines.addAll(details.subList(0, Math.min(details.size(), Math.max(2, context.height() / 4))));
             int row = lines.size();
+            // 选中项同时有文字箭头；NO_COLOR 下也能知道 Enter 将选择什么。
+            String allow = state.approvalChoice == 0 ? "[>同意 ]" : "[ 同意 ]";
+            String deny = state.approvalChoice == 1 ? "[>拒绝 ]" : "[ 拒绝 ]";
             if (width >= 18) {
-                lines.add(new StyledLine(List.of(new Span("[ 同意 ]", state.approvalChoice == 0 ? "selected" : "normal"),
-                        new Span("  ", "normal"), new Span("[ 拒绝 ]", state.approvalChoice == 1 ? "selected" : "normal"))));
+                lines.add(new StyledLine(List.of(new Span(allow, state.approvalChoice == 0 ? "selected" : "normal"),
+                        new Span("  ", "normal"), new Span(deny, state.approvalChoice == 1 ? "selected" : "normal"))));
                 hits.add(new Frame.Hit(row, 0, 8, "approve:" + request.id()));
                 hits.add(new Frame.Hit(row, 10, 18, "deny:" + request.id()));
             } else {
                 // 窄窗口竖排时同步移动命中区域，不能只改文字位置不改审批点击位置。
-                lines.add(StyledLine.of("[ 同意 ]", state.approvalChoice == 0 ? "selected" : "normal"));
-                lines.add(StyledLine.of("[ 拒绝 ]", state.approvalChoice == 1 ? "selected" : "normal"));
+                lines.add(StyledLine.of(allow, state.approvalChoice == 0 ? "selected" : "normal"));
+                lines.add(StyledLine.of(deny, state.approvalChoice == 1 ? "selected" : "normal"));
                 hits.add(new Frame.Hit(row, 0, Math.min(8, width), "approve:" + request.id()));
                 hits.add(new Frame.Hit(row + 1, 0, Math.min(8, width), "deny:" + request.id()));
             }
@@ -82,6 +85,12 @@ public final class ConversationView {
             lines.add(StyledLine.of(DisplayWidth.take("↑/↓ 选择 · Enter 确认 · Esc 返回草稿", width), "muted"));
             cursorRow = first; cursorColumn = 0;
         } else {
+            if (state.commands != null) {
+                // 候选与编辑器同屏显示，不把输入区替换成只能过滤列表的选择器。
+                lines.add(StyledLine.of(DisplayWidth.take("── Commands", width), "heading"));
+                lines.addAll(state.commands.render(width, Math.max(1, Math.min(4, context.height() / 5))));
+                lines.add(StyledLine.of(DisplayWidth.take("↑/↓ 选择 · Tab 补全 · Enter 执行 · Esc 关闭", width), "muted"));
+            }
             var editor = state.editor.layout(width, Math.max(1, context.height() * 3 / 10));
             cursorRow = lines.size() + editor.row(); cursorColumn = editor.column(); lines.addAll(editor.lines());
         }
