@@ -163,6 +163,7 @@ public class SubagentRuntime {
      * context 由父程序传来：定时子任务仍不能询问用户，也沿用父会话的退出检查。
      * 请求模型前后、执行工具前、等用户批准后都查是否退出，不只依赖线程中断。
      * 已经写入的文件不会因退出还原。</p>
+     * <p>工具耗时从批准后实际调用 execute 才开始计算；审批等待不计入，被拒绝的工具不提供执行耗时。</p>
      *
      * <p>只有拿到正式模型回复才消耗一轮，最多 30 轮；摘要和失败重试不算。
      * 第 30 次若能结束就返回 DONE，否则先给已调用工具加上结果，再返回 STOPPED，
@@ -317,8 +318,6 @@ public class SubagentRuntime {
                 boolean compactRequested = false;
 
                 for (ToolUseBlock u : toolCalls) {
-                    // 子代理也在实际处理线程计时，与主 Agent 相同，不由 TUI 的事件积压决定耗时。
-                    long toolStarted = System.nanoTime();
                     String displayCall = java.util.UUID.randomUUID().toString();
                     display(com.jadecode.execution.ExecutionNotice.event(com.jadecode.execution.ExecutionNotice.Kind.TOOL_START,
                             displayCall, u.name(), u.input() == null ? "{}" : u.input().toString(), "QUEUED"));
@@ -329,7 +328,7 @@ public class SubagentRuntime {
                     if (tool == null) {
                         results.add(new ToolResultBlock(u.id(), UNKNOWN_TOOL + u.name()));
                         display(com.jadecode.execution.ExecutionNotice.event(com.jadecode.execution.ExecutionNotice.Kind.TOOL_END,
-                                displayCall, u.name(), UNKNOWN_TOOL + u.name(), "NOT_RUN").timed(System.nanoTime() - toolStarted));
+                                displayCall, u.name(), UNKNOWN_TOOL + u.name(), "NOT_RUN"));
                         continue;
                     }
 
@@ -339,7 +338,7 @@ public class SubagentRuntime {
                     if (blocked != null) {
                         results.add(new ToolResultBlock(u.id(), blocked));
                         display(com.jadecode.execution.ExecutionNotice.event(com.jadecode.execution.ExecutionNotice.Kind.TOOL_END,
-                                displayCall, u.name(), blocked, "BLOCKED").timed(System.nanoTime() - toolStarted));
+                                displayCall, u.name(), blocked, "BLOCKED"));
                         continue;
                     }
 
@@ -349,6 +348,8 @@ public class SubagentRuntime {
                     ObjectNode node = u.input() instanceof ObjectNode o ? o : Json.mapper().createObjectNode();
                     display(com.jadecode.execution.ExecutionNotice.event(com.jadecode.execution.ExecutionNotice.Kind.TOOL_START,
                             displayCall, u.name(), node.toString(), "RUNNING"));
+                    // 与主 Agent 相同：审批及退出检查都已结束，只统计实际调用工具的时间。
+                    long toolStarted = System.nanoTime();
                     String output = tool.execute(node, context);
                     display(com.jadecode.execution.ExecutionNotice.event(com.jadecode.execution.ExecutionNotice.Kind.TOOL_END,
                             displayCall, u.name(), output, "RETURNED").timed(System.nanoTime() - toolStarted));
