@@ -32,8 +32,10 @@ public final class TerminalSession implements AutoCloseable {
             raw.setLocalFlag(Attributes.LocalFlag.IEXTEN, false);
             raw.setInputFlag(Attributes.InputFlag.IXON, false);
             terminal.setAttributes(raw);
-            // 只启用基础点击，不截取鼠标移动。初始化一半失败也恢复属性。
-            terminal.writer().print("\033[?2004h\033[?1000h\033[?1006h"); terminal.flush();
+            // 与 Pi 主屏模式一致：只接管键盘和整段粘贴，不捕获鼠标。
+            // 开启 1000 会同时截走滚轮和拖选；仅处理点击却不实现滚动／选区，
+            // 会让用户既不能查看终端历史，也不能选取文本。启动时清理可能遗留的捕获模式。
+            terminal.writer().print("\033[?1000l\033[?1002l\033[?1003l\033[?1006l\033[?2004h"); terminal.flush();
             if (terminal.writer().checkError()) throw new IOException("终端输出不可用");
         } catch (IOException | RuntimeException failure) {
             try { terminal.setAttributes(original); terminal.close(); } catch (Exception cleanup) { failure.addSuppressed(cleanup); }

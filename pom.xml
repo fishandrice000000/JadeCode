@@ -26,6 +26,12 @@
       <artifactId>commonmark</artifactId>
       <version>0.27.1</version>
     </dependency>
+    <!-- 基础 CommonMark 不包含管道表格；语法扩展与主解析器使用同一版本。 -->
+    <dependency>
+      <groupId>org.commonmark</groupId>
+      <artifactId>commonmark-ext-gfm-tables</artifactId>
+      <version>0.27.1</version>
+    </dependency>
     <!-- LLM 客户端:官方 Anthropic Java SDK(课程用官方 Python SDK 的镜像),baseUrl 指向 DeepSeek /anthropic 端点 -->
     <dependency>
       <groupId>com.anthropic</groupId>

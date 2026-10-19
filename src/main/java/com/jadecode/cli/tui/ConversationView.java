@@ -28,11 +28,14 @@ public final class ConversationView {
         // 1. 先按到达顺序排消息。没改过的条目复用排版，避免每帧重新解析所有 Markdown。
         for (var entry : state.entries) {
             int start = lines.size();
-            if (entry.cacheWidth != width || entry.cacheVersion != entry.version) {
-                entry.cached = entry(entry, width); entry.cacheWidth = width; entry.cacheVersion = entry.version;
+            // Team 的成员变化也会改变标题。使缓存失效只重排显示，不修改消息或 actor ID。
+            String actor = state.displayActor(entry.actor);
+            if (entry.cacheWidth != width || entry.cacheVersion != entry.version || !entry.cacheActor.equals(actor)) {
+                entry.cached = entry(entry, width, actor); entry.cacheWidth = width; entry.cacheVersion = entry.version;
+                entry.cacheActor = actor;
             }
             if (entry.kind.equals("Thinking") && !(state.thinkingVisible ^ entry.expanded)) {
-                lines.add(StyledLine.of(DisplayWidth.take("  ◇ " + TuiState.actorName(entry.actor) + " · Thinking… (click / Ctrl+T)", width), "thinking"));
+                lines.add(StyledLine.of(DisplayWidth.take("  ◇ " + (actor.isEmpty() ? "" : actor + " · ") + "Thinking… (Ctrl+T)", width), "thinking"));
             } else lines.addAll(entry.cached);
             if (entry.kind.equals("Tool") || entry.kind.equals("Thinking"))
                 for (int row = start; row < lines.size(); row++) hits.add(new Frame.Hit(row, 0, width, "entry:" + entry.id));
@@ -56,7 +59,8 @@ public final class ConversationView {
         //    审批和选择器不改 editor，因此结束后原草稿和光标仍在。
         if (!state.approvals.isEmpty()) {
             var request = state.approvals.getFirst();
-            lines.add(StyledLine.of(DisplayWidth.take("Approval · " + request.actor() + " · " + request.tool(), width), "warning"));
+            String actor = state.displayActor(request.actor());
+            lines.add(StyledLine.of(DisplayWidth.take("Approval · " + (actor.isEmpty() ? "" : actor + " · ") + request.tool(), width), "warning"));
             List<StyledLine> details = StyledLine.wrap(List.of(new Span(request.reason() + "\n" + request.arguments(), "normal")), width);
             lines.addAll(details.subList(0, Math.min(details.size(), Math.max(2, context.height() / 4))));
             int row = lines.size();
@@ -97,7 +101,8 @@ public final class ConversationView {
         if (context.height() < 8) return new Frame(lines.stream().map(l -> l.crop(width)).toList(), cursorRow, Math.min(width, cursorColumn), hits);
         // 3. 页脚只使用程序实际取得的数据。没有后端用量时明确写“未报告”，不能把字符数当 token。
         lines.add(StyledLine.of("─".repeat(Math.max(1, width)), "muted"));
-        String usage = state.usageReported ? "Leader tokens ↑" + state.inputTokens + " ↓" + state.outputTokens : "Leader tokens 未报告";
+        String usageLabel = state.teamActive() ? "Leader tokens" : "Tokens";
+        String usage = state.usageReported ? usageLabel + " ↑" + state.inputTokens + " ↓" + state.outputTokens : usageLabel + " 未报告";
         if (state.missingUsage > 0) usage += "（缺 " + state.missingUsage + " 次报告）";
         lines.add(StyledLine.of(DisplayWidth.take(state.directory + (state.branch.isBlank() ? "" : " · " + state.branch), width), "muted"));
         lines.add(StyledLine.of(DisplayWidth.take(state.model + " · " + usage + " · /help", width), "muted"));
@@ -110,12 +115,12 @@ public final class ConversationView {
      * 排一张消息卡。工具显示参数及结果，思考作为普通文本，其余正文按 Markdown 排版。
      * 折叠只缩短显示预览，Entry 中的原结果完整保留；正常返回也不自动涂成业务成功。
      */
-    private List<StyledLine> entry(TuiState.Entry entry, int width) {
+    private List<StyledLine> entry(TuiState.Entry entry, int width, String actor) {
         var out = new ArrayList<StyledLine>();
         String style = entry.kind.equals("Error") || entry.status.equals("ERROR") || entry.status.equals("INCOMPLETE") ? "error"
                 : entry.status.equals("BLOCKED") || entry.status.equals("INTERRUPTED") || entry.kind.equals("Warning") ? "warning"
                 : entry.kind.equals("User") ? "user" : entry.kind.equals("Thinking") ? "thinking" : "accent";
-        String title = TuiState.actorName(entry.actor) + " · " + entry.title;
+        String title = (actor.isEmpty() ? "" : actor + " · ") + entry.title;
         if (!entry.status.isBlank()) title += " · " + entry.status;
         if (entry.elapsed > 0) title += " · " + entry.elapsed / 1_000_000 + "ms";
         out.add(StyledLine.of(DisplayWidth.take(title, width), style));
@@ -132,7 +137,7 @@ public final class ConversationView {
             var wrapped = StyledLine.wrap(List.of(new Span(body, "normal")), width);
             if (!entry.expanded && wrapped.size() > 10) { wrapped = wrapped.subList(0, 10); cropped = true; }
             out.addAll(wrapped);
-            if (cropped) out.add(StyledLine.of(DisplayWidth.take("… click / Ctrl+O 展开完整结果", width), "muted"));
+            if (cropped) out.add(StyledLine.of(DisplayWidth.take("… Ctrl+O 展开完整结果", width), "muted"));
         } else if (entry.kind.equals("Thinking")) out.addAll(StyledLine.wrap(List.of(new Span(body, "thinking")), width));
         else out.addAll(markdown.render(body, width));
         if (entry.status.equals("INCOMPLETE")) out.add(StyledLine.of(DisplayWidth.take("输出中断：这些片段不是完整响应", width), "error"));
