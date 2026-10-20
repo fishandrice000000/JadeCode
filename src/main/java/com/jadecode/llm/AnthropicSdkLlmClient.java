@@ -267,30 +267,31 @@ public class AnthropicSdkLlmClient implements LlmClient {
 
     /**
      * 工具数据定义转换为 SDK 类型，不持有可执行 Tool。
-     * 保留原转换范围：只注入 type/properties/required，根级其它 schema 字段仍未映射。
+     * 完整传递 schema；根级约束与嵌套定义都不应因外部工具适配而丢失。
      */
     private com.anthropic.models.messages.Tool toSdkTool(ToolDefinition tool) {
         ObjectNode schema = tool.inputSchema();
-        // 把 inputSchema 拆成三段:type / properties / required
-        com.anthropic.models.messages.Tool.InputSchema.Properties.Builder propsBuilder =
-                com.anthropic.models.messages.Tool.InputSchema.Properties.builder();
-        JsonNode propsNode = schema.path("properties"); // path 永不返回 null,缺失时是 MissingNode
-        if (propsNode.isObject()) {
-            for (Map.Entry<String, JsonNode> e : propsNode.properties()) {
-                propsBuilder.putAdditionalProperty(e.getKey(), JsonValue.fromJsonNode(e.getValue()));
-            }
+        // 已知字段走 SDK 对应的入口，避免 type 等字段同时出现在普通字段和额外字段中。
+        var inputBuilder = com.anthropic.models.messages.Tool.InputSchema.builder();
+        if (schema.has("type")) inputBuilder.type(JsonValue.fromJsonNode(schema.get("type")));
+        if (schema.path("properties").isObject()) {
+            var properties = com.anthropic.models.messages.Tool.InputSchema.Properties.builder();
+            for (var field : schema.get("properties").properties())
+                properties.putAdditionalProperty(field.getKey(), JsonValue.fromJsonNode(field.getValue()));
+            inputBuilder.properties(properties.build());
         }
-        List<String> required = new ArrayList<>();
-        JsonNode requiredNode = schema.path("required");
-        if (requiredNode.isArray()) {
-            requiredNode.forEach(n -> required.add(n.asText()));
+        if (schema.path("required").isArray()) {
+            List<String> required = new ArrayList<>();
+            schema.get("required").forEach(value -> required.add(value.asText()));
+            inputBuilder.required(required);
         }
-        com.anthropic.models.messages.Tool.InputSchema inputSchema =
-                com.anthropic.models.messages.Tool.InputSchema.builder()
-                        .type(JsonValue.fromJsonNode(schema.path("type")))
-                        .properties(propsBuilder.build())
-                        .required(required)
-                        .build();
+        // 其它根级约束（如 $defs、additionalProperties）也必须发送，嵌套 JSON 原样保留。
+        // 这里只读取 ToolDefinition 交出的副本，不删改服务发现时取得的原定义。
+        for (var field : schema.properties()) {
+            if (!java.util.Set.of("type", "properties", "required").contains(field.getKey()))
+                inputBuilder.putAdditionalProperty(field.getKey(), JsonValue.fromJsonNode(field.getValue()));
+        }
+        var inputSchema = inputBuilder.build();
         return com.anthropic.models.messages.Tool.builder()
                 .name(tool.name())
                 .description(tool.description())

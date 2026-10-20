@@ -35,6 +35,22 @@ class ToolWireContractTest {
         assertTrue(block.asToolResult().isError().orElseThrow());
     }
 
+    /** 根级约束和嵌套引用必须到达 SDK；已知字段不能重复进入额外字段表。 */
+    @Test void sdkKeepsFullSchema() throws Exception {
+        var client = new AnthropicSdkLlmClient(new AppConfig("offline", "http://127.0.0.1:1", "offline", 100));
+        ObjectNode schema = (ObjectNode) Json.mapper().readTree("""
+                {"type":"object","properties":{"value":{"$ref":"#/$defs/value"}},"required":["value"],
+                 "additionalProperties":false,"$defs":{"value":{"type":"integer","minimum":2}}}
+                """);
+        var method = AnthropicSdkLlmClient.class.getDeclaredMethod("toSdkTool", ToolDefinition.class);
+        method.setAccessible(true);
+        var sdk = (com.anthropic.models.messages.Tool) method.invoke(client, new ToolDefinition("external", "desc", schema));
+        assertEquals(com.anthropic.core.JsonValue.from(false), sdk.inputSchema()._additionalProperties().get("additionalProperties"));
+        assertEquals(com.anthropic.core.JsonValue.fromJsonNode(schema.get("$defs")), sdk.inputSchema()._additionalProperties().get("$defs"));
+        assertEquals(List.of("value"), sdk.inputSchema().required().orElseThrow());
+        assertFalse(sdk.inputSchema()._additionalProperties().containsKey("type"));
+    }
+
     /** 工具可以返回失败而让模型继续；执行器写回失败标志，不把失败正文当成异常或成功。 */
     @Test void executorPreservesExplicitFailureWithoutAbortingTask() {
         Tool tool = new Tool() {
