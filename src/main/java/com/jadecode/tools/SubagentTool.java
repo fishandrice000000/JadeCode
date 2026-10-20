@@ -80,7 +80,7 @@ public class SubagentTool implements Tool {
      * <p>context 由父程序另外传入，不从 input 读取。定时任务仍是 SCHEDULED，不能询问用户。
      * 子 Agent 也用相同的方法检查会话是否退出，免得模型回复较晚，退出后还去执行工具。</p>
      * @param input 非 null 参数对象，prompt 沿用 asText 转换方式；不修改输入
-     * @param context 非 null 的父任务信息，直接交给 SubagentRuntime
+     * @param context 非 null 的父任务信息；保留来源、审批通道和退出检查，只把目标换成本次子任务
      * @return 最终文字或轮数耗尽提示；缺参及 LlmException 返回 Error 说明，
      *         父执行器再包装为本次 task 的 tool_result。其它意外运行异常继续抛出
      * @throws NullPointerException context 为 null，且已调用子运行器
@@ -95,7 +95,8 @@ public class SubagentTool implements Tool {
 
         String prompt = input.get("prompt").asText();
         try {
-            return runtime.run(prompt, context);
+            // 辅助审批应核对这次子任务，而不是拿父任务的宽泛目标替任意子操作背书。
+            return runtime.run(prompt, context.withGoal(prompt));
         } catch (LlmException e) {
             return "Error: " + e.getMessage();
         }

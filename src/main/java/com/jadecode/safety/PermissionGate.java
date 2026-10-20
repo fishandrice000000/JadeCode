@@ -1,174 +1,140 @@
 package com.jadecode.safety;
 
-import java.util.List;
-import java.util.function.Function;
-
+import java.nio.file.Path;
+import java.util.*;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.jadecode.execution.Approval;
 import com.jadecode.execution.ExecutionContext;
-import com.jadecode.util.Ansi;
+import com.jadecode.safety.approval.*;
+import com.jadecode.safety.checks.*;
+import com.jadecode.safety.checks.ToolPermissionCheck.Analysis;
+import com.jadecode.safety.rules.*;
+import com.jadecode.util.PathResolver;
 
 /**
- * 在执行工具前检查命令或路径：禁止的直接拒绝，需要用户同意的先询问。
- *
- * <p>先查绝对禁止的规则，命中就返回原因，不问用户。再查需要询问的规则，
- * 没有命中就允许执行；命中了才调用 Approval.ask。用户拒绝、不能询问或用户已经退出，
- * 都不允许这次需询问的操作。定时任务并非所有工具都不能用，只是不能向用户申请批准。</p>
- *
- * <p>是否用户任务看程序传来的 ExecutionContext，不看执行线程或模型自称的身份。
- * 这里不读 stdin；审批适配器统一接收用户答复。本类也不执行工具，只返回允许或拒绝原因，
- * 由执行器把原因放进 tool_result。</p>
+ * 执行前统一判断：解释输入、匹配规则，再处理真正需要的审批，不运行工具。
+ * 配置/目标改变时重新判断；原调用只获准一次，不能把旧批准借给另一份输入。
  */
-public class PermissionGate {
-    /** 检查 bash 命令是否禁止或需要先问用户。 */
-    private final CommandPolicy policy;
-    /** 检查文件路径是否危险或在工作区之外。 */
-    private final PathGuard guard;
-    /** 两参数 check 用的默认批准函数；CLI 则从当前任务取得真正询问用户的函数。 */
-    private final Approval approval;
-    /** 绝对禁止的规则，命中就拒绝，不询问用户。 */
-    private final List<Rule> hardRules;
-    /** 需要先问用户的规则，命中后才调用批准函数。 */
-    private final List<Rule> askRules;
+public final class PermissionGate {
+    private final PathResolver resolver;
+    private final PermissionState state;
+    private final ApprovalCoordinator coordinator;
+    private final String actor;
+    private final Approval defaultHuman;
+    private final FilePermissionCheck files;
+    private final ShellPermissionCheck shell;
+    private final PermissionRuleMatcher matcher = new PermissionRuleMatcher();
+    private final DefaultPermissionRules defaults = new DefaultPermissionRules();
+    private static final Set<String> INTERNAL = Set.of("glob", "todo_write", "compact", "load_skill", "task",
+            "create_task", "get_task", "list_tasks", "update_task", "claim_task", "complete_task",
+            "schedule_cron", "list_crons", "cancel_cron", "spawn_teammate", "list_teammates", "close_teammate",
+            "shutdown_teammate", "assign_task", "send_message", "submit_task_result", "reopen_task", "retry_team_message");
+    private static final Set<String> ADMIN_WRITES = Set.of("create_task", "update_task", "claim_task", "complete_task",
+            "schedule_cron", "cancel_cron", "spawn_teammate", "close_teammate", "shutdown_teammate", "assign_task", "send_message", "submit_task_result",
+            "reopen_task", "retry_team_message");
 
-    /**
-     * 创建权限检查对象。旧的两参数 check 没有用户回答时默认拒绝需询问的操作；
-     * CLI 使用带 ExecutionContext 的 check，从当前任务取得询问用户的方法。
-     * @param policy 判断命令是否禁止或需要询问
-     * @param guard 判断文件路径是否危险或在工作区之外
-     */
-    public PermissionGate(CommandPolicy policy, PathGuard guard) {
-        this(policy, guard, (name, input, reason) -> false);
+    /** 工厂传入同一 CLI 的共享状态；coordinator 可以询问用户或辅助模型，本类不读终端。 */
+    public PermissionGate(PathResolver resolver, PermissionState state, ApprovalCoordinator coordinator, String actor) {
+        this(resolver, state, coordinator, actor, null);
     }
-
+    /** 离线调用者可以提供固定审批器；生产始终读取本次 ExecutionContext 中的真实通道。 */
+    public PermissionGate(PathResolver resolver, PermissionState state, Approval human) {
+        this(resolver, state, new ApprovalCoordinator(null), "leader", human);
+    }
+    private PermissionGate(PathResolver resolver, PermissionState state, ApprovalCoordinator coordinator, String actor, Approval human) {
+        this.resolver = resolver; this.state = state; this.coordinator = coordinator; this.actor = actor; this.defaultHuman = human;
+        files = new FilePermissionCheck(resolver); shell = new ShellPermissionCheck(resolver);
+    }
+    public String check(String tool, ObjectNode input) {
+        return check(tool, input, ExecutionContext.create(ExecutionContext.Source.USER, defaultHuman));
+    }
     /**
-     * 给旧调用者或离线检查指定一个批准函数，不在构造时读取输入或执行检查。
+     * 在工具执行前给一次具体调用作许可判断，不修改入参、不运行命令。
      *
-     * <p>只有两参数 check 使用这个默认函数。带 ExecutionContext 的 check 始终看任务本身，
-     * 不能因为这里传了“总是同意”的函数，就给定时任务增加人工批准。</p>
-     * @param policy 命令规则
-     * @param guard 文件路径规则
-     * @param approval 默认询问函数，不应为 null；离线检查可传固定 true/false
+     * <p>例如模型请求删除临时文件，先从 command 算出删除目标，再看用户规则和当前档位。
+     * 只有需要询问时才等待答复。用户等待期间可能切换档位或改动符号链接，因此答复后
+     * 必须再看版本和目标，不能拿旧批准去操作新的文件。“允许此类”先写配置再重新匹配，
+     * 落盘失败不会以一次临时批准掩盖。</p>
+     * @param context 程序提供的任务来源、目标和审批通道；null 表示不能人工询问
+     * @return null 代表许可，文字代表拒绝；外层配对 tool_result，并在真正执行前再次检查退出
      */
-    public PermissionGate(CommandPolicy policy, PathGuard guard, Approval approval) {
-        this.policy = policy;
-        this.guard = guard;
-        this.approval = approval;
-        this.hardRules = buildHardRules();
-        this.askRules = buildAskRules();
-    }
-
-    /**
-     * 列出绝对不能执行的操作，用户说同意也不行。
-     * @return 按顺序检查 bash 禁止命令、文件高风险路径的规则；这里只保存检查函数，不执行工具
-     */
-    private List<Rule> buildHardRules() {
-        return List.of(
-                new Rule(List.of("bash"),
-                        input -> policy.checkDenyList(input.path("command").asText(""))),
-                new Rule(List.of("read_file", "write_file", "edit_file"),
-                        input -> guard.highRiskReason(input.path("path").asText(""))));
-    }
-
-    /**
-     * 列出需要先问用户的操作，不能用这些规则绕过绝对禁止的检查。
-     * @return 按顺序检查命令、受保护目录和工作区外文件的规则，第一个命中原因用来询问用户
-     */
-    private List<Rule> buildAskRules() {
-        return List.of(
-                new Rule(List.of("bash"),
-                        input -> policy.checkRules(input.path("command").asText(""))),
-                new Rule(List.of("bash"),
-                        input -> policy.checkProtectedDirs(input.path("command").asText(""))),
-                new Rule(List.of("read_file", "write_file", "edit_file"),
-                        input -> guard.outsideReason(input.path("path").asText(""))));
-    }
-
-    /**
-     * 旧调用者使用的检查方法，使用构造时传入的默认批准函数，不自己读取终端。
-     * @param toolName 要执行的工具名
-     * @param input 工具参数，只读取 command/path 等内容
-     * @return null 表示允许，非 null 表示拒绝原因，调用者应把它作为工具结果交给模型
-     */
-    public String check(String toolName, ObjectNode input) {
-        return checkWith(toolName, input, approval);
-    }
-
-    /**
-     * 按这项任务实际来自用户还是定时器，决定能否询问用户，再检查工具参数。
-     *
-     * <p>用户任务还必须有 approval 函数且没退出会话，才能询问。
-     * 定时任务即使传了 approval，也不能询问；它委派子代理后仍如此。
-     * 没有 context 时只拒绝需询问的操作，普通允许的工具仍可用。这里也不是停止工具的开关，
-     * 执行器在真正执行前仍应检查用户是否退出。</p>
-     * @param toolName 工具表中的名称
-     * @param input 非 null 参数对象，只读，不执行工具
-     * @param context 程序记录的任务信息，可为 null；不能从模型 JSON 取同名字段来代替
-     * @return null 表示允许；非 null 是拒绝原因，由调用者包装进 tool_result
-     */
-    public String check(String toolName, ObjectNode input, ExecutionContext context) {
-        Approval channel = context != null && !context.isCancelled() && context.source() == ExecutionContext.Source.USER
-                && context.approval() != null ? context.approval() : (name, args, reason) -> false;
-        return checkWith(toolName, input, channel);
-    }
-
-    /**
-     * 依次查绝对禁止的规则、需要询问的规则，最后才询问用户。
-     * @param toolName 待检查工具名
-     * @param input 非 null 的只读工具参数
-     * @param channel 已按任务来源选好的询问函数，可能等待用户回答，但本类不直接读输入
-     * @return 允许时为 null；拒绝时是原因。绝对禁止的操作还打印 blocked 提示
-     */
-    private String checkWith(String toolName, ObjectNode input, Approval channel) {
-        // 1. 绝对禁止的操作直接拒绝并说明原因，不能让用户批准绕过。
-        String denied = findReason(hardRules, toolName, input);
-        if (denied != null) {
-            System.out.println(Ansi.red("[Blocked] " + denied));
-            return denied;
-        }
-
-        // 2. 没有规则要求询问，就允许执行，不必每条命令都问用户。
-        String reason = findReason(askRules, toolName, input);
-        if (reason == null) {
+    public String check(String tool, ObjectNode input, ExecutionContext context) {
+        ObjectNode exact = input.deepCopy();
+        while (!Thread.currentThread().isInterrupted() && (context == null || !context.isCancelled())) {
+            if (!input.equals(exact)) return "待执行参数已经变化，请重新发起工具调用";
+            // 1. 每次重判都重新解析真实路径，并同时拿到规则和版本的同一份快照。
+            Analysis action;
+            try { action = analyze(tool, exact); }
+            catch (RuntimeException invalid) { return "无法解析工具目标：" + invalid.getClass().getSimpleName(); }
+            var snapshot = state.snapshot();
+            var decision = evaluate(action, snapshot);
+            if (decision.kind() == PermissionDecision.Kind.DENY) return decision.reason();
+            if (decision.kind() == PermissionDecision.Kind.ALLOW) {
+                if (state.snapshot().revision() != snapshot.revision()) continue;
+                if (!input.equals(exact)) return "待执行参数已经变化，请重新发起工具调用";
+                return null;
+            }
+            // 2. 模型不能通过 input.source 把定时任务冒充成人工任务。
+            Approval human = context != null && context.source() == ExecutionContext.Source.USER ? context.approval() : null;
+            var suggestion = decision.humanOnly() ? null : suggestion(action);
+            var request = new ApprovalRequest(UUID.randomUUID().toString(), actor, context == null ? "" : context.id(),
+                    tool, exact, action.cwd(), decision.reason() + " [" + decision.ruleId() + "]", snapshot.revision(), suggestion);
+            var outcome = coordinator.request(request, decision, state, human,
+                    (context == null ? "" : context.goal()) + "\nTask origin=" + (context == null ? "unknown" : context.source()));
+            var answer = outcome.answer();
+            if (answer == ApprovalAnswer.RECHECK) continue;
+            if (context != null && context.isCancelled()) return "会话已经关闭";
+            if (answer == ApprovalAnswer.DENY) return outcome.reason();
+            if (answer != ApprovalAnswer.ALLOW_ONCE && answer != ApprovalAnswer.ALLOW_SIMILAR)
+                return "审批没有给出有效答复，操作未执行";
+            if (state.snapshot().revision() != snapshot.revision()) continue;
+            if (!input.equals(exact)) return "审批期间工具参数已经变化，旧批准不适用";
+            // 仅本次和长期授权都要核对目标；不能先保存旧目标的批准，再发现链接已经变了。
+            try { if (!action.equals(analyze(tool, exact))) continue; }
+            catch (RuntimeException changed) { return "审批后无法重新解析工具目标"; }
+            if (answer == ApprovalAnswer.ALLOW_SIMILAR) {
+                // 3. 建议由解释过参数的权限层生成，界面只选答案，不能自行扩大范围。
+                if (suggestion == null) return "本次操作没有可保存的安全授权范围";
+                try { state.remember(suggestion, snapshot.revision()); }
+                catch (java.io.IOException failed) { return "规则未保存，操作未执行：" + failed.getMessage(); }
+                continue;
+            }
             return null;
         }
-
-        // 3. 询问用户；不同意时返回原因，让模型知道这次操作不能执行。
-        return channel.ask(toolName, input, reason) ? null : reason;
+        return "会话已经关闭或执行被中断";
     }
-
-    /**
-     * 按顺序找适用于这个工具的第一条命中规则，不检查无关工具的规则。
-     * @param rules 要遍历的规则表
-     * @param toolName 工具名
-     * @param input 只读参数对象
-     * @return 第一个命中原因；没有适用或命中的规则就返回 null
-     */
-    private static String findReason(List<Rule> rules, String toolName, ObjectNode input) {
-        for (Rule rule : rules) {
-            if (rule.tools().contains(toolName)) {
-                String reason = rule.reason(input);
-                if (reason != null) {
-                    return reason;
-                }
-            }
+    /** 解释各类已知工具；新工具未声明检查时进入不确定判断，不静默信任。 */
+    private Analysis analyze(String tool, ObjectNode input) {
+        if (Set.of("read_file", "write_file", "edit_file").contains(tool)) return files.analyze(tool, input);
+        if (tool.equals("bash")) return shell.analyze(tool, input);
+        return new Analysis(tool, resolver.workspaceReal(), List.of(), List.of(), ADMIN_WRITES.contains(tool), true, !INTERNAL.contains(tool), "");
+    }
+    /** 显式拒绝/询问优先；默认硬保护不能被普通 allow 推翻。 */
+    public PermissionDecision evaluate(Analysis action, PermissionState.Snapshot snapshot) {
+        if (!action.error().isEmpty()) return PermissionDecision.deny("input.invalid", action.error());
+        var denied = matcher.first(snapshot.rules(), PermissionRule.Effect.DENY, action);
+        if (denied != null) return PermissionDecision.deny(denied.id(), "命中拒绝规则：" + denied.id());
+        var asked = matcher.first(snapshot.rules(), PermissionRule.Effect.ASK, action);
+        if (asked != null) return PermissionDecision.ask(asked.id(), "命中强制询问规则：" + asked.id(), true);
+        var protection = defaults.protectedDecision(action, snapshot);
+        if (protection != null) return protection;
+        // 尚未声明检查方式的新工具，不能因 Full Access 绕过集成时的显式确认。
+        if (action.commands().isEmpty() && action.resources().isEmpty() && action.uncertain())
+            return PermissionDecision.ask("tool.unknown", "此工具尚未声明权限检查方式", true);
+        if (matcher.covers(snapshot.rules(), action)) return PermissionDecision.allow();
+        return defaults.ordinary(action, snapshot);
+    }
+    /** 只为可准确表达的单命令/单文件生成建议；不保存重定向或复杂脚本的宽泛前缀。 */
+    private PermissionRule suggestion(Analysis action) {
+        if (action.uncertain()) return null;
+        String id = "user." + UUID.randomUUID();
+        if (action.commands().size() == 1 && !action.commands().getFirst().redirected())
+            return new PermissionRule(id, PermissionRule.Effect.ALLOW, PermissionRule.Kind.COMMAND, action.tool(),
+                    action.cwd().toString(), "", "", false, action.commands().getFirst().argv());
+        if (action.commands().isEmpty() && action.resources().size() == 1) {
+            var resource = action.resources().getFirst();
+            return new PermissionRule(id, PermissionRule.Effect.ALLOW, PermissionRule.Kind.PATH, action.tool(),
+                    action.cwd().toString(), resource.operation(), resource.path().toString(), false, List.of());
         }
         return null;
-    }
-
-    /**
-     * 把规则适用的工具名和具体检查函数放在一起，不在这里执行工具。
-     * @param tools 这条规则要检查的工具名称列表
-     * @param check 读取参数并返回原因的函数，null 表示没有命中
-     */
-    private record Rule(List<String> tools, Function<ObjectNode, String> check) {
-        /**
-         * 调用本规则的检查函数。
-         * @param input 只读的工具参数
-         * @return 命中原因，没命中为 null
-         */
-        String reason(ObjectNode input) {
-            return check.apply(input);
-        }
     }
 }

@@ -15,7 +15,7 @@ public sealed interface UiEvent {
     record Delta(String request, String kind, String text) implements UiEvent { }
     record StreamEnd(String request, boolean failed) implements UiEvent { }
     record Message(String actor, String label, String text, boolean error) implements UiEvent { }
-    record ApprovalRequested(String id, String actor, String tool, String arguments, String reason) implements UiEvent { }
+    record ApprovalRequested(String id, String actor, String tool, String arguments, String reason, String suggestion) implements UiEvent { }
     record ApprovalRemoved(String id) implements UiEvent { }
     record Stopped() implements UiEvent { }
 }

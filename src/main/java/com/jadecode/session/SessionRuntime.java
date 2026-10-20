@@ -17,7 +17,7 @@ import com.jadecode.context.ContextCompactor;
 import com.jadecode.cron.CronJob;
 import com.jadecode.cron.CronProducer;
 import com.jadecode.cron.CronScheduler;
-import com.jadecode.execution.Approval;
+import com.jadecode.safety.approval.Approval;
 import com.jadecode.execution.ExecutionContext;
 import com.jadecode.execution.ExecutionNotice;
 import com.jadecode.hooks.Hooks;
@@ -56,6 +56,14 @@ import com.jadecode.todo.TodoManager;
  * 已经写入的业务文件不会还原，网络请求也不一定立即停止。</p>
  */
 public final class SessionRuntime implements AutoCloseable {
+    private com.jadecode.safety.PermissionState permissions = com.jadecode.safety.PermissionState.defaults();
+    /** 工厂装配一次，共享的是权限配置，不是队友的历史或工具表。 */
+    public void permissions(com.jadecode.safety.PermissionState value) {
+        if (consumer != null || journal != null || closed) throw new IllegalStateException("会话已经开始或关闭");
+        permissions = java.util.Objects.requireNonNull(value);
+    }
+    /** 界面通过共享状态切换档位；不能在运行后换成与工具检查器不同的另一份状态。 */
+    public com.jadecode.safety.PermissionState permissionState() { return permissions; }
     /**
      * 这次会话现在在做什么，不是 s10 任务文件里保存的任务状态。
      */
@@ -174,8 +182,6 @@ public final class SessionRuntime implements AutoCloseable {
     private Thread consumer;
     /** 只有 Leader 装配 Team 时安装；关闭父会话先停止全部队友。 */
     private Runnable closeDependents = () -> { };
-    /** 队友可把需审批操作交给独立辅助请求；Leader 默认保留用户通道。 */
-    private java.util.function.BiFunction<ExecutionContext, String, Approval> incomingApproval = (context, prompt) -> context.approval();
 
     /** 安装本会话拥有的额外资源清理，不启动它们；须在 start 前调用。 */
     public synchronized void onClose(Runnable cleanup) { closeDependents = java.util.Objects.requireNonNull(cleanup); }
@@ -229,11 +235,6 @@ public final class SessionRuntime implements AutoCloseable {
 
     /** 目标加载/装配失败时撤销冻结，让原会话继续接收请求；不会重放任何任务。 */
     public void unfreeze() { synchronized (inbox) { switching = false; inbox.wake(); } }
-
-    /** 工厂在 start 前设置接收任务的审批方式；不改变 source，定时来源仍不能人工审批。 */
-    public void incomingApproval(java.util.function.BiFunction<ExecutionContext, String, Approval> factory) {
-        incomingApproval = java.util.Objects.requireNonNull(factory);
-    }
 
     /** 是否正处理大轮次；等待后台也算忙，不能把新派工直接当当前工作。 */
     public boolean isBusy() { return active != null; }
@@ -296,7 +297,7 @@ public final class SessionRuntime implements AutoCloseable {
         var result = new CompletableFuture<String>();
         // 已入队的邮件属于接收方，发送者随后退出不能撤回它；仍保留原来源和审批范围。
         var scoped = new ExecutionContext("run_" + java.util.UUID.randomUUID(), context.source(),
-                incomingApproval.apply(context, incoming.render()), () -> closed);
+                context.approval(), () -> closed);
         synchronized (inbox) {
             if (closed || switching || persistenceFailed || !inbox.offer(new SessionInbox.Entry(new SessionEvent.Request(incoming.render(), scoped, null, incoming), result)))
                 return null;
@@ -961,9 +962,9 @@ public final class SessionRuntime implements AutoCloseable {
             snapshot = entry.request().cronId() == null ? List.of() : List.copyOf(history);
         }
         /**
-         * @return 程序记录的任务 ID、来源、询问用户的方法，以及会话是否退出的检查方法
+         * @return 原任务 ID、来源、审批和退出检查，再附上包含已接收补充的当前任务说明
          */
-        ExecutionContext context() { return entry.request().context(); }
+        ExecutionContext context() { return entry.request().context().withGoal(goal == null ? entry.request().prompt() : goal); }
         /**
          * @return 定时任务定义的 ID；用户直接提交的任务为 null
          */

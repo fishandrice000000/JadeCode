@@ -26,10 +26,10 @@ import com.jadecode.memory.MemoryManager;
 import com.jadecode.memory.MemoryStore;
 import com.jadecode.messages.ToolUseBlock;
 import com.jadecode.process.BackgroundManager;
-import com.jadecode.safety.CommandPolicy;
-import com.jadecode.safety.PathGuard;
 import com.jadecode.safety.PermissionGate;
-import com.jadecode.safety.DelegatedApproval;
+import com.jadecode.safety.PermissionState;
+import com.jadecode.safety.approval.ApprovalCoordinator;
+import com.jadecode.safety.approval.ModelApprovalReviewer;
 import com.jadecode.session.SessionRuntime;
 import com.jadecode.skills.SkillLoader;
 import com.jadecode.subagent.SubagentRuntime;
@@ -148,13 +148,20 @@ public final class JadeCodeFactory {
     /** TUI 复用配置快照；启动时可只读查询官方模型目录，查询失败沿用原预算，不发生成请求。 */
     public static SessionRuntime create(Presentation presentation, Consumer<String> output, Consumer<String> errors,
             Supplier<ResponseStream> streams, ExecutionObserver observer, JadeSettings settings) {
+        return create(presentation, output, errors, streams, observer, settings,
+                settings.permissions().state(new JadeConfigFile(JadeConfigFile.defaultPath())));
+    }
+
+    /** TUI 在恢复会话时继续使用同一份权限状态，不从旧聊天中恢复临时授权。 */
+    public static SessionRuntime create(Presentation presentation, Consumer<String> output, Consumer<String> errors,
+            Supplier<ResponseStream> streams, ExecutionObserver observer, JadeSettings settings, PermissionState permissions) {
         AppConfig config = AppConfig.fromEnv(Env.loadDotEnv());
         Path cwd = Path.of("").toAbsolutePath();
         // 只在生产入口发现一次。可注入客户端的离线入口不会读用户缓存或自行联网。
         var metadata = new ModelMetadataResolver(ModelMetadataResolver.defaultCacheDirectory()).resolve(config, settings.modelMetadata());
         observer.publish(com.jadecode.execution.ExecutionNotice.event(
                 com.jadecode.execution.ExecutionNotice.Kind.MODEL, "", config.model(), metadata.describe(), "READY").actor(TeamManager.LEADER));
-        return create(config, cwd, new AnthropicSdkLlmClient(config, metadata), output, errors, presentation, streams, observer, settings);
+        return create(config, cwd, new AnthropicSdkLlmClient(config, metadata), output, errors, presentation, streams, observer, settings, permissions);
     }
 
     /**
@@ -218,6 +225,15 @@ public final class JadeCodeFactory {
     public static SessionRuntime create(AppConfig config, Path cwd, LlmClient client,
             Consumer<String> output, Consumer<String> errors, Presentation presentation, Supplier<ResponseStream> streams,
             ExecutionObserver observer, JadeSettings settings) {
+        // 离线装配不暗中写 HOME；需要检查保存行为的调用者应显式注入临时规则存储。
+        return create(config, cwd, client, output, errors, presentation, streams, observer, settings,
+                settings.permissions().state(null));
+    }
+
+    /** 注入共享权限及其存储；父子与常驻队友共享这份状态，其余会话资料仍各自独立。 */
+    public static SessionRuntime create(AppConfig config, Path cwd, LlmClient client,
+            Consumer<String> output, Consumer<String> errors, Presentation presentation, Supplier<ResponseStream> streams,
+            ExecutionObserver observer, JadeSettings settings, PermissionState permissions) {
         try {
             Path workspace = cwd.toRealPath();
             WorkspaceDataMigration.migrate(new com.jadecode.config.WorkspacePaths(workspace));
@@ -229,12 +245,12 @@ public final class JadeCodeFactory {
             SessionRuntime leader = assemble(config, workspace, client,
                     text -> output.accept("[Leader] " + text), text -> errors.accept("[Leader] " + text),
                     presentation, team, TeamManager.LEADER, "Leader", streams, observer.scoped(TeamManager.LEADER), settings,
-                    usage, new java.util.concurrent.atomic.AtomicReference<>(settings.thinking()));
+                    usage, new java.util.concurrent.atomic.AtomicReference<>(settings.thinking()), permissions);
             team.bind(leader, (id, role) -> assemble(config, workspace, client,
                     text -> output.accept("[Teammate " + id + "] " + text),
                     text -> errors.accept("[Teammate " + id + "] " + text),
                     presentation, team, id, role, () -> ResponseStream.NONE, observer.scoped(id), settings, usage,
-                    new java.util.concurrent.atomic.AtomicReference<>(leader.thinking())));
+                    new java.util.concurrent.atomic.AtomicReference<>(leader.thinking()), permissions));
             leader.onClose(team::close);
             return leader;
         } catch (IOException failure) {
@@ -245,18 +261,19 @@ public final class JadeCodeFactory {
     /**
      * 为一个身份装配同一种 SessionRuntime。每份 history、Todo、后台和 Hooks 独立，
      * 共享底层模型客户端、用量账本、工作目录和受控任务存储；队友不创建 Memory/cron。
-     * 角色仅影响工具表、提示与审批方式，不额外复制一份循环实现。
+     * 角色主要影响工具表和提示；权限看共享档位与本次来源，不额外复制一份循环实现。
      */
     private static SessionRuntime assemble(AppConfig config, Path cwd, LlmClient client,
             Consumer<String> output, Consumer<String> errors, Presentation presentation,
             TeamManager team, String actor, String role, Supplier<ResponseStream> streams, ExecutionObserver observer,
             JadeSettings settings, com.jadecode.session.SessionUsage usage,
-            java.util.concurrent.atomic.AtomicReference<com.jadecode.llm.ThinkingSettings> thinking) {
+            java.util.concurrent.atomic.AtomicReference<com.jadecode.llm.ThinkingSettings> thinking, PermissionState permissions) {
         boolean isLeader = actor.equals(TeamManager.LEADER);
         PathResolver resolver = new PathResolver(cwd);
-        PathGuard guard = new PathGuard(resolver);
-        CommandPolicy policy = new CommandPolicy();
-        PermissionGate gate = new PermissionGate(policy, guard);
+        // 审批独立请求只读任务说明和待执行操作；不借用主循环，也不执行工具。
+        PermissionGate gate = new PermissionGate(resolver, permissions,
+                new ApprovalCoordinator(new ModelApprovalReviewer(tracked(client, config.model(), actor,
+                        com.jadecode.llm.UsageRecord.Purpose.APPROVAL, usage, null))), actor);
         TodoManager manager = new TodoManager();
 
         // 技能根目录由这里注入,Loader 不读全局 cwd;构造即扫描一次(skills 目录不存在 = 合法空 registry)
@@ -355,12 +372,9 @@ public final class JadeCodeFactory {
                 com.jadecode.execution.ExecutionNotice.Kind.SESSION, "", role, config.model(), "IDLE"));
         // 所有权在这里交给 session；CLI 不再另外关闭 engine/background/cron。
         SessionRuntime runtime = new SessionRuntime(engine, memory, background, cron, output, errors);
+        runtime.permissions(permissions);
         runtime.historyState(manager, config.model(), isLeader ? team::hasLiveMembers : () -> false);
         runtime.telemetry(usage, isLeader, formalClient, thinking);
-        if (!isLeader) runtime.incomingApproval((context, prompt) ->
-                new DelegatedApproval(tracked(client, config.model(), actor,
-                        com.jadecode.llm.UsageRecord.Purpose.APPROVAL, usage, null), cwd, actor, prompt,
-                        context.approval() == null ? null : context.approval().forActor(actor), output));
         return runtime;
     }
 
@@ -451,7 +465,7 @@ public final class JadeCodeFactory {
                 + " Use schedule_cron/list_crons/cancel_cron for authorized future prompts, not for already-running commands."
                 + " Cron runs only in a live REPL, in local time; durable saves definitions, not an external service."
                 + " Scheduled delivery can repeat after a crash; model receipt is not proof of business success."
-                + " Destructive operations require approval; teammate auxiliary review may authorize only narrowly recoverable operations."
+                + " Tool calls are checked against the user's current permission profile and rules. Never bypass a denial."
                 + " You are the team Leader. Only you may create up to three persistent teammates and manage the task graph."
                 + " Use spawn_teammate then assign_task for existing ready tasks; assign_task claims on their behalf."
                 + " Teammates have independent histories: include necessary context in summary and full body."

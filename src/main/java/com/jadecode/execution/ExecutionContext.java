@@ -3,6 +3,7 @@ package com.jadecode.execution;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.function.BooleanSupplier;
+import com.jadecode.safety.approval.Approval;
 
 
 /**
@@ -19,8 +20,13 @@ import java.util.function.BooleanSupplier;
  * @param source USER 表示用户提交，SCHEDULED 表示定时触发
  * @param approval 询问用户的函数，null 表示不能询问
  * @param sessionClosed 检查所属会话是否已退出的函数，由程序提供，不是模型参数
+ * @param goal 当前任务说明，供独立审批请求核对操作用途，不传入整段聊天历史
  */
-public record ExecutionContext(String id, Source source, Approval approval, BooleanSupplier sessionClosed) {
+public record ExecutionContext(String id, Source source, Approval approval, BooleanSupplier sessionClosed, String goal) {
+    /** 旧调用未提供目标时保留原签名；目标由会话在运行时补入，不改变来源。 */
+    public ExecutionContext(String id, Source source, Approval approval, BooleanSupplier sessionClosed) { this(id, source, approval, sessionClosed, ""); }
+    /** 给辅助审批携带当前真实任务说明，不把整个可变历史交给审批组件。 */
+    public ExecutionContext withGoal(String value) { return new ExecutionContext(id, source, approval, sessionClosed, value == null ? "" : value); }
     /**
      * 区分用户直接发起和定时触发。后台结果和 Stop 要求继续，都沿用原任务来源。
      */
@@ -44,6 +50,7 @@ public record ExecutionContext(String id, Source source, Approval approval, Bool
         if (id == null || id.isBlank()) throw new IllegalArgumentException("Execution ID is required");
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(sessionClosed, "sessionClosed");
+        goal = goal == null ? "" : goal;
     }
 
     /**

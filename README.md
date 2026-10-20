@@ -29,9 +29,9 @@ src/main/java/com/jadecode/
 ├── messages/         # Message + sealed ContentBlock(text/tool_use/tool_result)
 ├── llm/              # LlmClient / ToolDefinition(数据快照) + AnthropicSdkLlmClient(SDK 隔离层)
 ├── tools/            # Tool / ToolSchema 与工具适配器
-├── execution/        # 可信任务来源、Approval 审批及只读运行观察
+├── execution/        # 可信任务来源、运行上下文及只读运行观察
 ├── process/          # BackgroundManager(后台 bash / 完成队列) / ShellCommand(进程生命周期)
-├── safety/           # PathGuard, CommandPolicy, PermissionGate
+├── safety/           # 权限档位与 Gate；checks/ 解释参数，rules/ 匹配规则，approval/ 协调审批
 ├── hooks/            # 字符串事件、参数表和短路 hook
 ├── todo/             # TodoManager(计划表校验与渲染)
 ├── subagent/         # SubagentRuntime(嵌套循环 + 消息隔离 + 三终态)
@@ -52,8 +52,8 @@ src/main/java/com/jadecode/
 | 课程章节 | 主题 | JadeCode 包 |
 |---|---|---|
 | s01 | Agent Loop | `agent/` `messages/` `llm/` `tools/BashTool` |
-| s02 | Tool Use(分发表) | `tools/`(5 基础工具)+ `safety/PathGuard` |
-| s03 | Permission | `safety/CommandPolicy` `safety/PermissionGate` |
+| s02 | Tool Use(分发表) | `tools/`(5 基础工具)+ `safety/checks` |
+| s03 | Permission | `safety/PermissionGate` `safety/rules` `safety/approval`（后续重构为四档权限） |
 | s04 | Hooks | `hooks/Hooks` |
 | s05 | TodoWrite | `todo/` |
 | s06 | Subagent | `subagent/` |
@@ -148,8 +148,8 @@ Leader 正式请求的正文和接口返回的 thinking 流式更新消息，不
 队友和一次性子代理不展示 thinking，Memory/摘要/辅助审批也不流式展示；必要思考块仍按协议保留。
 流式结束后不重复打印正文；工具等完整响应和参数校验通过才执行。`run` 使用完整回复的文本输出。
 Agent 忙时，连续提交的提示词合并为一份非插入式缓冲；输入区为空时再次按 Enter，
-将同一缓冲批次升级为插入式，不重复投递。TUI 审批以“同意／拒绝”选项接管输入区并保存草稿，
-两个选项都不默认选中，方向键／Tab 选择后 Enter 确认；空 Enter 与 Esc 不作审批答复。
+将同一缓冲批次升级为插入式，不重复投递。TUI 审批以“仅本次／允许此类命令／拒绝”接管输入区并保存草稿，
+三个选项都不默认选中，方向键／Tab 选择后 Enter 确认；无可靠规则建议时中间项禁用。空 Enter 与 Esc 不作审批答复。
 `/quit` 或 `/exit` 退出整个会话，停止其队友和后台资源，再关闭日志和恢复终端；不是单轮取消。
 Ctrl+C 清草稿，500ms 内再次按下退出整个会话；编辑器为空时 Ctrl+D 退出，非空时向前删除。
 Esc 仅关闭选择界面，不提供单轮取消；`q`／`exit` 不再是退出指令。
@@ -160,6 +160,41 @@ Esc 仅关闭选择界面，不提供单轮取消；`q`／`exit` 不再是退出
 后台运行数为零时不显示。上下文剩余比例只参考主 Agent 最近正式请求的输入与输出，标为“约”；
 历史新增或压缩后旧测量失效，窗口未知或刚恢复时隐藏，不能用累计花费或字符数冒充实时占用。
 架构、验证与未验证范围见 [TUI 任务单](docs/jobs/s13/pi-tui.md)，阅读入口见 [TUI 指南](docs/notes/s13/pi-tui-review.md)。
+
+### 权限档位与规则
+
+`/permission` 打开四档菜单，页脚显示当前档位；默认 **Workspace**。
+
+| 档位 | 普通行为 | 需要额外授权时 |
+| --- | --- | --- |
+| Read Only | 已识别读取/查询允许；写入、任务管理和一般程序先确认 | 用户决定 |
+| Workspace | 普通工作区读写、构建允许；删除、越界和复杂 shell 先确认 | 用户决定 |
+| Approve for Me | 基础行为同 Workspace | 独立辅助模型审查普通询问，不确定/失败转人工；敏感操作仍问用户 |
+| Full Access | 普通操作免询问，包括普通删除和越界 | 显式 deny/ask、根目录/设备保护及强制人工项仍有效；需询问的项直接拒绝 |
+
+```sh
+./jade repl --permission auto-review
+./jade run --permission workspace "任务"
+```
+
+会话内 `/permission read-only` 等命令只改变本次 CLI；`/permission default workspace` 同时保存启动默认。
+TUI 切入 Full Access 需要再确认；显式 CLI 参数视为主动选择。Leader、队友与一次性子代理共用当前权限状态，
+切换影响后续许可判定，不撤销已执行操作、不停止已经启动的命令。`/resume` 沿用当前 CLI 状态，不恢复旧临时批准。
+
+选择“允许此类命令”将界面显示的范围写入 `~/.jadecode/config/config.json` 的 `permissions.rules`，
+绑定当前工作区；单文件建议精确到操作和路径，shell 建议是字面 argv token 前缀与 cwd，不是任意字符串前缀。
+复合命令、重定向和不能可靠解释的语法不生成命令建议；保存失败则不执行，不能把失败伪装成已授权。
+仅本次只授权原操作，拒绝只形成对应调用的 tool_result，不自动结束大轮次。
+
+配置还支持 `permissions.defaultProfile`、`permissions.disabledDefaults`。规则的 effect 为 `ALLOW/ASK/DENY`，
+kind 为 `TOOL/PATH/COMMAND`；工作区用绝对路径，空字符串表示用户明确设置的跨工作区规则。
+deny → ask → 默认硬保护/强制人工 → allow → 档位普通策略，前者优先；权限规则字段、类型与编号严格检查。
+默认保护编号与配置示例见 [权限任务单](docs/jobs/s13/permissions.md)，学习见 [阅读指南](docs/notes/s13/permissions-review.md)。
+
+本轮没有 Linux 沙箱。shell 检查器只解释 `/bin/sh` 的有限语法，无法证明脚本/一般程序的真实副作用，
+被允许的程序仍以当前用户权限运行；Read Only 与 Workspace 是应用内审批策略，不是操作系统隔离保证。
+这些档位检查模型调用的操作，不阻止日志、压缩归档和记忆等 Harness 自身的状态保存。
+配置写入有进程内互斥，不支持多 CLI 同时修改规则；外部手改在下次启动读取，运行中不热加载。
 
 ### 会话保存与恢复
 
@@ -259,8 +294,8 @@ REPL 到期入队，在 Agent 空闲时主动发起 `[Scheduled]` 回合；人�
 模型首个合法正式回复表示交付确认，不是业务验收；一次性删除，周期项等待下一次匹配。
 进程停止后不执行、不补跑停机分钟；`run` 只管理定义，不开启常驻调度。需要停机也执行应使用外部调度服务。
 至少一次交付可能在崩溃后重复；确认前失败退避 5 秒，连续三次暂停本会话自动投递，保留 durable 待交付记录。
-审批按 Harness 标注的任务来源而非线程身份判断；人工任务通过唯一终端输入入口审批，定时任务需要审批时拒绝，
-子代理继承来源。TUI 使用明确的同意／拒绝选项，run 需要交互时使用文本 y/n（忽略大小写）；
+审批按 Harness 标注的来源而非线程判断；定时任务和其子代理不能人工询问，不能通过 input 自填来源绕过。
+Approve for Me 可独立审查普通询问；仍需人工却没有通道时明确拒绝。TUI 使用三项审批，run 对应输入 1/2/3（y/n 为仅本次/拒绝的简写）；
 空 Enter 均不作为审批答复。多行提示词中的批准文字不会被单独取出执行。
 收件箱最多 64 项新请求；满时明确拒收，定时项保留 pending，后台完成结果不与新请求争抢容量。
 REPL 退出会关闭会话而不是等待队列排空；非交互执行使用 `run`。

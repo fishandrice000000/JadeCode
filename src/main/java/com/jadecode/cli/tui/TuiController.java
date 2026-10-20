@@ -7,6 +7,8 @@ import com.jadecode.cli.SessionHost;
 import com.jadecode.tui.components.SelectList;
 import com.jadecode.tui.core.InlineRenderer;
 import com.jadecode.tui.terminal.InputDecoder.Input;
+import com.jadecode.safety.PermissionProfile;
+import com.jadecode.safety.approval.ApprovalAnswer;
 
 /**
  * 在界面线程处理输入与显示事件。只通过现有 submitUser／promoteUserBuffer 发出用户意图，
@@ -22,6 +24,7 @@ public final class TuiController {
     private final Runnable shutdown;
     private long ctrlC;
     private String originalTheme;
+    private boolean savePermissionDefault;
     /** 元数据选择按用户输入顺序保存，避免较早的 low 写入反而盖过后来确认的 high。 */
     private java.util.concurrent.CompletableFuture<Void> localWrites = java.util.concurrent.CompletableFuture.completedFuture(null);
     /** 新运行时装配通知可能先于 SessionOpened 到达，暂存而不是丢掉模型参数通知。 */
@@ -71,7 +74,7 @@ public final class TuiController {
             case UiEvent.StreamEnd end -> state.end(end);
             case UiEvent.Message message -> state.message(message);
             case UiEvent.ApprovalRequested request -> {
-                if (state.closing) approvals.answer(request.id(), false);
+                if (state.closing) approvals.answer(request.id(), ApprovalAnswer.DENY);
                 else { if (state.approvals.isEmpty()) state.approvalChoice = -1; state.approvals.addLast(request); }
             }
             case UiEvent.ApprovalRemoved removed -> removeApproval(removed.id());
@@ -86,8 +89,14 @@ public final class TuiController {
      * 返回 true 才要求刷新屏幕，空闲时不会为了查询统计不断重画终端。
      */
     public boolean refreshSession() {
+        boolean changed = false;
+        var permission = host.permissionSnapshot();
+        if (permission != null) {
+            String profile = permission.profile().label();
+            changed = !profile.equals(state.permissionProfile); state.permissionProfile = profile;
+        }
         var next = host.display();
-        if (next == null || !next.id().equals(state.sessionId) || next.equals(state.session)) return false;
+        if (next == null || !next.id().equals(state.sessionId) || next.equals(state.session)) return changed;
         state.session = next; state.model = next.model(); state.modelInfo = next.metadata().describe();
         return true;
     }
@@ -156,7 +165,7 @@ public final class TuiController {
             state.commands = null;
             return;
         }
-        if (state.commands == null) state.commands = new SelectList(List.of("/help", "/theme", "/model", "/thinking",
+        if (state.commands == null) state.commands = new SelectList(List.of("/help", "/theme", "/model", "/thinking", "/permission",
                 "/usage", "/resume", "/rename", "/quit", "/exit"));
         if (!state.commands.filter().equals(draft)) state.commands.filter(draft);
     }
@@ -211,7 +220,8 @@ public final class TuiController {
             catch (IllegalArgumentException invalid) { state.hint = invalid.getMessage(); }
             return;
         }
-        if (List.of("/theme", "/help", "/model", "/thinking", "/usage", "/rename").contains(command)) { open(command); return; }
+        if (command.startsWith("/permission ")) { permissionCommand(command.substring(12).strip()); return; }
+        if (List.of("/theme", "/help", "/model", "/thinking", "/usage", "/rename", "/permission").contains(command)) { open(command); return; }
         if (!host.hasCurrent()) { state.editor.insert(prompt, false); state.hint = "请先 /resume 选择会话，或重启 jade repl 新建会话"; return; }
         state.add("You", "User", "Request", prompt); state.hint = "";
         // future 在业务线程结束，回调仍只投递显示事件，不能在该线程直接改 TuiState。
@@ -234,6 +244,12 @@ public final class TuiController {
         } else if (command.equals("/theme")) {
             originalTheme = state.theme; state.selectorKind = "Theme"; state.selector = new SelectList(List.of("dark", "light"));
             if (state.theme.equals("light")) state.selector.move(1);
+        } else if (command.equals("/permission")) {
+            if (!host.hasCurrent()) { state.hint = "请先打开会话"; return; }
+            savePermissionDefault = false;
+            state.selectorKind = "Permission";
+            state.selector = PermissionMenu.choices(host.current().permissionState().snapshot().profile());
+            state.hint = "仅切换本次运行；/permission default <档位> 保存启动默认";
         } else if (command.equals("/model")) {
             // 只展示启动时已取得的快照，不把命令发给模型，也不在 UI 线程重新请求网络。
             refreshSession();
@@ -266,7 +282,7 @@ public final class TuiController {
             state.selector = new SelectList(List.of("Enter 提交 · Alt+Enter 换行 · 粘贴后仍需 Enter", "忙时空 Enter：插入待发送缓冲",
                     "Ctrl+T 显示思考 · Ctrl+O 展开工具 · 鼠标滚动／复制由终端处理", "Ctrl+C 清草稿，500ms 内再按退出 · 空编辑器 Ctrl+D 退出",
                     "Esc 关闭选择界面，不取消 Agent · /quit 或 /exit 退出整个会话", "窗口／主题变化可能清空 scrollback 并重绘",
-                    "/model", "/thinking", "/usage", "/theme", "/resume", "/rename", "/quit", "/exit"));
+                    "/model", "/thinking", "/permission", "/usage", "/theme", "/resume", "/rename", "/quit", "/exit"));
         }
     }
 
@@ -286,6 +302,39 @@ public final class TuiController {
     /** 固定选择交给会话检查和保存，界面不直接改 SDK 或全局配置。 */
     private void setThinking(com.jadecode.llm.ThinkingSettings value) {
         saveLocal("Thinking", id -> host.thinking(id, value), "思考设置已保存：" + value.value() + "，从下一次请求生效");
+    }
+    /** 解析本地命令，不发给模型；错误档位不改变当前设置。 */
+    private void permissionCommand(String arguments) {
+        savePermissionDefault = arguments.startsWith("default ");
+        try { choosePermission(PermissionProfile.parse(savePermissionDefault ? arguments.substring(8).strip() : arguments)); }
+        catch (IllegalArgumentException invalid) { state.hint = invalid.getMessage(); }
+    }
+    /** Full Access 要先显示风险并再确认，其余档位直接采用，不中断已经执行的命令。 */
+    private void choosePermission(PermissionProfile profile) {
+        if (!host.hasCurrent()) { state.hint = "请先打开会话"; return; }
+        if (profile == PermissionProfile.FULL_ACCESS && host.current().permissionState().snapshot().profile() != profile) {
+            state.selectorKind = "PermissionConfirm"; state.selector = PermissionMenu.confirm();
+            state.hint = "普通文件和命令可直接执行，可能修改工作区外文件；显式拒绝和默认硬保护仍有效";
+        } else applyPermission(profile);
+    }
+    /**
+     * 按选择顺序切换；仅明确 default 的命令才保存启动默认。
+     * 后台可能正在保存“允许此类”规则，切换也交工作线程，界面不等配置锁或磁盘。
+     * 失败如实报告，当前快照由 refreshSession 采用；草稿、主任务和队友不被重建。
+     */
+    private void applyPermission(PermissionProfile profile) {
+        var permissions = host.current().permissionState();
+        boolean save = savePermissionDefault;
+        state.hint = "";
+        localWrites = localWrites.handle((value, failure) -> null).thenRunAsync(() -> {
+            permissions.select(profile);
+            events.accept(new UiEvent.Message("System", "Permission", "当前权限：" + profile.label(), false));
+            if (save) {
+                try { preferences.savePermission(profile); events.accept(new UiEvent.Message("System", "Permission", "启动默认已保存：" + profile.label(), false)); }
+                catch (java.io.IOException failed) { events.accept(new UiEvent.Message("System", "Error", "本次已切换，但默认保存失败：" + failed.getMessage(), true)); }
+            }
+        }, command -> Thread.ofVirtual().name("jade-permission-setting").start(command));
+        savePermissionDefault = false;
     }
     /**
      * 选择期间，文字只用于筛选，不进入原草稿。主题上下移动只作预览，Esc 恢复原主题；
@@ -316,6 +365,11 @@ public final class TuiController {
                         else events.accept(new UiEvent.Message("System", "Warning", "本次主题已生效，但保存失败：" + failed.getMessage(), true));
                     });
                 } else if (kind.equals("Thinking")) setThinking(com.jadecode.llm.ThinkingSettings.parse(choice));
+                else if (kind.equals("Permission")) choosePermission(PermissionProfile.parse(choice));
+                else if (kind.equals("PermissionConfirm")) {
+                    if (choice.equals("启用 Full Access")) applyPermission(PermissionProfile.FULL_ACCESS);
+                    else state.hint = "权限未改变";
+                }
                 else if (choice.startsWith("/")) open(choice);
             }
             default -> { }
@@ -355,10 +409,13 @@ public final class TuiController {
         // 新队首必须先真正显示，再允许选择。仅重置 choice 不足以防住上一份申请的连按。
         if (!renderer.hasAction("approve:" + state.approvals.getFirst().id())) return;
         switch (input.key()) {
-            case "LEFT" -> state.approvalChoice = 0;
-            case "RIGHT" -> state.approvalChoice = 1;
-            case "TAB", "BACKTAB" -> state.approvalChoice = state.approvalChoice < 0 ? 0 : 1 - state.approvalChoice;
-            case "ENTER" -> { if (state.approvalChoice >= 0) answer(state.approvals.getFirst().id(), state.approvalChoice == 0); }
+            case "LEFT", "BACKTAB", "RIGHT", "TAB" -> {
+                int direction = input.key().equals("LEFT") || input.key().equals("BACKTAB") ? -1 : 1;
+                int choice = state.approvalChoice < 0 ? (direction > 0 ? 0 : 2) : Math.floorMod(state.approvalChoice + direction, 3);
+                if (choice == 1 && state.approvals.getFirst().suggestion().isEmpty()) choice += direction;
+                state.approvalChoice = choice;
+            }
+            case "ENTER" -> { if (state.approvalChoice >= 0) answer(state.approvals.getFirst().id(), ApprovalAnswer.values()[state.approvalChoice]); }
             case "CLICK" -> click(renderer.hit(input.x(), input.y()));
             default -> { /* 无默认选择，普通文字、粘贴、空 Enter 和 Esc 都不能批准或拒绝。 */ }
         }
@@ -366,13 +423,15 @@ public final class TuiController {
     /** 点击动作来自最后显示帧；不是模型正文提供的命令，仍需核对当前审批编号。 */
     private void click(String action) {
         if (action == null) return;
-        if (action.startsWith("approve:")) answer(action.substring(8), true);
-        else if (action.startsWith("deny:")) answer(action.substring(5), false);
+        if (action.startsWith("approve:")) answer(action.substring(8), ApprovalAnswer.ALLOW_ONCE);
+        else if (action.startsWith("similar:")) answer(action.substring(8), ApprovalAnswer.ALLOW_SIMILAR);
+        else if (action.startsWith("deny:")) answer(action.substring(5), ApprovalAnswer.DENY);
         else if (action.startsWith("entry:") && state.approvals.isEmpty()) state.entries.stream()
                 .filter(e -> e.id.equals(action.substring(6))).findFirst().ifPresent(e -> { e.expanded = !e.expanded; e.version++; });
     }
-    private void answer(String id, boolean allowed) {
+    private void answer(String id, ApprovalAnswer allowed) {
         if (state.approvals.isEmpty() || !state.approvals.getFirst().id().equals(id)) return;
+        if (allowed == ApprovalAnswer.ALLOW_SIMILAR && state.approvals.getFirst().suggestion().isEmpty()) return;
         approvals.answer(id, allowed); removeApproval(id);
     }
     private void removeApproval(String id) {

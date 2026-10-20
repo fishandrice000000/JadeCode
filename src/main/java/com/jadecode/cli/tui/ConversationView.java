@@ -63,27 +63,34 @@ public final class ConversationView {
             lines.add(StyledLine.of(DisplayWidth.take("Approval · " + (actor.isEmpty() ? "" : actor + " · ") + request.tool(), width), "warning"));
             List<StyledLine> details = StyledLine.wrap(List.of(new Span(request.reason() + "\n" + request.arguments(), "normal")), width);
             lines.addAll(details.subList(0, Math.min(details.size(), Math.max(2, context.height() / 4))));
+            if (!request.suggestion().isEmpty()) lines.addAll(StyledLine.wrap(
+                    List.of(new Span("长期授权范围：" + request.suggestion(), "muted")), width));
             int row = lines.size();
-            // 选中项同时有文字箭头；NO_COLOR 下也能知道 Enter 将选择什么。
-            String allow = state.approvalChoice == 0 ? "[>同意 ]" : "[ 同意 ]";
-            String deny = state.approvalChoice == 1 ? "[>拒绝 ]" : "[ 拒绝 ]";
-            if (width >= 18) {
-                lines.add(new StyledLine(List.of(new Span(allow, state.approvalChoice == 0 ? "selected" : "normal"),
-                        new Span("  ", "normal"), new Span(deny, state.approvalChoice == 1 ? "selected" : "normal"))));
-                hits.add(new Frame.Hit(row, 0, 8, "approve:" + request.id()));
-                hits.add(new Frame.Hit(row, 10, 18, "deny:" + request.id()));
-            } else {
-                // 窄窗口竖排时同步移动命中区域，不能只改文字位置不改审批点击位置。
-                lines.add(StyledLine.of(allow, state.approvalChoice == 0 ? "selected" : "normal"));
-                lines.add(StyledLine.of(deny, state.approvalChoice == 1 ? "selected" : "normal"));
-                hits.add(new Frame.Hit(row, 0, Math.min(8, width), "approve:" + request.id()));
-                hits.add(new Frame.Hit(row + 1, 0, Math.min(8, width), "deny:" + request.id()));
+            // 同一套文字计算显示宽度和点击位置。窄屏竖排；禁用项不产生点击动作。
+            String[] labels = { "仅本次", "允许此类命令", "拒绝" };
+            String[] actions = { "approve:", "similar:", "deny:" };
+            var buttons = new ArrayList<Span>(); int column = 0, selectedColumn = 0;
+            boolean stacked = width < 42;
+            for (int i = 0; i < labels.length; i++) {
+                boolean enabled = i != 1 || !request.suggestion().isEmpty();
+                String text = "[" + (state.approvalChoice == i ? ">" : " ") + labels[i] + " ]";
+                int size = DisplayWidth.width(text);
+                String style = !enabled ? "muted" : state.approvalChoice == i ? "selected" : "normal";
+                if (stacked) lines.add(StyledLine.of(text, style));
+                else { if (i > 0) { buttons.add(new Span("  ", "normal")); column += 2; } buttons.add(new Span(text, style)); }
+                if (state.approvalChoice == i) selectedColumn = column;
+                if (enabled) hits.add(new Frame.Hit(row + (stacked ? i : 0), stacked ? 0 : column,
+                        Math.min(width, (stacked ? 0 : column) + size), actions[i] + request.id()));
+                column += size;
             }
+            if (!stacked) lines.add(new StyledLine(buttons));
             lines.add(StyledLine.of(DisplayWidth.take("←/→ 或 Tab 选择，Enter 确认；Esc 不作答 · 草稿已保留", width), "muted"));
-            cursorRow = row + (width < 18 && state.approvalChoice == 1 ? 1 : 0);
-            cursorColumn = width >= 18 && state.approvalChoice == 1 ? 10 : 0;
+            cursorRow = row + (stacked ? Math.max(0, state.approvalChoice) : 0);
+            cursorColumn = stacked ? 0 : selectedColumn;
         } else if (state.selector != null) {
             lines.add(StyledLine.of(DisplayWidth.take(state.selectorKind + " · filter: " + state.selector.filter(), width), "heading"));
+            if (state.selectorKind.equals("Permission")) lines.addAll(StyledLine.wrap(
+                    List.of(new Span(PermissionMenu.description(state.selector.selected()), "muted")), width));
             int first = lines.size();
             lines.addAll(state.selector.render(width, Math.max(1, Math.min(6, context.height() / 3))));
             lines.add(StyledLine.of(DisplayWidth.take("↑/↓ 选择 · Enter 确认 · Esc 返回草稿", width), "muted"));
@@ -103,6 +110,7 @@ public final class ConversationView {
         lines.add(StyledLine.of("─".repeat(Math.max(1, width)), "muted"));
         var fields = new ArrayList<String>();
         fields.add(state.model);
+        fields.add(state.permissionProfile);
         if (state.session != null) {
             fields.add(state.session.thinkingLabel());
             var total = state.session.usage().total();

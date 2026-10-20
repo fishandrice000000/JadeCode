@@ -63,6 +63,10 @@ public final class SessionHost implements AutoCloseable {
 
     /** 退出后仍可读取已保存身份，不调用已关闭运行时的执行方法。 */
     public SessionRuntime.Display display() { SessionRuntime runtime = current; return runtime == null ? null : runtime.display(); }
+    /** 只读权限快照在关闭期间仍可显示；不能用要求“会话可操作”的 current() 来刷新页脚。 */
+    public com.jadecode.safety.PermissionState.Snapshot permissionSnapshot() {
+        SessionRuntime runtime = current; return runtime == null ? null : runtime.permissionState().snapshot();
+    }
 
     /**
      * 打开指定 UUID；id 为 null 时创建新会话。此方法不 start，UI 安装历史后才启动消费者。

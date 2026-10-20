@@ -10,12 +10,29 @@ import java.util.Map;
  * 模型、认证和 endpoint 继续由 AppConfig 管理，不因统一 UI／压缩设置而搬动凭据。
  */
 public record JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimits limits, Memory memory, Models modelMetadata,
-        com.jadecode.llm.ThinkingSettings thinking) {
+        com.jadecode.llm.ThinkingSettings thinking, Permissions permissions) {
+    /** 旧装配保持 Workspace 默认，不因新增配置而读取用户文件。 */
+    public JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimits limits, Memory memory, Models models,
+            com.jadecode.llm.ThinkingSettings thinking) {
+        this(tui, compaction, limits, memory, models, thinking, new Permissions(com.jadecode.safety.PermissionProfile.WORKSPACE, java.util.List.of(), java.util.Set.of()));
+    }
     /** 老配置/离线装配缺少思考设置时不改变服务商默认行为。 */
     public JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimits limits, Memory memory, Models modelMetadata) {
         this(tui, compaction, limits, memory, modelMetadata, com.jadecode.llm.ThinkingSettings.DEFAULT);
     }
-    public JadeSettings { java.util.Objects.requireNonNull(thinking, "thinking"); }
+    public JadeSettings { java.util.Objects.requireNonNull(thinking, "thinking"); java.util.Objects.requireNonNull(permissions, "permissions"); }
+    /** 启动默认与长期规则；不能在模型参数中伪造这份配置。 */
+    public record Permissions(com.jadecode.safety.PermissionProfile defaultProfile,
+            java.util.List<com.jadecode.safety.rules.PermissionRule> rules, java.util.Set<String> disabledDefaults) {
+        public Permissions {
+            java.util.Objects.requireNonNull(defaultProfile); rules = java.util.List.copyOf(rules); disabledDefaults = java.util.Set.copyOf(disabledDefaults);
+            if (!com.jadecode.safety.rules.DefaultPermissionRules.IDS.containsAll(disabledDefaults)) throw new IllegalArgumentException("未知默认权限规则编号");
+            if (rules.stream().map(com.jadecode.safety.rules.PermissionRule::id).distinct().count() != rules.size()) throw new IllegalArgumentException("权限规则 id 重复");
+        }
+        public com.jadecode.safety.PermissionState state(com.jadecode.safety.rules.PermissionRuleStore store) {
+            return new com.jadecode.safety.PermissionState(defaultProfile, rules, disabledDefaults, store);
+        }
+    }
     /** 兼容已有离线装配；未指定记忆设置时使用相同默认值。 */
     public JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimits limits) {
         this(tui, compaction, limits, new Memory(8000));

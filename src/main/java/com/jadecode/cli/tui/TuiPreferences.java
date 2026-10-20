@@ -17,6 +17,8 @@ public final class TuiPreferences {
     public String load() throws IOException { return loadSettings().tui().theme(); }
     /** 只改 tui.theme，统一配置里的其它项必须保留。 */
     public void save(String theme) throws IOException { file.saveTheme(theme); }
+    /** 只保存用户明确选择的启动默认，不把一次临时切换偷偷持久化。 */
+    public void savePermission(com.jadecode.safety.PermissionProfile profile) throws IOException { file.savePermissionProfile(profile); }
     /** 排队保存，不在界面线程等待磁盘；回调只报告结果，不修改界面状态。 */
     public synchronized void saveLater(String theme, java.util.function.Consumer<IOException> completed) {
         pending = pending.handle((value, error) -> null).thenRunAsync(() -> {

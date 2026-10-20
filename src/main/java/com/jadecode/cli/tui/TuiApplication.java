@@ -27,7 +27,7 @@ import com.jadecode.tui.theme.Theme;
 public final class TuiApplication {
     /** 装配用接收者；可注入假会话进行 PTY 验证，不必读取真实凭据或调用付费模型。 */
     public record Wiring(Consumer<String> output, Consumer<String> errors, Supplier<ResponseStream> streams,
-            ExecutionObserver observer, JadeSettings settings) { }
+            ExecutionObserver observer, JadeSettings settings, com.jadecode.safety.PermissionState permissions) { }
     @FunctionalInterface public interface SessionFactory { SessionRuntime create(Wiring wiring); }
 
     /** 生产入口。创建客户端不等于调用模型；实际提示词仍由用户提交触发。 */
@@ -37,8 +37,13 @@ public final class TuiApplication {
 
     /** 启动入口与会话内 /resume 共用同一个 Host 和加载器；空串表示打开选择器。 */
     public int run(String resume) {
-        return run(w -> JadeCodeFactory.create((hooks, cwd, output) -> { }, w.output(), w.errors(), w.streams(), w.observer(), w.settings()),
-                JadeConfigFile.defaultPath(), resume);
+        return run(resume, null);
+    }
+
+    /** 显式命令行档位只影响本次 CLI，不修改用户启动默认。 */
+    public int run(String resume, com.jadecode.safety.PermissionProfile override) {
+        return run(w -> JadeCodeFactory.create((hooks, cwd, output) -> { }, w.output(), w.errors(), w.streams(), w.observer(), w.settings(), w.permissions()),
+                JadeConfigFile.defaultPath(), resume, override);
     }
 
     /**
@@ -55,6 +60,11 @@ public final class TuiApplication {
 
     /** 可注入入口；factory 决定如何装配客户端，离线验证可提供假客户端和临时偏好路径。 */
     public int run(SessionFactory factory, Path prefs, String resume) {
+        return run(factory, prefs, resume, null);
+    }
+
+    /** 可注入配置与启动档位；验证使用临时配置和假模型，不触碰真实用户配置。 */
+    public int run(SessionFactory factory, Path prefs, String resume, com.jadecode.safety.PermissionProfile override) {
         PrintStream originalOut = System.out, originalErr = System.err;
         var queue = new LinkedBlockingQueue<UiEvent>(); var accepting = new AtomicBoolean(true);
         Consumer<UiEvent> events = event -> { if (accepting.get()) queue.offer(event); };
@@ -72,6 +82,9 @@ public final class TuiApplication {
             var preferences = new TuiPreferences(prefs);
             // 用户显式写错压缩开关时不能只提示“主题读取失败”再偷偷按另一种管线运行。
             JadeSettings settings = preferences.loadSettings();
+            var permissions = settings.permissions().state(new JadeConfigFile(prefs));
+            if (override != null) permissions.select(override);
+            state.permissionProfile = permissions.snapshot().profile().label();
             state.theme = settings.tui().theme(); state.thinkingVisible = settings.tui().thinkingVisible();
             state.toolsExpanded = settings.tui().toolsExpanded(); state.commandSuggestions = settings.tui().commandSuggestions();
             // 捕获旧输出必须在 Terminal 建立之后，否则 renderer 会截获自己形成递归。
@@ -82,7 +95,7 @@ public final class TuiApplication {
                 Consumer<UiEvent> scoped = event -> events.accept(new UiEvent.Scoped(generation, event));
                 var bridge = new ExecutionUiBridge(scoped);
                 return factory.create(new Wiring(text -> bridge.message(text, false), text -> bridge.message(text, true),
-                        () -> new StreamingAdapter(scoped), bridge, settings));
+                        () -> new StreamingAdapter(scoped), bridge, settings, permissions));
             }, warning -> events.accept(new UiEvent.Message("System", "Warning", warning, true)));
             SessionHost sessions = host;
             TerminalSession screen = terminal;
