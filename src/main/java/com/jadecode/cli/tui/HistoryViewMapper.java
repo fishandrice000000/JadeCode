@@ -86,7 +86,7 @@ public final class HistoryViewMapper {
                 state.tools.put("leader/" + use.id(), card);
             } else if (block instanceof ToolResultBlock result) {
                 var card = state.tools.get("leader/" + result.toolUseId());
-                if (card != null) { card.replace(result.content()); card.status = "HISTORICAL"; }
+                if (card != null) { card.replace(result.content()); card.status = result.isError() ? "HISTORICAL ERROR" : "HISTORICAL"; }
             } else if (message.role() == Role.ASSISTANT && block instanceof TextBlock text && !text.text().isBlank()) {
                 var card = state.add("leader", "Reply", "Reply", text.text()); card.status = "HISTORICAL";
             } else if (message.role() == Role.ASSISTANT && block instanceof ThinkingBlock thinking) {

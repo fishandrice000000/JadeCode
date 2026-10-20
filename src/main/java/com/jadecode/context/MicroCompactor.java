@@ -107,7 +107,7 @@ final class MicroCompactor {
                 compactedMessages = new ArrayList<>(messages);
             }
             List<ContentBlock> content = new ArrayList<>(message.content());
-            content.set(position.blockIndex(), new ToolResultBlock(result.toolUseId(), replacement));
+            content.set(position.blockIndex(), result.withContent(replacement));
             compactedMessages.set(position.messageIndex(), new Message(message.role(), content));
             currentChars = ContextSerialization.estimateChars(compactedMessages);
         }

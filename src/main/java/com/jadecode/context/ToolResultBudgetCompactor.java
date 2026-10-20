@@ -49,7 +49,7 @@ final class ToolResultBudgetCompactor {
             String replacement = persistLargeOutput(result.toolUseId(), result.content());
             if (replacement.equals(result.content())) continue;
             // 新建 block 和外层消息，不对已有的不可变 content 调用 set。
-            content.set(i, new ToolResultBlock(result.toolUseId(), replacement)); changed = true;
+            content.set(i, result.withContent(replacement)); changed = true;
         }
         if (!changed) return messages;
         List<Message> result = new ArrayList<>(messages);
@@ -129,7 +129,7 @@ final class ToolResultBudgetCompactor {
             String persistedContent = persistLargeOutput(id, content);
 
             // 6. 用新 ToolResultBlock 替换对应位置，更新批次总长度。
-            ToolResultBlock budgetedResult = new ToolResultBlock(id, persistedContent);
+            ToolResultBlock budgetedResult = u.withContent(persistedContent);
             budgetedContents.set(i, budgetedResult);
             totalLength -= content.length();
             totalLength += persistedContent.length();

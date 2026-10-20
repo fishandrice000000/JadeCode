@@ -251,13 +251,13 @@ public class AgentExecutor implements AutoCloseable {
                 String blocked = hooks.trigger(Hooks.PRE_TOOL_USE,
                         Map.of(Hooks.PARAM_BLOCK, call, Hooks.PARAM_CONTEXT, context));
                 if (blocked != null) {
-                    results.add(new ToolResultBlock(call.id(), blocked));
+                    results.add(new ToolResultBlock(call.id(), blocked, true));
                     notice(ExecutionNotice.event(ExecutionNotice.Kind.TOOL_END, batchId + "/" + call.id(), call.name(), blocked, "BLOCKED"));
                     continue;
                 }
                 Tool tool = tools.get(call.name());
                 if (tool == null) {
-                    results.add(new ToolResultBlock(call.id(), "Error: Unknown tool: " + call.name()));
+                    results.add(new ToolResultBlock(call.id(), "Error: Unknown tool: " + call.name(), true));
                     notice(ExecutionNotice.event(ExecutionNotice.Kind.TOOL_END, batchId + "/" + call.id(), call.name(), "Unknown tool", "NOT_RUN"));
                     continue;
                 }
@@ -270,10 +270,11 @@ public class AgentExecutor implements AutoCloseable {
                 // 整轮用时另由 Session 的 TurnTimer 统计，并扣除人工审批等待，不能在这里累加。
                 toolStarted = System.nanoTime();
                 attempted = true;
-                String output = tool.execute(input, context);
+                com.jadecode.tools.ToolOutcome outcome = tool.executeOutcome(input, context);
+                String output = outcome.content();
                 // 先记下工具确实返回的结果，再显示日志，免得日志出错后连执行结果都丢掉。
-                results.add(new ToolResultBlock(call.id(), output));
-                notice(ExecutionNotice.event(ExecutionNotice.Kind.TOOL_END, batchId + "/" + call.id(), call.name(), output, "RETURNED")
+                results.add(new ToolResultBlock(call.id(), output, outcome.isError()));
+                notice(ExecutionNotice.event(ExecutionNotice.Kind.TOOL_END, batchId + "/" + call.id(), call.name(), output, outcome.isError() ? "ERROR" : "RETURNED")
                         .timed(System.nanoTime() - toolStarted));
                 usedTodo |= call.name().equals(TODO_TOOL);
                 compact |= call.name().equals(COMPACT_TOOL) && CompactTool.OUTPUT.equals(output);
@@ -290,7 +291,7 @@ public class AgentExecutor implements AutoCloseable {
                         index == executing && attempted ? "ERROR" : "NOT_RUN")
                         .timed(index == executing && attempted ? System.nanoTime() - toolStarted : 0));
                 results.add(new ToolResultBlock(calls.get(index).id(),
-                        "Error: Tool batch interrupted; this call did not produce a result. The task failed."));
+                        "Error: Tool batch interrupted; this call did not produce a result. The task failed.", true));
             }
         }
         // 3. 一批工具只加一次计数；任务已经失败，就不再加“更新 todo”的继续工作提示。

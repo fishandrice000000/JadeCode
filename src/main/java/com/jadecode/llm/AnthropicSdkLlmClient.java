@@ -249,6 +249,7 @@ public class AnthropicSdkLlmClient implements LlmClient {
             case ToolResultBlock r -> com.anthropic.models.messages.ContentBlockParam.ofToolResult(
                     com.anthropic.models.messages.ToolResultBlockParam.builder()
                             .toolUseId(r.toolUseId())
+                            .isError(r.isError())
                             .content(r.content())
                             .build());
         };

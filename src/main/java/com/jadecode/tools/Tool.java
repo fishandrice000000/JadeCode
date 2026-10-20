@@ -84,4 +84,16 @@ public interface Tool {
     default String execute(ObjectNode input, ExecutionContext context) {
         return execute(input);
     }
+
+    /**
+     * 提供带明确状态的结果，父子执行器在权限通过后调用，不另行执行第二次工具。
+     * 旧工具仍通过 execute(input, context) 执行一次，保留原来的文本契约；默认不猜测 Error 前缀。
+     * 有结构化失败标志的工具重写此入口，返回失败时仍允许模型继续处理。
+     * @param input 模型参数，具体字段由工具检查，不应修改
+     * @param context 程序提供的可信任务上下文
+     * @return 正文和失败标志，不包含 tool_use_id，不修改历史
+     */
+    default ToolOutcome executeOutcome(ObjectNode input, ExecutionContext context) {
+        return new ToolOutcome(execute(input, context), false);
+    }
 }

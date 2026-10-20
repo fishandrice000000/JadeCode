@@ -105,7 +105,7 @@ public final class SessionLoader {
         }
         List<ContentBlock> blocks = new ArrayList<>(results);
         for (int i = results.size(); i < uses.size(); i++) blocks.add(new ToolResultBlock(uses.get(i).id(),
-                "[Interrupted previous session: result was not recorded. The operation may already have executed; verify actual state before retrying.]") );
+                "[Interrupted previous session: result was not recorded. The operation may already have executed; verify actual state before retrying.]", true));
         if (last != calls) last.content().stream().filter(b -> !(b instanceof ToolResultBlock)).forEach(blocks::add);
         Message replacement = Message.userBlocks(List.copyOf(blocks));
         if (last == calls) history.add(replacement);

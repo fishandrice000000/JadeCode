@@ -64,6 +64,16 @@ class ToolResultBudgetCompactorTest {
         return (ToolResultBlock) history.getLast().content().get(index);
     }
 
+    /** 服务报告的失败不能因正文转存而变成成功；原结果和磁盘正文仍保留。 */
+    @Test
+    void persistenceKeepsExplicitErrorFlag() {
+        var failed = new ToolResultBlock("failed", "x".repeat(5000), true);
+        var history = List.of(Message.userBlocks(List.of(failed)));
+        assertTrue(result(compactor(500, 100).persistLargeResults(history), 0).isError());
+        assertTrue(result(compactor(500, 100).toolResultBudget(history), 0).isError());
+        assertEquals(5000, failed.content().length());
+    }
+
     /** 批次总正文恰好达标时，即使某一项超过单项门槛，第一层也不启动。 */
     @Test
     void exactBatchBoundaryDoesNotPersistLargeIndividualResult() {

@@ -326,7 +326,7 @@ public class SubagentRuntime {
                     // 未知工具在此短路,不进任何工具 hook——否则会打出一行"调用过"的假日志
                     Tool tool = tools.get(u.name());
                     if (tool == null) {
-                        results.add(new ToolResultBlock(u.id(), UNKNOWN_TOOL + u.name()));
+                        results.add(new ToolResultBlock(u.id(), UNKNOWN_TOOL + u.name(), true));
                         display(com.jadecode.execution.ExecutionNotice.event(com.jadecode.execution.ExecutionNotice.Kind.TOOL_END,
                                 displayCall, u.name(), UNKNOWN_TOOL + u.name(), "NOT_RUN"));
                         continue;
@@ -336,7 +336,7 @@ public class SubagentRuntime {
                     String blocked = hooks.trigger(Hooks.PRE_TOOL_USE,
                             Map.of(Hooks.PARAM_BLOCK, u, Hooks.PARAM_CONTEXT, context));
                     if (blocked != null) {
-                        results.add(new ToolResultBlock(u.id(), blocked));
+                        results.add(new ToolResultBlock(u.id(), blocked, true));
                         display(com.jadecode.execution.ExecutionNotice.event(com.jadecode.execution.ExecutionNotice.Kind.TOOL_END,
                                 displayCall, u.name(), blocked, "BLOCKED"));
                         continue;
@@ -350,9 +350,10 @@ public class SubagentRuntime {
                             displayCall, u.name(), node.toString(), "RUNNING"));
                     // 与主 Agent 相同：审批及退出检查都已结束，只统计实际调用工具的时间。
                     long toolStarted = System.nanoTime();
-                    String output = tool.execute(node, context);
+                    com.jadecode.tools.ToolOutcome outcome = tool.executeOutcome(node, context);
+                    String output = outcome.content();
                     display(com.jadecode.execution.ExecutionNotice.event(com.jadecode.execution.ExecutionNotice.Kind.TOOL_END,
-                            displayCall, u.name(), output, "RETURNED").timed(System.nanoTime() - toolStarted));
+                            displayCall, u.name(), output, outcome.isError() ? "ERROR" : "RETURNED").timed(System.nanoTime() - toolStarted));
 
                     // 只有"已知工具 + 未被拦截 + 真的执行完了 + 输出精确等于稳定文案"才算请求压缩。
                     // 判定放在执行之后:被拦的 compact 停在上面 continue,根本没有执行;别的工具返回同样
@@ -368,7 +369,7 @@ public class SubagentRuntime {
                             Map.of(Hooks.PARAM_BLOCK, u, Hooks.PARAM_OUTPUT, output));
 
                     // 记下这个调用 ID 对应的工具结果。
-                    results.add(new ToolResultBlock(u.id(), output));
+                    results.add(new ToolResultBlock(u.id(), output, outcome.isError()));
                 }
 
                 // 7. 全部结果一起加入一条 USER；现在这批每个 tool_use 都有对应的 tool_result。

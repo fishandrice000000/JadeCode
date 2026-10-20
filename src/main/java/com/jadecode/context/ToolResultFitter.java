@@ -209,7 +209,7 @@ final class ToolResultFitter {
             ResultPosition position, ToolResultBlock result, String replacement) {
         List<Message> replaced = new ArrayList<>(messages); // ① 外层浅拷贝
         List<ContentBlock> content = new ArrayList<>(message.content()); // ② 该消息 content 单独拷贝
-        content.set(position.blockIndex(), new ToolResultBlock(result.toolUseId(), replacement));
+        content.set(position.blockIndex(), result.withContent(replacement));
         replaced.set(position.messageIndex(), new Message(message.role(), content)); // ③ 新 Message 承接
         return replaced;
     }
