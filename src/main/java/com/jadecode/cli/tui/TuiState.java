@@ -52,6 +52,13 @@ public final class TuiState {
     }
     public final ArrayDeque<UiEvent.ApprovalRequested> approvals = new ArrayDeque<>();
     public int approvalChoice = -1;
+    /** 审批正文的显示行偏移及最近布局的页大小；只供阅读，不改变待批准操作。 */
+    public int approvalOffset, approvalPageSize = 1, approvalTotalLines;
+
+    /** 新申请或新队首不能沿用上一份的选项与滚动位置；原输入草稿保持不变。 */
+    public void resetApprovalView() {
+        approvalChoice = -1; approvalOffset = 0; approvalPageSize = 1; approvalTotalLines = 0;
+    }
     public SelectList selector;
     /** 命令候选只辅助编辑，不与审批／主题选择器共用焦点；Esc 后等下一次编辑再显示。 */
     public SelectList commands;

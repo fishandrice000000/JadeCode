@@ -41,6 +41,7 @@ public final class InputDecoder {
                     case "\033[C" -> "RIGHT"; case "\033[D" -> "LEFT";
                     case "\033[H", "\033[1~" -> "HOME"; case "\033[F", "\033[4~" -> "END";
                     case "\033[3~" -> "DELETE"; case "\033[Z" -> "BACKTAB";
+                    case "\033[5~" -> "PAGE_UP"; case "\033[6~" -> "PAGE_DOWN";
                     default -> "IGNORE";
                 };
                 if (s.matches("\\x1B\\[<\\d+;\\d+;\\d+M")) {

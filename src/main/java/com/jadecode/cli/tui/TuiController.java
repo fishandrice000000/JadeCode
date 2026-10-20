@@ -75,7 +75,7 @@ public final class TuiController {
             case UiEvent.Message message -> state.message(message);
             case UiEvent.ApprovalRequested request -> {
                 if (state.closing) approvals.answer(request.id(), ApprovalAnswer.DENY);
-                else { if (state.approvals.isEmpty()) state.approvalChoice = -1; state.approvals.addLast(request); }
+                else { if (state.approvals.isEmpty()) state.resetApprovalView(); state.approvals.addLast(request); }
             }
             case UiEvent.ApprovalRemoved removed -> removeApproval(removed.id());
             case UiEvent.Stopped stopped -> { return false; }
@@ -109,6 +109,8 @@ public final class TuiController {
     private void input(Input input) {
         String key = input.key();
         if (state.closing) return;
+        // 尺寸变化到新帧绘制之间，旧按钮可能已经不在屏幕上；本批后续按键不能继续批准它。
+        if (key.equals("RESIZE")) { renderer.invalidateActions(); return; }
         if (key.equals("EOF")) { close(); return; }
         if (key.equals("CTRL_C")) {
             long now = System.nanoTime();
@@ -183,7 +185,10 @@ public final class TuiController {
                 String command = state.commands.selected();
                 if (command == null) return false;
                 if (input.key().equals("TAB")) {
-                    state.editor.clear(); state.editor.insert(command, false); refreshCommands();
+                    state.editor.clear(); state.editor.insert(command, false);
+                    // Tab 只补回文字，不执行命令；补完后收起候选，避免同一完整命令显示两次。
+                    // 下一次真正编辑仍会重新启用候选，Enter 则沿普通命令提交路径执行。
+                    state.commands = null; state.commandsDismissed = true;
                 } else {
                     state.editor.submit(); state.commands = null; open(command);
                 }
@@ -404,8 +409,26 @@ public final class TuiController {
             catch (Exception failure) { events.accept(new UiEvent.ResumeFailed(failure.getMessage())); }
         });
     }
-    /** 审批独占输入焦点，按钮选择与草稿分开；排队中的另一份申请不能继承选择。 */
+    /**
+     * 审批独占输入焦点：上下键/翻页/首尾键只改变阅读位置，左右键或 Tab 才改变按钮选择。
+     * Enter 必须有明确选中项，且同一申请的按钮已经在最后画面上可见，才向 Broker 交回答复。
+     * 小窗口没有确认动作时不允许盲批；整个过程不编辑草稿、不执行工具。
+     * 排队中的另一份申请由 removeApproval 重置，不能继承本申请的高亮或阅读位置。
+     */
     private void approval(Input input) {
+        // 阅读按键不作审批答复。即使当前窗口太小而按钮不可见，也允许滚动；
+        // 真正的批准仍须通过下面基于最后已显示画面的检查。
+        int step = Math.max(1, state.approvalPageSize);
+        int last = Math.max(0, state.approvalTotalLines - step);
+        switch (input.key()) {
+            case "UP" -> { state.approvalOffset = Math.max(0, state.approvalOffset - 1); return; }
+            case "DOWN" -> { state.approvalOffset = Math.min(last, state.approvalOffset + 1); return; }
+            case "PAGE_UP" -> { state.approvalOffset = Math.max(0, state.approvalOffset - step); return; }
+            case "PAGE_DOWN" -> { state.approvalOffset = (int) Math.min(last, (long) state.approvalOffset + step); return; }
+            case "HOME" -> { state.approvalOffset = 0; return; }
+            case "END" -> { state.approvalOffset = last; return; }
+            default -> { }
+        }
         // 新队首必须先真正显示，再允许选择。仅重置 choice 不足以防住上一份申请的连按。
         if (!renderer.hasAction("approve:" + state.approvals.getFirst().id())) return;
         switch (input.key()) {
@@ -436,7 +459,7 @@ public final class TuiController {
     }
     private void removeApproval(String id) {
         boolean first = !state.approvals.isEmpty() && state.approvals.getFirst().id().equals(id);
-        state.approvals.removeIf(request -> request.id().equals(id)); if (first) state.approvalChoice = -1;
+        state.approvals.removeIf(request -> request.id().equals(id)); if (first) state.resetApprovalView();
     }
     /** 已提交的本地改名/设置先完成，再关闭日志；不等待业务任务自然做完。 */
     private void close() {

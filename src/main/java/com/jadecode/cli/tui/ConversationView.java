@@ -22,12 +22,12 @@ public final class ConversationView {
      * 把当前显示资料排成一份完整画面，不请求模型，也不消费 SessionInbox。
      * Frame 中的行号从这份画面的开头计数，不是终端当前可见区的行号；渲染器负责换算。
      * 光标和鼠标区域与文本一起计算，折叠、换行后才不会点到另一张卡或另一项审批。
-     * 这里只更新可重建的排版缓存及编辑器坐标，不删除消息原文，不写终端。
+     * 这里只更新可重建的排版缓存、编辑器坐标及审批阅读位置，不删除消息原文，不写终端。
      */
     public Frame render(TuiState state, RenderContext context) {
         int width = context.width();
         var lines = new ArrayList<StyledLine>(); var hits = new ArrayList<Frame.Hit>();
-        lines.add(StyledLine.of(DisplayWidth.take("JadeCode  /  coding agent", width), "heading"));
+        lines.add(StyledLine.of(DisplayWidth.ellipsize("JadeCode  /  coding agent", width), "heading"));
         // 1. 先按到达顺序排消息。没改过的条目复用排版，避免每帧重新解析所有 Markdown。
         for (var entry : state.entries) {
             int start = lines.size();
@@ -46,62 +46,36 @@ public final class ConversationView {
         }
         if (!state.pending.isEmpty()) {
             // 这里显示的是 Session 发来的缓冲快照；不是在界面里再排一份可执行任务。
-            lines.add(StyledLine.of(DisplayWidth.take("Queued · " + state.pendingKind + " · 空 Enter 插入当前轮次", width), "accent"));
-            lines.addAll(StyledLine.wrap(List.of(new Span(DisplayWidth.take(DisplayWidth.clean(state.pending).replace('\n', ' '), width * 2), "muted")), width));
+            lines.add(StyledLine.of(DisplayWidth.ellipsize("Queued · " + state.pendingKind + " · 空 Enter 插入当前轮次", width), "accent"));
+            lines.addAll(StyledLine.wrap(List.of(new Span(DisplayWidth.ellipsize(state.pending, width * 2), "muted")), width));
         }
         String status = status(state, System.nanoTime());
         String members = state.actors.entrySet().stream().filter(e -> !e.getKey().equals("leader") && !e.getKey().contains("/"))
                 .map(e -> e.getKey() + " " + e.getValue()).collect(java.util.stream.Collectors.joining(" · "));
         // 状态、编辑器/选择器/审批及页脚视为一整块底部区域；空位只允许补在它前面。
         int bottomStartRow = lines.size();
-        lines.add(StyledLine.of(DisplayWidth.take("── " + status + (members.isEmpty() ? "" : " · " + members), width), "accent"));
+        lines.add(StyledLine.of(DisplayWidth.ellipsize("── " + status + (members.isEmpty() ? "" : " · " + members), width), "accent"));
         int cursorRow, cursorColumn;
         // 2. 下方区域只有一个输入对象：审批优先，其次选择器，最后才是提示词编辑器。
         //    审批和选择器不改 editor，因此结束后原草稿和光标仍在。
         if (!state.approvals.isEmpty()) {
-            var request = state.approvals.getFirst();
-            String actor = state.displayActor(request.actor());
-            lines.add(StyledLine.of(DisplayWidth.take("Approval · " + (actor.isEmpty() ? "" : actor + " · ") + request.tool(), width), "warning"));
-            List<StyledLine> details = StyledLine.wrap(List.of(new Span(request.reason() + "\n" + request.arguments(), "normal")), width);
-            lines.addAll(details.subList(0, Math.min(details.size(), Math.max(2, context.height() / 4))));
-            if (!request.suggestion().isEmpty()) lines.addAll(StyledLine.wrap(
-                    List.of(new Span("长期授权范围：" + request.suggestion(), "muted")), width));
-            int row = lines.size();
-            // 同一套文字计算显示宽度和点击位置。窄屏竖排；禁用项不产生点击动作。
-            String[] labels = { "仅本次", "允许此类命令", "拒绝" };
-            String[] actions = { "approve:", "similar:", "deny:" };
-            var buttons = new ArrayList<Span>(); int column = 0, selectedColumn = 0;
-            boolean stacked = width < 42;
-            for (int i = 0; i < labels.length; i++) {
-                boolean enabled = i != 1 || !request.suggestion().isEmpty();
-                String text = "[" + (state.approvalChoice == i ? ">" : " ") + labels[i] + " ]";
-                int size = DisplayWidth.width(text);
-                String style = !enabled ? "muted" : state.approvalChoice == i ? "selected" : "normal";
-                if (stacked) lines.add(StyledLine.of(text, style));
-                else { if (i > 0) { buttons.add(new Span("  ", "normal")); column += 2; } buttons.add(new Span(text, style)); }
-                if (state.approvalChoice == i) selectedColumn = column;
-                if (enabled) hits.add(new Frame.Hit(row + (stacked ? i : 0), stacked ? 0 : column,
-                        Math.min(width, (stacked ? 0 : column) + size), actions[i] + request.id()));
-                column += size;
-            }
-            if (!stacked) lines.add(new StyledLine(buttons));
-            lines.add(StyledLine.of(DisplayWidth.take("←/→ 或 Tab 选择，Enter 确认；Esc 不作答 · 草稿已保留", width), "muted"));
-            cursorRow = row + (stacked ? Math.max(0, state.approvalChoice) : 0);
-            cursorColumn = stacked ? 0 : selectedColumn;
+            Cursor cursor = approval(state, context, lines, hits);
+            cursorRow = cursor.row(); cursorColumn = cursor.column();
         } else if (state.selector != null) {
-            lines.add(StyledLine.of(DisplayWidth.take(state.selectorKind + " · filter: " + state.selector.filter(), width), "heading"));
+            lines.add(StyledLine.of(DisplayWidth.ellipsize(state.selectorKind + " · filter: " + state.selector.filter(), width), "heading"));
             if (state.selectorKind.equals("Permission")) lines.addAll(StyledLine.wrap(
                     List.of(new Span(PermissionMenu.description(state.selector.selected()), "muted")), width));
             int first = lines.size();
-            lines.addAll(state.selector.render(width, Math.max(1, Math.min(6, context.height() / 3))));
-            lines.add(StyledLine.of(DisplayWidth.take("↑/↓ 选择 · Enter 确认 · Esc 返回草稿", width), "muted"));
-            cursorRow = first; cursorColumn = 0;
+            int max = Math.max(1, Math.min(6, context.height() / 3));
+            lines.addAll(state.selector.render(width, max));
+            lines.add(StyledLine.of(DisplayWidth.ellipsize("↑/↓ 选择 · Enter 确认 · Esc 返回草稿", width), "muted"));
+            cursorRow = first + state.selector.selectedRow(max); cursorColumn = 0;
         } else {
             if (state.commands != null) {
                 // 候选与编辑器同屏显示，不把输入区替换成只能过滤列表的选择器。
-                lines.add(StyledLine.of(DisplayWidth.take("── Commands", width), "heading"));
+                lines.add(StyledLine.of(DisplayWidth.ellipsize("── Commands", width), "heading"));
                 lines.addAll(state.commands.render(width, Math.max(1, Math.min(4, context.height() / 5))));
-                lines.add(StyledLine.of(DisplayWidth.take("↑/↓ 选择 · Tab 补全 · Enter 执行 · Esc 关闭", width), "muted"));
+                lines.add(StyledLine.of(DisplayWidth.ellipsize("↑/↓ 选择 · Tab 补全 · Enter 执行 · Esc 关闭", width), "muted"));
             }
             var editor = state.editor.layout(width, Math.max(1, context.height() * 3 / 10));
             cursorRow = lines.size() + editor.row(); cursorColumn = editor.column(); lines.addAll(editor.lines());
@@ -110,8 +84,8 @@ public final class ConversationView {
         // 3. 页脚使用会话只读快照。没有正数报告就不占一块位置，也不把未知显示为实测零。
         lines.add(StyledLine.of("─".repeat(Math.max(1, width)), "muted"));
         var fields = new ArrayList<String>();
-        fields.add(state.model);
-        fields.add(state.permissionProfile);
+        if (!state.model.isBlank()) fields.add(state.model);
+        if (!state.permissionProfile.isBlank()) fields.add(state.permissionProfile);
         if (state.session != null) {
             fields.add(state.session.thinkingLabel());
             var total = state.session.usage().total();
@@ -120,12 +94,82 @@ public final class ConversationView {
             // 只有匹配最近历史的主 Agent 报告才有效；队友的独立上下文不占 Leader 窗口。
             if (state.session.context() != null) fields.add("上下文剩余约 " + state.session.context().remainingPercent() + "%");
         }
-        fields.add("/help");
-        lines.add(StyledLine.of(DisplayWidth.take(state.directory + (state.branch.isBlank() ? "" : " · " + state.branch), width), "muted"));
-        lines.add(StyledLine.of(DisplayWidth.take(String.join(" · ", fields), width), "muted"));
-        if (!state.hint.isBlank()) lines.add(StyledLine.of(DisplayWidth.take(state.hint, width), "warning"));
+        lines.add(StyledLine.of(DisplayWidth.ellipsize(state.directory + (state.branch.isBlank() ? "" : " · " + state.branch), width), "muted"));
+        lines.add(StyledLine.of(footer(fields, width), "muted"));
+        // 审批已有自己的阅读/确认提示，不再让旧的全局 hint 挤占详情和按钮的位置。
+        if (!state.hint.isBlank() && state.approvals.isEmpty()) lines.add(StyledLine.of(DisplayWidth.ellipsize(state.hint, width), "warning"));
         // 输入区域必须留在视口内；极小窗口下只显示当前输入附近，不让光标跑到屏幕外。
         return new Frame(lines.stream().map(l -> l.crop(width)).toList(), cursorRow, Math.min(width, cursorColumn), hits, bottomStartRow);
+    }
+
+    /** 一次局部布局的光标位置，行号仍属于完整 Frame，后续底部定位会一起平移。 */
+    private record Cursor(int row, int column) { }
+
+    /**
+     * 把审批理由、完整参数和长期授权范围排成可滚动的详情，不静默丢掉命令尾部。
+     * 页大小先扣除状态、标题、行数、按钮、提示和页脚；只读取其中一页来显示，原文完整保留。
+     * 偏移属于本申请的界面状态，宽度变化后按新换行结果夹取，不能越界。
+     * 本方法只添加显示行/hit 并更新阅读位置，不批准操作、不改草稿。
+     * 过小窗口不显示可确认 hit，要求先扩大；避免按钮只露一部分时仍能键盘批准。
+     */
+    private Cursor approval(TuiState state, RenderContext context, List<StyledLine> lines, List<Frame.Hit> hits) {
+        int width = context.width();
+        var request = state.approvals.getFirst();
+        String actor = state.displayActor(request.actor());
+        lines.add(StyledLine.of(DisplayWidth.ellipsize("Approval · " + (actor.isEmpty() ? "" : actor + " · ") + request.tool(), width), "warning"));
+        String source = request.reason() + "\n参数：\n" + request.arguments()
+                + (request.suggestion().isEmpty() ? "" : "\n长期授权范围：\n" + request.suggestion());
+        List<StyledLine> details = StyledLine.wrap(List.of(new Span(source, "normal")), width);
+        boolean stacked = width < 42;
+        int footerRows = context.height() < 8 ? 0 : 3;
+        // 三个 1 依次是状态行、审批标题、详情行数；按钮横排一行/竖排三行，最后两行放操作说明。
+        int pageSize = context.height() - footerRows - 1 - 1 - 1 - (stacked ? 3 : 1) - 2;
+        state.approvalTotalLines = details.size(); state.approvalPageSize = Math.max(0, pageSize);
+        if (pageSize < 1 || width < 20) {
+            state.approvalPageSize = 0;
+            int row = lines.size();
+            lines.addAll(StyledLine.wrap(List.of(new Span("窗口太小，请扩大窗口后阅读并审批。", "warning")), width));
+            return new Cursor(row, 0);
+        }
+        // 行号说明这一页只是全文的一部分；PgUp/PgDn、上下键或 Home/End 可以到达任意一行。
+        state.approvalOffset = Math.max(0, Math.min(state.approvalOffset, Math.max(0, details.size() - pageSize)));
+        int end = Math.min(details.size(), state.approvalOffset + pageSize);
+        lines.add(StyledLine.of(DisplayWidth.ellipsize("详情 " + (state.approvalOffset + 1) + "–" + end + " / " + details.size() + " 行", width), "muted"));
+        lines.addAll(details.subList(state.approvalOffset, end));
+        int row = lines.size(), column = 0, selectedColumn = 0;
+        String[] labels = { "仅本次", "允许此类命令", "拒绝" };
+        String[] actions = { "approve:", "similar:", "deny:" };
+        var buttons = new ArrayList<Span>();
+        for (int i = 0; i < labels.length; i++) {
+            boolean enabled = i != 1 || !request.suggestion().isEmpty();
+            String text = "[" + (state.approvalChoice == i ? ">" : " ") + labels[i] + " ]";
+            int size = DisplayWidth.width(text);
+            String style = !enabled ? "muted" : state.approvalChoice == i ? "selected" : "normal";
+            if (stacked) lines.add(StyledLine.of(text, style));
+            else {
+                if (i > 0) { buttons.add(new Span("  ", "normal")); column += 2; }
+                buttons.add(new Span(text, style));
+            }
+            if (state.approvalChoice == i) selectedColumn = column;
+            if (enabled) hits.add(new Frame.Hit(row + (stacked ? i : 0), stacked ? 0 : column,
+                    (stacked ? 0 : column) + size, actions[i] + request.id()));
+            column += size;
+        }
+        if (!stacked) lines.add(new StyledLine(buttons));
+        lines.add(StyledLine.of(DisplayWidth.ellipsize(stacked ? "↑↓/PgUp/PgDn 阅读" : "↑↓ / PgUp/PgDn 阅读 · Home/End 首尾", width), "muted"));
+        lines.add(StyledLine.of(DisplayWidth.ellipsize(stacked ? "Tab 选择 · Enter 确认" : "←→ / Tab 选择 · Enter 确认 · Esc 不作答", width), "muted"));
+        return new Cursor(row + (stacked ? Math.max(0, state.approvalChoice) : 0), stacked ? 0 : selectedColumn);
+    }
+
+    /**
+     * 窄屏保留 /help 这一可用入口，其它字段不足时明确省略，不让长模型名静默吃掉全部提示。
+     * 空字段先过滤，启动时还没取得模型名也不会出现前导分隔符。take 本身的契约不变。
+     */
+    private String footer(List<String> fields, int width) {
+        String main = fields.stream().filter(s -> !s.isBlank()).collect(java.util.stream.Collectors.joining(" · "));
+        if (main.isEmpty()) return DisplayWidth.ellipsize("/help", width);
+        if (width <= 8) return DisplayWidth.ellipsize("/help", width);
+        return DisplayWidth.ellipsize(main, width - 8) + " · /help";
     }
 
     /**
@@ -223,7 +267,7 @@ public final class ConversationView {
         out.add(header(title, style, width));
         String body = entry.body.toString();
         if (entry.kind.equals("Tool")) {
-            out.add(StyledLine.of(DisplayWidth.take("  " + DisplayWidth.clean(entry.arguments).replace('\n', ' '), width), "muted"));
+            out.add(StyledLine.of(DisplayWidth.ellipsize("  " + entry.arguments, width), "muted"));
             boolean cropped = false;
             if (!entry.expanded) {
                 // 预览同时限制逻辑行和字符，防止一个超长的单行输出在折叠状态生成数万显示行。
@@ -236,12 +280,12 @@ public final class ConversationView {
             var wrapped = StyledLine.wrap(List.of(new Span(body, entry.expanded ? "normal" : "muted")), width);
             if (!entry.expanded && wrapped.size() > 10) { wrapped = wrapped.subList(0, 10); cropped = true; }
             out.addAll(wrapped);
-            if (cropped) out.add(StyledLine.of(DisplayWidth.take("… Ctrl+O 展开完整结果", width), "muted"));
+            if (cropped) out.add(StyledLine.of(DisplayWidth.ellipsize("… Ctrl+O 展开完整结果", width), "muted"));
         } else if (entry.kind.equals("Thinking")) out.addAll(StyledLine.wrap(List.of(new Span(body, "thinking")), width));
         // 参数快照中的每行都是一个字段。Markdown 会把普通换行合并为空格，不适用于这里。
         else if (entry.kind.equals("Model")) out.addAll(StyledLine.wrap(List.of(new Span(body, "normal")), width));
         else out.addAll(markdown.render(body, width));
-        if (entry.status.equals("INCOMPLETE")) out.add(StyledLine.of(DisplayWidth.take("输出中断：这些片段不是完整响应", width), "error"));
+        if (entry.status.equals("INCOMPLETE")) out.add(StyledLine.of(DisplayWidth.ellipsize("输出中断：这些片段不是完整响应", width), "error"));
         return List.copyOf(out);
     }
 
@@ -251,7 +295,7 @@ public final class ConversationView {
      * 输入标题先清理控制字符，返回可缓存的显示行，不写终端或修改原条目。
      */
     private StyledLine header(String title, String style, int width) {
-        String text = DisplayWidth.take(DisplayWidth.clean(title).replace('\n', ' '), Math.max(1, width));
+        String text = DisplayWidth.ellipsize(title, Math.max(1, width));
         int remaining = width - DisplayWidth.width(text);
         if (remaining < 3) return StyledLine.of(text, style);
         return new StyledLine(List.of(new Span(text, style), new Span(" " + "─".repeat(remaining - 1), "separator")));

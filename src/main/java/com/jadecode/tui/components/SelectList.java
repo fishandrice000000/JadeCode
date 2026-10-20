@@ -38,10 +38,20 @@ public final class SelectList {
     /** 窗口只显示选中项附近，不把整个列表塞进输入区。 */
     public List<StyledLine> render(int width, int max) {
         var out = new ArrayList<StyledLine>(); var values = visible();
-        int top = Math.max(0, selected - Math.max(1, max) + 1);
-        for (int i = top; i < Math.min(values.size(), top + max); i++)
-            out.add(StyledLine.of(DisplayWidth.take((i == selected ? "› " : "  ") + label.apply(values.get(i)), width), i == selected ? "selected" : "normal"));
-        if (values.isEmpty()) out.add(StyledLine.of("无匹配项", "muted"));
+        int limit = Math.max(1, max), top = windowTop(limit);
+        for (int i = top; i < Math.min(values.size(), top + limit); i++)
+            out.add(StyledLine.of(DisplayWidth.ellipsize((i == selected ? "› " : "  ") + label.apply(values.get(i)), width), i == selected ? "selected" : "normal"));
+        if (values.isEmpty()) out.add(StyledLine.of(DisplayWidth.ellipsize("无匹配项", width), "muted"));
         return out;
     }
+
+    /**
+     * 返回选中项在本次显示窗口中的相对行号，不是它在完整列表中的下标。
+     * 光标与 render 共用窗口起点；列表滚动后也不会把光标留在第一行。
+     * 没有匹配项时光标落在“无匹配项”这一行，不返回负下标。
+     */
+    public int selectedRow(int max) { return visible().isEmpty() ? 0 : selected - windowTop(Math.max(1, max)); }
+
+    /** 最多显示 limit 项，选中项超过首屏后窗口随之移动。 */
+    private int windowTop(int limit) { return Math.max(0, selected - limit + 1); }
 }

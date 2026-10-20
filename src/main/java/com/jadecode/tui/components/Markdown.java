@@ -24,40 +24,72 @@ public final class Markdown {
     /** 解析完整的当前显示副本；即使正在生成，也不会修改存入模型历史的原文。 */
     public List<StyledLine> render(String source, int width) {
         var lines = new ArrayList<StyledLine>();
-        blocks(parser.parse(DisplayWidth.clean(source)), "", width, lines);
+        blocks(parser.parse(DisplayWidth.clean(source)), "", "", Math.max(1, width), lines);
         while (!lines.isEmpty() && lines.getLast().text().isBlank()) lines.removeLast();
         return List.copyOf(lines);
     }
 
-    /** 递归处理块结构。列表前缀也计入可用宽度，不让缩进后的正文越过终端边界。 */
-    private void blocks(Node parent, String prefix, int width, List<StyledLine> out) {
+    /**
+     * 递归排版块结构，把首行标记与后续缩进分开：列表第一行是“• ”，续行应是两个空格。
+     * 引用的竖线则在两种前缀中都保留。前缀占用的列数先从正文宽度扣除，再把它加回每一行，
+     * 不能先把前缀混进正文再整体换行，否则只会给第一行留下竖线或缩进。
+     */
+    private void blocks(Node parent, String firstPrefix, String continuationPrefix, int width, List<StyledLine> out) {
+        boolean first = true;
         for (Node node = parent.getFirstChild(); node != null; node = node.getNext()) {
+            String prefix = first ? firstPrefix : continuationPrefix;
             if (node instanceof Paragraph || node instanceof Heading) {
-                var spans = new ArrayList<Span>(); spans.add(new Span(prefix, "muted"));
+                var spans = new ArrayList<Span>();
                 inline(node, node instanceof Heading ? "heading" : "normal", spans);
-                out.addAll(StyledLine.wrap(spans, width)); out.add(StyledLine.of("", "normal"));
-            } else if (node instanceof TableBlock) table(node, prefix, width, out);
-            else if (node instanceof FencedCodeBlock code) code(code.getLiteral(), code.getInfo(), prefix, width, out);
-            else if (node instanceof IndentedCodeBlock code) code(code.getLiteral(), "", prefix, width, out);
-            else if (node instanceof BlockQuote) blocks(node, prefix + "│ ", width, out);
+                wrapPrefixed(spans, prefix, continuationPrefix, width, out); out.add(StyledLine.of("", "normal"));
+            } else if (node instanceof TableBlock) table(node, prefix, continuationPrefix, width, out);
+            else if (node instanceof FencedCodeBlock code) code(code.getLiteral(), code.getInfo(), prefix, continuationPrefix, width, out);
+            else if (node instanceof IndentedCodeBlock code) code(code.getLiteral(), "", prefix, continuationPrefix, width, out);
+            else if (node instanceof BlockQuote) blocks(node, prefix + "│ ", continuationPrefix + "│ ", width, out);
             else if (node instanceof BulletList || node instanceof OrderedList) {
                 int number = node instanceof OrderedList ordered ? ordered.getStartNumber() : 0;
                 for (Node item = node.getFirstChild(); item != null; item = item.getNext()) {
-                    blocks(item, prefix + (node instanceof OrderedList ? number++ + ". " : "• "), width, out);
+                    String marker = node instanceof OrderedList ? number++ + ". " : "• ";
+                    String itemPrefix = (item == node.getFirstChild() ? prefix : continuationPrefix) + marker;
+                    String itemContinuation = continuationPrefix + " ".repeat(DisplayWidth.width(marker));
+                    if (item.getFirstChild() instanceof BulletList || item.getFirstChild() instanceof OrderedList) {
+                        // “- - 子项”也合法。父项没有段落时先单独显示父标记，不能粘成“• • 子项”。
+                        out.add(StyledLine.of(DisplayWidth.ellipsize(itemPrefix.stripTrailing(), width), "muted"));
+                        blocks(item, itemContinuation, itemContinuation, width, out);
+                    } else blocks(item, itemPrefix, itemContinuation, width, out);
                 }
-            } else if (node instanceof ThematicBreak) out.add(StyledLine.of("─".repeat(Math.max(1, width)), "muted"));
-            else if (node instanceof HtmlBlock html) out.addAll(StyledLine.wrap(List.of(new Span(prefix + html.getLiteral(), "normal")), width));
-            else blocks(node, prefix, width, out);
+            } else if (node instanceof ThematicBreak) wrapPrefixed(List.of(new Span("─".repeat(Math.max(1,
+                    width - Math.max(DisplayWidth.width(prefix), DisplayWidth.width(continuationPrefix)))), "muted")), prefix, continuationPrefix, width, out);
+            else if (node instanceof HtmlBlock html) wrapPrefixed(List.of(new Span(html.getLiteral(), "normal")), prefix, continuationPrefix, width, out);
+            else blocks(node, prefix, continuationPrefix, width, out);
+            first = false;
+        }
+    }
+
+    /**
+     * 正文先按扣除前缀后的宽度换行，再给每条显示行补对应前缀，并保留原有样式。
+     * 极深缩进或极窄窗口至少留一列给正文，避免只剩标记而完全看不到内容。
+     * 只裁显示前缀，不截断正文；装不下的双列字素由 StyledLine.wrap 的既有规则处理。
+     */
+    private void wrapPrefixed(List<Span> spans, String firstPrefix, String continuationPrefix, int width, List<StyledLine> out) {
+        String first = DisplayWidth.take(firstPrefix, Math.max(0, width - 1));
+        String rest = DisplayWidth.take(continuationPrefix, Math.max(0, width - 1));
+        int contentWidth = Math.max(1, width - Math.max(DisplayWidth.width(first), DisplayWidth.width(rest)));
+        List<StyledLine> wrapped = StyledLine.wrap(spans, contentWidth);
+        for (int row = 0; row < wrapped.size(); row++) {
+            var line = new ArrayList<Span>(); line.add(new Span(row == 0 ? first : rest, "muted"));
+            line.addAll(wrapped.get(row).spans()); out.add(new StyledLine(line));
         }
     }
 
     /**
      * 把 GFM 表格排成终端网格，参考 Pi 的“先分配列宽，再分别换行单元格”。
      * 解析转义管道符和行内代码仍由 CommonMark 完成，不能用 split("|") 重新猜列。
-     * width 是整行可用列数，prefix 的引用／列表缩进和边框也占空间。
+     * width 是整行可用列数，首行前缀、后续引用／列表缩进和边框也占空间。
+     * 列表标记只放在第一条边框，后面的边框与单元格使用续行缩进。
      * 本方法只读取语法树，不修改回复正文，也不向终端直接写入任何控制符。
      */
-    private void table(Node table, String prefix, int width, List<StyledLine> out) {
+    private void table(Node table, String firstPrefix, String prefix, int width, List<StyledLine> out) {
         var rows = new ArrayList<List<TableCell>>();
         // TableBlock 下先是表头／表体容器，容器下才是每一行。
         for (Node section = table.getFirstChild(); section != null; section = section.getNext()) {
@@ -71,14 +103,15 @@ public final class Markdown {
         }
         if (rows.isEmpty() || rows.getFirst().isEmpty()) return;
         int columns = rows.getFirst().size();
-        int available = Math.max(0, width - DisplayWidth.width(prefix));
+        int available = Math.max(0, width - Math.max(DisplayWidth.width(firstPrefix), DisplayWidth.width(prefix)));
         // n 列网格的边框和左右内边距共占 3*n+1 列；每列至少需要一格正文。
         // 极窄终端不裁掉后几列，改为按顺序显示可换行的文本行。
         if ((long) columns * 4 + 1 > available) {
-            for (var row : rows) {
-                var spans = new ArrayList<Span>(); spans.add(new Span(prefix + "| ", "muted"));
+            for (int index = 0; index < rows.size(); index++) {
+                var spans = new ArrayList<Span>();
+                var row = rows.get(index);
                 for (TableCell cell : row) { inline(cell, "normal", spans); spans.add(new Span(" | ", "muted")); }
-                out.addAll(StyledLine.wrap(spans, width));
+                wrapPrefixed(spans, (index == 0 ? firstPrefix : prefix) + "| ", prefix + "| ", width, out);
             }
             out.add(StyledLine.of("", "normal")); return;
         }
@@ -106,7 +139,7 @@ public final class Markdown {
         }
 
         // 3. 先画表头，再画数据行；每行高度是其中最高单元格的换行数。
-        tableBorder(prefix, widths, "┌", "┬", "┐", out);
+        tableBorder(firstPrefix, widths, "┌", "┬", "┐", out);
         for (int index = 0; index < rows.size(); index++) {
             List<TableCell> row = rows.get(index);
             var wrapped = new ArrayList<List<StyledLine>>(); int height = 1;
@@ -158,19 +191,27 @@ public final class Markdown {
         }
     }
 
-    /** 基本词法配色，不冒充完整语言服务器。代码字符、空格和缩进均保留，只增加显示样式。 */
-    private void code(String text, String language, String prefix, int width, List<StyledLine> out) {
-        out.add(StyledLine.of(DisplayWidth.take(prefix + "╭─ " + language, width), "muted"));
-        for (String line : text.split("\n", -1)) {
-            var spans = new ArrayList<Span>(); spans.add(new Span(prefix + "│ ", "muted"));
-            var matcher = TOKENS.matcher(line); int from = 0;
-            while (matcher.find()) {
-                spans.add(new Span(line.substring(from, matcher.start()), "code"));
-                spans.add(new Span(matcher.group(), matcher.group(1) != null ? "comment" : matcher.group(2) != null ? "string" : "keyword"));
-                from = matcher.end();
+    /**
+     * 基本词法配色：每条软换行都保留代码竖线，不改源码的空格与缩进。
+     * CommonMark 为普通代码行保留末尾换行；只去掉这一处终止符，不能 stripTrailing，
+     * 否则用户刻意写下的额外空行及行尾空格也会丢失。完全空的代码块只画上下边框。
+     */
+    private void code(String text, String language, String firstPrefix, String prefix, int width, List<StyledLine> out) {
+        out.add(StyledLine.of(DisplayWidth.ellipsize(firstPrefix + "╭─ " + language, width), "muted"));
+        if (!text.isEmpty()) {
+            String body = text.endsWith("\n") ? text.substring(0, text.length() - 1) : text;
+            for (String line : body.split("\n", -1)) {
+                var spans = new ArrayList<Span>();
+                var matcher = TOKENS.matcher(line); int from = 0;
+                while (matcher.find()) {
+                    spans.add(new Span(line.substring(from, matcher.start()), "code"));
+                    spans.add(new Span(matcher.group(), matcher.group(1) != null ? "comment" : matcher.group(2) != null ? "string" : "keyword"));
+                    from = matcher.end();
+                }
+                spans.add(new Span(line.substring(from), "code"));
+                wrapPrefixed(spans, prefix + "│ ", prefix + "│ ", width, out);
             }
-            spans.add(new Span(line.substring(from), "code")); out.addAll(StyledLine.wrap(spans, width));
         }
-        out.add(StyledLine.of(DisplayWidth.take(prefix + "╰─", width), "muted"));
+        out.add(StyledLine.of(DisplayWidth.ellipsize(prefix + "╰─", width), "muted"));
     }
 }
