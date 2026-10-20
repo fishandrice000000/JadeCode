@@ -18,7 +18,7 @@ import com.jadecode.util.Json;
  * 回退后继续使用意外的压缩方式。保存主题时重新读当前文件，只改 tui.theme，保留其它项。
  * 写入先完成同目录临时文件再替换；这里的进程内锁不提供多进程同时改配置的保证。</p>
  */
-public final class JadeConfigFile {
+public final class JadeConfigFile implements com.jadecode.safety.rules.PermissionRuleStore {
     private static final Object WRITE_LOCK = new Object();
     private final Path path;
 
@@ -67,6 +67,26 @@ public final class JadeConfigFile {
         }
     }
 
+    /** 明确保存启动默认，只改 permissions.defaultProfile；不会自动改变另一份运行时的当前档位。 */
+    public void savePermissionProfile(com.jadecode.safety.PermissionProfile profile) throws IOException {
+        synchronized (WRITE_LOCK) {
+            ObjectNode root = Files.exists(path) ? read(path) : template();
+            ObjectNode permissions = section(root, "permissions").deepCopy(); permissions.put("defaultProfile", profile.value());
+            root.set("permissions", permissions); parse(root); write(root);
+        }
+    }
+
+    /** 保存一条明确授权，保留所有其它配置。内存状态由调用方在本次 IO 成功后发布。 */
+    @Override public void save(com.jadecode.safety.rules.PermissionRule rule) throws IOException {
+        synchronized (WRITE_LOCK) {
+            ObjectNode root = Files.exists(path) ? read(path) : template();
+            var current = parse(root).permissions();
+            var rules = new java.util.ArrayList<>(current.rules()); rules.add(rule);
+            ObjectNode permissions = section(root, "permissions").deepCopy(); permissions.set("rules", Json.mapper().valueToTree(rules));
+            root.set("permissions", permissions); parse(root); write(root);
+        }
+    }
+
     /** 导出可复制的完整默认配置，不含任何凭据；也用于第一次保存时给用户可编辑的配置项。 */
     public static ObjectNode template() {
         JadeSettings defaults = JadeSettings.defaults();
@@ -74,6 +94,9 @@ public final class JadeConfigFile {
         root.set("tui", Json.mapper().valueToTree(defaults.tui()));
         root.set("memory", Json.mapper().valueToTree(defaults.memory()));
         root.set("modelMetadata", Json.mapper().valueToTree(defaults.modelMetadata()));
+        ObjectNode permissions = root.putObject("permissions");
+        permissions.put("defaultProfile", defaults.permissions().defaultProfile().value());
+        permissions.putArray("rules"); permissions.putArray("disabledDefaults");
         ObjectNode compact = Json.mapper().valueToTree(defaults.compaction());
         compact.set("limits", Json.mapper().valueToTree(defaults.limits())); root.set("compaction", compact);
         return root;
@@ -131,7 +154,41 @@ public final class JadeConfigFile {
             try { thinking = com.jadecode.llm.ThinkingSettings.parse(reasoning.get("effort").textValue()); }
             catch (IllegalArgumentException invalid) { throw new IOException("config.thinking.effort 无效"); }
         }
-        return new JadeSettings(tui, policy, limits, new JadeSettings.Memory(extractionTokens), discovery, thinking);
+        return new JadeSettings(tui, policy, limits, new JadeSettings.Memory(extractionTokens), discovery, thinking, permissions(root));
+    }
+
+    /** 严格读取权限配置；未知枚举/类型/编号不能静默降级为放行。异常不回显配置原文。 */
+    private static JadeSettings.Permissions permissions(ObjectNode root) throws IOException {
+        ObjectNode p = section(root, "permissions");
+        try {
+            var profile = p.has("defaultProfile") ? com.jadecode.safety.PermissionProfile.parse(p.path("defaultProfile").asText())
+                    : com.jadecode.safety.PermissionProfile.WORKSPACE;
+            var rules = new java.util.ArrayList<com.jadecode.safety.rules.PermissionRule>();
+            var disabled = new java.util.LinkedHashSet<String>();
+            if (p.has("rules")) {
+                if (!p.path("rules").isArray() || p.path("rules").size() > 1000) throw new IllegalArgumentException();
+                for (var rule : p.path("rules")) {
+                    // 权限规则不能沿用聊天反序列化的宽松模式：workspce 拼错不能变成全局授权。
+                    if (!rule.isObject()) throw new IllegalArgumentException();
+                    for (String key : java.util.List.of("id", "effect", "kind", "tool", "workspace"))
+                        if (!rule.path(key).isTextual()) throw new IllegalArgumentException();
+                    for (String key : java.util.List.of("operation", "path"))
+                        if (rule.has(key) && !rule.path(key).isTextual()) throw new IllegalArgumentException();
+                    if (rule.has("recursive") && !rule.path("recursive").isBoolean()) throw new IllegalArgumentException();
+                    if (rule.has("argvPrefix")) {
+                        if (!rule.path("argvPrefix").isArray()) throw new IllegalArgumentException();
+                        for (var token : rule.path("argvPrefix")) if (!token.isTextual()) throw new IllegalArgumentException();
+                    }
+                    rules.add(Json.mapper().readerFor(com.jadecode.safety.rules.PermissionRule.class)
+                            .with(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES).readValue(rule));
+                }
+            }
+            if (p.has("disabledDefaults")) {
+                if (!p.path("disabledDefaults").isArray()) throw new IllegalArgumentException();
+                for (var id : p.path("disabledDefaults")) { if (!id.isTextual()) throw new IllegalArgumentException(); disabled.add(id.textValue()); }
+            }
+            return new JadeSettings.Permissions(profile, rules, disabled);
+        } catch (Exception invalid) { throw new IOException("config.permissions 无效，请检查档位、规则及默认保护编号"); }
     }
 
     /** 手动限额允许省略／null 表示未知；其它值必须是可表示的正整数，不能把字符串数字当事实。 */

@@ -87,5 +87,85 @@ Full Access 在 TUI 中需一次明确确认；CLI 的显式 `--permission` 参�
 ## 7. 状态
 
 - 完整设计：已留档。
-- 实现、工程自审、构建/定向验证：待完成。
+- 实现、工程自审与定向验证：通过，详见 §9–§10。
 - 用户阅读与独立真机验收：待开始。
+
+## 8. 配置格式与默认保护
+
+权限配置仍在现有用户 `config.json`，不会读项目文件给项目自身授权，也不写 CODEX_HOME。
+示例仅说明格式，不代表程序已替用户保存这条规则：
+
+```json
+{
+  "permissions": {
+    "defaultProfile": "workspace",
+    "rules": [
+      {
+        "id": "user.example-build",
+        "effect": "ALLOW",
+        "kind": "COMMAND",
+        "tool": "bash",
+        "workspace": "/absolute/workspace",
+        "argvPrefix": ["mvn", "package"]
+      }
+    ],
+    "disabledDefaults": []
+  }
+}
+```
+
+每条规则必须显式提供 id/effect/kind/tool/workspace。workspace 空字符串才表示用户明确允许跨工作区匹配；
+规则字段拼写错误、非法类型、重复 ID 或未知默认编号均报错。PATH 规则另填 operation=READ/WRITE/DELETE、
+绝对 path 与可选 recursive；TOOL 规则不混填路径/命令字段。
+
+默认编号及含义：
+
+- `builtin.root-delete`：已识别文件系统根目录删除，硬拒。
+- `builtin.raw-device-write`：已识别设备写入/格式化，硬拒（输出重定向 `/dev/null` 不误报）。
+- `builtin.system-control`：实际 sudo/su/关机等可执行名，强制人工。
+- `builtin.sensitive-access` / `builtin.sensitive-write`：已识别凭据、环境文件、启动脚本、Git 元数据、权限配置及系统位置，强制人工。
+- `builtin.delete`：普通删除询问；Full Access 的普通删除免询问。
+- `builtin.outside`：已识别工作区外访问询问；Full Access 普通越界免询问。
+- `builtin.complex-shell`：动态展开、复杂语法询问；Full Access 普通复杂命令免询问。
+
+默认硬保护先于普通 allow，只有用户在 disabledDefaults 明确列出 ID 才关闭该条默认保护，
+不会因此取消显式 deny/ask。无法分析的任意程序仍可能有未识别副作用，不宣称硬保护可穿透任意脚本。
+外部编辑配置下次启动读取；本轮没有文件监听热加载，也不提供多 CLI 并发写保证。
+Read Only 检查模型调用的操作，日志、压缩、记忆等 Harness 自身状态仍照常保存。
+
+## 9. 实现与自审记录
+
+- Approval 从 execution 迁至 safety/approval；移除旧 CommandPolicy、PathGuard、DelegatedApproval 及 Session 的审批工厂插槽。
+  执行来源与退出检查仍由 ExecutionContext 提供，队友与子代理沿用来源，辅助审批拿到当前具体任务说明。
+- 工厂将同一 PermissionState 交给所有 Agent；TUI /resume 复用它。辅助审批采用单独用途记账，不进入主历史或流式展示。
+- 人工申请带独立编号、操作/输入副本、规则版本、程序生成的建议；TUI 和 run 只答三项。
+  规则变更唤醒旧等待，重判真实目标；规则先保存后采用，失败不执行。显式拒绝、无人工通道、辅助拒绝分别给出原因。
+- 自审修复：数字文件名不能漏掉删除判断；重定向不可混入普通前缀授权；敏感原名与链接真实目标都检查；
+  权限规则必须严格解析，避免字段拼错变成跨工作区允许；复合调用的 allow 覆盖所有段；补齐 reopen_task / retry_team_message 声明。
+- PTY 初次检查发现新页脚刷新在关闭后调用可操作 current() 导致退出报错，已改 SessionHost 的只读权限快照并复测。
+  同时使用不可变内存快照供重绘读取，配置写入和可能等待保存的档位切换不占 UI 线程。
+- 旧四项 CommandPolicy 与六项 PathGuard 测试随契约维护并改名为 ShellPermissionCheckTest / FilePermissionCheckTest，
+  保留原用例数量，没有新增永久测试。临时验证仅使用假模型、临时配置与临时工作区，不读凭据、不访问真实 API。
+- 已知限制：有限 shell 解释可能保守多问，也可能看不到一般程序内部副作用；无沙箱，不消除文件系统 TOCTOU；
+  辅助请求 20 秒超时取消本地等待，不保证远端请求已停止；跨进程配置协调和运行中手改热加载未实现。
+
+工程自审结论：**Pass**。本轮已检查范围没有已知阻塞问题；上面的能力限制属于本阶段明确取舍，
+不声称“任意 shell 都能静态判安全”，也不以自审替代真实模型行为或用户独立真机验收。
+
+## 10. 验证与交付
+
+- `mvn -q clean package -Dtest=MainTest,MainCompactionAssemblyTest,PermissionGateTest,ShellPermissionCheckTest,FilePermissionCheckTest,AgentExecutorTest,SubagentRuntimeTest`：
+  退出 0，已有 **62** 条测试，0 failure / 0 error / 0 skipped，产物生成。
+- 最后权限检查调整再用 `mvn -q -Dtest=PermissionGateTest,ShellPermissionCheckTest,FilePermissionCheckTest package`：
+  退出 0，已有 **18** 条，0 failure / 0 error / 0 skipped。未增加永久测试。
+- 临时离线检查 **42** 项通过：档位、规则优先级、复合命令、重定向、cwd、数字文件名、链接、规则保存/恢复/失败、
+  配置保留与严格校验、陈旧答复、参数变化/null 答复、独立辅助请求的严格输出与来源、三按钮宽窄布局。
+- 假模型 PTY 检查 **24** 项通过：四档菜单、Full Access 二次确认、切换、三项审批与空 Enter、长期授权保存及下次复用、
+  default 保存、正常退出码与终端恢复；文本审批适配器另有 **4** 项通过（1/2/3、EOF，空行不自动作答）。
+- 非法 `--permission` 在加载模型/终端前退出 2；检查 jar 不再包含旧 execution.Approval 或三份旧权限实现。
+- 最后打包与文本输出检查只针对对应展示改动；临时验证文件交付前清理，不进入 Git。
+- 没有真实 API 调用，没有读取凭据、修改机器 provider/认证或真实用户 config.json。真实辅助模型质量、真实终端手感与最终用户验收待完成。
+- 阅读顺序与四道架构题见 [permissions-review.md](../../notes/s13/permissions-review.md)。
+
+Git：设计留档为 `a724382`。实现作为下一笔完整能力提交，不 push、不改历史。
+既有三项文档删除、三份用户笔记编辑及 docs/reviews/ 均排除；它们的空白问题也不代为清理。

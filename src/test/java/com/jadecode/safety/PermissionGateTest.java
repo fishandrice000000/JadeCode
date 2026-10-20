@@ -7,7 +7,9 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.jadecode.execution.Approval;
+import com.jadecode.safety.approval.Approval;
+import com.jadecode.safety.approval.ApprovalAnswer;
+import com.jadecode.safety.approval.ApprovalRequest;
 import com.jadecode.execution.ExecutionContext;
 import com.jadecode.util.Json;
 import com.jadecode.util.PathResolver;
@@ -23,8 +25,7 @@ class PermissionGateTest {
 
     /** cwd 基准的闸门(注入假审批):bash 用例与文件用例共用 */
     private static PermissionGate gateWith(RecordingApproval approval) {
-        PathGuard guard = new PathGuard(new PathResolver(Path.of("").toAbsolutePath()));
-        return new PermissionGate(new CommandPolicy(), guard, approval);
+        return new PermissionGate(new PathResolver(Path.of("").toAbsolutePath()), PermissionState.defaults(), approval);
     }
 
     /** 记录审批调用:放行/拒绝开关 + 捕获透传参数 */
@@ -33,23 +34,24 @@ class PermissionGateTest {
         final List<String[]> calls = new ArrayList<>();
 
         @Override
-        public boolean ask(String toolName, ObjectNode input, String reason) {
-            calls.add(new String[] { toolName, reason });
-            return allow;
+        public ApprovalAnswer ask(ApprovalRequest request) {
+            calls.add(new String[] { request.tool(), request.reason() });
+            return allow ? ApprovalAnswer.ALLOW_ONCE : ApprovalAnswer.DENY;
         }
     }
 
-    /** ① 闸门 1 短路(bash):deny list 命中 → 直接拒绝并带回理由,审批未被调用 */
+    /** 根目录删除仍是硬拒绝；普通文件名包含 sudo 不再误判。 */
     @Test
-    void denyListBlocksWithoutAsking() {
+    void rootDeleteBlocksWithoutAsking() {
         RecordingApproval approval = new RecordingApproval();
         PermissionGate gate = gateWith(approval);
 
-        assertEquals("Blocked: 'sudo' is on the deny list", gate.check("bash", input("command", "sudo ls")));
+        assertNotNull(gate.check("bash", input("command", "rm -rf /")));
+        assertNull(gate.check("bash", input("command", "cat sudo-guide.md")));
         assertTrue(approval.calls.isEmpty());
     }
 
-    /** ② 闸门 3(bash):破坏性命令走审批;放行 → null,拒绝 → 命中理由 */
+    /** 普通删除走审批；放行返回 null，拒绝保留规则原因。 */
     @Test
     void destructiveCommandAsksApproval() {
         RecordingApproval approval = new RecordingApproval();
@@ -59,7 +61,7 @@ class PermissionGateTest {
         assertNull(gate.check("bash", input("command", "rm foo.txt")));
 
         approval.allow = false;
-        assertEquals("Potentially destructive command", gate.check("bash", input("command", "rm foo.txt")));
+        assertTrue(gate.check("bash", input("command", "rm foo.txt")).contains("删除目标"));
     }
 
     /** ③ 审批收到的参数透传:工具名与命中理由 */
@@ -72,7 +74,7 @@ class PermissionGateTest {
 
         assertEquals(1, approval.calls.size());
         assertEquals("bash", approval.calls.get(0)[0]);
-        assertEquals("Potentially destructive command", approval.calls.get(0)[1]);
+        assertTrue(approval.calls.get(0)[1].contains("builtin.delete"));
     }
 
     /** ④ 无规则工具(glob):直接放行且不问 */
@@ -101,19 +103,18 @@ class PermissionGateTest {
             t.start();
             t.join();
         });
-        assertEquals("Potentially destructive command", result.get());
+        assertTrue(result.get().contains("删除目标"));
         assertTrue(approval.calls.isEmpty());
     }
 
-    /** ⑥ 文件工具高危路径(/etc):硬拒并带回理由,审批未被调用 */
+    /** /etc 读取现在按工作区外访问询问，不再永久硬拒整个目录。 */
     @Test
-    void highRiskFilePathIsDeniedWithoutAsking() {
+    void outsideSystemReadRequiresApproval() {
         RecordingApproval approval = new RecordingApproval();
         PermissionGate gate = gateWith(approval);
 
-        assertEquals("Access to protected directory: /etc/passwd",
-                gate.check("read_file", input("path", "/etc/passwd")));
-        assertTrue(approval.calls.isEmpty());
+        assertNotNull(gate.check("read_file", input("path", "/etc/passwd")));
+        assertEquals(1, approval.calls.size());
     }
 
     /** ⑦ 文件工具工作区外路径(/tmp):走审批;放行 → null,拒绝 → 命中理由 */
@@ -126,7 +127,7 @@ class PermissionGateTest {
         assertNull(gate.check("write_file", input("path", "/tmp/jadecode-v2-test.txt")));
 
         approval.allow = false;
-        assertEquals("Access outside workspace", gate.check("write_file", input("path", "/tmp/jadecode-v2-test.txt")));
+        assertTrue(gate.check("write_file", input("path", "/tmp/jadecode-v2-test.txt")).contains("工作区外"));
     }
 
     /** ⑧ bash 触碰高危目录(cat /etc/hostname):走审批,堵旁路洞 */
@@ -136,8 +137,7 @@ class PermissionGateTest {
         PermissionGate gate = gateWith(approval);
 
         approval.allow = false;
-        assertEquals("Potentially touches protected directory",
-                gate.check("bash", input("command", "cat /etc/hostname")));
+        assertNotNull(gate.check("bash", input("command", "cat /etc/hostname")));
         assertEquals(1, approval.calls.size());
     }
 }

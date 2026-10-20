@@ -10,6 +10,7 @@ import com.jadecode.cli.plain.PlainOutput;
 
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Parameters;
+import picocli.CommandLine.Option;
 
 /**
  * 执行一次任务后退出，使用和 REPL 相同的 SessionRuntime，但不开定时检查。
@@ -22,6 +23,8 @@ public class RunCommand implements Callable<Integer> {
     /** picocli 解析到的任务文字，一次只执行这一项。 */
     @Parameters(paramLabel = "PROMPT", description = "任务描述(含空格请加引号)")
     private String prompt;
+    @Option(names = "--permission", description = "本次权限：read-only / workspace / auto-review / full-access")
+    private String permission;
 
     /**
      * 先检查任务文字，再创建会话、提交任务并等最终结果，不等未来的定时任务。
@@ -38,12 +41,14 @@ public class RunCommand implements Callable<Integer> {
             System.err.println("任务描述不能为空");
             return 1;
         }
+        com.jadecode.safety.PermissionProfile override;
+        try { override = permission == null ? null : com.jadecode.safety.PermissionProfile.parse(permission); }
+        catch (IllegalArgumentException invalid) { System.err.println(invalid.getMessage()); return 2; }
         // 最后才恢复终端；此前先拒绝待答申请、停止会话和命令，让清理过程还能正确显示日志。
         PlainOutput output = new PlainOutput(System.out::println);
         boolean previousColors = com.jadecode.util.Ansi.useTerminal(false);
         Thread shutdownHook = null;
-        try (SessionRuntime runtime = JadeCodeFactory.create((hooks, cwd, sink) -> { }, output::message,
-                        System.err::println, output::stream, output);
+        try (SessionRuntime runtime = create(output, override);
                 PlainApproval terminal = new PlainApproval()) {
             // run 没有 TUI 输入循环；SIGINT／SIGTERM 退出 JVM 时也必须停掉会话拥有的命令。
             shutdownHook = new Thread(() -> { terminal.close(); runtime.close(); }, "jade-run-shutdown");
@@ -70,5 +75,14 @@ public class RunCommand implements Callable<Integer> {
                 catch (IllegalStateException exiting) { /* JVM 正在执行关闭钩子。 */ }
             }
         }
+    }
+
+    /** 生产设置只加载一次；命令行覆盖不写回启动默认，不改变规则或任务来源。 */
+    private SessionRuntime create(PlainOutput output, com.jadecode.safety.PermissionProfile override) throws java.io.IOException {
+        var file = new com.jadecode.config.JadeConfigFile(com.jadecode.config.JadeConfigFile.defaultPath());
+        var settings = file.load(); var permissions = settings.permissions().state(file);
+        if (override != null) permissions.select(override);
+        return JadeCodeFactory.create((hooks, cwd, sink) -> { }, output::message, System.err::println,
+                output::stream, output, settings, permissions);
     }
 }

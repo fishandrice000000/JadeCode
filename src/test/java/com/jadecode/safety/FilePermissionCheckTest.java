@@ -11,45 +11,48 @@ import org.junit.jupiter.api.io.TempDir;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/** PathGuard v2:分类器矩阵——工作区内 / 高危区 / 工作区外 */
-class PathGuardTest {
+/** 迁移原路径分类用例：真实目标与敏感入口由新的文件权限检查解释。 */
+class FilePermissionCheckTest {
 
     @TempDir
     Path ws;
 
-    private PathGuard guard;
+    private PermissionGate guard;
+
+    private String check(String path, boolean write) {
+        return guard.check(write ? "write_file" : "read_file", com.jadecode.util.Json.mapper().createObjectNode().put("path", path));
+    }
 
     @BeforeEach
     void setUp() {
-        guard = new PathGuard(new PathResolver(ws));
+        guard = new PermissionGate(new PathResolver(ws), PermissionState.defaults(), null);
     }
 
     /** ① 工作区内:硬拒与问询都不命中 */
     @Test
     void insidePathPasses() {
-        assertNull(guard.highRiskReason("a/b.txt"));
-        assertNull(guard.outsideReason("a/b.txt"));
+        assertNull(check("a/b.txt", false));
+        assertNull(check("a/b.txt", true));
     }
 
-    /** ② 绝对高危路径(/etc):硬拒命中 */
+    /** /etc 写入保留强制人工保护，不能靠普通 allow 绕过。 */
     @Test
     void highRiskPathIsDenied() {
-        assertNotNull(guard.highRiskReason("/etc/passwd"));
+        assertNotNull(check("/etc/passwd", true));
     }
 
     /** ③ ../ 越界:硬拒不命中,问询命中 */
     @Test
     void dotDotEscapeAsks() {
-        assertNull(guard.highRiskReason("../x.txt"));
-        assertEquals("Access outside workspace", guard.outsideReason("../x.txt"));
+        assertTrue(check("../x.txt", false).contains("工作区外"));
     }
 
-    /** ④ symlink 指向 /etc:硬拒命中 */
+    /** symlink 指向 /etc：写保护依真实目标生效。 */
     @Test
     void symlinkToHighRiskIsDenied() throws IOException {
         Files.createSymbolicLink(ws.resolve("link.txt"), Path.of("/etc/hostname"));
 
-        assertNotNull(guard.highRiskReason("link.txt"));
+        assertNotNull(check("link.txt", true));
     }
 
     /** ⑤ symlink 指向工作区外普通目录:问询命中 */
@@ -59,18 +62,17 @@ class PathGuardTest {
         try {
             Files.createSymbolicLink(ws.resolve("link.txt"), outside);
 
-            assertNull(guard.highRiskReason("link.txt"));
-            assertEquals("Access outside workspace", guard.outsideReason("link.txt"));
+            assertTrue(check("link.txt", false).contains("工作区外"));
         } finally {
             Files.deleteIfExists(outside);
         }
     }
 
-    /** ⑥ 悬空 symlink 指向 /etc:仍命中硬拒 */
+    /** 悬空 symlink 也不能绕过敏感写入保护。 */
     @Test
     void danglingSymlinkToHighRiskIsDenied() throws IOException {
         Files.createSymbolicLink(ws.resolve("dead.txt"), Path.of("/etc/nonexistent-jadecode"));
 
-        assertNotNull(guard.highRiskReason("dead.txt"));
+        assertNotNull(check("dead.txt", true));
     }
 }

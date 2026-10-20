@@ -10,7 +10,7 @@ import java.util.Iterator;
  *
  * <p>和 {@code toRealPath()} 不同，即使链接指向一个还不存在的文件也能解析出来：
  * 逐个目录看过去，遇到链接就读它的目标继续走，不要求目标已经存在。
- * 本类只管怎么把路径算出来，不管能不能访问；越界和高危目录的判断在 safety.PathGuard。
+ * 本类只管怎么把路径算出来，不管能不能访问；权限判断在 safety.PermissionGate。
  */
 public class PathResolver {
     /** 词法工作区(绝对路径,归一化后) */
@@ -37,7 +37,7 @@ public class PathResolver {
         return workspace;
     }
 
-    /** 工作区真实路径(PathGuard 分类比对用) */
+    /** 工作区真实路径(权限检查比对用) */
     public Path workspaceReal() {
         return workspaceReal;
     }

@@ -15,6 +15,8 @@ public class ReplCommand implements Callable<Integer> {
     /** 缺选项为 null，新建会话；只写 --resume 得空串，打开选择器。 */
     @Option(names = "--resume", arity = "0..1", fallbackValue = "", description = "按 UUID 或名称恢复当前工作区会话；省略参数则选择")
     private String resume;
+    @Option(names = "--permission", description = "本次权限：read-only / workspace / auto-review / full-access")
+    private String permission;
     /**
      * 交给新界面运行；0 表示正常退出，不表示所有任务都业务成功。
      */
@@ -24,6 +26,7 @@ public class ReplCommand implements Callable<Integer> {
             try { com.jadecode.session.history.SessionMetadata.validTitle(resume); }
             catch (IllegalArgumentException invalid) { System.err.println("无效会话查找条件：" + invalid.getMessage()); return 2; }
         }
-        return new TuiApplication().run(resume);
+        try { return new TuiApplication().run(resume, permission == null ? null : com.jadecode.safety.PermissionProfile.parse(permission)); }
+        catch (IllegalArgumentException invalid) { System.err.println(invalid.getMessage()); return 2; }
     }
 }

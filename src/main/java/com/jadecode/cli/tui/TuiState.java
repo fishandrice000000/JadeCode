@@ -59,6 +59,7 @@ public final class TuiState {
     public com.jadecode.session.SessionRuntime.Display session;
     public String model = "", branch = "", directory = "";
     public String modelInfo = "";
+    public String permissionProfile = "Workspace";
 
     /** 增加一条界面消息，不回灌模型历史。 */
     public Entry add(String actor, String kind, String title, String body) {

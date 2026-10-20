@@ -76,7 +76,7 @@ class MainTest {
                         + " Use schedule_cron/list_crons/cancel_cron for authorized future prompts, not for already-running commands."
                         + " Cron runs only in a live REPL, in local time; durable saves definitions, not an external service."
                         + " Scheduled delivery can repeat after a crash; model receipt is not proof of business success."
-                        + " Destructive operations require approval; teammate auxiliary review may authorize only narrowly recoverable operations."
+                        + " Tool calls are checked against the user's current permission profile and rules. Never bypass a denial."
                         + " You are the team Leader. Only you may create up to three persistent teammates and manage the task graph."
                         + " Use spawn_teammate then assign_task for existing ready tasks; assign_task claims on their behalf."
                         + " Teammates have independent histories: include necessary context in summary and full body."
