@@ -7,7 +7,12 @@
     "commandSuggestions": true
   },
   "memory": {
-    "extractionMaxOutputTokens": 8000
+    "enabled": true,
+    "recallMaxOutputTokens": 2048,
+    "extractionMaxOutputTokens": 8000,
+    "consolidationMaxOutputTokens": 16384,
+    "consolidationInputChars": 128000,
+    "extractionCatalogChars": 128000
   },
   "thinking": {
     "effort": "default"

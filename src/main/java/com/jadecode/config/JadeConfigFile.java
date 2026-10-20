@@ -154,7 +154,12 @@ public final class JadeConfigFile implements com.jadecode.safety.rules.Permissio
             try { thinking = com.jadecode.llm.ThinkingSettings.parse(reasoning.get("effort").textValue()); }
             catch (IllegalArgumentException invalid) { throw new IOException("config.thinking.effort 无效"); }
         }
-        return new JadeSettings(tui, policy, limits, new JadeSettings.Memory(extractionTokens), discovery, thinking, permissions(root));
+        var memorySettings = new JadeSettings.Memory(bool(memory, "enabled", d.memory().enabled()), extractionTokens,
+                number(memory, "recallMaxOutputTokens", d.memory().recallMaxOutputTokens(), 1, "config.memory"),
+                number(memory, "consolidationMaxOutputTokens", d.memory().consolidationMaxOutputTokens(), 1, "config.memory"),
+                number(memory, "consolidationInputChars", d.memory().consolidationInputChars(), 1, "config.memory"),
+                number(memory, "extractionCatalogChars", d.memory().extractionCatalogChars(), 1, "config.memory"));
+        return new JadeSettings(tui, policy, limits, memorySettings, discovery, thinking, permissions(root));
     }
 
     /** 严格读取权限配置；未知枚举/类型/编号不能静默降级为放行。异常不回显配置原文。 */

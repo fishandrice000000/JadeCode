@@ -44,9 +44,19 @@ public record JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimit
     /** 仅是界面的初始选择；本次运行中的快捷键切换不会改写这些默认值。 */
     public record Tui(String theme, boolean thinkingVisible, boolean toolsExpanded, boolean commandSuggestions) { }
 
-    /** 辅助提取请求的最大输出额度，单位 token；不改变主任务 MAX_TOKENS。 */
-    public record Memory(int extractionMaxOutputTokens) {
-        public Memory { if (extractionMaxOutputTokens < 1) throw new IllegalArgumentException("memory.extractionMaxOutputTokens 必须为正整数"); }
+    /**
+     * 记忆辅助请求的独立额度；token 是输出上限，char 是 UTF-16 输入预算，不改变正式请求。
+     * enabled=false 只停用自动召回/提取/整理，不删除已有知识；缺省保持启用。
+     */
+    public record Memory(boolean enabled, int extractionMaxOutputTokens, int recallMaxOutputTokens,
+            int consolidationMaxOutputTokens, int consolidationInputChars, int extractionCatalogChars) {
+        /** 旧装配只指定提取额度时，为其余设置提供与生产相同的默认值。 */
+        public Memory(int extractionMaxOutputTokens) { this(true, extractionMaxOutputTokens, 2048, 16384, 128000, 128000); }
+        public Memory {
+            if (extractionMaxOutputTokens < 1 || recallMaxOutputTokens < 1 || consolidationMaxOutputTokens < 1
+                    || consolidationInputChars < 1 || extractionCatalogChars < 1)
+                throw new IllegalArgumentException("memory 输出与输入额度必须为正整数");
+        }
     }
 
     /**

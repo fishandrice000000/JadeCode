@@ -298,8 +298,8 @@ public final class JadeCodeFactory {
         TaskStore tasks;
         CronScheduler cron;
         try {
-            memory = isLeader ? new MemoryManager(tracked(client, config.model(), actor,
-                    com.jadecode.llm.UsageRecord.Purpose.MEMORY, usage, null), new MemoryStore(cwd), settings.memory().extractionMaxOutputTokens(),
+            memory = isLeader && settings.memory().enabled() ? new MemoryManager(tracked(client, config.model(), actor,
+                    com.jadecode.llm.UsageRecord.Purpose.MEMORY, usage, null), new MemoryStore(cwd, errors), settings.memory(),
                     output, errors) : null;
             tasks = team.tasks();
             cron = isLeader ? new CronScheduler(cwd) : null;

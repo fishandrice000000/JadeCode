@@ -141,7 +141,7 @@ final class MemoryTransaction {
     /** 新文件排他创建并刷新正文；恢复和索引使用同目录临时文件再原子替换。 */
     static void write(Path file, String text) throws IOException {
         try (var channel = FileChannel.open(file, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)) {
-            var data = StandardCharsets.UTF_8.encode(text);
+            var data = StandardCharsets.UTF_8.newEncoder().encode(java.nio.CharBuffer.wrap(text));
             while (data.hasRemaining()) channel.write(data);
             channel.force(true);
         }
@@ -153,7 +153,7 @@ final class MemoryTransaction {
         Path temporary = Files.createTempFile(target.getParent(), ".memory-publish-", ".tmp");
         try {
             try (var channel = FileChannel.open(temporary, StandardOpenOption.WRITE)) {
-                var data = StandardCharsets.UTF_8.encode(text);
+                var data = StandardCharsets.UTF_8.newEncoder().encode(java.nio.CharBuffer.wrap(text));
                 while (data.hasRemaining()) channel.write(data);
                 channel.force(true);
             }
