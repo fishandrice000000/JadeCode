@@ -136,6 +136,8 @@ public final class TuiController {
             case "CTRL_D" -> { if (state.editor.empty()) close(); else state.editor.delete(false); }
             case "LEFT" -> state.editor.move(-1);
             case "RIGHT" -> state.editor.move(1);
+            case "WORD_LEFT" -> state.editor.moveWord(-1);
+            case "WORD_RIGHT" -> state.editor.moveWord(1);
             case "UP" -> state.editor.vertical(-1);
             case "DOWN" -> state.editor.vertical(1);
             case "HOME" -> state.editor.home();

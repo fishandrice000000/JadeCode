@@ -52,6 +52,33 @@ public final class Editor {
         int next = direction < 0 ? previous(cursor) : following(cursor);
         cursor = snap(next, direction);
     }
+    /**
+     * Ctrl+左右跳到前一个词开头/后一个词末尾，不提交输入，也不增加撤销记录。
+     * 这里的“词”是连续字母数字（包括中文）或连续标点；空白用于分隔。
+     * 先跳过相邻空白，再跳过同类字素；最后把落在折叠粘贴内部的光标移到整块外侧。
+     * 与普通移动共用字素计算，因此 emoji、组合字符不会被截成一半。
+     */
+    public void moveWord(int direction) {
+        if (direction < 0) {
+            while (cursor > 0 && wordKind(previous(cursor)) == 0) cursor = previous(cursor);
+            if (cursor > 0) {
+                int kind = wordKind(previous(cursor));
+                while (cursor > 0 && wordKind(previous(cursor)) == kind) cursor = previous(cursor);
+            }
+        } else {
+            while (cursor < text.length() && wordKind(cursor) == 0) cursor = following(cursor);
+            if (cursor < text.length()) {
+                int kind = wordKind(cursor);
+                while (cursor < text.length() && wordKind(cursor) == kind) cursor = following(cursor);
+            }
+        }
+        cursor = snap(cursor, direction);
+    }
+    /** 只查看一个完整字素的首码点；不使用 char 把代理对当两个字符。 */
+    private int wordKind(int offset) {
+        int codePoint = text.codePointAt(offset);
+        return Character.isWhitespace(codePoint) ? 0 : Character.isLetterOrDigit(codePoint) || codePoint == '_' ? 1 : 2;
+    }
     /** Home/End 只移动到当前逻辑行头尾。 */
     public void home() { cursor = text.lastIndexOf('\n', Math.max(-1, cursor - 1)) + 1; }
     public void end() { int next = text.indexOf('\n', cursor); cursor = next < 0 ? text.length() : next; }

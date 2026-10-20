@@ -10,7 +10,11 @@ public record Theme(String name, boolean colors) {
             Map.entry("heading", "1;96"), Map.entry("user", "1;94"), Map.entry("thinking", "90;3"),
             Map.entry("tool", "36"), Map.entry("error", "91"), Map.entry("warning", "93"),
             Map.entry("code", "93"), Map.entry("keyword", "95"), Map.entry("string", "92"),
-            Map.entry("comment", "90;3"), Map.entry("selected", "7"), Map.entry("separator", "2;90"));
+            Map.entry("comment", "90;3"), Map.entry("selected", "7"), Map.entry("separator", "2;90"),
+            // 审批不是普通正文：用固定深色背景/浅色文字突出当前项，避免终端默认白色反色难辨。
+            // 是否选中还同时显示 >，关闭颜色或色觉不敏感时仍能明确选择。
+            Map.entry("approval", "36"), Map.entry("approval-deny", "31"),
+            Map.entry("approval-selected", "1;97;44"), Map.entry("approval-deny-selected", "1;97;41"));
     /** 编码一行并重置样式；无颜色模式完全不产生 SGR 色码。 */
     public String encode(StyledLine line) {
         var out = new StringBuilder();
