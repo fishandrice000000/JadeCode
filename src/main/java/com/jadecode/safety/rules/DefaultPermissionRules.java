@@ -45,7 +45,8 @@ public final class DefaultPermissionRules {
                 && a.resources().stream().anyMatch(r -> !r.path().startsWith(a.cwd())))
             return PermissionDecision.ask("builtin.outside", "访问工作区外的具体目标需要授权", false);
         if (a.uncertain() && state.profile() != PermissionProfile.FULL_ACCESS && enabled(state, "builtin.complex-shell"))
-            return PermissionDecision.ask("builtin.complex-shell", "无法可靠静态分析本次工具调用", false);
+            return PermissionDecision.ask("builtin.complex-shell", "需要确认：" + (a.uncertaintyReason().isBlank()
+                    ? "包含当前解析器未支持的 shell 写法" : a.uncertaintyReason()), false);
         return PermissionDecision.allow();
     }
     private boolean enabled(PermissionState.Snapshot state, String id) { return !state.disabledDefaults().contains(id); }

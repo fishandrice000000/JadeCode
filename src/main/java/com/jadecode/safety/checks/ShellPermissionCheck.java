@@ -25,6 +25,7 @@ public final class ShellPermissionCheck implements ToolPermissionCheck {
         var parsed = parser.parse(input.path("command").textValue());
         var resources = new ArrayList<Resource>(); var commands = new ArrayList<Command>();
         boolean uncertain = parsed.uncertain(), mutating = false, readOnly = true;
+        var reasons = new LinkedHashSet<>(parsed.reasons());
         Path current = cwd;
         // 每段都检查，不能因第一段是 echo 就忽略后面的 rm 或重定向。
         for (var segment : parsed.segments()) {
@@ -34,7 +35,9 @@ public final class ShellPermissionCheck implements ToolPermissionCheck {
                 commands.add(new Command(argv, current, !segment.redirects().isEmpty()));
                 String name = executable(argv.getFirst());
                 readOnly &= QUERY.contains(name) || name.equals("cd");
-                if (argv.getFirst().contains("=") || Set.of("eval", "exec", "source", ".", "for", "while", "if", "env", "command", "xargs", "sh", "bash").contains(name)) uncertain = true;
+                if (argv.getFirst().contains("=") || Set.of("eval", "exec", "source", ".", "for", "while", "if", "env", "command", "xargs", "sh", "bash").contains(name)) {
+                    uncertain = true; reasons.add("含环境赋值、间接执行或嵌套 shell，不能仅凭外层参数确定操作");
+                }
                 boolean deletes = name.equals("rm") || name.equals("rmdir") || name.equals("mv");
                 boolean writes = deletes || Set.of("mkdir", "touch", "cp", "chmod", "chown", "dd", "tee").contains(name)
                         || name.equals("sed") && argv.stream().anyMatch(a -> a.equals("--in-place") || a.startsWith("-i"));
@@ -77,7 +80,8 @@ public final class ShellPermissionCheck implements ToolPermissionCheck {
                 addResource(resources, segmentCwd, redirect.target(), write ? "WRITE" : "READ"); mutating |= write;
             }
         }
-        return new Analysis(tool, cwd, resources, commands, mutating, readOnly, uncertain, parsed.error());
+        if (uncertain && reasons.isEmpty()) reasons.add("含未支持的选项、目录切换或重定向形式");
+        return new Analysis(tool, cwd, resources, commands, mutating, readOnly, uncertain, parsed.error(), String.join("；", reasons));
     }
     private Path resolve(Path cwd, String text) { return resolver.resolve(cwd.resolve(text)); }
     /** 原始路径和链接目标都保留，后面的 deny/ask 任一命中即成立。 */

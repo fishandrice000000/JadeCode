@@ -2,6 +2,8 @@ package com.jadecode.safety.checks;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.LinkedHashSet;
+import java.nio.file.Path;
 
 /**
  * 解释 /bin/sh 的有限语法子集：字面参数、引号、转义、连接符与重定向。
@@ -12,7 +14,11 @@ public final class ShellCommandParser {
     public record Segment(List<String> argv, List<Redirect> redirects, String follows) {
         public Segment { argv = List.copyOf(argv); redirects = List.copyOf(redirects); }
     }
-    public record Parsed(List<Segment> segments, boolean uncertain, String error) { }
+    /** reasons 只包含程序生成的语法说明，不带脚本正文或变量值。 */
+    public record Parsed(List<Segment> segments, boolean uncertain, String error, List<String> reasons) {
+        public Parsed { segments = List.copyOf(segments); reasons = List.copyOf(reasons); }
+        public Parsed(List<Segment> segments, boolean uncertain, String error) { this(segments, uncertain, error, List.of()); }
+    }
     private record Token(String value, boolean operator) { }
 
     /**
@@ -24,12 +30,13 @@ public final class ShellCommandParser {
     public Parsed parse(String text) {
         // 1. quote 记录当前是否在引号里；started 用来区分空字符串参数与没有参数。
         var tokens = new ArrayList<Token>(); var word = new StringBuilder();
+        var reasons = new LinkedHashSet<String>();
         char quote = 0; boolean started = false, uncertain = false;
         for (int i = 0; i < text.length(); i++) {
             char c = text.charAt(i);
             if (quote != 0) {
                 if (c == quote) { quote = 0; continue; }
-                if (quote == '"' && (c == '$' || c == '`')) uncertain = true;
+                if (quote == '"' && (c == '$' || c == '`')) { uncertain = true; reasons.add("双引号内含变量或命令替换"); }
                 if (quote == '"' && c == '\\' && i + 1 < text.length()) {
                     char next = text.charAt(i + 1);
                     if (next == '$' || next == '`' || next == '"' || next == '\\' || next == '\n') {
@@ -45,7 +52,20 @@ public final class ShellCommandParser {
                 continue;
             }
             if (c == '#' && !started) { while (i < text.length() && text.charAt(i) != '\n') i++; c = '\n'; }
-            if (c == '$' || c == '`' || c == '(' || c == ')' || c == '{' || c == '}' || c == '*' || c == '?' || c == '[' || c == '~') uncertain = true;
+            // ~/ 只有位于未引用参数开头时才由 shell 展开。这里在去掉引号前处理，
+            // 所以 '~/a'、"~/a"、\~/a 始终保持字面路径，不能错误指向用户目录。
+            if (c == '~' && !started) {
+                boolean plainHome = i + 1 == text.length() || text.charAt(i + 1) == '/'
+                        || Character.isWhitespace(text.charAt(i + 1)) || ";&|<>".indexOf(text.charAt(i + 1)) >= 0;
+                String home = System.getenv("HOME");
+                if (plainHome && home != null && !home.isBlank() && Path.of(home).isAbsolute()) {
+                    word.append(home); started = true; continue;
+                }
+                uncertain = true; reasons.add(plainHome ? "无法确定 shell 的 HOME 目录" : "含未支持的用户家目录展开或引用组合");
+            }
+            if (c == '$' || c == '`') { uncertain = true; reasons.add("含变量或命令替换"); }
+            if (c == '(' || c == ')' || c == '{' || c == '}') { uncertain = true; reasons.add("含分组、函数或复合 shell 结构"); }
+            if (c == '*' || c == '?' || c == '[') { uncertain = true; reasons.add("含运行时文件名通配展开"); }
             boolean op = c == ';' || c == '&' || c == '|' || c == '<' || c == '>' || c == '\n';
             if (op || Character.isWhitespace(c)) {
                 // 2>/dev/null 的 2 是文件描述符，不是命令参数；但 echo 2 >file 中的 2 仍是参数。
@@ -56,7 +76,9 @@ public final class ShellCommandParser {
                 String operator = String.valueOf(c);
                 if (i + 1 < text.length() && text.charAt(i + 1) == c && (c == '&' || c == '|' || c == '>' || c == '<')) { operator += c; i++; }
                 if ((c == '<' || c == '>') && i + 1 < text.length() && text.charAt(i + 1) == '&') { operator += '&'; i++; }
-                if (operator.equals("&") || operator.startsWith("<<")) uncertain = true;
+                if (operator.equals("&") || operator.startsWith("<<")) {
+                    uncertain = true; reasons.add(operator.equals("&") ? "含 shell 后台执行符 &" : "含 here-document 输入");
+                }
                 tokens.add(new Token(fd + operator, true));
             } else { word.append(c); started = true; }
         }
@@ -81,6 +103,7 @@ public final class ShellCommandParser {
         if (!argv.isEmpty() || !redirects.isEmpty()) segments.add(new Segment(argv, redirects, ""));
         if (segments.isEmpty()) return new Parsed(List.of(), true, "命令不能为空");
         if (List.of("&&", "||", "|").contains(segments.getLast().follows())) uncertain = true;
-        return new Parsed(List.copyOf(segments), uncertain, "");
+        if (uncertain && reasons.isEmpty()) reasons.add("连接符缺少可确定的命令");
+        return new Parsed(List.copyOf(segments), uncertain, "", List.copyOf(reasons));
     }
 }
