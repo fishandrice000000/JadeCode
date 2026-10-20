@@ -294,7 +294,7 @@ CLI 先拒绝待答审批，会话清理后最后恢复终端；共享模型客�
 `llm.CompleteRequest` 只携带 `ToolDefinition` 数据快照，完整 schema 在构造与读取时深复制；
 SDK 仍只转换 type/properties/required，根级 additionalProperties 等字段丢失的已知限制尚未修复。
 `Tool`、`ToolSchema` 和包括 `SubagentTool` 在内的适配器仍在 tools；tools/subagent 的双向依赖按本轮裁决保留。
-新版包边界阅读入口见 [架构阅读指南](docs/notes/architecture/package-runtime-review.md)，工程记录见 [A01–A11 任务单](docs/jobs/architecture/package-reorganization.md)。
+包边界复审见 [架构复审报告](docs/reviews/architecture/ChatGPT/06-package-boundaries-2026-10-17.md)，工程记录见 [A01–A11 任务单](docs/jobs/architecture/package-reorganization.md)。
 
 会话由 `SessionRuntime` 单消费者拥有历史。人工和定时新请求排队，新派工不混入当前任务；
 允许插入的补充在完整工具批次后加入历史，插入式优先于非插入式消息。

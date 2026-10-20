@@ -116,7 +116,7 @@
 
 保留用户已有的 s08/s09/s10 笔记修改和 other-agents-analysis 目录，不暂存。tmp 验证材料、JAR、class 与运行期状态不加入 Git。
 
-讨论依据：[术语表](../../../CONTEXT.md)、[ADR 0001](../../adr/0001-background-task-completion-dependency.md)、[ADR 0002](../../adr/0002-session-event-processing-boundary.md)。
+讨论依据：[术语表](../../../CONTEXT.md)。原 `docs/adr/0001`、`0002` 两份决策记录已在文档整理中移除，核心结论保留在本任务单第 2–4 节。
 
 ## 9. 实际实现与工程自审
 
