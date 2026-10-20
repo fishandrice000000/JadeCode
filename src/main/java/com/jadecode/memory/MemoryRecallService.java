@@ -10,18 +10,12 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.regex.Pattern;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
-import com.jadecode.llm.CompleteRequest;
 import com.jadecode.llm.LlmClient;
 import com.jadecode.llm.LlmException;
 import com.jadecode.llm.ModelResponse;
 import com.jadecode.memory.MemoryStore.MemoryRecord;
-import com.jadecode.messages.Message;
-import com.jadecode.messages.Role;
-import com.jadecode.messages.TextBlock;
 import com.jadecode.util.Json;
 
 /**
@@ -47,6 +41,7 @@ public final class MemoryRecallService {
 
     private final LlmClient client;
     private final MemoryStore store;
+    private final int maxOutputTokens;
 
     /**
      * 注入只读库与辅助模型接口；不读取配置、创建新 provider 或发起模型请求。
@@ -56,16 +51,23 @@ public final class MemoryRecallService {
      * @throws NullPointerException 任一依赖为 null（装配错误）
      */
     public MemoryRecallService(LlmClient client, MemoryStore store) {
+        this(client, store, 2048);
+    }
+
+    /** 使用记忆专属选择额度，不影响正式模型请求；构造无 IO。 */
+    public MemoryRecallService(LlmClient client, MemoryStore store, int maxOutputTokens) {
         this.client = Objects.requireNonNull(client, "client");
         this.store = Objects.requireNonNull(store, "store");
+        if (maxOutputTokens < 1) throw new IllegalArgumentException("召回输出额度必须为正整数");
+        this.maxOutputTokens = maxOutputTokens;
     }
 
     /**
      * 根据当前用户请求，生成最多五条记忆的 JSON 背景。
      *
-     * <p>null / 空白请求、空库或没有目录条目可放入预算时不调用模型，返回空背景。
-     * 非空目录最多调用一次模型，合法 [] 是“模型未选中”，不触发降级。
-     * 调用失败或回复格式 / 索引非法时使用相同已发送目录的关键词匹配，并标记 usedFallback。</p>
+     * <p>null / 空白请求或空库不调用模型。小库一次选择，大库按页重新选最多五项，
+     * 所有记录都有机会被模型看到；合法 [] 是“本页未选中”，仍检查后续页。
+     * 任一页调用/回复失败，或单条目录无法放入页面时，对完整快照做关键词降级并报告原因。</p>
      *
      * <p>选中原文总量最多 20000 UTF-16 单元，截断不拆代理对；JSON 转义与 source 等封装
      * 不计入这个正文额度。它不是整段 system 的最终大小保证，也不保证相关知识一定被选中。</p>
@@ -82,48 +84,39 @@ public final class MemoryRecallService {
 
         // 1. 一次扫描同时固定元数据和原文。之后只用这批对象，避免重新编号或原文被悄悄换掉。
         List<MemoryRecord> snapshot = store.listRecords();
-        List<MemoryRecord> visible = new ArrayList<>();
-        ArrayNode catalog = Json.mapper().createArrayNode();
-        for (MemoryRecord record : snapshot) {
-            catalog.addObject().put("index", visible.size()).put("name", record.name())
-                    .put("description", record.description()).put("type", record.type());
-            if (catalog.toString().length() > CATALOG_CHARS) {
-                // 保留完整 JSON 条目，不能截断目录字符串后还允许模型选择未发送条目的索引。
-                catalog.remove(catalog.size() - 1);
-                System.err.println("[Memory] 目录达到字符预算，后续条目未参与本次召回");
-                break;
-            }
-            visible.add(record);
-        }
-        if (visible.isEmpty()) {
+        if (snapshot.isEmpty()) {
             return new RecallResult("", false);
         }
 
-        // 2. 当前请求与目录序列化为数据；正文不在辅助选择请求里，也不提供任何工具。
-        String selectionInput = Json.mapper().createObjectNode().put("current_request", query)
-                .set("catalog", catalog).toString();
-        List<Integer> selected;
+        // 2. 每页放入“上一页最多五个入选项 + 下一批新项”。模型从组合目录重新选前五项，
+        // 直到整个库都被看过。不能第一页选满就停止，否则文件名字典序后面的知识永远没机会。
+        // 任一页失败就对完整快照降级，不只在前缀目录里做关键词检索。
+        List<Integer> selected = List.of();
         boolean usedFallback = false;
-        ModelResponse response;
-        try {
-            response = client.complete(new CompleteRequest(SELECTION_SYSTEM,
-                    List.of(Message.userText(selectionInput)), 200, List.of()));
-        } catch (LlmException selectionFailure) {
-            // 只降级明确的模型调用失败。client 自己的程序异常不混成“模型没选好”。
-            response = null;
-            usedFallback = true;
-        }
-        if (usedFallback) {
-            selected = keywordSelection(visible, query);
-        } else {
+        MemoryReply.Reason reason = MemoryReply.Reason.NONE;
+        int next = 0;
+        while (next < snapshot.size()) {
+            List<Integer> visible = new ArrayList<>(selected);
+            ArrayNode catalog = Json.mapper().createArrayNode();
+            for (int index : visible) addCatalog(catalog, snapshot.get(index));
+            int pageStart = next;
+            while (next < snapshot.size()) {
+                addCatalog(catalog, snapshot.get(next));
+                if (catalog.toString().length() > CATALOG_CHARS) { catalog.remove(catalog.size() - 1); break; }
+                visible.add(next++);
+            }
+            if (next == pageStart) { reason = MemoryReply.Reason.CATALOG_ITEM_TOO_LARGE; usedFallback = true; break; }
+            String selectionInput = Json.mapper().createObjectNode().put("current_request", query).set("catalog", catalog).toString();
             try {
-                selected = selectedIndices(response, visible.size());
-            } catch (IllegalArgumentException invalidSelection) {
-                // 这里的异常来自回复契约验证，不是把整个磁盘与调用流程一概 catch。
-                selected = keywordSelection(visible, query);
-                usedFallback = true;
+                var response = client.complete(MemoryReply.request(client, SELECTION_SYSTEM, selectionInput, maxOutputTokens));
+                selected = selectedIndices(response, visible.size()).stream().map(visible::get).toList();
+            } catch (LlmException failure) {
+                reason = MemoryReply.Reason.REQUEST_FAILED; usedFallback = true; break;
+            } catch (MemoryReply.Invalid invalid) {
+                reason = invalid.reason; usedFallback = true; break;
             }
         }
+        if (usedFallback) selected = keywordSelection(snapshot, query);
 
         // 3. 把选择索引解释成已读取的记录；模型永远没有决定任意文件读取路径的权力。
         ArrayNode background = Json.mapper().createArrayNode();
@@ -132,14 +125,22 @@ public final class MemoryRecallService {
             if (remaining <= 0) {
                 break;
             }
-            MemoryRecord record = visible.get(index);
+            MemoryRecord record = snapshot.get(index);
             String content = prefix(record.content(), remaining);
             // 只替换模型收到的背景，不改磁盘记录；来源与截断标记让未来调用方知道还可回查。
-            background.addObject().put("source", ".memory/" + record.filename()).put("content", content)
+            background.addObject().put("source", store.sourcePath(record)).put("content", content)
                     .put("truncated", content.length() < record.content().length());
             remaining -= content.length();
         }
-        return new RecallResult(background.isEmpty() ? "" : background.toString(), usedFallback);
+        return new RecallResult(background.isEmpty() ? "" : background.toString(), usedFallback, reason);
+    }
+
+    /** 目录中的索引只对应这一页，模型不能指定任意读取路径。 */
+    private static void addCatalog(ArrayNode catalog, MemoryRecord record) {
+        // addObject 会立即增加数组长度，所以先取索引再添加，不能链式调用后再问 size。
+        int index = catalog.size();
+        catalog.addObject().put("index", index).put("name", record.name())
+                .put("description", record.description()).put("type", record.type());
     }
 
     /**
@@ -152,30 +153,16 @@ public final class MemoryRecallService {
      * @throws IllegalArgumentException 回复形状 / JSON / 索引非法，使调用方进入明确的降级分支
      */
     private static List<Integer> selectedIndices(ModelResponse response, int catalogSize) {
-        if (response == null || response.message() == null || response.message().role() != Role.ASSISTANT
-                || response.message().content() == null
-                || !response.message().hasOnlyTextAndThinking()) {
-            throw new IllegalArgumentException("Memory 选择回复不是 assistant 文本（可伴随 thinking）");
-        }
-        try {
-            // 共享 ObjectMapper 不改全局配置；专用 reader 要求整个回复只有一个 JSON 值。
-            JsonNode indices = Json.mapper().reader().with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
-                    .readTree(response.message().extractText());
-            if (indices == null || !indices.isArray()) {
-                throw new IllegalArgumentException("Memory 选择回复不是 JSON 数组");
+        JsonNode indices = MemoryReply.array(response);
+        Set<Integer> unique = new LinkedHashSet<>();
+        for (JsonNode index : indices) {
+            if (!index.isIntegralNumber() || !index.canConvertToInt()
+                    || index.intValue() < 0 || index.intValue() >= catalogSize) {
+                throw new MemoryReply.Invalid(MemoryReply.Reason.INVALID_INDEX);
             }
-            Set<Integer> unique = new LinkedHashSet<>();
-            for (JsonNode index : indices) {
-                if (!index.isIntegralNumber() || !index.canConvertToInt()
-                        || index.intValue() < 0 || index.intValue() >= catalogSize) {
-                    throw new IllegalArgumentException("Memory 选择索引非法");
-                }
-                unique.add(index.intValue());
-            }
-            return unique.stream().limit(MAX_ITEMS).toList();
-        } catch (JsonProcessingException invalidJson) {
-            throw new IllegalArgumentException("Memory 选择回复不是完整 JSON", invalidJson);
+            unique.add(index.intValue());
         }
+        return unique.stream().limit(MAX_ITEMS).toList();
     }
 
     /**
@@ -231,6 +218,7 @@ public final class MemoryRecallService {
      * @param background source / content / truncated 对象的 JSON 数组；无结果时为空字符串
      * @param usedFallback true 表示模型调用 / 回复验证失败后用了关键词降级，不能冒充模型选择成功
      */
-    public record RecallResult(String background, boolean usedFallback) {
+    public record RecallResult(String background, boolean usedFallback, MemoryReply.Reason reason) {
+        public RecallResult(String background, boolean usedFallback) { this(background, usedFallback, MemoryReply.Reason.NONE); }
     }
 }
