@@ -14,6 +14,9 @@ import com.jadecode.tui.text.StyledLine;
  * 已完成条目缓存按宽度及版本复用；主题只改变编码颜色，不必重新解析 Markdown。
  */
 public final class ConversationView {
+    /** 点阵逐格滚动，保持一列宽；不改变任务状态，只作为终端动画。 */
+    private static final String SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
+    static final long ANIMATION_INTERVAL_NANOS = 100_000_000L;
     private final Markdown markdown = new Markdown();
     /**
      * 把当前显示资料排成一份完整画面，不请求模型，也不消费 SessionInbox。
@@ -46,11 +49,7 @@ public final class ConversationView {
             lines.add(StyledLine.of(DisplayWidth.take("Queued · " + state.pendingKind + " · 空 Enter 插入当前轮次", width), "accent"));
             lines.addAll(StyledLine.wrap(List.of(new Span(DisplayWidth.take(DisplayWidth.clean(state.pending).replace('\n', ' '), width * 2), "muted")), width));
         }
-        String leader = state.actors.getOrDefault("leader", "IDLE");
-        long running = state.background.values().stream().filter(s -> s.equals("RUNNING")).count();
-        int tick = (int) (System.nanoTime() / 160_000_000L % 4);
-        String spinner = leader.equals("RUNNING") ? "◐◓◑◒".substring(tick, tick + 1) : "○";
-        String status = state.closing ? "Closing…" : spinner + " " + leader + (running == 0 ? "" : " · background " + running);
+        String status = status(state, System.nanoTime());
         String members = state.actors.entrySet().stream().filter(e -> !e.getKey().equals("leader") && !e.getKey().contains("/"))
                 .map(e -> e.getKey() + " " + e.getValue()).collect(java.util.stream.Collectors.joining(" · "));
         lines.add(StyledLine.of(DisplayWidth.take("── " + status + (members.isEmpty() ? "" : " · " + members), width), "accent"));
@@ -125,6 +124,26 @@ public final class ConversationView {
         if (!state.hint.isBlank()) lines.add(StyledLine.of(DisplayWidth.take(state.hint, width), "warning"));
         // 输入区域必须留在视口内；极小窗口下只显示当前输入附近，不让光标跑到屏幕外。
         return new Frame(lines.stream().map(l -> l.crop(width)).toList(), cursorRow, Math.min(width, cursorColumn), hits);
+    }
+
+    /**
+     * 生成主 Agent 状态行，不从历史卡片或各个工具用时反推整轮耗时。
+     * RUNNING/等待后台显示持续增加的计数；TURN_END 到达后 IDLE 显示“此轮用时”。
+     * 刚启动或恢复的历史没有可信运行起点时不伪造零用时；关闭期间不继续播放忙碌动画。
+     */
+    static String status(TuiState state, long nowNanos) {
+        if (state.closing) return "Closing…";
+        String leader = state.actors.getOrDefault("leader", "IDLE");
+        // Session 在写最终日志前可能先发布 IDLE；显示计数仍要等真正的 TURN_END 才冻结。
+        if (leader.equals("IDLE") && state.turnActive("leader")) leader = "RUNNING";
+        boolean busy = leader.equals("RUNNING") || leader.equals("WAITING_BACKGROUND");
+        int tick = (int) Math.floorMod(nowNanos / ANIMATION_INTERVAL_NANOS, SPINNER.length());
+        String text = (busy ? SPINNER.substring(tick, tick + 1) + " " : "") + leader;
+        Long elapsed = state.turnElapsed("leader", nowNanos);
+        if (elapsed != null && (busy || leader.equals("IDLE")))
+            text += " · " + (leader.equals("IDLE") ? "此轮用时 " : "") + duration(elapsed);
+        long background = state.background.values().stream().filter(s -> s.equals("RUNNING")).count();
+        return text + (background == 0 ? "" : " · background " + background);
     }
 
     /** 十进制缩写只用于显示，持久化仍存 long 原值；进位后不显示成 1000K。 */
