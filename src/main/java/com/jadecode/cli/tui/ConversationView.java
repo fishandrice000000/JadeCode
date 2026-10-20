@@ -52,6 +52,8 @@ public final class ConversationView {
         String status = status(state, System.nanoTime());
         String members = state.actors.entrySet().stream().filter(e -> !e.getKey().equals("leader") && !e.getKey().contains("/"))
                 .map(e -> e.getKey() + " " + e.getValue()).collect(java.util.stream.Collectors.joining(" · "));
+        // 状态、编辑器/选择器/审批及页脚视为一整块底部区域；空位只允许补在它前面。
+        int bottomStartRow = lines.size();
         lines.add(StyledLine.of(DisplayWidth.take("── " + status + (members.isEmpty() ? "" : " · " + members), width), "accent"));
         int cursorRow, cursorColumn;
         // 2. 下方区域只有一个输入对象：审批优先，其次选择器，最后才是提示词编辑器。
@@ -104,7 +106,7 @@ public final class ConversationView {
             var editor = state.editor.layout(width, Math.max(1, context.height() * 3 / 10));
             cursorRow = lines.size() + editor.row(); cursorColumn = editor.column(); lines.addAll(editor.lines());
         }
-        if (context.height() < 8) return new Frame(lines.stream().map(l -> l.crop(width)).toList(), cursorRow, Math.min(width, cursorColumn), hits);
+        if (context.height() < 8) return new Frame(lines.stream().map(l -> l.crop(width)).toList(), cursorRow, Math.min(width, cursorColumn), hits, bottomStartRow);
         // 3. 页脚使用会话只读快照。没有正数报告就不占一块位置，也不把未知显示为实测零。
         lines.add(StyledLine.of("─".repeat(Math.max(1, width)), "muted"));
         var fields = new ArrayList<String>();
@@ -123,7 +125,7 @@ public final class ConversationView {
         lines.add(StyledLine.of(DisplayWidth.take(String.join(" · ", fields), width), "muted"));
         if (!state.hint.isBlank()) lines.add(StyledLine.of(DisplayWidth.take(state.hint, width), "warning"));
         // 输入区域必须留在视口内；极小窗口下只显示当前输入附近，不让光标跑到屏幕外。
-        return new Frame(lines.stream().map(l -> l.crop(width)).toList(), cursorRow, Math.min(width, cursorColumn), hits);
+        return new Frame(lines.stream().map(l -> l.crop(width)).toList(), cursorRow, Math.min(width, cursorColumn), hits, bottomStartRow);
     }
 
     /**
@@ -141,7 +143,7 @@ public final class ConversationView {
         String text = (busy ? SPINNER.substring(tick, tick + 1) + " " : "") + leader;
         Long elapsed = state.turnElapsed("leader", nowNanos);
         if (elapsed != null && (busy || leader.equals("IDLE")))
-            text += " · " + (leader.equals("IDLE") ? "此轮用时 " : "") + duration(elapsed);
+            text += " · " + (leader.equals("IDLE") ? "此轮用时 " : "") + turnDuration(elapsed);
         long background = state.background.values().stream().filter(s -> s.equals("RUNNING")).count();
         return text + (background == 0 ? "" : " · background " + background);
     }
@@ -184,6 +186,28 @@ public final class ConversationView {
     }
 
     /**
+     * 状态栏与最终 Reply 共用的整轮显示格式，起止时刻仍由 Session 决定。
+     * 不足一分钟固定一位小数，连 50ms 也显示为 0.1s；不显示毫秒。
+     * 分钟以上使用紧凑的整数单位，如 1m02s、1h02m03s、1d02h03m04s，秒位不再带小数。
+     * 较小单位补两位，整分钟仍显示 00s，避免计数器在分钟切换时忽隐忽现。
+     */
+    static String turnDuration(long nanos) {
+        long millis = Math.max(0, nanos) / 1_000_000;
+        if (millis < 60_000) {
+            long tenths = (millis + 50) / 100;
+            if (tenths < 600) return tenths / 10 + "." + tenths % 10 + "s";
+            millis = 60_000; // 四舍五入到一分钟时换单位，不显示 60.0s。
+        }
+        long seconds = millis / 1000;
+        long days = seconds / 86_400, hours = seconds / 3600 % 24, minutes = seconds / 60 % 60;
+        seconds %= 60;
+        // 大单位只从第一个非零项开始，但它后面的所有较小项都保留，包括零。
+        if (days > 0) return String.format(java.util.Locale.ROOT, "%dd%02dh%02dm%02ds", days, hours, minutes, seconds);
+        if (hours > 0) return String.format(java.util.Locale.ROOT, "%dh%02dm%02ds", hours, minutes, seconds);
+        return String.format(java.util.Locale.ROOT, "%dm%02ds", minutes, seconds);
+    }
+
+    /**
      * 排一张消息卡。工具显示参数及结果，思考作为普通文本，其余正文按 Markdown 排版。
      * 折叠只缩短显示预览，Entry 中的原结果完整保留；正常返回也不自动涂成业务成功。
      */
@@ -195,7 +219,7 @@ public final class ConversationView {
         String title = (actor.isEmpty() ? "" : actor + " · ") + entry.title;
         // RETURNED 仍是内部执行事实，只省略它的常态文字；拒绝、异常、运行中等状态照常保留。
         if (!entry.status.isBlank() && !(entry.kind.equals("Tool") && entry.status.equals("RETURNED"))) title += " · " + entry.status;
-        if (entry.elapsed > 0) title += " · " + duration(entry.elapsed);
+        if (entry.elapsed > 0) title += " · " + (entry.kind.equals("Reply") ? turnDuration(entry.elapsed) : duration(entry.elapsed));
         out.add(header(title, style, width));
         String body = entry.body.toString();
         if (entry.kind.equals("Tool")) {
