@@ -144,7 +144,8 @@ public final class ConversationView {
             boolean enabled = i != 1 || !request.suggestion().isEmpty();
             String text = "[" + (state.approvalChoice == i ? ">" : " ") + labels[i] + " ]";
             int size = DisplayWidth.width(text);
-            String style = !enabled ? "muted" : state.approvalChoice == i ? "selected" : "normal";
+            String style = !enabled ? "muted" : state.approvalChoice == i
+                    ? (i == 2 ? "approval-deny-selected" : "approval-selected") : (i == 2 ? "approval-deny" : "approval");
             if (stacked) lines.add(StyledLine.of(text, style));
             else {
                 if (i > 0) { buttons.add(new Span("  ", "normal")); column += 2; }

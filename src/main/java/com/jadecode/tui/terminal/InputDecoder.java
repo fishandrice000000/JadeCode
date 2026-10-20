@@ -39,6 +39,10 @@ public final class InputDecoder {
                 String key = switch (s) {
                     case "\033[A" -> "UP"; case "\033[B" -> "DOWN";
                     case "\033[C" -> "RIGHT"; case "\033[D" -> "LEFT";
+                    // xterm/常见 SSH 终端使用 CSI 1;5，部分终端使用 CSI 5。
+                    // 必须先识别整个序列，不能把 Ctrl 修饰丢掉后当普通方向键。
+                    case "\033[1;5D", "\033[5D" -> "WORD_LEFT";
+                    case "\033[1;5C", "\033[5C" -> "WORD_RIGHT";
                     case "\033[H", "\033[1~" -> "HOME"; case "\033[F", "\033[4~" -> "END";
                     case "\033[3~" -> "DELETE"; case "\033[Z" -> "BACKTAB";
                     case "\033[5~" -> "PAGE_UP"; case "\033[6~" -> "PAGE_DOWN";
