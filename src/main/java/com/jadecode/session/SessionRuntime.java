@@ -465,13 +465,13 @@ public final class SessionRuntime implements AutoCloseable {
 
     /** 执行从后台唤起的轮次时，先登记已取出的回执；普通任务传空列表。 */
     private void execute(SessionInbox.Entry entry, boolean append, List<Completion> initialResults) {
-        Active task = new Active(entry, history);
+        Active task = new Active(entry, history, engine::notice);
         task.receipts.addAll(initialResults);
         active = task;
         changeState(State.RUNNING);
         // 实时计数和最终耗时共用 Active 的同一起点，不累加工具或模型的局部耗时。
         engine.notice(ExecutionNotice.event(ExecutionNotice.Kind.TURN_START, task.context().id(), "", "", "RUNNING")
-                .started(task.startedNanos));
+                .started(task.timer.startedNanos()));
         synchronized (inbox) { publishBuffer(); }
         try {
             ensureOpen();
@@ -916,12 +916,12 @@ public final class SessionRuntime implements AutoCloseable {
 
     /**
      * 最后一次回答与该轮日志已经处理完后，才报告整轮耗时；这不是“模型流结束”的同义词。
-     * 大轮次中的工具、思考、后台等待和记忆维护都使用 Active 开始时的同一计时点。
+     * 大轮次中的工具、思考、后台等待和记忆维护共用计时器，人工审批等待已扣除。
      * 只有最终确实有回复文字时才指向 Reply 卡，不把先前阶段回答冒充最终回答。
      */
     private void turnEnded(Active task, String outcome, boolean hasReply) {
         engine.notice(ExecutionNotice.event(ExecutionNotice.Kind.TURN_END, task.context().id(), hasReply ? "Reply" : "", "", outcome)
-                .timed(System.nanoTime() - task.startedNanos));
+                .timed(task.timer.elapsedNanos()));
     }
 
     /**
@@ -931,7 +931,9 @@ public final class SessionRuntime implements AutoCloseable {
      */
     private static final class Active {
         /** 消费者已经取出任务才创建，故不包含 Inbox 中等待别人做完的排队时间。 */
-        final long startedNanos = System.nanoTime();
+        final com.jadecode.execution.TurnTimer timer;
+        /** 审批已经绑定本轮计时；任务 ID、来源、退出检查不变。 */
+        final ExecutionContext execution;
         /** 最初取出的请求及结果 future，不随历史压缩变化。 */
         final SessionInbox.Entry entry;
         /** 定时任务开始前的历史副本，第一次模型回复前失败时恢复它；普通任务不保存。 */
@@ -958,15 +960,18 @@ public final class SessionRuntime implements AutoCloseable {
          * @param entry 取出的请求及结果 future
          * @param history 还没加入这项新请求的历史
          */
-        Active(SessionInbox.Entry entry, List<Message> history) {
+        Active(SessionInbox.Entry entry, List<Message> history, java.util.function.Consumer<ExecutionNotice> notices) {
             this.entry = entry;
+            var origin = entry.request().context();
+            timer = new com.jadecode.execution.TurnTimer(origin.id(), notices);
+            execution = new ExecutionContext(origin.id(), origin.source(), timer.track(origin.approval()), origin.sessionClosed(), origin.goal());
             // 只有定时任务在第一次回复前失败才会重试；普通任务不用多存一份长历史。
             snapshot = entry.request().cronId() == null ? List.of() : List.copyOf(history);
         }
         /**
          * @return 原任务 ID、来源、审批和退出检查，再附上包含已接收补充的当前任务说明
          */
-        ExecutionContext context() { return entry.request().context().withGoal(goal == null ? entry.request().prompt() : goal); }
+        ExecutionContext context() { return execution.withGoal(goal == null ? entry.request().prompt() : goal); }
         /**
          * @return 定时任务定义的 ID；用户直接提交的任务为 null
          */

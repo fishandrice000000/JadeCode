@@ -32,6 +32,7 @@ public record ExecutionNotice(String actor, Kind kind, String id, String name, S
         /** 会话开始、等待后台、回空闲或关闭；不会请求模型。 */ SESSION,
         /** 一项大轮次开始处理，id 和 startedNanos 来自真实执行，不包括此前排队时间。 */ TURN_START,
         /** 大轮次结束，含总耗时；name=Reply 才给最终文字卡加总耗时，失败不伪装 DONE。 */ TURN_END,
+        /** 实际进入/离开人工审批等待；elapsed 为已用工作时间，started 为该快照的时刻。 */ TURN_PAUSE, TURN_RESUME,
         /** 同一卡片从排队到真正执行，id 保持不变。 */ TOOL_START,
         /** 工具返回、被阻止或中断；每种结束都需要收尾卡片。 */ TOOL_END,
         /** 完整正式响应报告的输入／输出 token。 */ USAGE,

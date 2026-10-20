@@ -47,8 +47,10 @@ public final class TuiState {
     private static final class TurnView {
         final String id;
         final long startedNanos;
+        long sampledAt, sampledElapsed;
+        boolean paused;
         Entry lastReply;
-        TurnView(String id, long startedNanos) { this.id = id; this.startedNanos = startedNanos; }
+        TurnView(String id, long startedNanos) { this.id = id; this.startedNanos = startedNanos; sampledAt = startedNanos; }
     }
     public final ArrayDeque<UiEvent.ApprovalRequested> approvals = new ArrayDeque<>();
     public int approvalChoice = -1;
@@ -101,13 +103,14 @@ public final class TuiState {
     boolean turnActive(String actor) { return turns.containsKey(actor); }
     /**
      * 返回本轮当前或已冻结的纳秒用时，不修改状态；null 表示没有可靠的计时资料。
-     * 活动期间用执行线程传来的起点计算，包含审批、记忆与必等后台，不包含排队。
+     * 活动期间从执行线程的最近快照继续计时；人工审批时暂停，记忆与必等后台仍计入。
      * 结束后采用同一起点测出的 TURN_END 耗时，后续重绘、其它队友工作都不再增加它。
      * nowNanos 须来自同一 JVM 的 System.nanoTime；拆成参数便于离线检查而不用真实等待。
      */
     Long turnElapsed(String actor, long nowNanos) {
         TurnView active = turns.get(actor);
-        if (active != null) return active.startedNanos == 0 ? null : Math.max(0, nowNanos - active.startedNanos);
+        if (active != null) return active.startedNanos == 0 ? null : active.sampledElapsed
+                + (active.paused ? 0 : Math.max(0, nowNanos - active.sampledAt));
         return completedTurnTimes.get(actor);
     }
     /**
@@ -155,6 +158,14 @@ public final class TuiState {
                         reply.elapsed = notice.elapsedNanos(); reply.version++;
                     }
                     turns.remove(actor);
+                }
+            }
+            case TURN_PAUSE, TURN_RESUME -> {
+                TurnView turn = turns.get(actor);
+                if (turn != null && turn.id.equals(notice.id())) {
+                    // 已扣过的区间不再在 UI 累加或相减，使用计时器的累计工作时间即可。
+                    turn.sampledElapsed = notice.elapsedNanos(); turn.sampledAt = notice.startedNanos();
+                    turn.paused = notice.kind() == ExecutionNotice.Kind.TURN_PAUSE;
                 }
             }
             case SESSION -> {
