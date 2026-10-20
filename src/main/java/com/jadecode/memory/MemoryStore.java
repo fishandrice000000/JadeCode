@@ -4,6 +4,7 @@ import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.charset.CharacterCodingException;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
@@ -32,7 +33,8 @@ import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
  * 不用关键词否决记录；只有调用方明确要求新增或替换时才写入，不自动提取、不自动整理。
  *
  * <p>库在注入工作区的 {@code .jadecode/memory} 目录下，只有一层 Markdown 文件。每次读取都重新扫描，
- * 返回不可修改的列表，不缓存上次的结果。读到的是本次快照，不对其他进程的并发修改提供隔离。
+ * 返回不可修改的列表，不缓存上次的结果。协作进程的文件操作互斥，模型调用不持锁；
+ * 外部编辑器不遵守锁时仍可能改变库，整理发布前另核对输入快照。
  */
 public final class MemoryStore {
     /** 延用 s07 的 Jackson YAML 依赖，不另引入格式解析器。 */
@@ -44,6 +46,9 @@ public final class MemoryStore {
     private final Path workspaceRoot;
     /** 尚可不存在的库目录；只读召回不会 mkdir，显式新增才可能创建。 */
     private final Path memoryDir;
+    private final java.util.function.Consumer<String> warnings;
+    /** 同一 Store 对同一坏文件只提示一次；读回合法内容后清除，之后再次损坏仍可告警。 */
+    private final Set<String> reportedProblems = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     /**
      * 把记忆库绑定到一个确实存在的工作区，不读取进程全局 cwd；构造本身不写盘。
@@ -53,6 +58,11 @@ public final class MemoryStore {
      * @throws IllegalArgumentException 参数为 null
      */
     public MemoryStore(Path workspaceRoot) throws IOException {
+        this(workspaceRoot, System.err::println);
+    }
+
+    /** 将坏文件与恢复提示送到所属 Agent 的告警通道，构造不读正文、不写盘。 */
+    public MemoryStore(Path workspaceRoot, java.util.function.Consumer<String> warnings) throws IOException {
         if (workspaceRoot == null) {
             throw new IllegalArgumentException("workspaceRoot 不能为 null");
         }
@@ -62,6 +72,7 @@ public final class MemoryStore {
             throw new IOException("Memory 工作区不是目录: " + this.workspaceRoot);
         }
         this.memoryDir = new com.jadecode.config.WorkspacePaths(this.workspaceRoot).memory();
+        this.warnings = java.util.Objects.requireNonNull(warnings);
     }
 
     /**
@@ -71,7 +82,8 @@ public final class MemoryStore {
      * 格式非法的记录不进入结果。库根逃出工作区、目录列举或真实读取故障抛 IOException，
      * 避免把“无法读取知识”静默解释为“用户没有知识”。悬空链接或列举后消失的文件跳过。</p>
      *
-     * @return 不可修改的记录列表，原文包含 frontmatter，读取操作没有写入副作用
+     * @return 不可修改的记录列表，原文包含 frontmatter；已有库会创建/使用锁文件，
+     *         遇到中断的整理会先从备份恢复，缺库仍不创建目录
      * @throws IOException 库根非法或真实文件系统读取失败
      */
     public List<MemoryRecord> listRecords() throws IOException {
@@ -81,7 +93,12 @@ public final class MemoryStore {
             return List.of();
         }
         Path root = checkedRoot();
+        return MemoryLibraryLock.run(root, () -> { MemoryTransaction.recover(root, warnings); return scanRecords(); });
+    }
 
+    /** 已持有文件锁后扫描；内部写入流程直接调用它，避免重新取得同一个 OS 文件锁。 */
+    private List<MemoryRecord> scanRecords() throws IOException {
+        Path root = checkedRoot();
         // 2. 一次列举固定顺序。不要在模型回复后重新扫描，否则索引 0 可能已经指向另一条记录。
         List<MemoryRecord> records = new ArrayList<>();
         try (var entries = Files.list(root)) {
@@ -94,7 +111,7 @@ public final class MemoryStore {
                     // 3. 先检查真实位置与文件类型，再读正文；目录分组本身不能防止越界软链。
                     Path real = entry.toRealPath();
                     if (!real.startsWith(root)) {
-                        System.err.println("[Memory] 忽略越界记忆文件: " + filename);
+                        warnOnce(filename, "忽略越界记忆文件");
                         continue;
                     }
                     if (!Files.readAttributes(real, BasicFileAttributes.class).isRegularFile()) {
@@ -104,12 +121,16 @@ public final class MemoryStore {
                     MemoryRecord record = parseRecord(filename, content);
                     if (record == null) {
                         // 只报文件名，不回显原文；坏文件不妨碍其它合法知识被召回。
-                        System.err.println("[Memory] 忽略格式无效的记忆文件: " + filename);
+                        warnOnce(filename, "忽略格式无效的记忆文件");
                     } else {
+                        reportedProblems.remove(filename);
                         records.add(record);
                     }
                 } catch (NoSuchFileException disappeared) {
                     // 悬空链接 / 列举后删除，与权限或磁盘故障不同，不制造不存在的记录。
+                } catch (CharacterCodingException badEncoding) {
+                    // 坏 UTF-8 与坏 YAML 一样只是这一条不合法；权限/磁盘故障仍向上抛出。
+                    warnOnce(filename, "忽略非 UTF-8 记忆文件");
                 }
             }
         } catch (UncheckedIOException listingFailure) {
@@ -119,6 +140,13 @@ public final class MemoryStore {
         return List.copyOf(records);
     }
 
+    private void warnOnce(String filename, String reason) {
+        if (reportedProblems.add(filename)) warnings.accept("[Warning] [Memory] " + reason + ": " + filename);
+    }
+
+    /** 返回工具能直接读取的当前工作区相对路径，不再制造旧 .memory/ 引用。 */
+    public String sourcePath(MemoryRecord record) { return workspaceRoot.relativize(memoryDir.resolve(record.filename())).toString(); }
+
     /**
      * 新增一批已经完成结构 / scope 检查的记忆，成功后更新 MEMORY.md。
      *
@@ -127,18 +155,26 @@ public final class MemoryStore {
      *
      * <p>普通 IO 失败时尝试删除本批自己创建的新记录与临时索引，清理异常作为 suppressed
      * 保留；旧记录不删除。索引在同目录原子替换，不支持原子移动的文件系统会明确失败。
-     * 这不是多文件崩溃事务，也不对并发修改、断电或恶意路径竞态提供完整保证。</p>
+     * 新增不是多文件崩溃事务；协作进程的操作互斥，不对外部恶意路径竞态提供完整保证。</p>
      *
      * @param drafts 合法新增草稿；不能为空引用或含 null，空列表无 IO 副作用
-     * @return 不可修改的实际新增文件名列表，重复 / 名称碰撞不计为新增
+     * @return 不可修改的实际新增文件名列表；完全同名跳过，不同名撞路径另分配文件名
      * @throws IOException 库根、记录写入或索引发布失败；不返回假成功
      * @throws NullPointerException drafts 或其中的草稿为 null（调用方错误）
      */
     public List<String> saveNew(List<MemoryDraft> drafts) throws IOException {
+        return saveNewDetailed(drafts).filenames();
+    }
+
+    /**
+     * 新增并区分“同名已存在”和真正保存；不同名字的文件名碰撞使用稳定哈希分开。
+     * 整个扫描/写入/索引发布持有同一把库锁，避免多个进程用旧目录覆盖新索引。
+     */
+    public SaveResult saveNewDetailed(List<MemoryDraft> drafts) throws IOException {
         // 1. 固定本批输入并先检查 null。无候选不应仅为制造索引而创建运行目录。
         List<MemoryDraft> batch = List.copyOf(drafts);
         if (batch.isEmpty()) {
-            return List.of();
+            return new SaveResult(List.of(), 0);
         }
         if (Files.notExists(memoryDir)) {
             try {
@@ -148,22 +184,37 @@ public final class MemoryStore {
             }
         }
         Path root = checkedRoot();
+        return MemoryLibraryLock.run(root, () -> {
+            MemoryTransaction.recover(root, warnings);
+            return saveNewLocked(root, batch);
+        });
+    }
+
+    private SaveResult saveNewLocked(Path root, List<MemoryDraft> batch) throws IOException {
         Path index = root.resolve("MEMORY.md");
         checkIndexTarget(index);
+        var names = new java.util.HashSet<String>();
+        var occupied = new java.util.HashSet<String>();
+        for (var record : scanRecords()) names.add(record.name());
+        try (var entries = Files.list(root)) { entries.forEach(p -> occupied.add(p.getFileName().toString())); }
+        int duplicates = 0;
 
         List<Path> created = new ArrayList<>();
         Path temporaryIndex = null;
         try {
             // 2. 只新增。先编码完整文档，再排他创建；存在文件 / 目录 / 链接时绝不覆盖。
             for (MemoryDraft draft : batch) {
+                if (!names.add(draft.name())) { duplicates++; continue; }
                 String document = memoryDocument(draft);
-                Path target = root.resolve(memoryFilename(draft.name()));
+                String filename = availableFilename(draft.name(), occupied);
+                Path target = root.resolve(filename);
                 BufferedWriter writer;
                 try {
                     writer = Files.newBufferedWriter(target, StandardCharsets.UTF_8,
                             StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
                 } catch (FileAlreadyExistsException conflict) {
-                    continue;
+                    // 外部非协作写者抢占了已分配的目标。不能把它说成“同名记忆”，也不能覆盖。
+                    throw new IOException("记忆写入目标在分配后被占用", conflict);
                 }
                 // 创建成功即登记，即使 write 或 close 失败，也能清理自己的半成品。
                 created.add(target);
@@ -172,12 +223,12 @@ public final class MemoryStore {
                 }
             }
             if (created.isEmpty()) {
-                return List.of();
+                return new SaveResult(List.of(), duplicates);
             }
 
             // 3. 索引由现在的合法文件重建，不采纳模型自己生成的索引或 Markdown 路径。
             StringBuilder catalog = new StringBuilder();
-            for (MemoryRecord record : listRecords()) {
+            for (MemoryRecord record : scanRecords()) {
                 catalog.append("- [").append(indexText(record.name())).append("](")
                         .append(record.filename()).append(") - ").append(indexText(record.description()))
                         .append('\n');
@@ -189,8 +240,8 @@ public final class MemoryStore {
             checkIndexTarget(index);
             Files.move(temporaryIndex, index, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
             temporaryIndex = null;
-            return saved;
-        } catch (IOException failure) {
+            return new SaveResult(saved, duplicates);
+        } catch (IOException | RuntimeException failure) {
             // 4. 只清理本次排他创建的路径；不回滚用户旧记录，不删除整个库。
             deleteCreated(temporaryIndex, failure);
             for (Path path : created) {
@@ -200,6 +251,11 @@ public final class MemoryStore {
         }
     }
 
+    /** filenames 是实际已发布的新文件；duplicates 只数完全同名，不混同坏字段。 */
+    public record SaveResult(List<String> filenames, int duplicates) {
+        public SaveResult { filenames = List.copyOf(filenames); }
+    }
+
     /**
      * 把整理模型产生的整份候选库发布到磁盘，仅供同包整理服务调用。
      *
@@ -207,10 +263,10 @@ public final class MemoryStore {
      * 不用旧模型结论覆盖新内容。候选必须非空且生成的文件名唯一；模型不能指定删除路径。
      * 只替换快照中的合法普通文件，坏文件、目录和链接占位不删除、不覆盖。</p>
      *
-     * <p>先在专属临时目录写完候选及索引，再删除旧记录、创建新记录，最后原子发布索引。
-     * 普通 IO 失败会删除本批新文件并尝试恢复已删除旧文件；恢复失败作为 suppressed 保留。
-     * 恢复针对文件内容，不保证权限等元数据；这是课程式文件库的失败恢复，不是崩溃事务，
-     * 不支持并发写入的事务隔离。成功后的临时材料清理失败只告警，不伪装成发布失败。</p>
+     * <p>先在专属备份目录保存旧库、新库、索引和清单，刷新后才删除旧记录。
+     * 普通失败立即恢复；进程中断则下次库操作恢复未完成的发布。备份不自动删除。
+     * 恢复针对正文，不保证原文件权限等元数据；外部未知修改会使恢复停止并保留备份，
+     * 不是允许任意外部写者并发修改的数据库事务，也不保证任意硬件断电行为。</p>
      *
      * @param expected 本次辅助请求使用的完整合法记录快照
      * @param drafts 整理后的完整库，不是增量更新
@@ -219,115 +275,72 @@ public final class MemoryStore {
      */
     void replaceRecords(List<MemoryRecord> expected, List<MemoryDraft> drafts) throws IOException {
         List<MemoryRecord> snapshot = List.copyOf(expected);
-        // 1. 固定整库输出。不能只挑合法条目留下，否则坏条目会被解释成“模型要删除的旧知识”。
-        var documents = new LinkedHashMap<String, String>();
-        for (MemoryDraft draft : List.copyOf(drafts)) {
-            if (documents.putIfAbsent(memoryFilename(draft.name()), memoryDocument(draft)) != null) {
-                throw new IllegalArgumentException("整理后的记忆文件名发生碰撞");
-            }
-        }
-        if (documents.isEmpty()) {
-            throw new IllegalArgumentException("不允许用空整理结果清空记忆库");
-        }
-        if (!snapshot.equals(listRecords())) {
-            throw new IOException("整理期间记忆库发生变化，未发布旧快照的整理结果");
-        }
+        List<MemoryDraft> candidates = List.copyOf(drafts);
+        if (snapshot.isEmpty() || candidates.size() > snapshot.size())
+            throw new IllegalArgumentException("整理只能替换非空旧库，不能增加记录数量");
         Path root = checkedRoot();
+        MemoryLibraryLock.run(root, () -> {
+            MemoryTransaction.recover(root, warnings);
+            replaceLocked(root, snapshot, candidates);
+            return null;
+        });
+    }
+
+    /**
+     * 已持有库锁后准备整库替换。先检查模型输入快照仍是当前库，再完整保存磁盘备份。
+     * 候选不是增量，任何非法条目都拒绝整批，不能用丢弃坏条目的方式误删旧知识。
+     */
+    private void replaceLocked(Path root, List<MemoryRecord> snapshot, List<MemoryDraft> drafts) throws IOException {
+        if (!snapshot.equals(scanRecords())) throw new IOException("整理期间记忆库发生变化，未发布旧快照的整理结果");
+        var documents = new LinkedHashMap<String, String>();
+        var occupied = new java.util.HashSet<String>();
+        var preferred = new java.util.HashMap<String, String>();
+        for (var record : snapshot) preferred.put(record.name(), record.filename());
+        try (var entries = Files.list(root)) {
+            entries.filter(p -> snapshot.stream().noneMatch(r -> r.filename().equals(p.getFileName().toString())))
+                    .forEach(p -> occupied.add(p.getFileName().toString()));
+        }
+        var names = new java.util.HashSet<String>();
+        for (MemoryDraft draft : drafts) {
+            if (!names.add(draft.name())) throw new IllegalArgumentException("整理后的记忆名称重复");
+            String oldName = preferred.get(draft.name());
+            String filename = oldName != null && occupied.add(oldName) ? oldName : availableFilename(draft.name(), occupied);
+            documents.put(filename, memoryDocument(draft));
+        }
+        if (documents.isEmpty()) throw new IllegalArgumentException("不允许用空整理结果清空记忆库");
         Path index = root.resolve("MEMORY.md");
         checkIndexTarget(index);
-        var originals = new LinkedHashMap<Path, String>();
+        var originals = new LinkedHashMap<String, String>();
         for (MemoryRecord record : snapshot) {
             Path path = root.resolve(record.filename());
-            // listRecords 可以读取库内链接；破坏性替换不能把链接恢复成普通文件，故在这里拒绝。
             if (!Files.readAttributes(path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS).isRegularFile()) {
                 throw new IOException("整理只允许替换普通非链接记忆文件: " + record.filename());
             }
-            originals.put(path, record.content());
+            originals.put(record.filename(), record.content());
         }
-        for (String filename : documents.keySet()) {
-            Path target = root.resolve(filename);
-            if (!originals.containsKey(target) && Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
-                throw new IOException("整理目标被快照之外的对象占用: " + filename);
-            }
+        // prepare 返回之前没有删除任何旧记录。READY 与原文均在磁盘，下次读取可恢复中断。
+        StringBuilder catalog = new StringBuilder();
+        for (var entry : documents.entrySet()) {
+            MemoryRecord record = parseRecord(entry.getKey(), entry.getValue());
+            if (record == null) throw new IOException("候选编码后不能读回为合法记忆");
+            catalog.append("- [").append(indexText(record.name())).append("](")
+                    .append(record.filename()).append(") - ").append(indexText(record.description())).append('\n');
         }
-
-        Path staging = Files.createTempDirectory(root, ".memory-consolidate-");
-        List<Path> staged = new ArrayList<>();
-        List<Path> removed = new ArrayList<>();
-        List<Path> created = new ArrayList<>();
-        IOException failure = null;
+        MemoryTransaction transaction = MemoryTransaction.prepare(root, originals, documents, catalog.toString());
         try {
-            // 2. 完整编码并写完临时候选。比如 UTF-8 编码失败发生在旧库仍完整的时候。
-            StringBuilder catalog = new StringBuilder();
+            if (!snapshot.equals(scanRecords())) throw new IOException("准备整理候选期间记忆库发生变化");
+            for (String name : originals.keySet()) Files.delete(root.resolve(name));
             for (var entry : documents.entrySet()) {
-                Path temporary = staging.resolve(entry.getKey());
-                staged.add(temporary);
-                Files.writeString(temporary, entry.getValue(), StandardCharsets.UTF_8,
-                        StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
-                MemoryRecord record = parseRecord(entry.getKey(), entry.getValue());
-                if (record == null) {
-                    throw new IOException("候选编码后不能读回为合法记忆");
-                }
-                catalog.append("- [").append(indexText(record.name())).append("](")
-                        .append(record.filename()).append(") - ").append(indexText(record.description())).append('\n');
+                // 候选先完整写到临时文件再原子发布，进程中断不会留下半个新正文妨碍恢复。
+                MemoryTransaction.atomicReplace(root.resolve(entry.getKey()), entry.getValue());
             }
-            Path stagedIndex = staging.resolve("MEMORY.md");
-            staged.add(stagedIndex);
-            Files.writeString(stagedIndex, catalog.toString(), StandardCharsets.UTF_8);
-            // 临时目录不参与一层记录扫描；再次确认模型调用/准备期间没有出现新版本。
-            if (!snapshot.equals(listRecords())) {
-                throw new IOException("准备整理候选期间记忆库发生变化");
-            }
-
-            // 3. 只删除已核验的旧记录。逐个登记实际删除路径，失败时只恢复这些路径。
-            for (Path path : originals.keySet()) {
-                Files.delete(path);
-                removed.add(path);
-            }
-            for (var entry : documents.entrySet()) {
-                Path target = root.resolve(entry.getKey());
-                try (var writer = Files.newBufferedWriter(target, StandardCharsets.UTF_8,
-                        StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)) {
-                    created.add(target);
-                    writer.write(entry.getValue());
-                }
-            }
-            // 4. 索引最后发布。移动失败则原索引仍在，随后按原内容恢复记录。
             checkIndexTarget(index);
-            Files.move(stagedIndex, index, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-        } catch (IOException error) {
-            failure = error;
-            for (Path path : created) {
-                deleteCreated(path, error);
-            }
-            for (Path path : removed) {
-                try {
-                    Files.writeString(path, originals.get(path), StandardCharsets.UTF_8,
-                            StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
-                } catch (IOException restoreFailure) {
-                    error.addSuppressed(restoreFailure);
-                }
-            }
+            MemoryTransaction.atomicReplace(index, catalog.toString());
+            transaction.commit();
+        } catch (IOException | RuntimeException error) {
+            try { transaction.rollback(); }
+            catch (IOException restoreFailure) { error.addSuppressed(restoreFailure); }
             throw error;
-        } finally {
-            // 5. 只清理自己的已知临时文件与空目录，不递归清扫用户库。
-            for (Path path : staged) {
-                cleanupStaged(path, failure);
-            }
-            cleanupStaged(staging, failure);
-        }
-    }
-
-    /** 发布后的清理问题不改变发布结果；失败路径则把清理原因附到原异常。 */
-    private static void cleanupStaged(Path path, IOException original) {
-        try {
-            Files.deleteIfExists(path);
-        } catch (IOException cleanupFailure) {
-            if (original != null) {
-                original.addSuppressed(cleanupFailure);
-            } else {
-                System.err.println("[Memory] 临时整理材料清理失败: " + path.getFileName());
-            }
         }
     }
 
@@ -360,7 +373,39 @@ public final class MemoryStore {
         if (slug.isEmpty() || slug.equals("memory")) {
             slug = "record-memory";
         }
+        // Linux 常见单个文件名上限为 255 字节，不是 255 个汉字。预留扩展名与哈希位置。
+        // 保留完整码点；长名称的稳定哈希防止截成相同前缀后相互冲突。
+        if (slug.getBytes(StandardCharsets.UTF_8).length > 180) slug = utf8Prefix(slug, 180) + "-" + nameHash(name);
         return slug + ".md";
+    }
+
+    /** 已有同名由上层跳过；这里只为不同名称分配不覆盖旧对象的文件名。 */
+    private static String availableFilename(String name, Set<String> occupied) {
+        String base = memoryFilename(name);
+        if (occupied.add(base)) return base;
+        String alternative = base.substring(0, base.length() - 3) + "-" + nameHash(name) + ".md";
+        if (!occupied.add(alternative)) throw new IllegalArgumentException("不同记忆的目标文件仍冲突，未覆盖任何记录");
+        return alternative;
+    }
+
+    /** 名称哈希只用于区分路径，不拿正文哈希代替记忆内容；不依赖平台默认编码。 */
+    private static String nameHash(String name) {
+        try {
+            return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(name.getBytes(StandardCharsets.UTF_8))).substring(0, 12);
+        } catch (java.security.NoSuchAlgorithmException impossible) { throw new IllegalStateException("JDK 缺少 SHA-256", impossible); }
+    }
+
+    /** 在 UTF-8 字节预算内取最长完整码点前缀，不会制造半个汉字或 emoji。 */
+    private static String utf8Prefix(String text, int maxBytes) {
+        int end = 0, bytes = 0;
+        while (end < text.length()) {
+            int code = text.codePointAt(end), next = Character.charCount(code);
+            int size = text.substring(end, end + next).getBytes(StandardCharsets.UTF_8).length;
+            if (bytes + size > maxBytes) break;
+            bytes += size; end += next;
+        }
+        return text.substring(0, end);
     }
 
     /** 用 YAML 编码元数据而非字符串拼字段，防止换行 / 冒号变成伪造的 frontmatter 字段。 */
@@ -384,7 +429,7 @@ public final class MemoryStore {
     }
 
     /** 删除本批专属材料；清理失败不覆盖导致整个保存失败的原异常。 */
-    private static void deleteCreated(Path path, IOException original) {
+    private static void deleteCreated(Path path, Throwable original) {
         if (path == null) {
             return;
         }
@@ -456,6 +501,12 @@ public final class MemoryStore {
      * @param content 完整文件原文（含 frontmatter），只在选中后发送给主任务背景
      */
     public record MemoryRecord(String filename, String name, String description, String type, String content) {
+        /** 辅助整理只需要正文；元数据另有字段，避免再发送一遍完整 frontmatter 浪费输入。 */
+        public String body() {
+            String normalized = content.replace("\r\n", "\n");
+            int closing = normalized.indexOf("\n---\n");
+            return closing < 0 ? content : normalized.substring(closing + 5).strip();
+        }
     }
 
     /**
