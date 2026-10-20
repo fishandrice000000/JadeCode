@@ -31,3 +31,18 @@ Agent 先等用户批准，再运行 bash，最后等后台构建与记忆维护
 恢复旧聊天后，能不能拿旧进程记录的 nanoTime 与当前 nanoTime 相减？
 
 回答：
+
+## 补充阅读：恢复提示与显示格式
+
+2026-10-20 的小调整见 [恢复提示与小数显示记录](../../jobs/s13/tui-display-followup.md)。
+先读 `session/history/SessionLoader.load` 怎样区分正常恢复与不完整记录，再看
+`cli/tui/HistoryViewMapper.restore` 怎样显示实际警告，最后看 `ConversationView.duration/tokens`。
+这是显示调整，不恢复旧进程、不更改计时或 token 统计，也没有修改自动压缩和记忆整理策略。
+
+### S03（可选）：恢复对话为什么不等于恢复执行？
+
+resume 后模型能看到旧工具调用、后台命令的启动记录，但上一进程已退出。
+为什么不能仅凭这些历史文字就向用户宣称命令仍在运行或直接重跑？删掉固定提示后，
+程序仍要保留哪些真正的恢复错误说明？从 SessionLoader 与模型的恢复说明分别找依据。
+
+回答：

@@ -78,7 +78,8 @@ public final class SessionLoader {
         catch (IllegalArgumentException invalid) { throw new IOException("历史中存在非末尾工具交换损坏，不能自动恢复", invalid); }
         if (repaired) warnings.add("上次工具调用结果未完整记录，操作可能已执行；已补中断说明，不会重跑工具。");
         if (unfinished) warnings.add("上次大轮次未正常结束；恢复后等待新输入，不自动继续执行。");
-        if (!entries.isEmpty()) warnings.add("旧后台进程、队友、排队输入和审批授权未恢复；工作区文件不会回滚。");
+        // 不为每次正常恢复添加固定提示。上面的日志中断、工具结果缺失等实际异常仍须告知用户；
+        // 这里只减少界面噪声，不改变恢复范围，也不让旧进程、审批或业务文件回到过去的状态。
         // 清单可能在日志写完之后更新失败。从日志重算标题/更新时间，不让旧索引成为历史事实。
         rebuilt = rebuilt.withUsage(usage.snapshot().total());
         return new RestoredSession(rebuilt, history, todos, entries, warnings, sequence, start,

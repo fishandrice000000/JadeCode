@@ -146,17 +146,22 @@ public final class ConversationView {
         return text + (background == 0 ? "" : " · background " + background);
     }
 
-    /** 十进制缩写只用于显示，持久化仍存 long 原值；进位后不显示成 1000K。 */
+    /**
+     * 用 K/M 等单位显示较大的 token 数，统一保留一位小数，例如 100.0K、1.4M。
+     * 不足一千时仍显示实际整数条数；这里只改显示，持久化仍存 long 原值。
+     * 四舍五入达到下一个单位时先换单位，避免显示成 1000.0K。
+     */
     static String tokens(long value) {
         if (value < 1000) return Long.toString(value);
         String[] units = { "K", "M", "B", "T", "Q" };
         double number = value / 1000.0; int unit = 0;
         while (Math.round(number * 10) >= 10_000 && unit < units.length - 1) { number /= 1000; unit++; }
-        return String.format(java.util.Locale.ROOT, "%.1f", number).replaceAll("\\.0$", "") + units[unit];
+        return String.format(java.util.Locale.ROOT, "%.1f", number) + units[unit];
     }
 
     /**
-     * 将单调时钟测得的纳秒排成易读时长。小于一秒保留毫秒，不足一分钟最多一位小数；
+     * 将单调时钟测得的纳秒排成易读时长。小于一秒保留整数毫秒，不足一分钟固定一位小数；
+     * 整秒也显示为 29.0s，不因末位是零就删掉小数，以免运行中计数器反复变宽变窄。
      * 再长拆成天/小时/分钟/秒，不显示无意义的零项，也不把天继续变成年。
      * 这里只格式化，不重新计时，因而重绘和恢复不会让已结束的耗时增长。
      */
@@ -166,8 +171,7 @@ public final class ConversationView {
         long seconds = millis / 1000;
         if (millis < 60_000) {
             long tenths = (millis + 50) / 100;
-            if (tenths < 600) return (tenths % 10 == 0 ? Long.toString(tenths / 10)
-                    : (tenths / 10) + "." + (tenths % 10)) + "s";
+            if (tenths < 600) return (tenths / 10) + "." + (tenths % 10) + "s";
             seconds = 60; // 四舍五入达到一分钟时进位，不显示 60.0s。
         }
         var parts = new ArrayList<String>();
