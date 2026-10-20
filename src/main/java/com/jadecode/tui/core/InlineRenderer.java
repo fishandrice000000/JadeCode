@@ -1,6 +1,7 @@
 package com.jadecode.tui.core;
 
 import java.io.PrintWriter;
+import java.util.ArrayList;
 import java.util.List;
 import com.jadecode.tui.text.StyledLine;
 import com.jadecode.tui.theme.Theme;
@@ -40,12 +41,20 @@ public final class InlineRenderer {
      * 本方法唯一产生光标控制序列，写入的正文必须已经清理；不修改输入帧。
      */
     public void render(Frame frame, RenderContext context) {
-        List<StyledLine> lines = frame.lines();
-        if (lines.isEmpty()) return;
+        if (frame.lines().isEmpty()) return;
+        boolean layoutChanged = previous.isEmpty() || width != context.width() || height != context.height()
+                || !context.theme().equals(lastTheme);
+        // 候选栏收起后，已滚动过的终端不会自动把较短画面向下挪。
+        // 保留当前可见区的底部行号，把多出来的空行放在输入区上方，而不是页脚下方。
+        Frame painted = anchorBottom(frame, (layoutChanged ? 0 : viewportTop) + context.height());
+        List<StyledLine> lines = painted.lines();
         int first = 0;
         while (first < Math.min(lines.size(), previous.size()) && lines.get(first).equals(previous.get(first))) first++;
-        boolean reset = previous.isEmpty() || width != context.width() || height != context.height()
-                || !context.theme().equals(lastTheme) || first < viewportTop;
+        boolean reset = layoutChanged || first < viewportTop;
+        if (reset) {
+            // 真正重放整篇内容时会重新建立可见区，不沿用上一份画面的滚动行号补空行。
+            painted = anchorBottom(frame, context.height()); lines = painted.lines();
+        }
         output.print("\033[?2026h\033[?25l");
         if (reset) {
             if (previous.isEmpty()) {
@@ -67,12 +76,33 @@ public final class InlineRenderer {
             }
             output.print("\033[J"); // 新内容变短时清掉旧尾部，而不是留下重复的输入框。
         }
-        int target = Math.max(viewportTop, Math.min(frame.cursorRow(), lines.size() - 1));
-        move(target); output.print("\033[" + (Math.max(0, frame.cursorColumn()) + 1) + "G\033[?25h\033[?2026l");
+        int target = Math.max(viewportTop, Math.min(painted.cursorRow(), lines.size() - 1));
+        move(target); output.print("\033[" + (Math.max(0, painted.cursorColumn()) + 1) + "G\033[?25h\033[?2026l");
         output.flush();
         if (output.checkError()) throw new IllegalStateException("终端写入失败，停止交互会话");
-        previous = lines; visible = frame;
+        previous = lines; visible = painted;
         width = context.width(); height = context.height(); lastTheme = context.theme();
+    }
+
+    /**
+     * 在底部输入区域之前补齐显示空行，使页脚落在当前窗口最后一行。
+     * minimumRows 是当前可见区末尾的下一行；新内容更长时不补，让正常换行推进滚动。
+     * 空行只属于这次显示，不写入聊天历史；后续消息增长时会逐步占用这些空位。
+     * 返回新帧并同步平移输入区的光标与点击位置，避免审批按钮看到的位置与可确认的位置不一致。
+     * 普通四参数帧没有底部标记，原样返回，不改变独立组件的渲染方式。
+     */
+    private Frame anchorBottom(Frame frame, int minimumRows) {
+        int start = frame.bottomStartRow(), padding = minimumRows - frame.lines().size();
+        if (start < 0 || padding <= 0) return frame;
+        var lines = new ArrayList<StyledLine>(minimumRows);
+        lines.addAll(frame.lines().subList(0, start));
+        for (int row = 0; row < padding; row++) lines.add(StyledLine.of("", "normal"));
+        lines.addAll(frame.lines().subList(start, frame.lines().size()));
+        // 消息卡仍在原位置；只有输入区域及其后的行需要平移，不能给所有 hit 无差别加偏移。
+        var hits = frame.hits().stream().map(hit -> hit.row() < start ? hit
+                : new Frame.Hit(hit.row() + padding, hit.fromColumn(), hit.toColumn(), hit.action())).toList();
+        int cursor = frame.cursorRow() < start ? frame.cursorRow() : frame.cursorRow() + padding;
+        return new Frame(lines, cursor, frame.cursorColumn(), hits, start + padding);
     }
     private void move(int row) {
         int delta = row - cursorRow;
