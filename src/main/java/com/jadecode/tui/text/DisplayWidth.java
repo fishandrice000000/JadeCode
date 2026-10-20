@@ -52,4 +52,15 @@ public final class DisplayWidth {
         }
         return out.toString();
     }
+
+    /**
+     * 显示摘要、标题或提示时使用的单行省略：放不下时留一列显示省略号。
+     * 与 take 的精确裁列契约分开，避免代码块、表格等布局被自动添加的省略号挤坏。
+     * 先移除控制指令并合并换行；中文和 emoji 按完整字素截取，不修改原文字。
+     */
+    public static String ellipsize(String text, int columns) {
+        if (columns <= 0) return "";
+        String line = clean(text).replace('\n', ' ');
+        return width(line) <= columns ? line : take(line, columns - 1) + "…";
+    }
 }

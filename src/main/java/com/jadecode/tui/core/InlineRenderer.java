@@ -16,6 +16,8 @@ public final class InlineRenderer {
     private int viewportTop, cursorRow, width, height;
     private Theme lastTheme;
     private Frame visible;
+    /** 终端改变尺寸后，旧坐标即使仍在旧 Frame 中，也不能继续用于审批确认。 */
+    private boolean actionsValid;
     public InlineRenderer(PrintWriter output) { this.output = output; }
     /** 结束时移到实际内容下方，避免返回 shell 后提示符覆盖编辑器或页脚。 */
     public void finish() {
@@ -25,16 +27,23 @@ public final class InlineRenderer {
 
     /** 根据最后真正画出的帧处理点击，不能使用尚未绘制的新状态。 */
     public String hit(int column, int row) {
-        if (visible == null) return null;
+        if (visible == null || !actionsValid) return null;
         int documentRow = viewportTop + row;
         return visible.hits().stream().filter(h -> h.row() == documentRow && column >= h.fromColumn()
                 && column < h.toColumn()).map(Frame.Hit::action).findFirst().orElse(null);
     }
     /** 确认选项确实已经画在可见帧上，防止上一份审批的排队按键作用于尚未显示的新申请。 */
     public boolean hasAction(String action) {
-        return visible != null && visible.hits().stream().anyMatch(h -> h.action().equals(action)
+        return visible != null && actionsValid && visible.hits().stream().anyMatch(h -> h.action().equals(action)
                 && h.row() >= viewportTop && h.row() < viewportTop + height);
     }
+
+    /**
+     * 收到窗口尺寸变化后立即停止使用旧画面的操作位置，防止同一批事件中的 Enter 盲批。
+     * 不清屏、不删除显示记录；下一次 render 真正写完新画面后才重新启用确认位置。
+     * 只由界面线程调用，与 render、hit 和 hasAction 保持相同的线程使用约定。
+     */
+    public void invalidateActions() { actionsValid = false; }
 
     /**
      * 比较样式行后只重写变化的尾部。最后一列由布局保留，避免终端自动折行破坏行号。
@@ -80,7 +89,7 @@ public final class InlineRenderer {
         move(target); output.print("\033[" + (Math.max(0, painted.cursorColumn()) + 1) + "G\033[?25h\033[?2026l");
         output.flush();
         if (output.checkError()) throw new IllegalStateException("终端写入失败，停止交互会话");
-        previous = lines; visible = painted;
+        previous = lines; visible = painted; actionsValid = true;
         width = context.width(); height = context.height(); lastTheme = context.theme();
     }
 
