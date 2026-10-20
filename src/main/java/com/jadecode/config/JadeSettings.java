@@ -10,7 +10,12 @@ import java.util.Map;
  * 模型、认证和 endpoint 继续由 AppConfig 管理，不因统一 UI／压缩设置而搬动凭据。
  */
 public record JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimits limits, Memory memory, Models modelMetadata,
-        com.jadecode.llm.ThinkingSettings thinking, Permissions permissions) {
+        com.jadecode.llm.ThinkingSettings thinking, Permissions permissions, Mcp mcp) {
+    /** 旧配置和离线装配不默认连接外部程序；必须显式提供服务配置。 */
+    public JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimits limits, Memory memory, Models models,
+            com.jadecode.llm.ThinkingSettings thinking, Permissions permissions) {
+        this(tui, compaction, limits, memory, models, thinking, permissions, new Mcp(Map.of()));
+    }
     /** 旧装配保持 Workspace 默认，不因新增配置而读取用户文件。 */
     public JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimits limits, Memory memory, Models models,
             com.jadecode.llm.ThinkingSettings thinking) {
@@ -20,7 +25,20 @@ public record JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimit
     public JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimits limits, Memory memory, Models modelMetadata) {
         this(tui, compaction, limits, memory, modelMetadata, com.jadecode.llm.ThinkingSettings.DEFAULT);
     }
-    public JadeSettings { java.util.Objects.requireNonNull(thinking, "thinking"); java.util.Objects.requireNonNull(permissions, "permissions"); }
+    public JadeSettings {
+        java.util.Objects.requireNonNull(thinking, "thinking"); java.util.Objects.requireNonNull(permissions, "permissions");
+        java.util.Objects.requireNonNull(mcp, "mcp");
+    }
+
+    /** 非秘密服务配置；空表意味着 MCP 未配置，不影响普通工具或 Java 构建。 */
+    public record Mcp(Map<String, com.jadecode.mcp.McpServerConfig> servers) {
+        /** 固定本次启动采用的配置；后续连接不能读取模型提供的替代 command。 */
+        public Mcp {
+            servers = Map.copyOf(servers);
+            if (servers.size() > 16 || servers.keySet().stream().anyMatch(n -> n.isBlank() || n.length() > 128))
+                throw new IllegalArgumentException("MCP 服务数量或名称无效");
+        }
+    }
     /** 启动默认与长期规则；不能在模型参数中伪造这份配置。 */
     public record Permissions(com.jadecode.safety.PermissionProfile defaultProfile,
             java.util.List<com.jadecode.safety.rules.PermissionRule> rules, java.util.Set<String> disabledDefaults) {

@@ -94,6 +94,7 @@ public final class JadeConfigFile implements com.jadecode.safety.rules.Permissio
         root.set("tui", Json.mapper().valueToTree(defaults.tui()));
         root.set("memory", Json.mapper().valueToTree(defaults.memory()));
         root.set("modelMetadata", Json.mapper().valueToTree(defaults.modelMetadata()));
+        root.set("mcp", Json.mapper().valueToTree(defaults.mcp()));
         ObjectNode permissions = root.putObject("permissions");
         permissions.put("defaultProfile", defaults.permissions().defaultProfile().value());
         permissions.putArray("rules"); permissions.putArray("disabledDefaults");
@@ -159,7 +160,49 @@ public final class JadeConfigFile implements com.jadecode.safety.rules.Permissio
                 number(memory, "consolidationMaxOutputTokens", d.memory().consolidationMaxOutputTokens(), 1, "config.memory"),
                 number(memory, "consolidationInputChars", d.memory().consolidationInputChars(), 1, "config.memory"),
                 number(memory, "extractionCatalogChars", d.memory().extractionCatalogChars(), 1, "config.memory"));
-        return new JadeSettings(tui, policy, limits, memorySettings, discovery, thinking, permissions(root));
+        return new JadeSettings(tui, policy, limits, memorySettings, discovery, thinking, permissions(root), mcp(root));
+    }
+
+    /**
+     * 读取可信用户配置中的 stdio 服务；缺失时为空，非法配置报字段而不回显启动参数。
+     * 不安装依赖、不验证程序存在，也不启动服务，因此未安装 Fetch 不影响配置读取或构建。
+     */
+    private static JadeSettings.Mcp mcp(ObjectNode root) throws IOException {
+        ObjectNode configured = section(section(root, "mcp"), "servers");
+        var servers = new java.util.LinkedHashMap<String, com.jadecode.mcp.McpServerConfig>();
+        for (var field : configured.properties()) {
+            if (!(field.getValue() instanceof ObjectNode value)) throw new IOException("config.mcp.servers 中的服务必须为对象");
+            // 拼错 transport 或 command 不能静默回退；第一版只支持 stdio，没有网络 transport 隐式降级。
+            for (var property : value.properties()) {
+                String key = property.getKey();
+                if (!java.util.Set.of("enabled", "command", "args", "cwd", "startupTimeoutSeconds", "callTimeoutSeconds",
+                        "maxResultChars", "readOnlyTools").contains(key)) throw new IOException("config.mcp.servers 包含不支持的字段");
+            }
+            if (!value.path("command").isTextual() || value.has("cwd") && !value.path("cwd").isTextual())
+                throw new IOException("config.mcp command/cwd 必须为字符串");
+            try {
+                servers.put(field.getKey(), new com.jadecode.mcp.McpServerConfig(bool(value, "enabled", true, "config.mcp"),
+                        value.path("command").textValue(), mcpStrings(value, "args"), value.path("cwd").asText(""),
+                        number(value, "startupTimeoutSeconds", 15, 1, "config.mcp"),
+                        number(value, "callTimeoutSeconds", 30, 1, "config.mcp"),
+                        number(value, "maxResultChars", 20_000, 1, "config.mcp"),
+                        new java.util.LinkedHashSet<>(mcpStrings(value, "readOnlyTools"))));
+            } catch (IllegalArgumentException invalid) { throw new IOException("config.mcp 服务参数或范围无效", invalid); }
+        }
+        try { return new JadeSettings.Mcp(servers); }
+        catch (IllegalArgumentException invalid) { throw new IOException("config.mcp 服务数量或名称无效", invalid); }
+    }
+
+    /** 严格读取字符串数组；缺失为空，不把对象/数字宽松转换成可执行参数。 */
+    private static java.util.List<String> mcpStrings(ObjectNode value, String key) throws IOException {
+        if (!value.has(key)) return java.util.List.of();
+        if (!value.path(key).isArray() || value.path(key).size() > 64) throw new IOException("config.mcp." + key + " 必须为有限字符串数组");
+        var result = new java.util.ArrayList<String>();
+        for (var item : value.path(key)) {
+            if (!item.isTextual() || item.textValue().length() > 8192) throw new IOException("config.mcp." + key + " 包含无效参数");
+            result.add(item.textValue());
+        }
+        return java.util.List.copyOf(result);
     }
 
     /** 严格读取权限配置；未知枚举/类型/编号不能静默降级为放行。异常不回显配置原文。 */

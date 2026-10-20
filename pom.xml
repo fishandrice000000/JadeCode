@@ -20,6 +20,17 @@
   </properties>
 
   <dependencies>
+    <!-- s14：官方 MCP 客户端；使用 Jackson 2 适配，不引入 Spring 或 Jackson 3。 -->
+    <dependency>
+      <groupId>io.modelcontextprotocol.sdk</groupId>
+      <artifactId>mcp-core</artifactId>
+      <version>2.1.0</version>
+    </dependency>
+    <dependency>
+      <groupId>io.modelcontextprotocol.sdk</groupId>
+      <artifactId>mcp-json-jackson2</artifactId>
+      <version>2.1.0</version>
+    </dependency>
     <!-- TUI 解析 Markdown 为语法树；终端排版由本项目负责，不自行重造 Markdown 解析器。 -->
     <dependency>
       <groupId>org.commonmark</groupId>
