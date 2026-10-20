@@ -469,7 +469,9 @@ public final class SessionRuntime implements AutoCloseable {
         task.receipts.addAll(initialResults);
         active = task;
         changeState(State.RUNNING);
-        engine.notice(ExecutionNotice.event(ExecutionNotice.Kind.TURN_START, task.context().id(), "", "", "RUNNING"));
+        // 实时计数和最终耗时共用 Active 的同一起点，不累加工具或模型的局部耗时。
+        engine.notice(ExecutionNotice.event(ExecutionNotice.Kind.TURN_START, task.context().id(), "", "", "RUNNING")
+                .started(task.startedNanos));
         synchronized (inbox) { publishBuffer(); }
         try {
             ensureOpen();

@@ -42,10 +42,13 @@ public final class TuiState {
     public final Map<String, String> background = new LinkedHashMap<>();
     /** 每个 Agent 当前大轮次的显示关联；不保存模型历史，也不据此调度下一项任务。 */
     private final Map<String, TurnView> turns = new LinkedHashMap<>();
+    /** 每个 Agent 最近一轮已冻结的用时，不是所有轮次累计，也不累加工具卡的耗时。 */
+    private final Map<String, Long> completedTurnTimes = new LinkedHashMap<>();
     private static final class TurnView {
         final String id;
+        final long startedNanos;
         Entry lastReply;
-        TurnView(String id) { this.id = id; }
+        TurnView(String id, long startedNanos) { this.id = id; this.startedNanos = startedNanos; }
     }
     public final ArrayDeque<UiEvent.ApprovalRequested> approvals = new ArrayDeque<>();
     public int approvalChoice = -1;
@@ -84,7 +87,22 @@ public final class TuiState {
     }
 
     /** 切换/恢复会话时丢弃旧显示关联，不能把新轮次时间标到 HISTORICAL 回复上。 */
-    public void resetTurns() { turns.clear(); }
+    public void resetTurns() { turns.clear(); completedTurnTimes.clear(); }
+    /** 是否还有尚未结束的轮次；等待后台也要持续刷新计时，不依赖收到新的流式文字。 */
+    boolean hasActiveTurn() { return !turns.isEmpty(); }
+    /** 主会话有活动轮次时不把“正在写完成记录”的短暂 IDLE 通知误显示成已经计时结束。 */
+    boolean turnActive(String actor) { return turns.containsKey(actor); }
+    /**
+     * 返回本轮当前或已冻结的纳秒用时，不修改状态；null 表示没有可靠的计时资料。
+     * 活动期间用执行线程传来的起点计算，包含审批、记忆与必等后台，不包含排队。
+     * 结束后采用同一起点测出的 TURN_END 耗时，后续重绘、其它队友工作都不再增加它。
+     * nowNanos 须来自同一 JVM 的 System.nanoTime；拆成参数便于离线检查而不用真实等待。
+     */
+    Long turnElapsed(String actor, long nowNanos) {
+        TurnView active = turns.get(actor);
+        if (active != null) return active.startedNanos == 0 ? null : Math.max(0, nowNanos - active.startedNanos);
+        return completedTurnTimes.get(actor);
+    }
     /**
      * 追加一次请求的片段。同类连续片段拼在当前块，类型变化时另开一块，以保留思考／正文顺序。
      * request 标识一次显示请求，不是工具调用 ID；新请求不能接到上一请求尚未完成的卡片里。
@@ -114,11 +132,17 @@ public final class TuiState {
         String actor = notice.actor();
         switch (notice.kind()) {
             case MODEL -> { if (actor.equals("leader")) modelInfo = notice.detail(); }
-            case TURN_START -> turns.put(actor, new TurnView(notice.id()));
+            case TURN_START -> {
+                completedTurnTimes.remove(actor); // 新轮次不能在缺少计时时退回显示上一轮的数值。
+                turns.put(actor, new TurnView(notice.id(), notice.startedNanos()));
+            }
             case TURN_END -> {
                 TurnView turn = turns.get(actor);
                 // 运行编号必须匹配；失败、不含最终正文、或中断流都不能给阶段回复补上假 DONE。
                 if (turn != null && turn.id.equals(notice.id())) {
+                    // 先冻结这一轮，失败/无正文也可以显示真实用时，但不能冒称业务成功。
+                    if (turn.startedNanos != 0 || notice.elapsedNanos() > 0)
+                        completedTurnTimes.put(actor, notice.elapsedNanos());
                     Entry reply = turn.lastReply;
                     if (notice.state().equals("DONE") && notice.name().equals("Reply") && reply != null && reply.status.equals("DONE")) {
                         reply.elapsed = notice.elapsedNanos(); reply.version++;

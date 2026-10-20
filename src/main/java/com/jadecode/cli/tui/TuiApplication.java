@@ -146,7 +146,9 @@ public final class TuiApplication {
                     if (!running || count == 127) break;
                     event = queue.poll();
                 }
-                if (System.nanoTime() - animated >= 160_000_000L && state.actors.containsValue("RUNNING")) {
+                // 没有流式片段、正在审批或等必需后台结果时，整轮计数仍要前进。
+                if (System.nanoTime() - animated >= ConversationView.ANIMATION_INTERVAL_NANOS
+                        && (state.hasActiveTurn() || state.actors.containsValue("RUNNING"))) {
                     scheduler.request(); animated = System.nanoTime();
                 }
                 // 仅读取不可变内存快照，不读日志/网络。只有统计或设置真的变化才要求重绘。
