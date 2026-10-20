@@ -10,10 +10,13 @@ import static org.junit.jupiter.api.Assertions.*;
 class McpSettingsTest {
     @TempDir Path directory;
 
-    /** 缺省禁用 MCP；配置程序可尚未安装，保存主题仍完整保留服务定义。 */
+    /** 旧用户文件和首次启动默认提供 Fetch，配置读取不要求本机已经安装该程序。 */
     @Test void optionalConfigIsPortableAndPreserved() throws Exception {
         Path file = directory.resolve("config.json");
-        assertTrue(new JadeConfigFile(file).load().mcp().servers().isEmpty());
+        assertTrue(new JadeConfigFile(file).load().mcp().servers().get("fetch").enabled());
+        Files.writeString(file, "{\"tui\":{\"theme\":\"dark\"}}");
+        assertEquals(JadeSettings.Mcp.defaults(), new JadeConfigFile(file).load().mcp());
+        assertTrue(JadeConfigFile.template().path("mcp").path("servers").path("fetch").path("enabled").booleanValue());
         Files.writeString(file, """
                 {"mcp":{"servers":{"fetch":{"command":".jadecode/mcp/fetch/bin/python","args":["-m","mcp_server_fetch"],"readOnlyTools":["fetch"]}}}}
                 """);
@@ -22,6 +25,22 @@ class McpSettingsTest {
         config.saveTheme("dark");
         assertEquals(".jadecode/mcp/fetch/bin/python", config.load().mcp().servers().get("fetch").command());
         Files.writeString(file, "{\"mcp\":{\"servers\":{\"fetch\":{\"command\":\"python\",\"args\":[1]}}}}");
+        assertThrows(java.io.IOException.class, config::load);
+    }
+
+    /** 默认开放不等于强制开放；用户的关闭及替换选择不能被默认 Fetch 覆盖。 */
+    @Test void explicitServerTableOverridesDefaultFetch() throws Exception {
+        Path file = directory.resolve("config.json");
+        var config = new JadeConfigFile(file);
+        Files.writeString(file, "{\"mcp\":{\"servers\":{}}}");
+        assertTrue(config.load().mcp().servers().isEmpty());
+        Files.writeString(file, """
+                {"mcp":{"servers":{"fetch":{"enabled":false,"command":"python","args":["-m","mcp_server_fetch"]}}}}
+                """);
+        assertFalse(config.load().mcp().servers().get("fetch").enabled());
+        config.saveTheme("light");
+        assertFalse(config.load().mcp().servers().get("fetch").enabled());
+        Files.writeString(file, "{\"mcp\":null}");
         assertThrows(java.io.IOException.class, config::load);
     }
 }

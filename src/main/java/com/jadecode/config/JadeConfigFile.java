@@ -164,11 +164,14 @@ public final class JadeConfigFile implements com.jadecode.safety.rules.Permissio
     }
 
     /**
-     * 读取可信用户配置中的 stdio 服务；缺失时为空，非法配置报字段而不回显启动参数。
+     * 读取可信用户配置中的 stdio 服务；缺失时启用默认 Fetch，非法配置报字段而不回显启动参数。
      * 不安装依赖、不验证程序存在，也不启动服务，因此未安装 Fetch 不影响配置读取或构建。
      */
     private static JadeSettings.Mcp mcp(ObjectNode root) throws IOException {
-        ObjectNode configured = section(section(root, "mcp"), "servers");
+        ObjectNode mcp = section(root, "mcp");
+        // 旧用户文件尚无 MCP 字段时也获得默认入口；显式 servers 表（包括空表）完整替换默认表。
+        if (!mcp.has("servers")) return JadeSettings.Mcp.defaults();
+        ObjectNode configured = section(mcp, "servers");
         var servers = new java.util.LinkedHashMap<String, com.jadecode.mcp.McpServerConfig>();
         for (var field : configured.properties()) {
             if (!(field.getValue() instanceof ObjectNode value)) throw new IOException("config.mcp.servers 中的服务必须为对象");

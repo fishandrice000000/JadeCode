@@ -11,10 +11,10 @@ import java.util.Map;
  */
 public record JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimits limits, Memory memory, Models modelMetadata,
         com.jadecode.llm.ThinkingSettings thinking, Permissions permissions, Mcp mcp) {
-    /** 旧配置和离线装配不默认连接外部程序；必须显式提供服务配置。 */
+    /** 旧配置和离线装配同样提供默认 Fetch；只登记入口，不启动外部程序。 */
     public JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimits limits, Memory memory, Models models,
             com.jadecode.llm.ThinkingSettings thinking, Permissions permissions) {
-        this(tui, compaction, limits, memory, models, thinking, permissions, new Mcp(Map.of()));
+        this(tui, compaction, limits, memory, models, thinking, permissions, Mcp.defaults());
     }
     /** 旧装配保持 Workspace 默认，不因新增配置而读取用户文件。 */
     public JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimits limits, Memory memory, Models models,
@@ -30,13 +30,24 @@ public record JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimit
         java.util.Objects.requireNonNull(mcp, "mcp");
     }
 
-    /** 非秘密服务配置；空表意味着 MCP 未配置，不影响普通工具或 Java 构建。 */
+    /** 非秘密服务配置；显式空表关闭所有 MCP 入口，不影响普通工具或 Java 构建。 */
     public record Mcp(Map<String, com.jadecode.mcp.McpServerConfig> servers) {
         /** 固定本次启动采用的配置；后续连接不能读取模型提供的替代 command。 */
         public Mcp {
             servers = Map.copyOf(servers);
             if (servers.size() > 16 || servers.keySet().stream().anyMatch(n -> n.isBlank() || n.length() > 128))
                 throw new IllegalArgumentException("MCP 服务数量或名称无效");
+        }
+
+        /**
+         * 默认开放 Fetch 的连接入口，安装路径相对工作区，避免绑定开发者机器的绝对路径。
+         * 此处只创建配置数据；环境未安装时由连接工具报告安装指引，不能在启动时自动下载。
+         * 用户显式提供 servers 表时整表替换，因此空表或 enabled=false 仍能关闭服务。
+         */
+        public static Mcp defaults() {
+            return new Mcp(Map.of("fetch", new com.jadecode.mcp.McpServerConfig(true,
+                    ".jadecode/mcp/fetch/bin/python", java.util.List.of("-m", "mcp_server_fetch"), "",
+                    15, 30, 20_000, java.util.Set.of("fetch"))));
         }
     }
     /** 启动默认与长期规则；不能在模型参数中伪造这份配置。 */

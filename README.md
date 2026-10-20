@@ -138,8 +138,10 @@ s14 使用官方 Java MCP SDK 接入独立 stdio 服务。Fetch 是现成的 Pyt
 Fetch 未安装不影响 Maven 构建及其它工具；重新 clone 或移动目录后，在新位置重新执行脚本，不能搬运 venv。
 脚本面向 POSIX 环境；Windows 原生环境可用 `python -m venv` 与同一 requirements 安装，并配置实际的 `Scripts/python.exe`。
 
-将以下对象合并到 `~/.jadecode/config/config.json` 的 `mcp` 字段，保留已有其它设置，重启生效。
-`config.example.json` 中的 Fetch 缺省禁用，安装后再改为 true：
+Fetch 默认启用：没有 `mcp.servers` 配置时，JadeCode 自动采用以下定义并提供 `connect_mcp`，
+安装完成后无需手动合并配置。旧用户配置缺少该字段时同样生效；重建 JAR 并重启后使用新的默认值。
+`config.example.json` 与新生成的默认配置保持一致。
+如需自定义，可将以下对象写入 `~/.jadecode/config/config.json` 的 `mcp` 字段，保留其它设置：
 
 ```json
 {
@@ -157,6 +159,8 @@ Fetch 未安装不影响 Maven 构建及其它工具；重新 clone 或移动目
 }
 ```
 
+显式配置的 `mcp.servers` 整表替换默认表；设为 `{}` 可关闭全部 MCP，或在完整 Fetch 定义中设 `enabled: false`。
+默认启用只登记工具入口，服务仍由模型按需连接；不在启动时下载依赖、启动 Fetch 或访问网页。
 含路径分隔符的相对 command 和 cwd 按当前工作区解析；裸 command 使用 PATH，args 不经过 shell。
 该配置可用于其它工作区，但每个工作区需准备对应相对路径的环境，或配置本机已安装服务的绝对路径。
 模型只能按已启用名称调用 `connect_mcp`，不能提交启动命令或自动下载依赖。

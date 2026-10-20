@@ -3,7 +3,7 @@
   "mcp": {
     "servers": {
       "fetch": {
-        "enabled": false,
+        "enabled": true,
         "command": ".jadecode/mcp/fetch/bin/python",
         "args": ["-m", "mcp_server_fetch"],
         "cwd": "",
