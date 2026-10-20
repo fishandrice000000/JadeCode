@@ -59,6 +59,8 @@ git log --oneline --diff-filter=A -- src/main/java/com/jadecode/memory/MemoryRec
 
 回答：
 
+我觉得这种情况应该从两方面约束: 一方面, 描述不应过于简略; 另一方面, 记忆正文也不应该太长. 
+
 ### R02：没有选中与选择失败，为什么可以采用不同策略？
 
 情况甲：辅助模型正常返回 []。情况乙：辅助模型调用失败，本轮还有一条与请求词匹配的记忆。
@@ -68,6 +70,8 @@ git log --oneline --diff-filter=A -- src/main/java/com/jadecode/memory/MemoryRec
 或统一“把所有记忆加载进去”，又会改变什么？不用按 catch 的行号作答。
 
 回答：
+
+不重要.
 
 ### R03：被截断的记忆还应该怎样帮助模型？
 
@@ -79,6 +83,7 @@ git log --oneline --diff-filter=A -- src/main/java/com/jadecode/memory/MemoryRec
 不要求现在实现某一种优化。
 
 回答：
+
 
 ## 5. 尚未验证与下一步
 
