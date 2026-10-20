@@ -266,7 +266,8 @@ public class AgentExecutor implements AutoCloseable {
                 if (context.isCancelled()) throw new IllegalStateException("Parent session is closed");
                 ObjectNode input = call.input() instanceof ObjectNode node ? node : Json.mapper().createObjectNode();
                 notice(ExecutionNotice.event(ExecutionNotice.Kind.TOOL_START, batchId + "/" + call.id(), call.name(), input.toString(), "RUNNING"));
-                // 权限检查和审批已经结束，现在才开始计工具执行时间；整轮总用时仍包含实际等待。
+                // 权限检查和审批已经结束，现在才开始计工具执行时间。
+                // 整轮用时另由 Session 的 TurnTimer 统计，并扣除人工审批等待，不能在这里累加。
                 toolStarted = System.nanoTime();
                 attempted = true;
                 String output = tool.execute(input, context);
