@@ -1,5 +1,19 @@
 {
   "version": 1,
+  "mcp": {
+    "servers": {
+      "fetch": {
+        "enabled": false,
+        "command": ".jadecode/mcp/fetch/bin/python",
+        "args": ["-m", "mcp_server_fetch"],
+        "cwd": "",
+        "startupTimeoutSeconds": 15,
+        "callTimeoutSeconds": 30,
+        "maxResultChars": 20000,
+        "readOnlyTools": ["fetch"]
+      }
+    }
+  },
   "tui": {
     "theme": "dark",
     "thinkingVisible": true,

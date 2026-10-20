@@ -40,6 +40,7 @@ src/main/java/com/jadecode/
 ├── memory/           # 工作区记忆：召回 / 提取 / 数量触发整理算法
 ├── tasks/            # 持久任务图：创建 / 依赖 / 认领 / 完成与解锁，六工具由父循环使用
 ├── team/             # 常驻队友、独立派工编号、文件邮箱与结果提交
+├── mcp/              # 真实 stdio 服务连接、工具发现与文本调用；官方 Java SDK 隔离层
 ├── cron/             # CronProducer 定时生产、时间规则、待交付状态与工作区持久化
 ├── session/          # SessionRuntime(单消费者、历史、记忆时机、服务关闭) / SessionInbox / SessionEvent
 └── agent/            # AgentExecutor(模型请求、工具批次、压缩步骤及嵌套结果)
@@ -64,7 +65,7 @@ src/main/java/com/jadecode/
 | s11 | Background Tasks | `process/BackgroundManager` |
 | s12 | Cron Scheduler | `cron/` |
 | s13 | Agent Teams | `team/` |
-| s14 | MCP Plugin | `mcp/` |
+| s14 | MCP Plugin | `mcp/`、`tools/ToolCatalog` 与 MCP 工具适配器 |
 | s15 | 集成装配 | `agent/AsyncEventLoop` `context/SystemPromptBuilder` `llm/RetryPolicy`(完整版) |
 | s16 | Workflow Runtime | `workflow/` |
 | s17 | Goal Loop | `goal/` |
@@ -120,6 +121,67 @@ TUI 输入 `/model` 只显示当前模型、思考强度和已知的窗口／输
 除最后一项外都按 Java 字符数计算，**不是精确 token 或模型窗口保证**，须按实际后端调整。
 默认开关参考指定 Claude Code 快照，不代表已复制其缓存共享、硬阻塞线或服务端上下文机制；
 当前 JadeCode 的 read_file 仍参与普通结果转存，没有引入 Claude Code 的专用读取例外。
+
+## MCP 与 Fetch
+
+s14 使用官方 Java MCP SDK 接入独立 stdio 服务。Fetch 是现成的 Python 服务，
+负责读取公开网页并转换为 Markdown；MCP 服务本身不按调用收费，模型读取正文仍消耗 token。
+
+先准备 Python 3.10+（含 venv），在 checkout 中执行：
+
+```sh
+./scripts/install-fetch.sh
+```
+
+脚本按 `scripts/fetch-requirements.txt` 安装固定版本服务到 `.jadecode/mcp/fetch/`，
+不改全局 Python 或用户配置。该目录已由工作区运行数据规则忽略。
+Fetch 未安装不影响 Maven 构建及其它工具；重新 clone 或移动目录后，在新位置重新执行脚本，不能搬运 venv。
+脚本面向 POSIX 环境；Windows 原生环境可用 `python -m venv` 与同一 requirements 安装，并配置实际的 `Scripts/python.exe`。
+
+将以下对象合并到 `~/.jadecode/config/config.json` 的 `mcp` 字段，保留已有其它设置，重启生效。
+`config.example.json` 中的 Fetch 缺省禁用，安装后再改为 true：
+
+```json
+{
+  "servers": {
+    "fetch": {
+      "enabled": true,
+      "command": ".jadecode/mcp/fetch/bin/python",
+      "args": ["-m", "mcp_server_fetch"],
+      "startupTimeoutSeconds": 15,
+      "callTimeoutSeconds": 30,
+      "maxResultChars": 20000,
+      "readOnlyTools": ["fetch"]
+    }
+  }
+}
+```
+
+含路径分隔符的相对 command 和 cwd 按当前工作区解析；裸 command 使用 PATH，args 不经过 shell。
+该配置可用于其它工作区，但每个工作区需准备对应相对路径的环境，或配置本机已安装服务的绝对路径。
+模型只能按已启用名称调用 `connect_mcp`，不能提交启动命令或自动下载依赖。
+连接完成后的下一次请求会出现 `mcp__fetch__fetch`；同一回复中猜测尚未发现的名字会被拒绝。
+
+可在 `./jade repl` 中输入：
+
+```text
+连接 fetch 服务，读取 https://example.com，概括页面内容并附来源。每次最多读取 5000 字符。
+```
+
+Fetch 参数支持 `url`、`max_length`、`start_index` 和 `raw`；默认返回上限 5000 字符。
+宿主限制显式 max_length 为 1–10000，支持按 start_index 分段；服务器输出还受 maxResultChars 限制。
+`readOnlyTools` 是用户配置的原始工具名白名单，不信任服务自报的 readOnlyHint；其它外部工具默认需要确认。
+HTTP(S) URL 不能包含用户名密码，Fetch 保留默认非公网地址限制；代理环境按白名单传入，不传模型 API Key。
+正文作为外部参考数据，不能据此增加用户授权。
+
+Leader 和常驻队友各自按需连接；一次性子代理暂不接入 MCP。关闭会话会关闭所属连接，恢复历史不恢复旧进程。
+连接和调用失败形成明确工具错误，不自动重放；SDK 关闭最长等待约 10 秒，未确认退出时提示检查进程。
+若代理 DNS 把公网域名解析成 `198.18.x.x` 等假地址，Fetch 的默认非公网保护会拒绝请求，
+即使浏览器能打开也可能发生。需要用户在代理侧为目标域名配置真实解析；不应默认用 `--allow-private-ips` 关闭保护。
+本机已验证 `https://detectportal.firefox.com/success.txt` 可读取，`example.com` 因上述环境原因被拒绝；
+用户选择保持代理配置，详见任务单。其它机器应按自身 DNS 与网络状态验收。
+第一版只支持 stdio、文本工具，不支持 HTTP/OAuth、resources/prompts、sampling、elicitation、热更新或非文本结果。
+工程记录见 [s14 任务单](docs/jobs/s14/mcp-fetch.md)，源码阅读见 [s14 指南](docs/notes/s14/mcp-fetch-review.md)。
 
 ## 运行
 
@@ -263,7 +325,8 @@ REPL 默认新建并保存主会话。`/resume` 打开可筛选选择器，
 - [x] s11:显式后台 bash、请求前完成通知与退出清理；用户学习与 R1–R4 真机验收通过
 - [ ] s12:定时交付与持久恢复真机检查通过，事件化场景已获准代跑通过；源码学习与最终章节确认另记
 - [ ] s13:独立 Session Team、文件邮箱与结果提交已接入；工程验证见任务单，用户学习与真机验收待完成
-- [ ] s14–s17:逐章实现(见映射表)
+- [ ] s14:真实 MCP stdio、动态工具与 Fetch 已接入；工程证据见任务单，用户理解与独立真机验收待完成
+- [ ] s15–s17:逐章实现(见映射表)
 
 由 `SessionRuntime` 在任务入口和完成处调用 Memory 服务。Memory 使用工作区 `.jadecode/memory/`，每次用户任务入口召回一次，真正结束后提取，新增成功后按数量尝试整理。
 辅助请求沿用现有客户端，不带工具；记忆维护失败告警，不抹掉已完成的主任务结果。

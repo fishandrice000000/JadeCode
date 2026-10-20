@@ -1,0 +1,32 @@
+#!/usr/bin/env sh
+# 在当前 checkout 的工作区重建 Fetch 运行环境；不复制其它机器的 venv，不改用户配置。
+set -eu
+
+JADE_FETCH_SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+JADE_FETCH_PROJECT_DIR=$(CDPATH= cd -- "$JADE_FETCH_SCRIPT_DIR/.." && pwd -P)
+JADE_FETCH_ENV_DIR="$JADE_FETCH_PROJECT_DIR/.jadecode/mcp/fetch"
+JADE_FETCH_PYTHON_BIN="${JADE_FETCH_PYTHON:-python3}"
+
+# 这里只检查程序版本；缺少 Python/venv 时给出错误，不自动安装系统软件或请求 sudo。
+"$JADE_FETCH_PYTHON_BIN" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else "Fetch requires Python >= 3.10")'
+for JADE_FETCH_CHECK_DIR in "$JADE_FETCH_PROJECT_DIR/.jadecode" "$JADE_FETCH_PROJECT_DIR/.jadecode/mcp" "$JADE_FETCH_ENV_DIR" "$JADE_FETCH_ENV_DIR/.jadecode-managed"; do
+    if [ -L "$JADE_FETCH_CHECK_DIR" ]; then
+        echo "拒绝写入符号链接路径：$JADE_FETCH_CHECK_DIR" >&2
+        exit 1
+    fi
+done
+
+# 只复用本脚本曾创建的目标，不覆盖归属不明的既有目录；失败后可在原位置重新执行。
+if [ -e "$JADE_FETCH_ENV_DIR" ] && [ ! -f "$JADE_FETCH_ENV_DIR/.jadecode-managed" ]; then
+    echo "Fetch 目标已存在但不是本脚本管理的环境，请先检查：$JADE_FETCH_ENV_DIR" >&2
+    exit 1
+fi
+mkdir -p "$JADE_FETCH_ENV_DIR"
+printf '%s\n' 'JadeCode Fetch environment' > "$JADE_FETCH_ENV_DIR/.jadecode-managed"
+
+# venv 的启动器保存绝对路径，因此必须直接在最终位置创建，不能先建临时 venv 再移动。
+"$JADE_FETCH_PYTHON_BIN" -m venv "$JADE_FETCH_ENV_DIR"
+"$JADE_FETCH_ENV_DIR/bin/python" -m pip install --disable-pip-version-check --quiet -r "$JADE_FETCH_SCRIPT_DIR/fetch-requirements.txt"
+"$JADE_FETCH_ENV_DIR/bin/python" -m pip check
+"$JADE_FETCH_ENV_DIR/bin/python" -c 'import importlib.metadata; print("Fetch installed:", importlib.metadata.version("mcp-server-fetch"))'
+printf '%s\n' '下一步：按 README 的 MCP 配置启用 fetch。搬迁或重新 clone 后在新位置再次运行本脚本。'

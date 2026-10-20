@@ -1,0 +1,2 @@
+# 固定服务版本；安装在工作区隔离 venv，不修改全局 Python。
+mcp-server-fetch==2026.10.19
