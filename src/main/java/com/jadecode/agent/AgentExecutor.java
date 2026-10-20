@@ -43,8 +43,8 @@ import com.jadecode.util.Json;
 public class AgentExecutor implements AutoCloseable {
     /** 向模型请求下一步操作的客户端；查记忆和生成摘要的客户端由相应对象保存。 */
     private final LlmClient client;
-    /** 工具名称与实现对象的对应表；开始运行后，外部不要再修改。 */
-    private final Map<String, Tool> tools;
+    /** 内置与动态工具来源；每次请求固定一个快照，本批执行不重新取目录。 */
+    private final com.jadecode.tools.ToolCatalog tools;
     /** 基础 system 提示词，会话可在任务入口加上查到的记忆。 */
     private final String system;
     /** 模型一次回答最多生成多少 token，不是历史消息允许的字符数。 */
@@ -112,8 +112,17 @@ public class AgentExecutor implements AutoCloseable {
      */
     public AgentExecutor(LlmClient client, Map<String, Tool> tools, String system, int maxTokens, Hooks hooks,
             ContextCompactor compactor, Supplier<ResponseStream> streams) {
+        this(client, com.jadecode.tools.ToolCatalog.fixed(tools), system, maxTokens, hooks, compactor, streams);
+    }
+
+    /**
+     * 动态工具装配入口；只保存目录，不连接外部服务，不启动执行线程。
+     * 每次请求的目录将随 ModelReply 交给会话，执行时再原样传回，避免发现后的目录变化影响当前批次。
+     */
+    public AgentExecutor(LlmClient client, com.jadecode.tools.ToolCatalog tools, String system, int maxTokens, Hooks hooks,
+            ContextCompactor compactor, Supplier<ResponseStream> streams) {
         // 有控制工具却没有处理器会形成假成功，仍在构造时拒绝这种装配。
-        if (compactor == null && tools.containsKey(COMPACT_TOOL)) {
+        if (compactor == null && tools.hasBuiltin(COMPACT_TOOL)) {
             throw new IllegalArgumentException("工具表注册了 " + COMPACT_TOOL
                     + " 但构造时未提供 ContextCompactor:压缩请求将无人处理,请注入压缩器或移除该工具");
         }
@@ -142,7 +151,7 @@ public class AgentExecutor implements AutoCloseable {
      * 立即修改原 messages 的内容，然后把更新后的消息交给模型。本方法自己不 clear/add，
      * 也不另开线程，返回时还没有执行回复中的工具。</p>
      *
-     * <p>catch 只包住正式的 client.complete。网络、限流等错误不能一律当作上下文超限；
+     * <p>catch 覆盖正式请求准备与响应校验；只有 LlmException 中的上下文超限才进入补救。网络、限流等错误不能一律当作上下文超限；
      * 生成摘要失败也不能再套进超限重试。已成功换上的历史不会因后续模型失败而恢复成旧版。
      * 定时任务第一次回答前如何恢复历史，由会话的失败处理单独处理。</p>
      * @param messages 当前历史；本方法读取它，但 adoptHistory 函数会直接更新这个列表的内容
@@ -181,8 +190,9 @@ public class AgentExecutor implements AutoCloseable {
             };
             try {
                 ensureOpen();
+                com.jadecode.tools.ToolCatalog.Snapshot snapshot = tools.snapshot();
                 CompleteRequest request = new CompleteRequest(taskSystem, messages, maxTokens,
-                        tools.values().stream().map(Tool::definition).toList());
+                        snapshot.definitions());
                 ModelResponse response = observed == ResponseStream.NONE ? client.complete(request)
                         : client.complete(request, observed);
                 // 完整消息通过角色和工具 ID 校验后才结束预览，返回给 Session 采用。
@@ -194,7 +204,7 @@ public class AgentExecutor implements AutoCloseable {
                 ToolExchangeProtocol.requireDistinctCallIds(calls);
                 display.complete();
                 // 用量已由客户端包装统一保存；这里仅带回本次报告，供 Session 更新自己的占用快照。
-                return new ModelReply(response.message(), calls, textDisplayed[0], response.usage());
+                return new ModelReply(response.message(), calls, textDisplayed[0], response.usage(), snapshot);
             } catch (LlmException failure) {
                 display.failed();
                 // 配置关闭就直接暴露本次错误，不额外重试同一历史。开启时也只补救真正的上下文超限。
@@ -228,6 +238,17 @@ public class AgentExecutor implements AutoCloseable {
      * @return 完整的一批结果和新的提醒计数；意外异常放在 failure 中，普通 Error 文本不放在那里
      */
     public ToolBatch executeTools(List<ToolUseBlock> calls, ExecutionContext context, int previousRounds) {
+        return executeTools(calls, context, previousRounds, tools.snapshot());
+    }
+
+    /** 正式会话用请求时的快照执行；旧手工构造的 ModelReply 沿用即时目录，不影响旧离线调用。 */
+    public ToolBatch executeTools(ModelReply reply, ExecutionContext context, int previousRounds) {
+        return executeTools(reply.calls(), context, previousRounds, reply.tools() == null ? tools.snapshot() : reply.tools());
+    }
+
+    /** 在固定目录中先查成员再走权限，结果统一返回；不修改会话历史或外部目录。 */
+    private ToolBatch executeTools(List<ToolUseBlock> calls, ExecutionContext context, int previousRounds,
+            com.jadecode.tools.ToolCatalog.Snapshot snapshot) {
         List<ContentBlock> results = new ArrayList<>();
         boolean usedTodo = false;
         boolean compact = false;
@@ -248,19 +269,20 @@ public class AgentExecutor implements AutoCloseable {
                 // 1. 先查是否退出，再查权限；被拒绝或未知的工具，也要返回与调用 ID 对应的结果。
                 ensureOpen();
                 if (context.isCancelled()) throw new IllegalStateException("Parent session is closed");
+                var entry = snapshot.entries().get(call.name());
+                if (entry == null) {
+                    results.add(new ToolResultBlock(call.id(), "Error: Unknown tool: " + call.name(), true));
+                    notice(ExecutionNotice.event(ExecutionNotice.Kind.TOOL_END, batchId + "/" + call.id(), call.name(), "Unknown tool", "NOT_RUN"));
+                    continue;
+                }
                 String blocked = hooks.trigger(Hooks.PRE_TOOL_USE,
-                        Map.of(Hooks.PARAM_BLOCK, call, Hooks.PARAM_CONTEXT, context));
+                        Map.of(Hooks.PARAM_BLOCK, call, Hooks.PARAM_CONTEXT, context, Hooks.PARAM_TOOL_IDENTITY, entry.identity()));
                 if (blocked != null) {
                     results.add(new ToolResultBlock(call.id(), blocked, true));
                     notice(ExecutionNotice.event(ExecutionNotice.Kind.TOOL_END, batchId + "/" + call.id(), call.name(), blocked, "BLOCKED"));
                     continue;
                 }
-                Tool tool = tools.get(call.name());
-                if (tool == null) {
-                    results.add(new ToolResultBlock(call.id(), "Error: Unknown tool: " + call.name(), true));
-                    notice(ExecutionNotice.event(ExecutionNotice.Kind.TOOL_END, batchId + "/" + call.id(), call.name(), "Unknown tool", "NOT_RUN"));
-                    continue;
-                }
+                Tool tool = entry.tool();
                 // 等用户批准可能很久；用户若已退出，即使现在收到批准，也不能再执行工具。
                 ensureOpen();
                 if (context.isCancelled()) throw new IllegalStateException("Parent session is closed");
@@ -344,8 +366,14 @@ public class AgentExecutor implements AutoCloseable {
      *              还要看是否在等后台结果，以及 Stop 是否要求继续
      * @param textDisplayed 正文已经通过流式回调展示；Session 仍采用完整消息，但不能重复打印正文
      * @param usage 本次后端报告，供会话估算当前占用；累计用量已由客户端保存，可为 null
+     * @param tools 本次请求使用的执行目录；只在内存传递，不随 message 持久化
      */
-    public record ModelReply(Message message, List<ToolUseBlock> calls, boolean textDisplayed, ModelResponse.Usage usage) {
+    public record ModelReply(Message message, List<ToolUseBlock> calls, boolean textDisplayed, ModelResponse.Usage usage,
+            com.jadecode.tools.ToolCatalog.Snapshot tools) {
+        /** 兼容旧调用；正式请求始终提供本次工具快照，不把它写进模型消息或历史。 */
+        public ModelReply(Message message, List<ToolUseBlock> calls, boolean textDisplayed, ModelResponse.Usage usage) {
+            this(message, calls, textDisplayed, usage, null);
+        }
         /** 兼容没有报告用量的旧离线调用，不伪造实际数字。 */
         public ModelReply(Message message, List<ToolUseBlock> calls, boolean textDisplayed) { this(message, calls, textDisplayed, null); }
         /** 普通非流式调用保持原构造方式，完成时仍由 Session 显示正文。 */

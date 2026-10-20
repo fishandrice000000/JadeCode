@@ -180,11 +180,16 @@ public final class SessionRuntime implements AutoCloseable {
     private java.util.function.BooleanSupplier switchBlocked = () -> false;
     /** start 创建的任务处理线程；旧 runExisting 直接用调用者线程。 */
     private Thread consumer;
-    /** 只有 Leader 装配 Team 时安装；关闭父会话先停止全部队友。 */
+    /** 工厂组合 Team、MCP 等依赖清理；后登记的依赖先关闭，动作不能互相覆盖。 */
     private Runnable closeDependents = () -> { };
 
     /** 安装本会话拥有的额外资源清理，不启动它们；须在 start 前调用。 */
-    public synchronized void onClose(Runnable cleanup) { closeDependents = java.util.Objects.requireNonNull(cleanup); }
+    public synchronized void onClose(Runnable cleanup) {
+        java.util.Objects.requireNonNull(cleanup);
+        Runnable previous = closeDependents;
+        // 后装配的依赖先关闭；即使其中失败，也继续释放先前登记的资源，不能覆盖 Team/MCP 清理。
+        closeDependents = () -> { try { cleanup.run(); } finally { previous.run(); } };
+    }
 
     /** 工厂登记真实 Todo 和模型名，不开始存盘；旧兼容调用仍可使用没有日志的运行时。 */
     public void historyState(TodoManager manager, String modelName, java.util.function.BooleanSupplier blocked) {
@@ -605,7 +610,7 @@ public final class SessionRuntime implements AutoCloseable {
 
             if (!reply.calls().isEmpty()) {
                 // 3. 执行这一批工具，把每个调用的结果一起写入历史；出错也要配齐调用和结果的 ID。
-                ToolBatch batch = engine.executeTools(reply.calls(), task.context(), task.rounds);
+                ToolBatch batch = engine.executeTools(reply, task.context(), task.rounds);
                 task.toolCalls += reply.calls().size();
                 apply(batch);
                 task.rounds = batch.roundsSinceTodo();

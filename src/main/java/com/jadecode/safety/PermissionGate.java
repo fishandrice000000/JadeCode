@@ -22,11 +22,12 @@ public final class PermissionGate {
     private final Approval defaultHuman;
     private final FilePermissionCheck files;
     private final ShellPermissionCheck shell;
+    private final McpPermissionCheck mcp;
     private final PermissionRuleMatcher matcher = new PermissionRuleMatcher();
     private final DefaultPermissionRules defaults = new DefaultPermissionRules();
     private static final Set<String> INTERNAL = Set.of("glob", "todo_write", "compact", "load_skill", "task",
             "create_task", "get_task", "list_tasks", "update_task", "claim_task", "complete_task",
-            "schedule_cron", "list_crons", "cancel_cron", "spawn_teammate", "list_teammates", "close_teammate",
+            "connect_mcp", "schedule_cron", "list_crons", "cancel_cron", "spawn_teammate", "list_teammates", "close_teammate",
             "shutdown_teammate", "assign_task", "send_message", "submit_task_result", "reopen_task", "retry_team_message");
     private static final Set<String> ADMIN_WRITES = Set.of("create_task", "update_task", "claim_task", "complete_task",
             "schedule_cron", "cancel_cron", "spawn_teammate", "close_teammate", "shutdown_teammate", "assign_task", "send_message", "submit_task_result",
@@ -42,7 +43,7 @@ public final class PermissionGate {
     }
     private PermissionGate(PathResolver resolver, PermissionState state, ApprovalCoordinator coordinator, String actor, Approval human) {
         this.resolver = resolver; this.state = state; this.coordinator = coordinator; this.actor = actor; this.defaultHuman = human;
-        files = new FilePermissionCheck(resolver); shell = new ShellPermissionCheck(resolver);
+        files = new FilePermissionCheck(resolver); shell = new ShellPermissionCheck(resolver); mcp = new McpPermissionCheck(resolver);
     }
     public String check(String tool, ObjectNode input) {
         return check(tool, input, ExecutionContext.create(ExecutionContext.Source.USER, defaultHuman));
@@ -58,12 +59,17 @@ public final class PermissionGate {
      * @return null 代表许可，文字代表拒绝；外层配对 tool_result，并在真正执行前再次检查退出
      */
     public String check(String tool, ObjectNode input, ExecutionContext context) {
+        return check(tool, input, context, com.jadecode.execution.ToolIdentity.builtin(tool));
+    }
+
+    /** 使用固定目录中的身份解释外部工具；模型输入内同名字段无法替代此参数。 */
+    public String check(String tool, ObjectNode input, ExecutionContext context, com.jadecode.execution.ToolIdentity identity) {
         ObjectNode exact = input.deepCopy();
         while (!Thread.currentThread().isInterrupted() && (context == null || !context.isCancelled())) {
             if (!input.equals(exact)) return "待执行参数已经变化，请重新发起工具调用";
             // 1. 每次重判都重新解析真实路径，并同时拿到规则和版本的同一份快照。
             Analysis action;
-            try { action = analyze(tool, exact); }
+            try { action = analyze(tool, exact, identity); }
             catch (RuntimeException invalid) { return "无法解析工具目标：" + invalid.getClass().getSimpleName(); }
             var snapshot = state.snapshot();
             var decision = evaluate(action, snapshot);
@@ -89,7 +95,7 @@ public final class PermissionGate {
             if (state.snapshot().revision() != snapshot.revision()) continue;
             if (!input.equals(exact)) return "审批期间工具参数已经变化，旧批准不适用";
             // 仅本次和长期授权都要核对目标；不能先保存旧目标的批准，再发现链接已经变了。
-            try { if (!action.equals(analyze(tool, exact))) continue; }
+            try { if (!action.equals(analyze(tool, exact, identity))) continue; }
             catch (RuntimeException changed) { return "审批后无法重新解析工具目标"; }
             if (answer == ApprovalAnswer.ALLOW_SIMILAR) {
                 // 3. 建议由解释过参数的权限层生成，界面只选答案，不能自行扩大范围。
@@ -103,7 +109,8 @@ public final class PermissionGate {
         return "会话已经关闭或执行被中断";
     }
     /** 解释各类已知工具；新工具未声明检查时进入不确定判断，不静默信任。 */
-    private Analysis analyze(String tool, ObjectNode input) {
+    private Analysis analyze(String tool, ObjectNode input, com.jadecode.execution.ToolIdentity identity) {
+        if (identity.kind() == com.jadecode.execution.ToolIdentity.Kind.MCP) return mcp.analyze(tool, input, identity);
         if (Set.of("read_file", "write_file", "edit_file").contains(tool)) return files.analyze(tool, input);
         if (tool.equals("bash")) return shell.analyze(tool, input);
         return new Analysis(tool, resolver.workspaceReal(), List.of(), List.of(), ADMIN_WRITES.contains(tool), true, !INTERNAL.contains(tool), "");

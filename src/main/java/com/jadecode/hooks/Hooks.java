@@ -32,6 +32,8 @@ public class Hooks {
     // 调用者和 hook 都用这些参数名，免得一边传 block，另一边却按别的名字读取。
     public static final String PARAM_QUERY = "query"; // UserPromptSubmit
     public static final String PARAM_BLOCK = "block"; // PreToolUse / PostToolUse
+    /** 本批工具目录提供的可信身份，不从模型 input 读取。 */
+    public static final String PARAM_TOOL_IDENTITY = "toolIdentity";
     public static final String PARAM_OUTPUT = "output"; // PostToolUse
     public static final String PARAM_MESSAGES = "messages"; // Stop
     public static final String PARAM_OUTCOME = "outcome";

@@ -272,9 +272,9 @@ class MainCompactionAssemblyTest {
 
         // 只读反射取私有依赖:身份相等是"共享同一个实例"的直接证据,行为相似不能替代它。
         ContextCompactor parentCompactor = (ContextCompactor) readField(readField(loop, "engine"), "compactor");
-        @SuppressWarnings("unchecked")
-        Map<String, Tool> tools = (Map<String, Tool>) readField(readField(loop, "engine"), "tools");
-        Object runtime = readField(tools.get("task"), "runtime");
+        // s14 的执行目录改为快照；仍沿真实 task 实例检查父子共享关系，不将目录强转回旧 Map。
+        var tools = (com.jadecode.tools.ToolCatalog) readField(readField(loop, "engine"), "tools");
+        Object runtime = readField(tools.snapshot().entries().get("task").tool(), "runtime");
         ContextCompactor childCompactor = (ContextCompactor) readField(runtime, "compactor");
 
         assertNotNull(parentCompactor, "父循环必须注入压缩器");

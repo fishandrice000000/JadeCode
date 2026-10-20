@@ -334,7 +334,8 @@ public class SubagentRuntime {
 
                     // 已知工具才进 PRE_TOOL_USE:权限闸门与日志都挂在这里,首个非 null 即拦截
                     String blocked = hooks.trigger(Hooks.PRE_TOOL_USE,
-                            Map.of(Hooks.PARAM_BLOCK, u, Hooks.PARAM_CONTEXT, context));
+                            Map.of(Hooks.PARAM_BLOCK, u, Hooks.PARAM_CONTEXT, context, Hooks.PARAM_TOOL_IDENTITY,
+                                    com.jadecode.execution.ToolIdentity.builtin(u.name())));
                     if (blocked != null) {
                         results.add(new ToolResultBlock(u.id(), blocked, true));
                         display(com.jadecode.execution.ExecutionNotice.event(com.jadecode.execution.ExecutionNotice.Kind.TOOL_END,
