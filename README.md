@@ -110,7 +110,8 @@ TUI 输入 `/model` 只显示当前模型、思考强度和已知的窗口／输
 当前适配 DeepSeek 官方端点的 `off / low / high / max`（default 对应官方默认 high），
 以及 Anthropic 官方 Claude Opus/Sonnet 4.6 的 `off / low / medium / high / max`。
 未适配模型或第三方兼容端点只保留 default，不猜参数支持情况。
-新队友和一次性子代理继承创建时设置，已有队友不随 Leader 改动；摘要、记忆和辅助审批保持默认。
+新队友和一次性子代理继承创建时设置，已有队友不随 Leader 改动；摘要和辅助审批保持默认。
+记忆只需要结构化正文，后端已适配 OFF 时显式关闭思考，否则保持默认。
 
 默认压缩管线是**单条结果转存 → 超阈值摘要**：`largeResultEnabled` 与 `autoSummaryEnabled` 为 true，
 `batchBudgetEnabled`、`snipEnabled`、`microEnabled`、`fitEnabled`、`reactiveEnabled` 为 false。
@@ -137,7 +138,8 @@ JLine 只负责底层终端，不再使用旧 LineReader／PrintAbove／Status �
 工具普通返回不再显示 `RETURNED`，标题显示实际执行耗时（如 `bash · 49.7s`），不计审批等待；拒绝、异常等状态仍保留，不靠正文是否以 Error 开头推断成败。
 工具时长支持 ms/s/m/h/d；不足一秒用整数毫秒，不足一分钟的秒数固定一位小数，更长时间拆成整数单位。
 整轮计时不显示毫秒：`0.3s`、`29.0s`；分钟以上用 `1m02s`、`1h02m03s`，秒位为整数。
-最终 `Reply · DONE · 1m02s` 统计整轮模型、工具、审批与必要等待、记忆维护的用时，不包含此前的排队时间。
+最终 `Reply · DONE · 1m02s` 统计整轮模型、工具、必要后台等待与记忆维护的用时，
+不包含此前的任务排队或等待人工审批的时间（含审批队列等待）；辅助模型审批仍计入工作时间。
 状态栏使用点阵动画，`RUNNING · 12.3s` 实时计数，结束后显示 `IDLE · 此轮用时 12.3s`。
 实时计数、IDLE 与 Reply 最终时长共用执行线程的同一轮起点，不累加往期或各张工具卡耗时；等待后台也持续计时。
 相关报告核实见 [TUI 核查记录](docs/jobs/s13/tui-audit-and-turn-status.md)，已确认问题的修复与验证见 [修复记录](docs/jobs/s13/tui-audit-fixes.md)。
@@ -265,10 +267,20 @@ REPL 默认新建并保存主会话。`/resume` 打开可筛选选择器，
 
 由 `SessionRuntime` 在任务入口和完成处调用 Memory 服务。Memory 使用工作区 `.jadecode/memory/`，每次用户任务入口召回一次，真正结束后提取，新增成功后按数量尝试整理。
 辅助请求沿用现有客户端，不带工具；记忆维护失败告警，不抹掉已完成的主任务结果。
-提取额度由 `memory.extractionMaxOutputTokens` 设置（默认 8000 token）。合法 `[]` 不告警；
+`memory.enabled=false` 可停用自动记忆，不删除已有文件。召回/提取/整理最大输出分别由
+`recallMaxOutputTokens` / `extractionMaxOutputTokens` / `consolidationMaxOutputTokens` 设置，
+默认 2048 / 8000 / 16384 token；已适配关闭思考的后端，记忆请求只要求结构化正文。
+整理输入 `consolidationInputChars` 与提取的完整目录 `extractionCatalogChars` 默认均为 128000 字符，
+超限明确跳过，不截掉后半库后覆盖或假装完整去重。大库召回逐页选择，最终最多注入五条；
+页数增加会增加辅助调用，失败时从全库关键词降级，不永久排除字典序靠后的记录。
+合法 `[]` 在召回/提取中不告警，整理仍不允许用空数组清库；
 格式、空正文、截断和拒答分别显示固定原因，不回显原始对话或思考，也不自动重试。
 完整 JSON 外包一层 json 代码围栏可接受，解释文字夹带数组、尾随内容和截断回复仍拒绝写盘。
 子代理不自主维护长期记忆。记忆内容的真伪、长期价值与合并质量依赖模型，格式校验不提供语义保证。
+记忆操作使用库文件锁；坏编码按条跳过、长名称按 UTF-8 字节限长、不同名撞路径分开保存。
+整理前的旧/新正文和索引保存在 `.jadecode/memory/.memory-backup-*/`，发布中断后在下次库操作恢复；
+遇到未知外部修改不覆盖。备份不自动清理、不恢复原权限等元数据，也不声称解决任意断电或外部竞态。
+人工审批等待（含排队）不计入本轮计时；模型/后台/记忆维护仍计入。
 
 Task System 使用 `.jadecode/tasks/{id}.json`。先创建取得实际 ID，再增加依赖；认领检查前置条件，完成报告刚解锁任务。
 `list_tasks` 查看全部进度，`get_task` 读取完整描述。`task` 仍表示子代理委派，不是持久任务创建。
