@@ -82,7 +82,7 @@ cp .env.example .env   # 填入 ANTHROPIC_API_KEY(DeepSeek key)
 [config.example.json](config.example.json)。缺失字段使用默认值，修改后重启生效，非法布尔值、数值或主题会明确报错。
 配置不包含 API Key，模型和认证仍走上面的环境配置。
 
-`tui` 可设置 `theme`、`thinkingVisible`、`toolsExpanded`、`commandSuggestions`。
+`tui` 继续支持 `theme`/`thinkingVisible`/`toolsExpanded`/`commandSuggestions`，并新增 `mode`（fullscreen/regular）、fullscreen 滚动条/复制/滚轮、硬件光标、编辑器/输出间距、候选数量、主题配对、外部编辑器、键位覆盖等非秘密显示设置；旧字段和未知字段保留，保存只 patch TUI 子树。
 `modelMetadata` 控制启动时的官方参数查询：默认开启，缓存 24 小时，最多等待 2000ms。
 当前只自动识别 Anthropic／DeepSeek 官方 HTTPS 端点，第三方代理不猜查询接口，也不向其它主机转发凭据。
 参数按端点和模型分开缓存在 `~/.jadecode/cache/model-metadata/`，不存认证或原始响应。
@@ -103,7 +103,7 @@ TUI 输入 `/model` 只显示当前模型、思考强度和已知的窗口／输
 上下文窗口单位是 token，压缩器目前仍按字符估算；本轮不把两者等同，仍保留原压缩阈值。
 
 旧 `tui.json` 的主题会先备份再迁入新文件；新主题优先，原文件保留但不再写入。
-`/theme` 只更新 `tui.theme`，不会清除压缩设置或用户其它字段。
+主题通过 `/settings` 的 Theme 子流程选择；只保存 `tui` 白名单，不会清除压缩设置或用户其它字段。旧 `/theme` 命令别名已移除。
 
 `thinking.effort` 设置请求的默认思考强度，缺省为 `default`（不额外发参数）。
 `/thinking` 打开选项，也可输入 `/thinking low`；保存的是当前会话覆盖，不改全局默认。
@@ -196,48 +196,38 @@ mvn -q test                                 # 单元测试
 ./jade run "任务"                            # 一次性
 ```
 
-REPL 中 **Enter 提交、Alt+Enter 换行**；支持 bracketed paste 的终端中，粘贴的多行文字保留为同一条提示词，粘贴后还要按 Enter 才提交。
-REPL 使用 Pi 风格的主屏内联 TUI：界面线程统一管理消息、工具卡、状态和多行编辑器，
-JLine 只负责底层终端，不再使用旧 LineReader／PrintAbove／Status 组合。旧交互模式没有切换入口。
-`repl` 需要真实终端；脚本、管道和输出重定向使用 `run`，其输出为纯文本，不启动 TUI。
-未启用 Team 时不显示 Leader；有存活常驻队友时标明 Leader／队友，一次性子代理始终保留自己的来源。调用和结果显示在同一卡片。
-工具普通返回不再显示 `RETURNED`，标题显示实际执行耗时（如 `bash · 49.7s`），不计审批等待；拒绝、异常等状态仍保留，不靠正文是否以 Error 开头推断成败。
-工具时长支持 ms/s/m/h/d；不足一秒用整数毫秒，不足一分钟的秒数固定一位小数，更长时间拆成整数单位。
-整轮计时不显示毫秒：`0.3s`、`29.0s`；分钟以上用 `1m02s`、`1h02m03s`，秒位为整数。
-最终 `Reply · DONE · 1m02s` 统计整轮模型、工具、必要后台等待与记忆维护的用时，
-不包含此前的任务排队或等待人工审批的时间（含审批队列等待）；辅助模型审批仍计入工作时间。
-状态栏使用点阵动画，`RUNNING · 12.3s` 实时计数，结束后显示 `IDLE · 此轮用时 12.3s`。
-实时计数、IDLE 与 Reply 最终时长共用执行线程的同一轮起点，不累加往期或各张工具卡耗时；等待后台也持续计时。
-相关报告核实见 [TUI 核查记录](docs/jobs/s13/tui-audit-and-turn-status.md)，已确认问题的修复与验证见 [修复记录](docs/jobs/s13/tui-audit-fixes.md)。
-记忆正常新增、跳过或整理显示为 `Memory`；提取或整理失败、召回降级与存储故障显示 `Warning`，不把辅助维护失败当成主任务失败。
-工具结果折叠预览采用灰色，Ctrl+O 展开后采用普通正文色；卡片标题右侧使用低对比度细分割线。
-支持 Markdown（含按窗口宽度换行的 GFM 表格）、基本代码配色、Ctrl+O 全局展开工具及 Ctrl+T 切换思考显示。
-代码、引用与列表的续行保留边框或缩进；代码块不额外制造空行，用户明确写下的空行仍保留。
-主屏模式不捕获鼠标，滚轮、拖选和复制交给终端；不再使用左键展开卡片或点击审批。
-输入 `/` 会立即在编辑器上方显示命令候选，继续输入筛选、上下选择、Tab 补全、Enter 执行，Esc 收起。
-Tab 补全后候选收起，不会自动执行；继续编辑会重新显示候选。长标题、目录与提示裁短时用省略号说明，窄屏页脚优先保留 /help。
-状态行、输入区域与页脚整体贴住窗口底部；候选收起后多余空位留在它们上方，不在页脚下留空行。
-短对话也采用这一布局；显示用的空行不进入模型历史，消息增加时会占用这些空位。
-深浅主题通过 `/theme` 选择，明确确认后保存到统一配置的 `tui.theme`；`/help` 显示操作说明。
-颜色依实际终端支持启用，尊重 `NO_COLOR` 和 `TERM=dumb`；不直接执行正文中的终端控制序列。
-Leader 正式请求的正文和接口返回的 thinking 流式更新消息，不再使用独立底部半行预览。
-`[Thinking]` 只代表接口提供的可读内容，不保证是完整内部推理；未返回时只显示 `[Reply]`。
-队友和一次性子代理不展示 thinking，Memory/摘要/辅助审批也不流式展示；必要思考块仍按协议保留。
-流式结束后不重复打印正文；工具等完整响应和参数校验通过才执行。`run` 使用完整回复的文本输出。
-Agent 忙时，连续提交的提示词合并为一份非插入式缓冲；输入区为空时再次按 Enter，
-将同一缓冲批次升级为插入式，不重复投递。TUI 审批以“仅本次／允许此类命令／拒绝”接管输入区并保存草稿，
-三个选项都不默认选中，左右方向键／Tab 选择后 Enter 确认；无可靠规则建议时中间项禁用。空 Enter 与 Esc 不作审批答复。
-审批详情显示当前行数/总行数；上下键、PgUp/PgDn、Home/End 可阅读完整理由、参数和长期授权范围。
-窗口太小无法放下阅读区及完整按钮时要求先扩大，不允许确认不可见的选项；阅读只改变显示，不修改实际操作。
-`/quit` 或 `/exit` 退出整个会话，停止其队友和后台资源，再关闭日志和恢复终端；不是单轮取消。
-Ctrl+C 清草稿，500ms 内再次按下退出整个会话；编辑器为空时 Ctrl+D 退出，非空时向前删除。
-Esc 仅关闭选择界面，不提供单轮取消；`q`／`exit` 不再是退出指令。
-窗口尺寸、主题或旧卡片改变而需要重排时，TUI 可能清空终端 scrollback 并重放本次界面记录，
-包括进入 JadeCode 前的 shell 滚动历史；模型历史压缩不会删除界面记录，主会话可通过 resume 恢复。
-页脚 Tokens 累计主会话、队友、一次性子代理、摘要、记忆和辅助审批的已报告用量，随会话持久保存。
-包含缓存输入，不等于金额；无正数报告时隐藏，用 `100.0K`、`1.4M` 等固定一位小数的缩写，`/usage` 查看分类。
-后台运行数为零时不显示。上下文剩余比例只参考主 Agent 最近正式请求的输入与输出，标为“约”；
-历史新增或压缩后旧测量失效，窗口未知或刚恢复时隐藏，不能用累计花费或字符数冒充实时占用。
+TUI 默认使用 Pi 原生 fullscreen，也可在 `/settings` 切换为 regular；两种模式共用编辑器、消息、工具卡和命令，不保留旧底锚内联模式。
+浏览器/脚本/管道请用 `run`，其输出仍是纯文本，不初始化 TUI。`repl` 需要真实终端。
+**Enter 提交；Shift+Enter、Ctrl+J 或反斜杠 Enter 换行；Alt+Enter 在当前无独立 follow-up 接口时不绑定。**
+括号粘贴的整段正文保留为同一条提示词，粘贴中的回车不会提交；粘贴后仍需按 Enter。
+编辑器按完整字素移动/删除，支持 Pi 的词/行移动、撤销（Ctrl+-）、kill/yank（Ctrl+U/K/Y、Alt+Y）、100 项去重历史；
+超过 10 行或 1000 字符的粘贴折叠为顺序编号的 `[paste #N …]` 标记，提交时展开。
+Tab 只应用候选；slash 命令的 Enter 应用后执行，文件路径的 Enter 只应用。异步候选带草稿版本校验，过期结果丢弃。
+
+消息保留 JadeCode 批准的 Request/Reply/Thinking 卡片容器和真实状态（Streaming/Done/Incomplete/Historical），
+工具卡按可信工具身份使用专用 renderer：bash 显示 `$ command` 与最后 5 个视觉行，read 收起时不显示正文，
+write 显示前 10 行并标 `Preview · not executed`，edit 显示片段 diff 且明确未执行，其他工具/MCP fallback 显示前 10 行。
+`RETURNED` 保持中性，不等于业务成功；BLOCKED/ERROR/NOT_RUN/INCOMPLETE 保留真实细分。Ctrl+O 展开工具，Ctrl+T 切换思考正文。
+整轮计时来自执行线程的单调时钟：审批等待暂停，结束后冻结；真实耗时显示为 `29.0s`。状态栏 spinner 每 80ms 更新。
+页脚显示目录/分支/会话名、真实 token/R/W 缓存/context 估计/权限与模型；token 使用大写 K，例如 100000→`100K`，不把缺报告当 0，也不显示无来源的费用/订阅。
+
+全屏模式支持应用滚轮、PageUp/Down、Ctrl+Home/End、选区复制和搜索（Ctrl+F；Enter/Shift+Enter 前后匹配，Esc 关闭）。
+`Ctrl+O` 同时展开工具卡与欢迎资源；`Ctrl+G` 外部编辑器；`Ctrl+V` 读取文字或图片剪贴板（图片保存为临时文件并插入路径，仍只是文本输入）；
+`Ctrl+X` 复制选区或最近助手回复；`Ctrl+Z` 暂退到 shell，`fg` 后重绘；`Ctrl+C` 清草稿，500ms 内再按退出；空编辑器 Ctrl+D 退出。
+Esc 只关闭本地菜单/搜索/候选，不是 Agent 单轮取消。regular 模式不捕获鼠标，滚轮/拖选交给终端。
+退出时恢复终端并打印一次 Session/ID/Resume；fullscreen 默认把最终转录重放到主屏，`tui.fullscreenExitOutput=resume-hint` 时只保留恢复提示。
+
+命令只列真实后端：`/settings /name /session /hotkeys /copy /new /resume /quit /model /thinking /permission /mcp`。
+旧 `/help`、`/exit`、`/usage`、`/theme`、`/rename` 别名已移除；未知 slash 留在本地报英文错误并保留草稿，不发给模型。
+`/model` 只读；`/mcp` 只读服务/工具清单，无连接/配置/OAuth 按钮；缺取消/树/分叉/模型热切换/扩展管理等后端的入口统一隐藏。
+审批以“仅本次/允许此类/拒绝”接管 dock，完整显示理由、真实参数和长期范围；默认无选择，窗口无法安全显示审阅区时不发布批准动作。
+Esc/空 Enter/普通文字不答复审批；旧画面、旧输入水位、resize 或 revision 变化都会使旧批准失效。
+
+颜色尊重 `NO_COLOR`/`TERM=dumb`；只有受信编码器能输出 SGR/OSC8/终端协议，模型与工具正文先净化。
+全屏退出/窗口宽度变化可能清空并重放 scrollback，这是终端可寻址边界的正常行为。
+当前 Markdown 使用 Java 解析/排版（固定 GraalJS bundle 尚未交付），因此标题/列表/表格等视觉可用，但尚未宣称与 Pi 的 marked/highlight.js/Mermaid 完全一致；
+真实 SSH/IME/图片终端/模型流仍需人工验收。详细限制见 `docs/tui-pi-replication/05-handover/design-deviations.md` 与 `acceptance-results.md`。
+
 架构、验证与未验证范围见 [TUI 任务单](docs/jobs/s13/pi-tui.md)，阅读入口见 [TUI 指南](docs/notes/s13/pi-tui-review.md)。
 
 ### 权限档位与规则
@@ -300,7 +290,7 @@ REPL 默认新建并保存主会话。`/resume` 打开可筛选选择器，
 模型使用压缩后重建的有效历史，TUI 则保留压缩前的已记录主会话内容。
 历史工具卡只标记 HISTORICAL，不伪造耗时/业务成功；完整队友/子代理显示过程及未记录的旧用量不补造。
 新增用量记录会随原会话继续累计；旧版未保存的用量无法追溯，失败/断流也可能缺少后端报告。
-`/rename 新名称` 保存便于查找的名称，`/resume 名称` 也支持匹配；名称不参与目录计算，UUID 仍唯一。
+`/name 新名称` 保存便于查找的名称，`/resume 名称` 也支持匹配；名称不参与目录计算，UUID 仍唯一。
 启动不固定显示 UUID；退出恢复终端后显示当前名称、ID 和恢复命令。
 末尾未闭合工具交换会补“结果未记录，操作可能已执行”，不自动重试。
 中间坏记录拒绝恢复；末尾半行先保留 recovery 副本再处理。日志写入失败停止后续操作并告警。
