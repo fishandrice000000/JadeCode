@@ -47,14 +47,15 @@ public final class Editor implements Component {
     private final KeyBindings bindings;
     private final Listener listener;
     private CompletionProvider completion = CompletionProvider.NONE;
-    private List<CompletionRequest.Candidate> candidates = List.of();
-    private int candidateIndex;
-    private boolean completionVisible;
+    // 补全 future 在 worker 线程完成，UI 线程读取；这些字段用 volatile 保证可见性。
+    private volatile List<CompletionRequest.Candidate> candidates = List.of();
+    private volatile int candidateIndex;
+    private volatile boolean completionVisible;
     private long requestCounter;
     private long draftVersion;
     private long generation;
     private long lastRequestId;
-    private String completionError = "";
+    private volatile String completionError = "";
     private String status = "";
     private int lastColumns = 78;
     private int lastVisibleRows = 5;
