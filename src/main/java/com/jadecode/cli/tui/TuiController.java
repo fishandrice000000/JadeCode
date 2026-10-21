@@ -214,6 +214,10 @@ public final class TuiController {
                 && event.kind() != InputEvent.Kind.PASTE) return;
         if (event.actionableKey()) {
             KeyChord key = event.key();
+            // 选择器的 Ctrl+C 是取消选择，不是全局清草稿；与 KeyBindings 的 select.cancel 对齐。
+            if (state.selector != null && key.key().equals("c") && key.has(KeyChord.Modifier.CTRL)) {
+                cancelSelector(); return;
+            }
             // 全局会话动作：关闭/退出/暂退/剪贴板/展开。审批期间也不允许 Ctrl+C 清掉参数草稿。
             if (matches("app.exit", event) && state.approvals.isEmpty() && state.selector == null && editor.text().isEmpty()) { close(); return; }
             if (key.key().equals("c") && key.has(KeyChord.Modifier.CTRL)) { ctrlC(event); return; }

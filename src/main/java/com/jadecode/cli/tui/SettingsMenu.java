@@ -50,7 +50,7 @@ public final class SettingsMenu {
                 new Item("fullscreenExitOutput", "Fullscreen exit output", current.fullscreenExitOutput()),
                 new Item("fullscreenScrollbar", "Fullscreen scrollbar", current.fullscreenScrollbar()),
                 new Item("fullscreenCopyOnSelect", "Copy on select", Boolean.toString(current.fullscreenCopyOnSelect())),
-                new Item("fullscreenWheelScrollLines", "Wheel scroll lines", Integer.toString(current.fullscreenWheelScrollLines())),
+                new Item("fullscreenWheelScrollLines", "Wheel scroll lines", current.fullscreenWheelScrollLines() == 0 ? "auto" : Integer.toString(current.fullscreenWheelScrollLines())),
                 new Item("showHardwareCursor", "Hardware cursor", Boolean.toString(current.showHardwareCursor())),
                 new Item("editorPaddingX", "Editor padding X", Integer.toString(current.editorPaddingX())),
                 new Item("outputPad", "Output padding", Integer.toString(current.outputPad())),
