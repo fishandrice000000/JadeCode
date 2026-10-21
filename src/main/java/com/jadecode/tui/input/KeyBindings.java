@@ -58,16 +58,16 @@ public final class KeyBindings {
     private void registerDefaults() {
         action("tui.editor.cursorUp", "Move cursor up", Context.EDITOR, "up");
         action("tui.editor.cursorDown", "Move cursor down", Context.EDITOR, "down");
-        action("tui.editor.historyPrevious", "Previous input history", Context.EDITOR);
-        action("tui.editor.historyNext", "Next input history", Context.EDITOR);
+        action("tui.editor.historyPrevious", "Previous input history", Context.EDITOR, Support.HIDDEN);
+        action("tui.editor.historyNext", "Next input history", Context.EDITOR, Support.HIDDEN);
         action("tui.editor.cursorLeft", "Move cursor left", Context.EDITOR, "left", "ctrl+b");
         action("tui.editor.cursorRight", "Move cursor right", Context.EDITOR, "right", "ctrl+f");
         action("tui.editor.cursorWordLeft", "Move word left", Context.EDITOR, "alt+left", "ctrl+left", "alt+b");
         action("tui.editor.cursorWordRight", "Move word right", Context.EDITOR, "alt+right", "ctrl+right", "alt+f");
         action("tui.editor.cursorLineStart", "Move to line start", Context.EDITOR, "home", "ctrl+a");
         action("tui.editor.cursorLineEnd", "Move to line end", Context.EDITOR, "end", "ctrl+e");
-        action("tui.editor.jumpForward", "Jump to character", Context.EDITOR, "ctrl+]");
-        action("tui.editor.jumpBackward", "Jump backward to character", Context.EDITOR, "ctrl+alt+]");
+        action("tui.editor.jumpForward", "Jump to character", Context.EDITOR, Support.HIDDEN);
+        action("tui.editor.jumpBackward", "Jump backward to character", Context.EDITOR, Support.HIDDEN);
         action("tui.editor.pageUp", "Editor page up", Context.EDITOR, "pageup", "ctrl+pageup");
         action("tui.editor.pageDown", "Editor page down", Context.EDITOR, "pagedown", "ctrl+pagedown");
         action("tui.editor.deleteCharBackward", "Delete character backward", Context.EDITOR, "backspace");
@@ -82,7 +82,7 @@ public final class KeyBindings {
         action("tui.input.newLine", "Insert newline", Context.EDITOR, "shift+enter", "ctrl+j");
         action("tui.input.submit", "Submit input", Context.EDITOR, "enter");
         action("tui.input.tab", "Tab completion", Context.EDITOR, "tab");
-        action("tui.input.copy", "Copy selection", Context.EDITOR, "ctrl+c");
+        action("tui.input.copy", "Copy selection", Context.EDITOR, Support.HIDDEN);
         action("tui.select.up", "Previous item", Context.SELECT, "up");
         action("tui.select.down", "Next item", Context.SELECT, "down");
         action("tui.select.pageUp", "Previous page", Context.SELECT, "pageup");
@@ -95,8 +95,8 @@ public final class KeyBindings {
         action("tui.altScreen.halfPageDown", "Scroll half page down", Context.ALT_SCREEN);
         action("tui.altScreen.lineUp", "Scroll line up", Context.ALT_SCREEN);
         action("tui.altScreen.lineDown", "Scroll line down", Context.ALT_SCREEN);
-        action("tui.altScreen.previousPrompt", "Previous prompt", Context.ALT_SCREEN, "ctrl+shift+up", "ctrl+up");
-        action("tui.altScreen.nextPrompt", "Next prompt", Context.ALT_SCREEN, "ctrl+shift+down", "ctrl+down");
+        action("tui.altScreen.previousPrompt", "Previous prompt", Context.ALT_SCREEN, Support.HIDDEN);
+        action("tui.altScreen.nextPrompt", "Next prompt", Context.ALT_SCREEN, Support.HIDDEN);
         action("tui.altScreen.search", "Search transcript", Context.ALT_SCREEN, "ctrl+shift+f");
         action("tui.altScreen.searchNext", "Next search match", Context.SEARCH, "enter", "ctrl+g");
         action("tui.altScreen.searchPrevious", "Previous search match", Context.SEARCH, "shift+enter", "ctrl+shift+g");
@@ -130,7 +130,7 @@ public final class KeyBindings {
         action("app.tree.toggleLabelTimestamp", "Toggle label timestamp", Context.GLOBAL, Support.HIDDEN);
         action("app.session.togglePath", "Toggle session path", Context.SELECT, "ctrl+p");
         action("app.session.toggleSort", "Toggle session sort", Context.SELECT, "ctrl+s");
-        action("app.session.rename", "Rename session", Context.GLOBAL, "ctrl+r");
+        action("app.session.rename", "Rename session", Context.GLOBAL, Support.HIDDEN);
         action("app.session.delete", "Delete session", Context.GLOBAL, Support.HIDDEN);
         action("app.session.deleteNoninvasive", "Delete session non-invasively", Context.GLOBAL, Support.HIDDEN);
         action("app.models.save", "Save model selection", Context.GLOBAL, Support.HIDDEN);

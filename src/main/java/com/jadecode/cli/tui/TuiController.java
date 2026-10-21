@@ -238,6 +238,19 @@ public final class TuiController {
                 state.thinkingVisible = !state.thinkingVisible; return;
             }
             if (matches("app.thinking.cycle", event) && state.approvals.isEmpty()) { cycleThinking(); return; }
+            if (matches("app.session.new", event) && state.approvals.isEmpty()) { resume(null); return; }
+            if (matches("app.session.resume", event) && state.approvals.isEmpty()) { openSessionList(); return; }
+            if (matches("app.permission.menu", event) && state.approvals.isEmpty()) {
+                if (host.hasCurrent()) {
+                    state.selectorKind = "Permission";
+                    state.selector = PermissionMenu.choices(host.current().permissionState().snapshot().profile());
+                } else state.hint = "Open a session first";
+                return;
+            }
+            if (matches("tui.altScreen.halfPageUp", event)) { chat.scrollLines(-Math.max(1, viewportHeight / 2)); return; }
+            if (matches("tui.altScreen.halfPageDown", event)) { chat.scrollLines(Math.max(1, viewportHeight / 2)); return; }
+            if (matches("tui.altScreen.lineUp", event)) { chat.scrollLines(-1); return; }
+            if (matches("tui.altScreen.lineDown", event)) { chat.scrollLines(1); return; }
             if (key.key().equals("f") && key.has(KeyChord.Modifier.CTRL) && state.approvals.isEmpty() && state.selector == null) {
                 openSearch(); return;
             }
