@@ -30,7 +30,7 @@ public final class ApprovalBroker implements Approval, AutoCloseable {
             if (request.revision() < revision) return ApprovalAnswer.RECHECK;
             waiting.put(id, pending);
             sink.accept(new UiEvent.ApprovalRequested(id, request.actor(), request.tool(), request.input().toString(),
-                    request.reason(), request.suggestion() == null ? "" : request.suggestion().description()));
+                    request.reason(), request.suggestion() == null ? "" : request.suggestion().description(), request.revision()));
         }
         // 锁内只登记，不在锁内等用户，否则界面无法调用 answer/close，形成互相等待。
         try { return pending.result().get(); }

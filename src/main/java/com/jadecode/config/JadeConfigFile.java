@@ -67,6 +67,61 @@ public final class JadeConfigFile implements com.jadecode.safety.rules.Permissio
         }
     }
 
+    /**
+     * 白名单保存 TUI 子树：只接受已批准字段，重新读取当前文件合并，保留未知字段/Agent 配置。
+     * 保存前用同一严格 parse 验证，坏值不落盘。调用方应在工作线程执行。
+     */
+    public void saveTui(java.util.Map<String, Object> patch) throws IOException {
+        if (patch == null || patch.isEmpty()) return;
+        java.util.Set<String> allowed = java.util.Set.of(
+                "theme", "mode", "fullscreenExitOutput", "fullscreenScrollbar", "fullscreenCopyOnSelect",
+                "fullscreenWheelScrollLines", "showHardwareCursor", "editorPaddingX", "outputPad",
+                "autocompleteMaxVisible", "thinkingVisible", "toolsExpanded", "commandSuggestions",
+                "mermaidRendering", "showImages", "imageWidthCells", "clearOnShrink", "showTerminalProgress",
+                "quietStartup", "codeBlockIndent", "externalEditor", "keybindings", "escapeTimeoutMillis",
+                "lightTheme", "darkTheme");
+        for (String key : patch.keySet())
+            if (!allowed.contains(key)) throw new IllegalArgumentException("Unsupported tui setting: " + key);
+        synchronized (WRITE_LOCK) {
+            ObjectNode root = Files.exists(path) ? read(path) : template();
+            ObjectNode ui = section(root, "tui").deepCopy();
+            for (var entry : patch.entrySet()) ui.set(entry.getKey(), Json.mapper().valueToTree(entry.getValue()));
+            root.set("tui", ui);
+            parse(root);
+            write(root);
+        }
+    }
+
+    /** 严格读取 TUI 键位覆盖：动作 ID→非空字符串数组，空数组允许清除默认键。 */
+    private static java.util.Map<String, java.util.List<String>> keybindings(ObjectNode ui) throws IOException {
+        if (!ui.has("keybindings")) return java.util.Map.of();
+        if (!ui.path("keybindings").isObject()) throw new IOException("config.tui.keybindings 必须是对象");
+        var result = new java.util.LinkedHashMap<String, java.util.List<String>>();
+        for (var entry : ui.path("keybindings").properties()) {
+            if (!entry.getValue().isArray()) throw new IOException("config.tui.keybindings." + entry.getKey() + " 必须是数组");
+            var keys = new java.util.ArrayList<String>();
+            for (var item : entry.getValue()) {
+                if (!item.isTextual()) throw new IOException("config.tui.keybindings 只能包含字符串");
+                keys.add(item.textValue());
+            }
+            result.put(entry.getKey(), java.util.List.copyOf(keys));
+        }
+        return java.util.Map.copyOf(result);
+    }
+
+    /** 必填字符串字段；空串允许。 */
+    private static String string(ObjectNode node, String key, String path) throws IOException {
+        if (!node.path(key).isTextual()) throw new IOException("config." + path.substring(path.indexOf('.') + 1) + " 必须为字符串");
+        return node.path(key).textValue();
+    }
+
+    /** 可选字符串：字段存在时必须是字符串，null 不写入。 */
+    private static String optionalString(ObjectNode node, String key, String path) throws IOException {
+        if (!node.has(key)) return "";
+        if (!node.path(key).isTextual()) throw new IOException("config." + path + " 必须为字符串");
+        return node.path(key).textValue();
+    }
+
     /** 明确保存启动默认，只改 permissions.defaultProfile；不会自动改变另一份运行时的当前档位。 */
     public void savePermissionProfile(com.jadecode.safety.PermissionProfile profile) throws IOException {
         synchronized (WRITE_LOCK) {
@@ -110,9 +165,36 @@ public final class JadeConfigFile implements com.jadecode.safety.rules.Permissio
         JadeSettings d = JadeSettings.defaults();
         ObjectNode ui = section(root, "tui"), c = section(root, "compaction"), l = section(c, "limits");
         // 1. 未填写的 UI 字段用默认值；显式写错则报错，不能把 "false" 字符串当作布尔值。
-        JadeSettings.Tui tui = new JadeSettings.Tui(ui.has("theme") ? theme(ui.get("theme"), "tui.theme") : d.tui().theme(),
-                bool(ui, "thinkingVisible", d.tui().thinkingVisible()), bool(ui, "toolsExpanded", d.tui().toolsExpanded()),
-                bool(ui, "commandSuggestions", d.tui().commandSuggestions()));
+        JadeSettings.Tui dt = d.tui();
+        JadeSettings.Tui tui;
+        try {
+            tui = new JadeSettings.Tui(
+                    ui.has("theme") ? theme(ui.get("theme"), "tui.theme") : dt.theme(),
+                    ui.has("mode") ? string(ui, "mode", "tui.mode") : dt.mode(),
+                    ui.has("fullscreenExitOutput") ? string(ui, "fullscreenExitOutput", "tui.fullscreenExitOutput") : dt.fullscreenExitOutput(),
+                    ui.has("fullscreenScrollbar") ? string(ui, "fullscreenScrollbar", "tui.fullscreenScrollbar") : dt.fullscreenScrollbar(),
+                    bool(ui, "fullscreenCopyOnSelect", dt.fullscreenCopyOnSelect()),
+                    number(ui, "fullscreenWheelScrollLines", dt.fullscreenWheelScrollLines(), 0, "config.tui"),
+                    bool(ui, "showHardwareCursor", dt.showHardwareCursor()),
+                    number(ui, "editorPaddingX", dt.editorPaddingX(), 0, "config.tui"),
+                    number(ui, "outputPad", dt.outputPad(), 0, "config.tui"),
+                    number(ui, "autocompleteMaxVisible", dt.autocompleteMaxVisible(), 3, "config.tui"),
+                    bool(ui, "thinkingVisible", dt.thinkingVisible()), bool(ui, "toolsExpanded", dt.toolsExpanded()),
+                    bool(ui, "commandSuggestions", dt.commandSuggestions()),
+                    ui.has("mermaidRendering") ? string(ui, "mermaidRendering", "tui.mermaidRendering") : dt.mermaidRendering(),
+                    bool(ui, "showImages", dt.showImages()),
+                    number(ui, "imageWidthCells", dt.imageWidthCells(), 1, "config.tui"),
+                    bool(ui, "clearOnShrink", dt.clearOnShrink()),
+                    bool(ui, "showTerminalProgress", dt.showTerminalProgress()),
+                    bool(ui, "quietStartup", dt.quietStartup()),
+                    ui.has("codeBlockIndent") ? string(ui, "codeBlockIndent", "tui.codeBlockIndent") : dt.codeBlockIndent(),
+                    ui.has("externalEditor") ? optionalString(ui, "externalEditor", "tui.externalEditor") : dt.externalEditor(),
+                    keybindings(ui), number(ui, "escapeTimeoutMillis", dt.escapeTimeoutMillis(), 0, "config.tui"),
+                    ui.has("lightTheme") ? string(ui, "lightTheme", "tui.lightTheme") : dt.lightTheme(),
+                    ui.has("darkTheme") ? string(ui, "darkTheme", "tui.darkTheme") : dt.darkTheme());
+        } catch (IllegalArgumentException invalid) {
+            throw new IOException("config.tui 设置无效: " + invalid.getMessage(), invalid);
+        }
         CompactionPolicy p = d.compaction();
         // 2. 开关与数值分开：保存某层的阈值不意味着已经打开那层策略。
         CompactionPolicy policy = new CompactionPolicy(bool(c, "largeResultEnabled", p.largeResultEnabled()),

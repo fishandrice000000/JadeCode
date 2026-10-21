@@ -1,303 +1,578 @@
 package com.jadecode.cli.tui;
 
 import java.util.List;
+import java.util.Map;
 import java.util.function.Consumer;
-import com.jadecode.cli.tui.bridge.ApprovalBroker;
 import com.jadecode.cli.SessionHost;
-import com.jadecode.tui.components.SelectList;
-import com.jadecode.tui.core.InlineRenderer;
-import com.jadecode.tui.terminal.InputDecoder.Input;
+import com.jadecode.cli.tui.approval.ApprovalViewState;
+import com.jadecode.cli.tui.bridge.ApprovalBroker;
+import com.jadecode.cli.tui.model.TranscriptEntry;
+import com.jadecode.cli.tui.view.ChatViewport;
+import com.jadecode.cli.tui.view.HotkeysView;
+import com.jadecode.cli.tui.view.McpStatusView;
+import com.jadecode.cli.tui.view.SessionInfoView;
 import com.jadecode.safety.PermissionProfile;
 import com.jadecode.safety.approval.ApprovalAnswer;
+import com.jadecode.tui.components.Editor;
+import com.jadecode.tui.components.SelectList;
+import com.jadecode.tui.core.ActionToken;
+import com.jadecode.tui.core.Frame;
+import com.jadecode.tui.core.PresentedFrame;
+import com.jadecode.tui.input.InputEvent;
+import com.jadecode.tui.input.KeyBindings;
+import com.jadecode.tui.input.KeyChord;
+import com.jadecode.tui.text.DisplayWidth;
+import com.jadecode.tui.text.LinkTarget;
+import com.jadecode.tui.text.StyledLine;
+import com.jadecode.tui.theme.ThemeManager;
 
 /**
- * 在界面线程处理输入与显示事件。只通过现有 submitUser／promoteUserBuffer 发出用户意图，
- * 不执行工具、不改模型历史。磁盘偏好保存和关闭业务资源都交给其它线程。
+ * 语义输入与 UI 事件分派器：审批 > 菜单/选择器 > 编辑器/视口；调用真实 Host 操作。
+ *
+ * <p>本类不手写编辑器键表（使用 KeyBindings），不直接写终端（renderer 负责），不实现
+ * 组件算法。用户意图通过既有 SessionHost/ApprovalBroker 进入业务；所有批准需当前队首、
+ * revision、成功 PresentedFrame 与输入水位同时成立。未知 slash 返回本地英文错误并保留
+ * 草稿，不发给模型；不提供 Agent 取消/树/模型热切换等无后端动作。</p>
  */
 public final class TuiController {
+    /** 终端生命周期/剪贴板/外部编辑器端口；由 Application 实现，测试可注入空实现。 */
+    public interface TerminalActions {
+        default void suspend() { }
+        default void openExternalEditor(String draft, Consumer<String> success, Consumer<String> failure) { }
+        default void pasteClipboard(Editor editor) { }
+        default void copy(String text, boolean explicit) { }
+        default void setMode(String mode) { }
+        default void openLink(String uri) { }
+    }
+
     private final TuiState state;
     private final SessionHost host;
     private final ApprovalBroker approvals;
-    private final InlineRenderer renderer;
+    private final ChatViewport chat;
+    private final Editor editor;
     private final TuiPreferences preferences;
+    private final KeyBindings keys;
+    private final CommandCatalog catalog;
+    private final SettingsMenu settings;
+    private final ThemeManager themes;
     private final Consumer<UiEvent> events;
     private final Runnable shutdown;
+    private final TerminalActions terminal;
+    private final SessionInfoView sessionInfo = new SessionInfoView();
+    private final HotkeysView hotkeys = new HotkeysView();
+    private final McpStatusView mcpView = new McpStatusView();
+
     private long ctrlC;
     private String originalTheme;
     private boolean savePermissionDefault;
-    /** 元数据选择按用户输入顺序保存，避免较早的 low 写入反而盖过后来确认的 high。 */
-    private java.util.concurrent.CompletableFuture<Void> localWrites = java.util.concurrent.CompletableFuture.completedFuture(null);
-    /** 新运行时装配通知可能先于 SessionOpened 到达，暂存而不是丢掉模型参数通知。 */
+    private java.util.concurrent.CompletableFuture<Void> localWrites =
+            java.util.concurrent.CompletableFuture.completedFuture(null);
     private final java.util.Map<Long, List<UiEvent>> awaiting = new java.util.LinkedHashMap<>();
-    public TuiController(TuiState state, SessionHost host, ApprovalBroker approvals,
-            InlineRenderer renderer, TuiPreferences preferences, Consumer<UiEvent> events, Runnable shutdown) {
-        this.state = state; this.host = host; this.approvals = approvals; this.renderer = renderer;
-        this.preferences = preferences; this.events = events; this.shutdown = shutdown;
+    private int viewportTop, viewportHeight, dockTop, columns, rows;
+    private boolean searchOpen;
+    private boolean welcomeExpanded;
+    /** 最近成功呈现的原始帧，仅用于把点击坐标映射到同一布局的动作矩形。 */
+    private Frame lastFrame;
+
+    public TuiController(TuiState state, SessionHost host, ApprovalBroker approvals, ChatViewport chat,
+            Editor editor, TuiPreferences preferences, KeyBindings keys, CommandCatalog catalog,
+            SettingsMenu settings, ThemeManager themes, Consumer<UiEvent> events, Runnable shutdown,
+            TerminalActions terminal) {
+        this.state = state; this.host = host; this.approvals = approvals; this.chat = chat;
+        this.editor = editor; this.preferences = preferences; this.keys = keys; this.catalog = catalog;
+        this.settings = settings; this.themes = themes; this.events = events; this.shutdown = shutdown;
+        this.terminal = terminal == null ? new TerminalActions() { } : terminal;
+        state.editor = editor;
     }
 
-    /** 应用事件；返回 false 表示清理完成，可以结束界面循环。 */
-    public boolean accept(UiEvent event) {
-        switch (event) {
+    /** 每帧布局后由 Application 调用，供鼠标点击/滚轮坐标换算。 */
+    public void layout(int columns, int rows, int viewportTop, int viewportHeight, int dockTop) {
+        this.columns = columns; this.rows = rows; this.viewportTop = viewportTop;
+        this.viewportHeight = viewportHeight; this.dockTop = dockTop;
+    }
+
+    /** @return 搜索 Overlay 是否打开。 */
+    public boolean searchOpen() { return searchOpen; }
+
+    /** @return 欢迎资源区是否由 Ctrl+O 展开。 */
+    public boolean welcomeExpanded() { return welcomeExpanded; }
+
+    /** Application 成功呈现后调用，建立动作证据并让审批水位对齐。 */
+    public void presented(PresentedFrame frame, Frame rawFrame) {
+        state.presented = frame;
+        lastFrame = rawFrame;
+        if (state.approval.active()) state.approval.presented(frame, state.terminalEpoch, state.inputSequence);
+    }
+
+    /** 模式切换/resize 立即失效旧动作。 */
+    public void invalidateActions() { state.presented = null; lastFrame = null; state.approval.invalidate(); }
+
+    /** 应用事件；返回 false 表示清理完成，可以结束 UI 循环。 */
+    public boolean accept(UiEvent uiEvent) {
+        switch (uiEvent) {
             case UiEvent.Scoped scoped -> {
                 if (scoped.generation() == state.generation) return accept(scoped.event());
                 if (scoped.generation() > state.generation)
                     awaiting.computeIfAbsent(scoped.generation(), ignored -> new java.util.ArrayList<>()).add(scoped.event());
-                // 旧代次事件直接丢弃，不能把旧回复、关闭通知或工具卡接到新会话。
+                // 旧代次迟到事件直接丢弃，不能把旧回复/工具卡接到新会话。
             }
             case UiEvent.SessionOpened opened -> {
                 var session = opened.opened();
-                state.generation = session.generation(); state.loadingResume = false;
-                state.selector = null; state.sessionPicker = null;
+                state.installGeneration(session.generation());
                 state.sessionId = session.restored().metadata().id();
                 HistoryViewMapper.restore(state, session.restored());
+                editor.setGeneration(state.generation);
                 for (UiEvent initial : awaiting.getOrDefault(state.generation, List.of())) accept(initial);
                 awaiting.clear();
                 refreshSession();
-                if (!session.restored().metadata().model().equals(session.currentModel()))
-                    state.add("System", "Warning", "Model", "原会话模型: " + session.restored().metadata().model()
-                            + "；当前使用: " + session.currentModel());
-                state.hint = "会话已打开，等待新输入 · /resume 切换 · /help";
+                state.hint = "Enter submit · / for commands · Esc closes local UI";
                 host.start(state.generation);
             }
             case UiEvent.SessionList list -> {
                 state.loadingResume = false; state.selectorKind = "Resume";
-                state.sessionPicker = new SessionPicker(list.sessions()); state.selector = state.sessionPicker.choices();
-                state.hint = list.sessions().isEmpty() ? "当前工作区没有其它可恢复会话；Esc 返回" : "选择会话后恢复；不会重跑旧工具";
+                state.sessionPicker = new SessionPicker(list.sessions());
+                state.selector = state.sessionPicker.choices();
+                state.hint = list.sessions().isEmpty() ? UiMessages.NO_SESSIONS : "Select a session · Enter to resume";
             }
             case UiEvent.ResumeFailed failed -> {
                 state.loadingResume = false; awaiting.clear();
-                state.hint = failed.message(); state.add("System", "Error", "Resume", failed.message());
+                state.hint = failed.message();
+                state.transcript.addNotice("System", "Resume", failed.message(), true);
             }
-            case UiEvent.Input input -> input(input.input());
+            case UiEvent.Input input -> {
+                state.inputSequence = Math.max(state.inputSequence, input.input().sequence());
+                state.terminalEpoch = input.input().terminalEpoch();
+                input(input.input());
+            }
             case UiEvent.Execution execution -> state.execution(execution.notice());
+            case UiEvent.StreamStarted started -> state.transcript.requestStarted(started.request(), started.actor());
             case UiEvent.Delta delta -> state.delta(delta);
+            case UiEvent.ToolPreviewStarted preview -> state.transcript.previewStarted(preview.request(), preview.actor(),
+                    preview.blockIndex(), preview.callId(), preview.name(), preview.initialInput(), preview.identity());
+            case UiEvent.ToolPreviewDelta preview -> state.transcript.previewDelta(preview.request(), preview.blockIndex(),
+                    preview.fragment());
+            case UiEvent.ToolPreviewClosed preview -> state.transcript.previewClosed(preview.request(), preview.blockIndex());
             case UiEvent.StreamEnd end -> state.end(end);
             case UiEvent.Message message -> state.message(message);
             case UiEvent.ApprovalRequested request -> {
                 if (state.closing) approvals.answer(request.id(), ApprovalAnswer.DENY);
-                else { if (state.approvals.isEmpty()) state.resetApprovalView(); state.approvals.addLast(request); }
+                else {
+                    // 审批优先于搜索/菜单：关闭局部搜索，避免按键继续被 Overlay 消费。
+                    if (searchOpen) { search.close(); searchOpen = false; }
+                    if (state.approvals.isEmpty()) {
+                        var snapshot = new UiEvent.ApprovalRequested(request.id(), request.actor(), request.tool(),
+                                request.arguments(), request.reason(), request.suggestion(), request.revision());
+                        state.approvals.addLast(snapshot);
+                        state.approval.show(snapshot, state.inputSequence, state.terminalEpoch);
+                    } else state.approvals.addLast(request);
+                }
             }
             case UiEvent.ApprovalRemoved removed -> removeApproval(removed.id());
+            case UiEvent.Branch branch -> state.branch = branch.branch();
+            case UiEvent.ClipboardText text -> {
+                if (text.text().isEmpty()) return true;
+                // 用户显式 Ctrl+V 是插入，不是替换整份草稿；保留光标/撤销边界。
+                editor.insert(text.text(), true);
+            }
+            case UiEvent.ExternalEditorResult text -> editor.replaceText(text.text());
+            case UiEvent.TerminalFailure failure -> { state.hint = failure.message(); close(); }
             case UiEvent.Stopped stopped -> { return false; }
         }
         return true;
     }
 
-    /**
-     * 从当前会话读取已发布的统计和设置，不读盘、不等模型，也不访问可修改的 history。
-     * 以真实会话 ID 核对，避免 Host 已切换而 SessionOpened 尚未到达时采用新旧混合快照。
-     * 返回 true 才要求刷新屏幕，空闲时不会为了查询统计不断重画终端。
-     */
+    /** 从当前会话读取已发布统计/权限；不读盘、不等模型，也不访问可变 history。 */
     public boolean refreshSession() {
         boolean changed = false;
         var permission = host.permissionSnapshot();
         if (permission != null) {
-            String profile = permission.profile().label();
+            String profile = permission.profile().value();
             changed = !profile.equals(state.permissionProfile); state.permissionProfile = profile;
         }
         var next = host.display();
-        if (next == null || !next.id().equals(state.sessionId) || next.equals(state.session)) return changed;
-        state.session = next; state.model = next.model(); state.modelInfo = next.metadata().describe();
-        return true;
+        if (next != null && (!next.id().equals(state.sessionId) || !next.equals(state.session))) {
+            state.session = next; state.model = next.model(); state.modelInfo = next.metadata().describe();
+            changed = true;
+        }
+        var servers = host.mcpServers();
+        if (!servers.equals(state.mcpServers)) { state.mcpServers = servers; changed = true; }
+        return changed;
     }
 
-    /**
-     * 处理一个已解码的输入。先处理整会话退出，再只让当前可操作的区域接收按键。
-     * 同一个 Enter 不能既批准操作又提交草稿；PASTE 是一整块正文，不拆成许多 Enter。
-     * 本方法只修改界面状态或调用现有 Session 方法，不等待模型和工具返回。
-     */
-    private void input(Input input) {
-        String key = input.key();
+    /** 处理一个已解码输入。先全局退出/暂退，再按审批/菜单/编辑器/视口优先级路由。 */
+    private void input(InputEvent event) {
         if (state.closing) return;
-        // 尺寸变化到新帧绘制之间，旧按钮可能已经不在屏幕上；本批后续按键不能继续批准它。
-        if (key.equals("RESIZE")) { renderer.invalidateActions(); return; }
-        if (key.equals("EOF")) { close(); return; }
-        if (key.equals("CTRL_C")) {
-            long now = System.nanoTime();
-            if (ctrlC != 0 && now - ctrlC < 500_000_000L) { close(); return; }
-            ctrlC = now;
-            if (state.approvals.isEmpty() && state.selector == null) {
-                state.editor.clear(); state.commands = null; state.commandsDismissed = false;
-            }
-            state.hint = "再次 Ctrl+C（500ms 内）退出整个会话；Esc 不取消 Agent"; return;
-        }
-        // 审批盖住选择器，选择器盖住编辑器：被盖住的草稿仍保存，但不会收到这一按键。
-        if (!state.approvals.isEmpty()) { approval(input); return; }
-        if (state.selector != null) { selector(input); return; }
-        // 候选出现时，文字仍输入原草稿；只有选择／补全按键被候选接收。
-        if (state.commands != null && commandInput(input)) return;
-        switch (key) {
-            case "TEXT" -> state.editor.insert(input.text(), false);
-            case "PASTE" -> state.editor.insert(input.text(), true);
-            case "ENTER" -> submit();
-            case "NEWLINE" -> state.editor.insert("\n", false);
-            case "BACKSPACE" -> state.editor.delete(true);
-            case "DELETE" -> state.editor.delete(false);
-            case "CTRL_D" -> { if (state.editor.empty()) close(); else state.editor.delete(false); }
-            case "LEFT" -> state.editor.move(-1);
-            case "RIGHT" -> state.editor.move(1);
-            case "WORD_LEFT" -> state.editor.moveWord(-1);
-            case "WORD_RIGHT" -> state.editor.moveWord(1);
-            case "UP" -> state.editor.vertical(-1);
-            case "DOWN" -> state.editor.vertical(1);
-            case "HOME" -> state.editor.home();
-            case "END" -> state.editor.end();
-            case "CLEAR" -> state.editor.clear();
-            case "KILL_END" -> state.editor.killEnd();
-            case "DELETE_WORD" -> state.editor.deleteWord();
-            case "UNDO" -> state.editor.undo();
-            case "CTRL_O" -> {
-                state.toolsExpanded = !state.toolsExpanded;
-                state.entries.stream().filter(e -> e.kind.equals("Tool"))
-                        .forEach(e -> { e.expanded = state.toolsExpanded; e.version++; });
-            }
-            case "CTRL_T" -> { state.thinkingVisible = !state.thinkingVisible; state.entries.stream().filter(e -> e.kind.equals("Thinking")).forEach(e -> e.expanded = false); }
-            case "CLICK" -> click(renderer.hit(input.x(), input.y()));
-            case "TAB" -> { }
-            case "ESC" -> state.hint = "Esc 仅关闭选择界面；本版不支持单轮取消";
+        switch (event.kind()) {
+            case RESIZE -> { invalidateActions(); editor.setGeneration(state.generation); return; }
+            case EOF -> { close(); return; }
+            case FAILURE -> { state.transcript.addNotice("System", "Terminal", event.text(), true); close(); return; }
+            case REPLY -> { return; }
+            case MOUSE -> { mouse(event); return; }
             default -> { }
         }
-        if (List.of("TEXT", "PASTE", "BACKSPACE", "DELETE", "CTRL_D", "CLEAR", "KILL_END", "DELETE_WORD", "UNDO").contains(key))
-            state.commandsDismissed = false;
-        refreshCommands();
-    }
-
-    /** 只对单行、无空格的斜杠命令提供候选；普通任务或多行粘贴不会误入命令选择。 */
-    private void refreshCommands() {
-        String draft = state.editor.text();
-        if (!state.commandSuggestions || state.commandsDismissed || !draft.startsWith("/") || draft.codePoints().anyMatch(Character::isWhitespace)) {
-            state.commands = null;
-            return;
-        }
-        if (state.commands == null) state.commands = new SelectList(List.of("/help", "/theme", "/model", "/thinking", "/permission",
-                "/usage", "/resume", "/rename", "/quit", "/exit"));
-        if (!state.commands.filter().equals(draft)) state.commands.filter(draft);
-    }
-
-    /**
-     * 候选列表不保存另一份正文。Tab 只把选中命令补回编辑器；Enter 才清掉命令草稿并执行。
-     * 返回 true 表示本按键已经处理，不再让编辑器浏览历史或把 `/` 发给模型。
-     */
-    private boolean commandInput(Input input) {
-        switch (input.key()) {
-            case "UP" -> state.commands.move(-1);
-            case "DOWN" -> state.commands.move(1);
-            case "ESC" -> { state.commands = null; state.commandsDismissed = true; }
-            case "TAB", "ENTER" -> {
-                String command = state.commands.selected();
-                if (command == null) return false;
-                if (input.key().equals("TAB")) {
-                    state.editor.clear(); state.editor.insert(command, false);
-                    // Tab 只补回文字，不执行命令；补完后收起候选，避免同一完整命令显示两次。
-                    // 下一次真正编辑仍会重新启用候选，Enter 则沿普通命令提交路径执行。
-                    state.commands = null; state.commandsDismissed = true;
-                } else {
-                    state.editor.submit(); state.commands = null; open(command);
-                }
+        if (event.kind() != InputEvent.Kind.KEY && event.kind() != InputEvent.Kind.TEXT
+                && event.kind() != InputEvent.Kind.PASTE) return;
+        if (event.actionableKey()) {
+            KeyChord key = event.key();
+            // 全局会话动作：关闭/退出/暂退/剪贴板/展开。审批期间也不允许 Ctrl+C 清掉参数草稿。
+            if (matches("app.exit", event) && state.approvals.isEmpty() && state.selector == null && editor.text().isEmpty()) { close(); return; }
+            if (key.key().equals("c") && key.has(KeyChord.Modifier.CTRL)) { ctrlC(event); return; }
+            if (matches("app.suspend", event)) { terminal.suspend(); return; }
+            if (matches("app.editor.external", event)) {
+                terminal.openExternalEditor(editor.expandedText(), value -> {
+                    events.accept(new UiEvent.Message("System", "Editor", "External draft applied", false));
+                    // 结果必须回到 UI 线程；Application 在事件循环中调用这里。
+                    pendingExternalEditor = value;
+                }, message -> events.accept(new UiEvent.Message("System", "Editor", message, true)));
+                return;
             }
-            default -> { return false; }
+            if (matches("app.clipboard.pasteImage", event)) { terminal.pasteClipboard(editor); return; }
+            if (matches("app.message.copy", event)) { copyLastReply(); return; }
+            if (matches("app.tools.expand", event) && state.approvals.isEmpty()) {
+                state.toolsExpanded = !state.toolsExpanded;
+                state.transcript.setToolsExpanded(state.toolsExpanded);
+                welcomeExpanded = !welcomeExpanded;
+                return;
+            }
+            if (matches("app.thinking.toggle", event) && state.approvals.isEmpty()) {
+                state.thinkingVisible = !state.thinkingVisible; return;
+            }
+            if (matches("app.thinking.cycle", event) && state.approvals.isEmpty()) { cycleThinking(); return; }
+            if (key.key().equals("f") && key.has(KeyChord.Modifier.CTRL) && state.approvals.isEmpty() && state.selector == null) {
+                openSearch(); return;
+            }
         }
-        return true;
+        // 搜索 Overlay 优先于编辑器；它消费文字/Esc/Enter。
+        if (searchOpen) {
+            if (search.handle(event)) updateSearchOpen();
+            return;
+        }
+        if (!state.approvals.isEmpty()) { approvalInput(event); return; }
+        if (state.selector != null) { selectorInput(event); return; }
+        // 全屏 PageUp/PageDown 在编辑器为空时滚动转录；有草稿时仍由编辑器翻页。
+        if (event.actionableKey() && (event.key().key().equals("pageup") || event.key().key().equals("pagedown"))
+                && editor.text().isEmpty()) {
+            chat.page(event.key().key().equals("pageup") ? -1 : 1); return;
+        }
+        if (event.actionableKey() && (matches("tui.altScreen.top", event) || matches("tui.altScreen.bottom", event))) {
+            if (matches("tui.altScreen.top", event)) chat.top(); else chat.bottom();
+            return;
+        }
+        if (editor.handle(event)) return;
+        // 未消费的 Esc 是本地关闭提示，不是 Agent 取消。
+        if (event.actionableKey() && event.key().key().equals("escape")) {
+            state.hint = UiMessages.NO_AGENT_CANCEL;
+        }
     }
 
-    /**
-     * 将编辑器原文交给会话，并立即返回。忙时合并、排队和插入升级由 Session 决定。
-     * 空提交只升级同一业务缓冲；前端命令不发给模型；q／exit 则是普通提示词。
-     * UI 先保留用户输入供查阅；若业务队列拒收，再另显示拒收原因，不伪称已执行。
-     */
-    private void submit() {
-        // 退出是整个 CLI 的本地操作，即使会话正在加载也要能响应，不能交给模型或排到任务队尾。
-        String command = state.editor.text().strip();
-        if (command.equals("/quit") || command.equals("/exit")) { state.editor.submit(); close(); return; }
-        if (state.loadingResume) { state.hint = "正在打开会话，草稿已保留，请稍后提交"; return; }
-        String prompt = state.editor.submit();
-        if (prompt.isBlank()) {
-            state.hint = host.hasCurrent() && host.current().promoteUserBuffer() ? "待发送内容已升级为插入式" : "没有可插入的待发送内容"; return;
-        }
-        if (command.equals("/resume") || command.startsWith("/resume ") || command.startsWith("/resume\n") || command.startsWith("/resume\t")) {
-            String id = command.substring(7).strip();
-            if (id.isEmpty()) open("/resume"); else resume(id);
+    private String pendingExternalEditor;
+    private final com.jadecode.tui.overlay.SearchOverlay search = new com.jadecode.tui.overlay.SearchOverlay();
+
+    /** 由 Application 在每个事件循环调用；外部编辑器结果只在 UI 线程采用。 */
+    public void applyPendingExternalEditor() {
+        if (pendingExternalEditor == null) return;
+        editor.replaceText(pendingExternalEditor);
+        pendingExternalEditor = null;
+    }
+
+    /** @return 搜索 Overlay，Application 用于合成。 */
+    public com.jadecode.tui.overlay.SearchOverlay searchOverlay() { return search; }
+
+    private void openSearch() {
+        search.open(chat); searchOpen = true;
+        state.hint = "Search · Enter next · Shift+Enter previous · Esc close";
+    }
+
+    private void updateSearchOpen() { searchOpen = search.visible(); if (!searchOpen) state.hint = ""; }
+
+    private void ctrlC(InputEvent event) {
+        long now = System.nanoTime();
+        if (ctrlC != 0 && now - ctrlC < 500_000_000L) { close(); return; }
+        ctrlC = now;
+        if (state.approvals.isEmpty() && state.selector == null) editor.clear();
+        state.hint = "Press Ctrl+C again within 500ms to exit; Esc does not cancel the agent";
+    }
+
+    private void mouse(InputEvent event) {
+        InputEvent.Mouse mouse = event.mouse();
+        int row = mouse.y();
+        if (mouse.wheel()) {
+            chat.wheel(mouse.wheelDirection(), mouse.alt() ? 3 : 1);
             return;
         }
-        if (command.startsWith("/rename ") || command.startsWith("/rename\n") || command.startsWith("/rename\t")) {
-            saveLocal("Rename", id -> host.rename(id, command.substring(7).strip()), "会话已命名：" + command.substring(7).strip()); return;
-        }
-        if (command.startsWith("/thinking ")) {
-            try { setThinking(com.jadecode.llm.ThinkingSettings.parse(command.substring(10))); }
-            catch (IllegalArgumentException invalid) { state.hint = invalid.getMessage(); }
+        if (row < dockTop) {
+            int viewRow = row - viewportTop;
+            if (viewRow < 0 || viewRow >= viewportHeight) return;
+            if (mouse.action() == InputEvent.Mouse.Action.PRESS) {
+                LinkTarget link = chat.linkAt(viewRow, mouse.x());
+                if (link != null) { terminalsOpen(link); return; }
+                chat.startSelection(viewRow, mouse.x(), 1);
+            } else if (mouse.action() == InputEvent.Mouse.Action.DRAG) {
+                int direction = chat.dragSelection(viewRow, mouse.x());
+                if (direction != 0) chat.scrollLines(direction * 2);
+            } else if (mouse.action() == InputEvent.Mouse.Action.RELEASE) {
+                String text = chat.finishSelection();
+                if (!text.isBlank() && chat.copyOnSelect()) terminal.copy(text, false);
+            }
             return;
         }
-        if (command.startsWith("/permission ")) { permissionCommand(command.substring(12).strip()); return; }
-        if (List.of("/theme", "/help", "/model", "/thinking", "/usage", "/rename", "/permission").contains(command)) { open(command); return; }
-        if (!host.hasCurrent()) { state.editor.insert(prompt, false); state.hint = "请先 /resume 选择会话，或重启 jade repl 新建会话"; return; }
-        state.add("You", "User", "Request", prompt); state.hint = "";
-        // future 在业务线程结束，回调仍只投递显示事件，不能在该线程直接改 TuiState。
-        long generation = state.generation;
-        host.current().submitUser(prompt, approvals).whenComplete((answer, failure) -> {
-            if (failure instanceof java.util.concurrent.RejectedExecutionException)
-                events.accept(new UiEvent.Scoped(generation, new UiEvent.Message("System", "Rejected", failure.getMessage(), true)));
+        // dock 点击来自最后成功呈现的帧；同一 Frame 的 hit 矩形与文字来自一次布局。
+        PresentedFrame frame = state.presented;
+        if (frame == null || lastFrame == null) return;
+        ActionToken action = lastFrame.actionAt(mouse.x(), row);
+        if (action == null || !action.isApproval() || !state.approval.active()) return;
+        if (!state.approval.canAnswer(event.sequence(), state.terminalEpoch, frame, action.kind())) return;
+        approvals.answer(state.approval.request().id(), action.kind() == ActionToken.Kind.DENY ? ApprovalAnswer.DENY
+                : action.kind() == ActionToken.Kind.ALLOW_SIMILAR ? ApprovalAnswer.ALLOW_SIMILAR
+                : ApprovalAnswer.ALLOW_ONCE);
+        removeApproval(state.approval.request().id());
+    }
+
+    private void terminalsOpen(LinkTarget link) {
+        // 打开链接是外部副作用；只接受用户明确点击，并交给 Application 的受控端口。
+        terminal.openLink(link.uri());
+    }
+
+    private void cycleThinking() {
+        if (state.session == null || state.session.thinkingChoices().size() < 2) {
+            state.hint = UiMessages.NO_THINKING; return;
+        }
+        var choices = state.session.thinkingChoices();
+        int index = choices.indexOf(state.session.thinking());
+        var next = choices.get((index + 1) % choices.size());
+        saveLocal("Thinking", id -> host.thinking(id, next), "Thinking level: " + next.value());
+    }
+
+    private void copyLastReply() {
+        String text = state.transcript.lastReplyText();
+        if (text.isBlank()) { state.hint = UiMessages.COPY_EMPTY; return; }
+        terminal.copy(text, true);
+    }
+
+    /** Ctrl+X/菜单复制：有选区复制选区，否则复制最近助手回复；不含卡标题/Thinking。 */
+    public void copySelectionOrLastReply() {
+        String text = chat.selection().active() ? chat.selection().text(chat.document()) : state.transcript.lastReplyText();
+        if (text.isBlank()) { state.hint = UiMessages.COPY_EMPTY; return; }
+        terminal.copy(text, true);
+    }
+
+    /** 审批输入：阅读键不答复；左右/Tab 改选择；Enter 需证据与显式选择。 */
+    private void approvalInput(InputEvent event) {
+        if (event.kind() != InputEvent.Kind.KEY || !event.actionableKey()) return;
+        KeyChord key = event.key();
+        var approval = state.approval;
+        switch (key.key()) {
+            case "up" -> { approval.scroll(-1); return; }
+            case "down" -> { approval.scroll(1); return; }
+            case "pageup" -> { approval.scroll(-Math.max(1, approval.pageSize())); return; }
+            case "pagedown" -> { approval.scroll(Math.max(1, approval.pageSize())); return; }
+            case "home" -> { approval.scroll(-approval.totalLines()); return; }
+            case "end" -> { approval.scroll(approval.totalLines()); return; }
+            default -> { }
+        }
+        if (key.key().equals("left") || key.key().equals("right") || key.key().equals("tab")) {
+            boolean backward = key.key().equals("left") || key.has(KeyChord.Modifier.SHIFT);
+            approval.move(backward ? -1 : 1, !approval.request().suggestion().isBlank());
+            return;
+        }
+        if (key.key().equals("enter")) {
+            var answer = approval.selectedAnswer();
+            if (answer == null) return;
+            ActionToken.Kind kind = answer == ApprovalAnswer.DENY ? ActionToken.Kind.DENY
+                    : answer == ApprovalAnswer.ALLOW_SIMILAR ? ActionToken.Kind.ALLOW_SIMILAR : ActionToken.Kind.APPROVE;
+            if (!approval.canAnswer(event.sequence(), state.terminalEpoch, state.presented, kind)) return;
+            approvals.answer(approval.request().id(), answer);
+            removeApproval(approval.request().id());
+            return;
+        }
+        if (key.key().equals("escape")) { state.hint = "Esc does not answer an approval; use an explicit option"; }
+        // 普通文字/粘贴/空 Enter 不批准也不拒绝。
+    }
+
+    private void removeApproval(String id) {
+        boolean first = !state.approvals.isEmpty() && state.approvals.getFirst().id().equals(id);
+        state.approvals.removeIf(request -> request.id().equals(id));
+        if (first) {
+            state.approval.clear();
+            if (!state.approvals.isEmpty()) {
+                var next = state.approvals.getFirst();
+                state.approval.show(next, state.inputSequence, state.terminalEpoch);
+            } else state.hint = "";
+        }
+    }
+
+    /** 选择器输入：Esc 回滚；上下移动；输入文字过滤；Enter 分派。 */
+    private void selectorInput(InputEvent event) {
+        if (event.kind() == InputEvent.Kind.TEXT) {
+            state.selector.filter(state.selector.filter() + event.text()); return;
+        }
+        if (event.kind() == InputEvent.Kind.PASTE) return;
+        if (event.kind() != InputEvent.Kind.KEY || !event.actionableKey()) return;
+        KeyChord key = event.key();
+        switch (key.key()) {
+            case "escape" -> { cancelSelector(); return; }
+            case "up" -> { state.selector.move(-1); previewSelector(); return; }
+            case "down" -> { state.selector.move(1); previewSelector(); return; }
+            case "pageup" -> { state.selector.page(-1, 5); return; }
+            case "pagedown" -> { state.selector.page(1, 5); return; }
+            case "backspace" -> {
+                String filter = state.selector.filter();
+                if (!filter.isEmpty()) state.selector.filter(DisplayWidth.take(filter, DisplayWidth.width(filter) - 1));
+                return;
+            }
+            case "enter" -> { chooseSelector(); return; }
+            default -> { }
+        }
+        if (key.key().equals("n") && key.has(KeyChord.Modifier.CTRL) && state.selectorKind.equals("Resume")) {
+            state.sessionPicker.toggleNamedOnly(); state.selector = state.sessionPicker.choices(); return;
+        }
+        if (key.key().equals("p") && key.has(KeyChord.Modifier.CTRL) && state.selectorKind.equals("Resume")) {
+            state.sessionPicker.togglePath(); state.selector = state.sessionPicker.choices(); return;
+        }
+        if (key.key().equals("s") && key.has(KeyChord.Modifier.CTRL) && state.selectorKind.equals("Resume")) {
+            state.sessionPicker.toggleSort(); state.selector = state.sessionPicker.choices(); return;
+        }
+    }
+
+    private void previewSelector() {
+        if (!state.selectorKind.equals("Theme")) return;
+        String selected = state.selector.selected();
+        if (selected == null) return;
+        String error = themes.preview(selected);
+        if (!error.isEmpty()) state.hint = error;
+    }
+
+    private void cancelSelector() {
+        if (state.selectorKind.equals("Theme")) {
+            themes.cancelPreview();
+            if (originalTheme != null) themes.reload(originalTheme);
+        }
+        String kind = state.selectorKind;
+        state.selector = null; state.sessionPicker = null; state.selectorKind = ""; state.hint = "";
+        if (kind.equals("Resume") && !host.hasCurrent()) close();
+    }
+
+    private void chooseSelector() {
+        String selectedId = state.selector.selected();
+        if (selectedId == null) return;
+        String kind = state.selectorKind;
+        switch (kind) {
+            case "Resume" -> {
+                String id = state.sessionPicker.id(selectedId);
+                state.selector = null; state.sessionPicker = null; state.selectorKind = "";
+                if (id != null) resume(id);
+            }
+            case "Theme" -> {
+                state.selector = null; state.selectorKind = "";
+                themes.applyPreview();
+                preferences.saveLater(Map.of("theme", selectedId), failed -> {
+                    if (failed == null) events.accept(new UiEvent.Message("System", "Theme", "Theme saved", false));
+                    else events.accept(new UiEvent.Message("System", "Warning", UiMessages.NOT_SAVED + failed.getMessage(), true));
+                });
+            }
+            case "Thinking" -> {
+                state.selector = null; state.selectorKind = "";
+                try { changeThinking(com.jadecode.llm.ThinkingSettings.parse(selectedId)); }
+                catch (IllegalArgumentException invalid) { state.hint = invalid.getMessage(); }
+            }
+            case "Permission" -> {
+                state.selector = null; state.selectorKind = "";
+                choosePermission(PermissionProfile.parse(selectedId));
+            }
+            case "PermissionConfirm" -> {
+                state.selector = null; state.selectorKind = "";
+                if (selectedId.equals("confirm")) applyPermission(PermissionProfile.FULL_ACCESS);
+                else state.hint = "Permission unchanged";
+            }
+            case "Settings" -> {
+                if (selectedId.equals("theme")) {
+                    originalTheme = themes.preview().name();
+                    state.selectorKind = "Theme";
+                    var items = new java.util.ArrayList<SelectList.Item>();
+                    for (String choice : settings.themeChoices())
+                        items.add(new SelectList.Item(choice, choice, ""));
+                    state.selector = new SelectList(items, true);
+                    return;
+                }
+                if (selectedId.equals("mode")) {
+                    String mode = settings.current().mode().equals("fullscreen") ? "regular" : "fullscreen";
+                    settings.reload(SettingsMenu.apply(settings.current(), Map.of("mode", mode)));
+                    state.selector = settings.list();
+                    state.selector.selectId("mode");
+                    terminal.setMode(mode);
+                    preferences.saveLater(Map.of("mode", mode), failed -> {
+                        if (failed == null) events.accept(new UiEvent.Message("System", "Settings", "TUI mode: " + mode, false));
+                        else events.accept(new UiEvent.Message("System", "Warning", UiMessages.NOT_SAVED + failed.getMessage(), true));
+                    });
+                    return;
+                }
+                Map<String, Object> patch = settings.cycle(selectedId);
+                if (patch.isEmpty()) return;
+                applySettingsPatch(patch);
+                state.selector = settings.list();
+                state.selector.selectId(selectedId);
+            }
+            default -> { }
+        }
+    }
+
+    private void applySettingsPatch(Map<String, Object> patch) {
+        var updated = settings.current();
+        if (patch.containsKey("thinkingVisible")) state.thinkingVisible = updated.thinkingVisible();
+        if (patch.containsKey("toolsExpanded")) { state.toolsExpanded = updated.toolsExpanded();
+            state.transcript.setToolsExpanded(state.toolsExpanded); }
+        if (patch.containsKey("fullscreenScrollbar")) {
+            try { chat.setScrollbar(ChatViewport.Scrollbar.valueOf(updated.fullscreenScrollbar().toUpperCase(java.util.Locale.ROOT))); }
+            catch (IllegalArgumentException ignored) { }
+        }
+        if (patch.containsKey("fullscreenCopyOnSelect")) chat.setCopyOnSelect(updated.fullscreenCopyOnSelect());
+        if (patch.containsKey("fullscreenWheelScrollLines")) chat.wheelLines(
+                updated.fullscreenWheelScrollLines() == 0 ? 3 : updated.fullscreenWheelScrollLines());
+        if (patch.containsKey("autocompleteMaxVisible")) editor.setCompletionMaxVisible(updated.autocompleteMaxVisible());
+        preferences.saveLater(patch, failed -> {
+            if (failed == null) events.accept(new UiEvent.Message("System", "Settings", "Setting saved", false));
+            else events.accept(new UiEvent.Message("System", "Warning", UiMessages.NOT_SAVED + failed.getMessage(), true));
         });
     }
-    /** 前端命令不交给模型：帮助/主题/参数在本地处理，resume 则让 Host 异步装配目标运行时。 */
-    private void open(String command) {
-        if (command.equals("/quit") || command.equals("/exit")) { close(); return; }
-        if (state.loadingResume) { state.hint = "正在打开会话，请稍后"; return; }
-        if (command.equals("/resume")) {
-            state.loadingResume = true; state.hint = "正在读取当前工作区的会话列表…";
-            Thread.ofVirtual().name("jade-session-list").start(() -> {
-                try { events.accept(new UiEvent.SessionList(host.list())); }
-                catch (Exception failure) { events.accept(new UiEvent.ResumeFailed(failure.getMessage())); }
-            });
-        } else if (command.equals("/theme")) {
-            originalTheme = state.theme; state.selectorKind = "Theme"; state.selector = new SelectList(List.of("dark", "light"));
-            if (state.theme.equals("light")) state.selector.move(1);
-        } else if (command.equals("/permission")) {
-            if (!host.hasCurrent()) { state.hint = "请先打开会话"; return; }
-            savePermissionDefault = false;
-            state.selectorKind = "Permission";
-            state.selector = PermissionMenu.choices(host.current().permissionState().snapshot().profile());
-            state.hint = "仅切换本次运行；/permission default <档位> 保存启动默认";
-        } else if (command.equals("/model")) {
-            // 只展示启动时已取得的快照，不把命令发给模型，也不在 UI 线程重新请求网络。
-            refreshSession();
-            state.add("", "Model", state.model + " · " + (state.session == null ? "默认" : state.session.thinkingLabel()), state.modelInfo);
-        } else if (command.equals("/thinking")) {
-            refreshSession();
-            if (state.session == null || state.session.thinkingChoices().size() < 2) {
-                state.hint = "当前端点或模型尚未适配思考强度切换"; return;
+
+    private void changeThinking(com.jadecode.llm.ThinkingSettings value) {
+        saveLocal("Thinking", id -> host.thinking(id, value), "Thinking level: " + value.value());
+    }
+
+    /** 权限：Full Access 需显式确认；其余档位直接切换，真实 Gate 规则不变。 */
+    private void choosePermission(PermissionProfile profile) {
+        if (!host.hasCurrent()) { state.hint = "Open a session first"; return; }
+        if (profile == PermissionProfile.FULL_ACCESS
+                && host.current().permissionState().snapshot().profile() != profile) {
+            state.selectorKind = "PermissionConfirm"; state.selector = PermissionMenu.confirm();
+            state.hint = "Full Access skips routine prompts; explicit denies remain in force";
+        } else applyPermission(profile);
+    }
+
+    private void applyPermission(PermissionProfile profile) {
+        var permissions = host.current().permissionState();
+        boolean save = savePermissionDefault;
+        savePermissionDefault = false;
+        state.hint = "";
+        localWrites = localWrites.handle((value, failure) -> null).thenRunAsync(() -> {
+            permissions.select(profile);
+            events.accept(new UiEvent.Message("System", "Permission", "Permission: " + profile.label(), false));
+            if (save) {
+                try {
+                    preferences.savePermission(profile);
+                    events.accept(new UiEvent.Message("System", "Permission", "Default permission saved: " + profile.label(), false));
+                } catch (java.io.IOException failed) {
+                    events.accept(new UiEvent.Message("System", "Warning",
+                            "Active for this run, but saving the default failed: " + failed.getMessage(), true));
+                }
             }
-            state.selectorKind = "Thinking";
-            state.selector = new SelectList(state.session.thinkingChoices().stream().map(com.jadecode.llm.ThinkingSettings::value).toList());
-            state.selector.move(state.session.thinkingChoices().indexOf(state.session.thinking()));
-        } else if (command.equals("/rename")) {
-            if (state.editor.empty()) state.editor.insert("/rename ", false);
-            state.hint = "输入 /rename 新名称；名称只用于查找，不改变会话 UUID 或目录";
-        } else if (command.equals("/usage")) {
-            refreshSession();
-            if (state.session == null) { state.hint = "请先打开会话"; return; }
-            var usage = state.session.usage(); var total = usage.total();
-            StringBuilder body = new StringBuilder("输入：" + ConversationView.tokens(total.inputTokens())
-                    + "\n输出：" + ConversationView.tokens(total.outputTokens())
-                    + "\n已报告请求：" + total.reportedRequests());
-            if (total.missingRequests() > 0) body.append("\n未取得用量的请求：").append(total.missingRequests());
-            usage.byActor().entrySet().stream().sorted(java.util.Map.Entry.comparingByKey()).forEach(entry ->
-                    body.append("\n").append(entry.getKey()).append("：↑").append(ConversationView.tokens(entry.getValue().inputTokens()))
-                            .append(" ↓").append(ConversationView.tokens(entry.getValue().outputTokens())));
-            state.add("System", "Model", "Usage", body.toString());
-        } else {
-            state.selectorKind = "Help";
-            state.selector = new SelectList(List.of("Enter 提交 · Alt+Enter 换行 · 粘贴后仍需 Enter", "忙时空 Enter：插入待发送缓冲",
-                    "Ctrl+T 显示思考 · Ctrl+O 展开工具 · 鼠标滚动／复制由终端处理", "Ctrl+C 清草稿，500ms 内再按退出 · 空编辑器 Ctrl+D 退出",
-                    "Esc 关闭选择界面，不取消 Agent · /quit 或 /exit 退出整个会话", "窗口／主题变化可能清空 scrollback 并重绘",
-                    "/model", "/thinking", "/permission", "/usage", "/theme", "/resume", "/rename", "/quit", "/exit"));
-        }
+        }, command -> Thread.ofVirtual().name("jade-permission").start(command));
     }
 
     @FunctionalInterface private interface LocalAction { void run(String expectedId) throws Exception; }
 
-    /** 本地元数据写盘在工作线程做；完成后只投递文字，不能从该线程改界面组件。 */
     private void saveLocal(String label, LocalAction action, String success) {
-        if (!host.hasCurrent() || state.loadingResume) { state.hint = "请先打开会话"; return; }
+        if (!host.hasCurrent() || state.loadingResume) { state.hint = "Open a session first"; return; }
         long generation = state.generation;
         String id = state.sessionId;
         localWrites = localWrites.handle((value, failure) -> null).thenRunAsync(() -> {
@@ -306,92 +581,118 @@ public final class TuiController {
         }, command -> Thread.ofVirtual().name("jade-session-setting").start(command));
     }
 
-    /** 固定选择交给会话检查和保存，界面不直接改 SDK 或全局配置。 */
-    private void setThinking(com.jadecode.llm.ThinkingSettings value) {
-        saveLocal("Thinking", id -> host.thinking(id, value), "思考设置已保存：" + value.value() + "，从下一次请求生效");
-    }
-    /** 解析本地命令，不发给模型；错误档位不改变当前设置。 */
-    private void permissionCommand(String arguments) {
-        savePermissionDefault = arguments.startsWith("default ");
-        try { choosePermission(PermissionProfile.parse(savePermissionDefault ? arguments.substring(8).strip() : arguments)); }
-        catch (IllegalArgumentException invalid) { state.hint = invalid.getMessage(); }
-    }
-    /** Full Access 要先显示风险并再确认，其余档位直接采用，不中断已经执行的命令。 */
-    private void choosePermission(PermissionProfile profile) {
-        if (!host.hasCurrent()) { state.hint = "请先打开会话"; return; }
-        if (profile == PermissionProfile.FULL_ACCESS && host.current().permissionState().snapshot().profile() != profile) {
-            state.selectorKind = "PermissionConfirm"; state.selector = PermissionMenu.confirm();
-            state.hint = "普通文件和命令可直接执行，可能修改工作区外文件；显式拒绝和默认硬保护仍有效";
-        } else applyPermission(profile);
-    }
-    /**
-     * 按选择顺序切换；仅明确 default 的命令才保存启动默认。
-     * 后台可能正在保存“允许此类”规则，切换也交工作线程，界面不等配置锁或磁盘。
-     * 失败如实报告，当前快照由 refreshSession 采用；草稿、主任务和队友不被重建。
-     */
-    private void applyPermission(PermissionProfile profile) {
-        var permissions = host.current().permissionState();
-        boolean save = savePermissionDefault;
+    /** @return 编辑器提交意图；返回 true 才清空草稿。 */
+    public boolean submit(String expanded) {
+        String text = expanded == null ? "" : expanded;
+        String trimmed = text.strip();
+        if (trimmed.isEmpty()) return false;
+        if (trimmed.startsWith("/")) return command(trimmed);
+        if (state.loadingResume) { state.hint = "Session is opening; draft kept"; return false; }
+        if (!host.hasCurrent()) { state.hint = "Open or create a session first"; return false; }
+        state.transcript.addUser(text);
         state.hint = "";
-        localWrites = localWrites.handle((value, failure) -> null).thenRunAsync(() -> {
-            permissions.select(profile);
-            events.accept(new UiEvent.Message("System", "Permission", "当前权限：" + profile.label(), false));
-            if (save) {
-                try { preferences.savePermission(profile); events.accept(new UiEvent.Message("System", "Permission", "启动默认已保存：" + profile.label(), false)); }
-                catch (java.io.IOException failed) { events.accept(new UiEvent.Message("System", "Error", "本次已切换，但默认保存失败：" + failed.getMessage(), true)); }
-            }
-        }, command -> Thread.ofVirtual().name("jade-permission-setting").start(command));
-        savePermissionDefault = false;
+        long generation = state.generation;
+        host.current().submitUser(text, approvals).whenComplete((answer, failure) -> {
+            if (failure instanceof java.util.concurrent.RejectedExecutionException)
+                events.accept(new UiEvent.Scoped(generation, new UiEvent.Message("System", "Rejected", failure.getMessage(), true)));
+        });
+        return true;
     }
-    /**
-     * 选择期间，文字只用于筛选，不进入原草稿。主题上下移动只作预览，Esc 恢复原主题；
-     * 只有 Enter 确认才排队保存。保存回调发事件回到界面线程，不跨线程改组件。
-     */
-    private void selector(Input input) {
-        switch (input.key()) {
-            case "ESC" -> {
-                if (state.selectorKind.equals("Theme")) state.theme = originalTheme;
-                boolean startupPicker = state.selectorKind.equals("Resume") && !host.hasCurrent();
-                state.selector = null; state.sessionPicker = null;
-                if (startupPicker) close();
+
+    /** 本地命令；未知 slash 保留输入并返回 false。 */
+    private boolean command(String text) {
+        int space = text.indexOf(' ');
+        String name = space < 0 ? text : text.substring(0, space);
+        String arguments = space < 0 ? "" : text.substring(space + 1).strip();
+        CommandCatalog.Command command = catalog.find(name);
+        if (command == null) {
+            state.hint = "Unknown command: " + name + " · /hotkeys";
+            return false;
+        }
+        switch (name) {
+            case "/quit" -> { close(); return true; }
+            case "/new" -> { resume(null); return true; }
+            case "/resume" -> {
+                if (arguments.isEmpty()) openSessionList(); else resume(arguments); return true;
             }
-            case "UP", "BACKTAB" -> { state.selector.move(-1); previewTheme(); }
-            case "DOWN", "TAB" -> { state.selector.move(1); previewTheme(); }
-            case "TEXT" -> state.selector.filter(state.selector.filter() + input.text());
-            case "BACKSPACE" -> { String filter = state.selector.filter(); if (!filter.isEmpty()) state.selector.filter(filter.substring(0, filter.offsetByCodePoints(filter.length(), -1))); }
-            case "ENTER" -> {
-                String choice = state.selector.selected(); if (choice == null) return;
-                String kind = state.selectorKind; state.selector = null;
-                if (kind.equals("Resume")) {
-                    String id = state.sessionPicker.id(choice); state.sessionPicker = null;
-                    resume(id);
-                } else if (kind.equals("Theme")) {
-                    state.theme = choice;
-                    preferences.saveLater(choice, failed -> {
-                        if (failed == null) events.accept(new UiEvent.Message("System", "Theme", "主题已保存：" + choice, false));
-                        else events.accept(new UiEvent.Message("System", "Warning", "本次主题已生效，但保存失败：" + failed.getMessage(), true));
-                    });
-                } else if (kind.equals("Thinking")) setThinking(com.jadecode.llm.ThinkingSettings.parse(choice));
-                else if (kind.equals("Permission")) choosePermission(PermissionProfile.parse(choice));
-                else if (kind.equals("PermissionConfirm")) {
-                    if (choice.equals("启用 Full Access")) applyPermission(PermissionProfile.FULL_ACCESS);
-                    else state.hint = "权限未改变";
+            case "/name" -> {
+                if (arguments.isEmpty()) { editor.replaceText("/name "); state.hint = "Type a title after /name"; return false; }
+                saveLocal("Rename", id -> host.rename(id, arguments), "Session renamed: " + arguments); return true;
+            }
+            case "/settings" -> {
+                state.selectorKind = "Settings"; state.selector = settings.list();
+                state.hint = "Enter change · Esc return to draft"; return true;
+            }
+            case "/session" -> { addNotice("Session", "Session", sessionInfo.render(state, renderContext(), columns)); return true; }
+            case "/hotkeys" -> { addNotice("Hotkeys", "Hotkeys", hotkeys.render(keys, catalog.helpLines(),
+                    renderContext(), columns)); return true; }
+            case "/copy" -> { copyLastReply(); return true; }
+            case "/model" -> {
+                refreshSession();
+                String detail = state.modelInfo == null || state.modelInfo.isBlank() ? state.model : state.modelInfo;
+                state.transcript.addNotice("System", "Model", (detail == null ? "" : detail)
+                        + (detail == null || detail.isBlank() ? "" : "\n") + UiMessages.NO_MODEL_SWITCH, false);
+                return true;
+            }
+            case "/thinking" -> {
+                if (arguments.isEmpty()) {
+                    if (state.session == null || state.session.thinkingChoices().size() < 2) {
+                        state.hint = UiMessages.NO_THINKING; return true;
+                    }
+                    var items = new java.util.ArrayList<SelectList.Item>();
+                    for (var thinking : state.session.thinkingChoices())
+                        items.add(new SelectList.Item(thinking.value(), thinking.value(), ""));
+                    state.selector = new SelectList(items, true); state.selectorKind = "Thinking";
+                } else {
+                    try { changeThinking(com.jadecode.llm.ThinkingSettings.parse(arguments)); }
+                    catch (IllegalArgumentException invalid) { state.hint = invalid.getMessage(); }
                 }
-                else if (choice.startsWith("/")) open(choice);
+                return true;
             }
-            default -> { }
+            case "/permission" -> {
+                savePermissionDefault = arguments.startsWith("default ");
+                String value = savePermissionDefault ? arguments.substring(8).strip() : arguments;
+                if (value.isEmpty()) {
+                    if (!host.hasCurrent()) { state.hint = "Open a session first"; return true; }
+                    state.selectorKind = "Permission";
+                    state.selector = PermissionMenu.choices(host.current().permissionState().snapshot().profile());
+                } else {
+                    try { choosePermission(PermissionProfile.parse(value)); }
+                    catch (IllegalArgumentException invalid) { state.hint = invalid.getMessage(); }
+                }
+                return true;
+            }
+            case "/mcp" -> { addNotice("MCP", "MCP", mcpView.render(state.mcpServers, renderContext(), columns)); return true; }
+            default -> { state.hint = "Unknown command: " + name; return false; }
         }
     }
-    private void previewTheme() { if (state.selectorKind.equals("Theme") && state.selector.selected() != null) state.theme = state.selector.selected(); }
 
-    /**
-     * 异步打开会话。加载与关闭不占 UI 线程，只有 SessionOpened 回来后才清理旧卡片并启动新会话。
-     * id 为 null 新建，空串打开启动选择器；名称先查清单，重名展示候选，不默认选择第一项。
-     */
+    private com.jadecode.tui.core.RenderContext renderContext() {
+        return new com.jadecode.tui.core.RenderContext(Math.max(20, columns), Math.max(10, rows),
+                themes.preview(), com.jadecode.tui.terminal.TerminalCapabilities.detect(java.util.Map.of()),
+                System.nanoTime(), state.transcript.revision());
+    }
+
+    private void addNotice(String actor, String title, List<StyledLine> lines) {
+        String text = lines.stream().map(StyledLine::text).collect(java.util.stream.Collectors.joining("\n"));
+        state.transcript.addNotice(actor, title, text, false);
+    }
+
+    /** 打开会话清单；只读清单，不解析每份日志。 */
+    private void openSessionList() {
+        if (state.loadingResume) { state.hint = "Session is switching"; return; }
+        state.loadingResume = true; state.hint = UiMessages.SESSION_LIST;
+        Thread.ofVirtual().name("jade-session-list").start(() -> {
+            try { events.accept(new UiEvent.SessionList(host.list())); }
+            catch (Exception failure) { events.accept(new UiEvent.ResumeFailed(failure.getMessage())); }
+        });
+    }
+
+    /** 异步打开会话；加载/关闭不占 UI 线程，只有 SessionOpened 回来后才清理旧卡片。 */
     public void resume(String id) {
-        if (id != null && id.isEmpty()) { open("/resume"); return; }
-        if (state.loadingResume) { state.hint = "会话正在切换"; return; }
-        state.loadingResume = true; state.hint = id == null ? "正在创建会话…" : "正在恢复会话…";
+        if (id != null && id.isEmpty()) { openSessionList(); return; }
+        if (state.loadingResume) { state.hint = "Session is switching"; return; }
+        state.loadingResume = true; state.hint = id == null ? "Creating session…" : UiMessages.SESSION_OPENING;
         Thread.ofVirtual().name("jade-session-open").start(() -> {
             try {
                 String target = id;
@@ -401,72 +702,22 @@ public final class TuiController {
                     catch (IllegalArgumentException invalid) { uuid = false; }
                     if (!uuid) {
                         var matches = host.find(target);
-                        if (matches.isEmpty()) throw new java.io.IOException("没有匹配该名称的会话");
+                        if (matches.isEmpty()) throw new java.io.IOException("No session matches that name");
                         if (matches.size() > 1) { events.accept(new UiEvent.SessionList(matches)); return; }
                         target = matches.getFirst().id();
                     }
                 }
                 events.accept(new UiEvent.SessionOpened(host.open(target)));
-            }
-            catch (Exception failure) { events.accept(new UiEvent.ResumeFailed(failure.getMessage())); }
+            } catch (Exception failure) { events.accept(new UiEvent.ResumeFailed(failure.getMessage())); }
         });
     }
-    /**
-     * 审批独占输入焦点：上下键/翻页/首尾键只改变阅读位置，左右键或 Tab 才改变按钮选择。
-     * Enter 必须有明确选中项，且同一申请的按钮已经在最后画面上可见，才向 Broker 交回答复。
-     * 小窗口没有确认动作时不允许盲批；整个过程不编辑草稿、不执行工具。
-     * 排队中的另一份申请由 removeApproval 重置，不能继承本申请的高亮或阅读位置。
-     */
-    private void approval(Input input) {
-        // 阅读按键不作审批答复。即使当前窗口太小而按钮不可见，也允许滚动；
-        // 真正的批准仍须通过下面基于最后已显示画面的检查。
-        int step = Math.max(1, state.approvalPageSize);
-        int last = Math.max(0, state.approvalTotalLines - step);
-        switch (input.key()) {
-            case "UP" -> { state.approvalOffset = Math.max(0, state.approvalOffset - 1); return; }
-            case "DOWN" -> { state.approvalOffset = Math.min(last, state.approvalOffset + 1); return; }
-            case "PAGE_UP" -> { state.approvalOffset = Math.max(0, state.approvalOffset - step); return; }
-            case "PAGE_DOWN" -> { state.approvalOffset = (int) Math.min(last, (long) state.approvalOffset + step); return; }
-            case "HOME" -> { state.approvalOffset = 0; return; }
-            case "END" -> { state.approvalOffset = last; return; }
-            default -> { }
-        }
-        // 新队首必须先真正显示，再允许选择。仅重置 choice 不足以防住上一份申请的连按。
-        if (!renderer.hasAction("approve:" + state.approvals.getFirst().id())) return;
-        switch (input.key()) {
-            case "LEFT", "BACKTAB", "RIGHT", "TAB" -> {
-                int direction = input.key().equals("LEFT") || input.key().equals("BACKTAB") ? -1 : 1;
-                int choice = state.approvalChoice < 0 ? (direction > 0 ? 0 : 2) : Math.floorMod(state.approvalChoice + direction, 3);
-                if (choice == 1 && state.approvals.getFirst().suggestion().isEmpty()) choice += direction;
-                state.approvalChoice = choice;
-            }
-            case "ENTER" -> { if (state.approvalChoice >= 0) answer(state.approvals.getFirst().id(), ApprovalAnswer.values()[state.approvalChoice]); }
-            case "CLICK" -> click(renderer.hit(input.x(), input.y()));
-            default -> { /* 无默认选择，普通文字、粘贴、空 Enter 和 Esc 都不能批准或拒绝。 */ }
-        }
-    }
-    /** 点击动作来自最后显示帧；不是模型正文提供的命令，仍需核对当前审批编号。 */
-    private void click(String action) {
-        if (action == null) return;
-        if (action.startsWith("approve:")) answer(action.substring(8), ApprovalAnswer.ALLOW_ONCE);
-        else if (action.startsWith("similar:")) answer(action.substring(8), ApprovalAnswer.ALLOW_SIMILAR);
-        else if (action.startsWith("deny:")) answer(action.substring(5), ApprovalAnswer.DENY);
-        else if (action.startsWith("entry:") && state.approvals.isEmpty()) state.entries.stream()
-                .filter(e -> e.id.equals(action.substring(6))).findFirst().ifPresent(e -> { e.expanded = !e.expanded; e.version++; });
-    }
-    private void answer(String id, ApprovalAnswer allowed) {
-        if (state.approvals.isEmpty() || !state.approvals.getFirst().id().equals(id)) return;
-        if (allowed == ApprovalAnswer.ALLOW_SIMILAR && state.approvals.getFirst().suggestion().isEmpty()) return;
-        approvals.answer(id, allowed); removeApproval(id);
-    }
-    private void removeApproval(String id) {
-        boolean first = !state.approvals.isEmpty() && state.approvals.getFirst().id().equals(id);
-        state.approvals.removeIf(request -> request.id().equals(id)); if (first) state.resetApprovalView();
-    }
-    /** 已提交的本地改名/设置先完成，再关闭日志；不等待业务任务自然做完。 */
+
+    /** 已提交本地写入先完成，再关闭业务；审批先拒绝。 */
     private void close() {
         if (state.closing) return;
         state.closing = true; approvals.close();
         localWrites.whenComplete((value, failure) -> shutdown.run());
     }
+
+    private boolean matches(String action, InputEvent event) { return keys.matches(action, event); }
 }

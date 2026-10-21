@@ -1,23 +1,58 @@
 package com.jadecode.tui.core;
 
 import java.util.List;
+import com.jadecode.tui.geometry.Rect;
 import com.jadecode.tui.text.StyledLine;
 
 /**
- * 一次完整布局，包括文字、光标和点击区域。三者必须来自同一帧，不能各自重新计算。
- * bottomStartRow 指明要贴住窗口底部的区域从哪行开始；渲染器可在它前面补空行，
- * 但必须一起移动光标和点击区域。-1 表示普通布局，不做底部定位。
+ * 一次完整布局的不可变结果：显示行、硬件光标和命中区域来自同一 revision。
+ *
+ * <p>Frame 只是“准备显示”的内容，不代表已经写到终端；renderer flush 成功后才生成
+ * {@link PresentedFrame}。坐标约定：行/列从 0 开始；同时属于整屏 Frame（对 fullscreen）
+ * 或整篇转录 + dock 的完整文档（对 regular）。renderer 负责换算到可见屏幕。
+ * 旧实现中的 `bottomStartRow` 底锚策略已移除：全屏由 ChatViewport/dock 分配空间，
+ * regular 让内容自然增长，不再把编辑器贴到终端底部。</p>
+ *
+ * @param frameId 单调递增帧号
+ * @param terminalEpoch 产生该帧的终端代次；resize/恢复后旧帧失效
+ * @param revision 模型/布局 revision
+ * @param lines 完整行；宽度不得超过 RenderContext.width
+ * @param cursor 硬件光标（IME 锚点）；不可见时 visible=false
+ * @param hits 可点击区域；坐标与 lines 同一布局
  */
-public record Frame(List<StyledLine> lines, int cursorRow, int cursorColumn, List<Hit> hits, int bottomStartRow) {
-    /** 既有独立组件没有底部区域，保持原来的四参数构造方式与布局行为。 */
-    public Frame(List<StyledLine> lines, int cursorRow, int cursorColumn, List<Hit> hits) {
-        this(lines, cursorRow, cursorColumn, hits, -1);
-    }
+public record Frame(long frameId, long terminalEpoch, long revision, List<StyledLine> lines,
+        Cursor cursor, List<Hit> hits) {
     public Frame {
-        lines = List.copyOf(lines); hits = List.copyOf(hits);
-        if (bottomStartRow < -1 || bottomStartRow >= lines.size())
-            throw new IllegalArgumentException("底部区域起始行不在画面内");
+        lines = List.copyOf(lines);
+        hits = List.copyOf(hits);
     }
-    /** 以文档行为坐标的点击范围；action 是界面条目编号，不是模型指令。 */
-    public record Hit(int row, int fromColumn, int toColumn, String action) { }
+
+    /** 光标不可见时的占位。 */
+    public static final Cursor NO_CURSOR = new Cursor(0, 0, false);
+
+    /** 0 基光标位置；visible 决定是否显示真实硬件光标。 */
+    public record Cursor(int row, int column, boolean visible) {
+        public Cursor {
+            row = Math.max(0, row);
+            column = Math.max(0, column);
+        }
+    }
+
+    /** 矩形命中区域与动作身份；同一帧内不允许两个动作重叠（调用方保证）。 */
+    public record Hit(Rect rect, ActionToken action) {
+        public Hit {
+            if (rect == null || action == null) throw new IllegalArgumentException("命中区域和动作不能为空");
+        }
+    }
+
+    /** @return 指定位置的动作；无命中返回 null。 */
+    public ActionToken actionAt(int column, int row) {
+        for (Hit hit : hits) if (hit.rect().contains(column, row)) return hit.action();
+        return null;
+    }
+
+    /** @return 判断某个动作是否出现在本帧（不检查是否已显示）。 */
+    public boolean contains(ActionToken token) {
+        return hits.stream().anyMatch(hit -> hit.action().equals(token));
+    }
 }

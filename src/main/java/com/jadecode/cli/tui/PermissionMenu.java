@@ -1,28 +1,55 @@
 package com.jadecode.cli.tui;
 
-import java.util.Arrays;
+import java.util.ArrayList;
 import java.util.List;
 import com.jadecode.safety.PermissionProfile;
 import com.jadecode.tui.components.SelectList;
 
-/** 只组织权限选择文字；规则判断和存储不放进界面组件。 */
+/**
+ * 四档权限与 Full Access 显式确认的 Pi 式选择器；规则判断/保存仍由安全和配置模块负责。
+ *
+ * <p>无默认 Full Access：确认菜单默认停在 Cancel，一次连按 Enter 不会扩大授权；Esc 取消
+ * 不改权限。每档附真实行为说明；选择后仍由 PermissionState/Gate 检查，不把 UI 选择当作
+ * 单次工具批准。候选 ID 用稳定 value，标签英文。</p>
+ */
 final class PermissionMenu {
     private PermissionMenu() { }
-    static List<String> labels() { return Arrays.stream(PermissionProfile.values()).map(PermissionProfile::label).toList(); }
-    /** 当前档位先选中；用户仍需 Enter 确认，不因打开列表就切换。 */
-    static SelectList choices(PermissionProfile current) {
-        var list = new SelectList(labels()); list.move(current.ordinal()); return list;
+
+    static List<String> labels() {
+        var result = new ArrayList<String>();
+        for (PermissionProfile profile : PermissionProfile.values()) result.add(profile.value());
+        return List.copyOf(result);
     }
-    /** Full Access 默认选返回，避免一次连按 Enter 就扩大授权。 */
-    static SelectList confirm() { return new SelectList(List.of("返回", "启用 Full Access")); }
-    /** 说明预设的实际行为，不让四个名字代替产品契约。 */
+
+    /** 当前档位先选中；用户仍需 Enter 确认。ID 为 value。 */
+    static SelectList choices(PermissionProfile current) {
+        var items = new ArrayList<SelectList.Item>();
+        for (PermissionProfile profile : PermissionProfile.values())
+            items.add(new SelectList.Item(profile.value(), profile.label(), description(profile.value())));
+        var list = new SelectList(items, true);
+        list.selectId(current.value());
+        return list;
+    }
+
+    /** Full Access 默认选 Cancel，避免一次连按 Enter 就扩大授权。 */
+    static SelectList confirm() {
+        var list = new SelectList(List.of(
+                new SelectList.Item("cancel", "Cancel", "Keep the current permission level"),
+                new SelectList.Item("confirm", "Enable Full Access", "Routine actions skip prompts")), true);
+        return list;
+    }
+
+    /** @return 该档位的真实行为说明；未知档位空。 */
     static String description(String selected) {
         if (selected == null) return "";
-        return switch (PermissionProfile.parse(selected)) {
-            case READ_ONLY -> "允许已识别读取；写文件、任务管理和一般程序需用户确认";
-            case WORKSPACE -> "普通工作区读写与构建直接执行；删除、越界和复杂脚本先询问";
-            case AUTO_REVIEW -> "普通询问交辅助模型审查；不确定时问用户，敏感操作仍由用户决定";
-            case FULL_ACCESS -> "普通操作免询问；显式拒绝与默认硬保护保留，强制询问项不执行";
+        PermissionProfile profile;
+        try { profile = PermissionProfile.parse(selected); }
+        catch (IllegalArgumentException invalid) { return ""; }
+        return switch (profile) {
+            case READ_ONLY -> "Reads only; writes, task changes and general commands ask first.";
+            case WORKSPACE -> "Workspace reads/writes and builds run directly; deletes and outside paths ask.";
+            case AUTO_REVIEW -> "Routine prompts go to the review model; uncertain or sensitive actions still ask.";
+            case FULL_ACCESS -> "Routine actions skip prompts; explicit denies and hard protections remain.";
         };
     }
 }

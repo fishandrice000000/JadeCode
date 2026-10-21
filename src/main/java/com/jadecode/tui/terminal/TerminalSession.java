@@ -1,86 +1,223 @@
 package com.jadecode.tui.terminal;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.PrintWriter;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import org.jline.terminal.Attributes;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
-import org.jline.utils.InfoCmp.Capability;
+import org.jline.utils.NonBlocking;
+import org.jline.utils.NonBlockingInputStream;
 
 /**
- * 唯一的终端适配器：JLine 负责底层，不创建 LineReader、Status 或 PrintAboveWriter。
- * 原始输入在一条读取线程上解码，界面线程独占 writer。关闭时恢复启动前的终端属性。
+ * 唯一的 JLine 终端适配器与原始字节读写边界，不创建 LineReader/Status/第二输出者。
+ *
+ * <p>生命周期分为 NEW → ACTIVE ⇄ HANDOFF → CLOSING → CLOSED：HANDOFF 用于外部编辑器或
+ * Ctrl+Z 暂退，只恢复终端属性/停止读取，不关闭 Host；CLOSED 之后禁止重新激活。所有原始
+ * 输入只由一条读取线程读取，并发布带序号/epoch 的 {@link TerminalEvent}；解码、组件状态和
+ * 写屏都留在 UI 线程。这样不会出现两个 reader 争抢输入，也不让信号处理器并发写屏。</p>
+ *
+ * <p>raw 模式关闭 ISIG/IEXTEN/IXON，使 Ctrl+C 字节进入 UI，由应用实现“清草稿/再次退出”
+ * 语义，而不是被系统直接杀进程。暂停/关闭时恢复启动前保存的完整 Attributes；终端 writer
+ * 是 renderer 唯一输出通道，{@code System.out/err} 的兜底路由不能截获它。</p>
  */
 public final class TerminalSession implements AutoCloseable {
+    /** 终端资源状态。 */
+    public enum State { NEW, ACTIVE, HANDOFF, CLOSING, CLOSED }
+
     private final Terminal terminal;
     private final Attributes original;
-    private volatile boolean closed;
-    private Thread input;
+    private final PrintWriter writer;
+    private final AtomicLong sequence = new AtomicLong();
+    private final AtomicLong epoch = new AtomicLong();
+    private final AtomicBoolean terminated = new AtomicBoolean();
+    private volatile State state = State.NEW;
+    private volatile boolean running;
+    private volatile Consumer<TerminalEvent> sink = ignored -> { };
+    private NonBlockingInputStream input;
+    private Thread reader;
     private Object previousTerm, previousHup;
+
+    /**
+     * 建立真实终端并保存原属性。失败时按逆序关闭已建立资源。
+     * @throws IOException 非真实终端（stdout 不是 TTY）或初始化失败
+     */
     public TerminalSession() throws IOException {
-        if (System.console() == null) throw new IOException("jade repl 需要真实终端；脚本请使用 jade run \"任务\"");
+        if (System.console() == null) throw new IOException("jade repl requires a real terminal; use jade run for scripts");
         terminal = TerminalBuilder.builder().system(true).encoding(StandardCharsets.UTF_8).dumb(false).build();
         original = terminal.getAttributes();
+        writer = terminal.writer();
         try {
-            terminal.enterRawMode();
-            // 自定义解码器需要真的收到 Ctrl+C 等字符。保留 ISIG 会把快速两次 Ctrl+C
-            // 合并成一个操作系统信号，无法可靠执行“清草稿／再次退出”的区分。
-            Attributes raw = terminal.getAttributes();
-            raw.setLocalFlag(Attributes.LocalFlag.ISIG, false);
-            raw.setLocalFlag(Attributes.LocalFlag.IEXTEN, false);
-            raw.setInputFlag(Attributes.InputFlag.IXON, false);
-            terminal.setAttributes(raw);
-            // 与 Pi 主屏模式一致：只接管键盘和整段粘贴，不捕获鼠标。
-            // 开启 1000 会同时截走滚轮和拖选；仅处理点击却不实现滚动／选区，
-            // 会让用户既不能查看终端历史，也不能选取文本。启动时清理可能遗留的捕获模式。
-            terminal.writer().print("\033[?1000l\033[?1002l\033[?1003l\033[?1006l\033[?2004h"); terminal.flush();
-            if (terminal.writer().checkError()) throw new IOException("终端输出不可用");
+            enterRaw();
         } catch (IOException | RuntimeException failure) {
-            try { terminal.setAttributes(original); terminal.close(); } catch (Exception cleanup) { failure.addSuppressed(cleanup); }
+            try { terminal.setAttributes(original); terminal.close(); }
+            catch (Exception cleanup) { failure.addSuppressed(cleanup); }
             throw failure;
         }
     }
-    /** 启动唯一输入读取者。50ms 超时让退出不依赖中断 System.in，也不关闭全局输入流。 */
-    public void start(Consumer<InputDecoder.Input> events) {
-        terminal.handle(Terminal.Signal.WINCH, ignored -> events.accept(InputDecoder.Input.key("RESIZE")));
-        terminal.handle(Terminal.Signal.INT, ignored -> events.accept(InputDecoder.Input.key("CTRL_C")));
-        // 先走会话清理再离开 JVM，避免 JVM 与 JLine 的关闭钩子并发抢先关掉终端 writer，
-        // 导致鼠标／粘贴模式的恢复指令来不及发出。SSH 断开同样需要停掉会话拥有的命令。
-        previousTerm = org.jline.utils.Signals.register("TERM", () -> events.accept(InputDecoder.Input.key("EOF")));
-        previousHup = org.jline.utils.Signals.register("HUP", () -> events.accept(InputDecoder.Input.key("EOF")));
-        input = Thread.ofPlatform().daemon().name("jade-tui-input").start(() -> {
-            var decoder = new InputDecoder(events);
-            try {
-                while (!closed) {
-                    int c = terminal.reader().read(50);
-                    if (c == -1) { events.accept(InputDecoder.Input.key("EOF")); return; }
-                    if (c >= 0) decoder.accept(c); else decoder.tick();
-                }
-            } catch (IOException failure) { if (!closed) events.accept(InputDecoder.Input.key("EOF")); }
-        });
-    }
-    public int columns() { return Math.max(2, terminal.getWidth()); }
-    public int rows() { return Math.max(3, terminal.getHeight()); }
-    public PrintWriter writer() { return terminal.writer(); }
+
+    /** @return 当前终端资源状态。 */
+    public State state() { return state; }
+
+    /** @return 终端代次；resize/恢复后递增。 */
+    public long epoch() { return epoch.get(); }
+
+    /** 递增 terminalEpoch，使此前生成的鼠标/审批动作失效；由 UI 在 resize/模式切换时调用。 */
+    public long bumpEpoch() { return epoch.incrementAndGet(); }
+
+    /** @return 真实列数；0 表示终端未报告，布局使用显式 fallback。 */
+    public int columns() { return terminal.getWidth(); }
+
+    /** @return 真实行数；0 表示未知。 */
+    public int rows() { return terminal.getHeight(); }
+
+    /** @return 唯一受信输出 writer；只有 renderer/协议查询可以写。 */
+    public PrintWriter writer() { return writer; }
+
+    /** @return 最近一次输出是否有错误；renderer 在 flush 后必须检查。 */
+    public boolean outputFailed() { return writer.checkError(); }
+
+    /** @return 是否允许颜色（NO_COLOR/dumb 由 TerminalCapabilities 另判）。 */
     public boolean colors() {
-        Integer colors = terminal.getNumericCapability(Capability.max_colors);
-        return System.getenv("NO_COLOR") == null && !"dumb".equals(System.getenv("TERM")) && colors != null && colors > 0;
+        Integer colors = terminal.getNumericCapability(org.jline.utils.InfoCmp.Capability.max_colors);
+        return colors != null && colors > 0;
     }
-    /** 停止读取后恢复光标、鼠标、粘贴和原始模式；不关闭 System.in。 */
-    @Override public synchronized void close() throws IOException {
-        if (closed) return;
-        closed = true;
-        if (input != null) {
-            try { input.join(500); } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+
+    /** @return 终端名（TERM），仅用于能力探测/诊断。 */
+    public String type() { return terminal.getType(); }
+
+    /**
+     * 开始读取原始字节。信号只发事件，不写屏；读取循环使用 50ms 超时，退出不依赖关闭 System.in。
+     * 重复调用只保留一个 reader。
+     */
+    public void start(Consumer<TerminalEvent> events) {
+        if (state == State.CLOSED) throw new IllegalStateException("终端已经关闭");
+        if (state == State.HANDOFF) throw new IllegalStateException("终端暂退中");
+        this.sink = events == null ? ignored -> { } : events;
+        if (reader != null) return;
+        previousTerm = org.jline.utils.Signals.register("TERM", () -> emitEof());
+        previousHup = org.jline.utils.Signals.register("HUP", () -> emitEof());
+        terminal.handle(Terminal.Signal.WINCH, ignored -> emit(new TerminalEvent.Resize(
+                terminal.getWidth(), terminal.getHeight(), sequence.incrementAndGet(), epoch.get())));
+        terminal.handle(Terminal.Signal.CONT, ignored -> {
+            // 从 shell fg 回来：JLine 已恢复 raw；UI 收到 CONT 后重查尺寸/协议。
+            emit(new TerminalEvent.Resize(terminal.getWidth(), terminal.getHeight(),
+                    sequence.incrementAndGet(), epoch.get()));
+        });
+        input = NonBlocking.nonBlocking("jade-stdin", terminal.input());
+        running = true;
+        state = State.ACTIVE;
+        reader = Thread.ofPlatform().daemon().name("jade-tui-reader").start(this::readLoop);
+    }
+
+    private void readLoop() {
+        byte[] buffer = new byte[4096];
+        try {
+            while (running) {
+                int read = input.readBuffered(buffer, 0, buffer.length, 50);
+                if (read == NonBlockingInputStream.READ_EXPIRED) continue;
+                if (read == NonBlockingInputStream.EOF) { emitEof(); return; }
+                if (read <= 0) continue;
+                byte[] chunk = java.util.Arrays.copyOf(buffer, read);
+                emit(new TerminalEvent.InputChunk(chunk, sequence.incrementAndGet(), epoch.get()));
+            }
+        } catch (IOException failure) {
+            if (running && !terminated.get()) emit(new TerminalEvent.Failure(failure.getMessage(),
+                    sequence.incrementAndGet(), epoch.get()));
+            else if (running) emitEof();
         }
-        terminal.writer().print("\033[?2026l" + (colors() ? "\033[0m" : "") + "\033[?25h\033[?1000l\033[?1006l\033[?2004l\r\n");
-        try { terminal.flush(); terminal.setAttributes(original); }
+    }
+
+    private void emit(TerminalEvent event) {
+        try { sink.accept(event); } catch (RuntimeException ignored) { /* UI 队列已关闭时不能再抛出。 */ }
+    }
+
+    private void emitEof() {
+        if (terminated.compareAndSet(false, true))
+            emit(new TerminalEvent.Eof(sequence.incrementAndGet(), epoch.get()));
+    }
+
+    /**
+     * 暂退到外部编辑器/子进程：停止读取、恢复属性、显示光标并关闭应用协议模式。
+     * 不关闭 Terminal/Host；恢复由 {@link #resume()} 完成。失败时保持 HANDOFF 并抛出。
+     */
+    public synchronized void pauseForHandoff() throws IOException {
+        if (state != State.ACTIVE && state != State.NEW) throw new IllegalStateException("当前状态不能暂退: " + state);
+        state = State.HANDOFF;
+        running = false;
+        if (reader != null) {
+            try { reader.join(500); } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+            reader = null;
+        }
+        writer.print("\u001b[?2004l\u001b[?25h\u001b[0m\u001b[m");
+        writer.flush();
+        terminal.setAttributes(original);
+        if (writer.checkError()) throw new IOException("终端在暂退时写入失败");
+    }
+
+    /** 从暂退恢复：重新 raw、清屏并重启唯一 reader；epoch 递增使旧动作失效。 */
+    public synchronized void resume() throws IOException {
+        if (state != State.HANDOFF) throw new IllegalStateException("终端不在暂退状态: " + state);
+        enterRaw();
+        state = State.ACTIVE;
+        epoch.incrementAndGet();
+        running = true;
+        if (reader == null) reader = Thread.ofPlatform().daemon().name("jade-tui-reader").start(this::readLoop);
+    }
+
+    /** 重新进入 raw 并关闭会吞掉 Ctrl+C 的系统处理；暂停/恢复共用。 */
+    private void enterRaw() throws IOException {
+        terminal.enterRawMode();
+        Attributes raw = terminal.getAttributes();
+        raw.setLocalFlag(Attributes.LocalFlag.ISIG, false);
+        raw.setLocalFlag(Attributes.LocalFlag.IEXTEN, false);
+        raw.setInputFlag(Attributes.InputFlag.IXON, false);
+        terminal.setAttributes(raw);
+        writer.print("\u001b[?1000l\u001b[?1002l\u001b[?1003l\u001b[?1006l\u001b[?2004h\u001b[?25h");
+        writer.flush();
+        if (writer.checkError()) throw new IOException("终端输出不可用");
+    }
+
+    /**
+     * 幂等关闭：停止读取（不关闭全局 System.in）、恢复粘贴/鼠标/光标/颜色和原属性，
+     * 注销信号处理器。重复调用不重复写恢复序列。
+     */
+    @Override public synchronized void close() throws IOException {
+        if (state == State.CLOSED || state == State.CLOSING) return;
+        state = State.CLOSING;
+        running = false;
+        if (reader != null && reader != Thread.currentThread()) {
+            try { reader.join(500); } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+        }
+        reader = null;
+        IOException failure = null;
+        try {
+            writer.print("\u001b[?2026l\u001b[0m\u001b[?25h\u001b[?1000l\u001b[?1002l\u001b[?1003l\u001b[?1006l\u001b[?2004l\r\n");
+            writer.flush();
+            if (writer.checkError()) throw new IOException("终端在关闭时写入失败");
+            terminal.setAttributes(original);
+        } catch (IOException error) { failure = error; }
         finally {
-            terminal.close();
+            try {
+                if (input != null) input.shutdown();
+            } catch (RuntimeException ignored) { }
             if (previousTerm != null) org.jline.utils.Signals.unregister("TERM", previousTerm);
             if (previousHup != null) org.jline.utils.Signals.unregister("HUP", previousHup);
+            previousTerm = previousHup = null;
+            try { terminal.close(); } catch (RuntimeException ignored) { }
+            state = State.CLOSED;
         }
+        if (failure != null) throw failure;
+    }
+
+    /** 测试/宿主可注入的写入入口；仍然只有一个 writer。 */
+    public void write(String value) {
+        writer.print(value);
+        writer.flush();
+        if (writer.checkError()) throw new IllegalStateException("终端写入失败，停止交互会话");
     }
 }

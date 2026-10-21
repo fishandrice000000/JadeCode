@@ -1,208 +1,561 @@
 package com.jadecode.cli.tui;
 
+import java.io.IOException;
 import java.io.PrintStream;
+import java.io.PrintWriter;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 import com.jadecode.bootstrap.JadeCodeFactory;
 import com.jadecode.cli.SessionHost;
-import com.jadecode.config.WorkspacePaths;
+import com.jadecode.cli.tui.bridge.ApprovalBroker;
+import com.jadecode.cli.tui.bridge.ExecutionUiBridge;
+import com.jadecode.cli.tui.bridge.RoutingPrintStream;
+import com.jadecode.cli.tui.bridge.StreamingAdapter;
+import com.jadecode.cli.tui.view.ChatViewport;
+import com.jadecode.cli.tui.view.ConversationView;
+import com.jadecode.cli.tui.view.DockView;
 import com.jadecode.config.JadeConfigFile;
 import com.jadecode.config.JadeSettings;
-import com.jadecode.cli.tui.bridge.*;
+import com.jadecode.config.WorkspacePaths;
 import com.jadecode.execution.ExecutionObserver;
 import com.jadecode.llm.ResponseStream;
 import com.jadecode.session.SessionRuntime;
-import com.jadecode.tui.core.*;
+import com.jadecode.tui.components.Editor;
+import com.jadecode.tui.core.Frame;
+import com.jadecode.tui.core.PresentedFrame;
+import com.jadecode.tui.core.RenderContext;
+import com.jadecode.tui.core.RenderScheduler;
+import com.jadecode.tui.geometry.Rect;
+import com.jadecode.tui.input.InputDecoder;
+import com.jadecode.tui.input.InputEvent;
+import com.jadecode.tui.input.KeyBindings;
+import com.jadecode.tui.render.FullscreenRenderer;
+import com.jadecode.tui.render.RegularRenderer;
+import com.jadecode.tui.render.ScreenRenderer;
+import com.jadecode.tui.terminal.AnsiEncoder;
+import com.jadecode.tui.media.ImageClipboard;
+import com.jadecode.tui.terminal.ClipboardService;
+import com.jadecode.tui.terminal.PosixJobControl;
+import com.jadecode.tui.terminal.TerminalCapabilities;
+import com.jadecode.tui.terminal.TerminalEvent;
+import com.jadecode.tui.terminal.TerminalHandoff;
+import com.jadecode.tui.terminal.TerminalQueries;
 import com.jadecode.tui.terminal.TerminalSession;
-import com.jadecode.tui.theme.Theme;
+import com.jadecode.tui.text.DisplayWidth;
+import com.jadecode.tui.text.StyledLine;
+import com.jadecode.tui.theme.ThemeManager;
 
 /**
- * 新 REPL 唯一的前端生命周期和界面循环。主线程只处理界面，Session 照常在自己的线程运行。
- * 先拒绝审批并停业务，最后恢复终端；任何初始化失败也走 finally，不留下原始模式。
+ * TUI 根装配：终端/配置/会话/Host/组件/单 UI 循环/双屏切换与有序关闭。
+ *
+ * <p>不承载业务循环或组件算法。读取线程只发原始事件；StdinBuffer/InputDecoder 组装按键；
+ * 所有状态/组件只在 UI 线程更新。每帧先布局 ChatViewport 与 Dock，再由唯一 renderer 写出；
+ * PresentedFrame 只在 flush/错误检查成功后发布。切换模式不重启 Host、不清草稿；关闭时先拒
+ * 审批、停输入、等待本地写入，再按原顺序关闭 Host/终端，最后恢复全局流并输出一次告别。</p>
  */
 public final class TuiApplication {
-    /** 装配用接收者；可注入假会话进行 PTY 验证，不必读取真实凭据或调用付费模型。 */
+    /** 装配用接收者；可注入假会话进行 PTY 验证，不读取真实凭据或调用付费模型。 */
     public record Wiring(Consumer<String> output, Consumer<String> errors, Supplier<ResponseStream> streams,
             ExecutionObserver observer, JadeSettings settings, com.jadecode.safety.PermissionState permissions) { }
     @FunctionalInterface public interface SessionFactory { SessionRuntime create(Wiring wiring); }
 
-    /** 生产入口。创建客户端不等于调用模型；实际提示词仍由用户提交触发。 */
-    public int run() {
-        return run((String) null);
-    }
+    /** 生产入口；创建客户端不等于调用模型，实际提示词仍由用户提交触发。 */
+    public int run() { return run((String) null); }
 
     /** 启动入口与会话内 /resume 共用同一个 Host 和加载器；空串表示打开选择器。 */
-    public int run(String resume) {
-        return run(resume, null);
-    }
+    public int run(String resume) { return run(resume, null); }
 
     /** 显式命令行档位只影响本次 CLI，不修改用户启动默认。 */
     public int run(String resume, com.jadecode.safety.PermissionProfile override) {
-        return run(w -> JadeCodeFactory.create((hooks, cwd, output) -> { }, w.output(), w.errors(), w.streams(), w.observer(), w.settings(), w.permissions()),
+        return run(w -> JadeCodeFactory.create((hooks, cwd, output) -> { }, w.output(), w.errors(),
+                        w.streams(), w.observer(), w.settings(), w.permissions()),
                 JadeConfigFile.defaultPath(), resume, override);
     }
 
+    public int run(SessionFactory factory, Path prefs) { return run(factory, prefs, null); }
+
+    public int run(SessionFactory factory, Path prefs, String resume) { return run(factory, prefs, resume, null); }
+
     /**
-     * 建立终端和会话，处理显示事件，直到用户退出或界面发生不可恢复的错误。
-     *
-     * <p>本线程只更新屏幕；模型请求、工具和关闭会话都在其它线程完成。factory 可以提供
-     * 假模型，因此终端检查不必调用真实 API；prefs 也由调用者指定，检查时不会写真实偏好。
-     * 方法会临时接管 System.out/err，最终恢复它们和终端属性。返回 0 仅表示界面正常退出，
-     * 不表示各项业务任务成功；初始化或显示失败返回 1。</p>
+     * 可注入入口；factory 决定如何装配客户端，离线验证可提供假客户端和临时偏好路径。
+     * 返回 0 只表示 UI 正常退出，不表示业务任务成功。
      */
-    public int run(SessionFactory factory, Path prefs) {
-        return run(factory, prefs, null);
-    }
-
-    /** 可注入入口；factory 决定如何装配客户端，离线验证可提供假客户端和临时偏好路径。 */
-    public int run(SessionFactory factory, Path prefs, String resume) {
-        return run(factory, prefs, resume, null);
-    }
-
-    /** 可注入配置与启动档位；验证使用临时配置和假模型，不触碰真实用户配置。 */
-    public int run(SessionFactory factory, Path prefs, String resume, com.jadecode.safety.PermissionProfile override) {
+    public int run(SessionFactory factory, Path prefs, String resume,
+            com.jadecode.safety.PermissionProfile override) {
         PrintStream originalOut = System.out, originalErr = System.err;
-        var queue = new LinkedBlockingQueue<UiEvent>(); var accepting = new AtomicBoolean(true);
-        Consumer<UiEvent> events = event -> { if (accepting.get()) queue.offer(event); };
-        var broker = new ApprovalBroker(events);
+        var events = new LinkedBlockingQueue<UiEvent>();
+        var accepting = new AtomicBoolean(true);
+        Consumer<UiEvent> sink = event -> { if (accepting.get()) events.offer(event); };
+        var broker = new ApprovalBroker(sink);
         SessionHost host = null;
         TerminalSession terminal = null;
-        InlineRenderer renderer = null;
+        ScreenRenderer renderer = null;
+        ThemeManager themes = null;
+        TerminalHandoff handoff = null;
+        ClipboardService clipboard = null;
+        ImageClipboard imageClipboard = null;
+        CommandCatalog catalog = null;
         Thread shutdownHook = null;
-        String failureMessage = null;
         var farewellPrinted = new AtomicBoolean();
+        String failureMessage = null;
+        var stopping = new AtomicBoolean();
+        var closeStarted = new AtomicBoolean();
         try {
-            // 1. 先确认是真实终端，再读取偏好、装配业务；非 TTY 不会启动一份不可操作的会话。
+            // 1. 先确认真实终端，再读取配置/装配业务；非 TTY 不创建不可操作会话。
             terminal = new TerminalSession();
-            var state = new TuiState(); state.directory = Path.of("").toAbsolutePath().normalize().toString();
+            final TerminalSession term = terminal;
             var preferences = new TuiPreferences(prefs);
-            // 用户显式写错压缩开关时不能只提示“主题读取失败”再偷偷按另一种管线运行。
             JadeSettings settings = preferences.loadSettings();
             var permissions = settings.permissions().state(new JadeConfigFile(prefs));
             if (override != null) permissions.select(override);
-            state.permissionProfile = permissions.snapshot().profile().label();
-            state.theme = settings.tui().theme(); state.thinkingVisible = settings.tui().thinkingVisible();
-            state.toolsExpanded = settings.tui().toolsExpanded(); state.commandSuggestions = settings.tui().commandSuggestions();
-            // 捕获旧输出必须在 Terminal 建立之后，否则 renderer 会截获自己形成递归。
-            var normalRoute = new RoutingPrintStream(events, false); var errorRoute = new RoutingPrintStream(events, true);
+            var caps = TerminalCapabilities.detect(System.getenv());
+            boolean colors = caps.colorsEnabled() && terminal.colors();
+            themes = new ThemeManager(settings.tui().theme(), prefs.toAbsolutePath().getParent().resolve("themes"),
+                    colors, settings.tui().lightTheme(), settings.tui().darkTheme());
+            var capabilities = new AtomicReference<>(caps);
+            var state = new TuiState();
+            state.directory = Path.of("").toAbsolutePath().normalize().toString();
+            state.permissionProfile = permissions.snapshot().profile().value();
+            state.thinkingVisible = settings.tui().thinkingVisible();
+            state.toolsExpanded = settings.tui().toolsExpanded();
+            state.generation = 0;
+            var keys = new KeyBindings(settings.tui().keybindings());
+            catalog = new CommandCatalog(Path.of("").toAbsolutePath());
+            var settingsMenu = new SettingsMenu(settings.tui(), prefs.toAbsolutePath().getParent().resolve("themes"));
+            var conversation = new ConversationView();
+            var chat = new ChatViewport(conversation,
+                    ChatViewport.Scrollbar.valueOf(settings.tui().fullscreenScrollbar().toUpperCase(java.util.Locale.ROOT)),
+                    settings.tui().fullscreenCopyOnSelect());
+            chat.wheelLines(settings.tui().fullscreenWheelScrollLines() == 0 ? 3 : settings.tui().fullscreenWheelScrollLines());
+            var mode = new AtomicReference<>(settings.tui().mode());
+
+            // 2. 兜底路由 System.out/err；必须在 Terminal 建立后，renderer 使用原始 writer 不受截获影响。
+            var normalRoute = new RoutingPrintStream(sink, false);
+            var errorRoute = new RoutingPrintStream(sink, true);
             System.setOut(normalRoute); System.setErr(errorRoute);
-            // 每份运行时的所有显示通知带同一代次。装配通知先暂存，恢复卡片后再采用。
+
+            var handoffRef = new AtomicReference<TerminalHandoff>();
+            var clipboardRef = new AtomicReference<ClipboardService>();
+            var imageClipboardRef = new AtomicReference<ImageClipboard>();
+            var controllerRef = new AtomicReference<TuiController>();
+            var editorRef = new AtomicReference<Editor>();
+
+            var listener = new Editor.Listener() {
+                @Override public boolean submit(String text) {
+                    TuiController controller = controllerRef.get();
+                    return controller != null && controller.submit(text);
+                }
+                @Override public void localEscape() {
+                    TuiController controller = controllerRef.get();
+                    if (controller != null) controller.invalidateActions();
+                }
+                @Override public void externalEditor() {
+                    TerminalHandoff edge = handoffRef.get();
+                    Editor editor = editorRef.get();
+                    if (edge == null || editor == null) return;
+                    edge.edit(editor.expandedText(), settingsMenu.current().externalEditor(),
+                            value -> sink.accept(new UiEvent.ExternalEditorResult(value)),
+                            error -> sink.accept(new UiEvent.Message("System", "Editor", error, true)));
+                }
+                @Override public void pasteClipboard() {
+                    ClipboardService service = clipboardRef.get();
+                    ImageClipboard images = imageClipboardRef.get();
+                    if (service == null) return;
+                    Thread.ofVirtual().name("jade-clipboard").start(() -> {
+                        var text = service.readText();
+                        if (text.isPresent()) { sink.accept(new UiEvent.ClipboardText(text.get())); return; }
+                        var image = images == null ? java.util.Optional.<java.nio.file.Path>empty()
+                                : images.saveFromClipboard();
+                        if (image.isPresent()) sink.accept(new UiEvent.ClipboardText(image.get().toString() + " "));
+                        else sink.accept(new UiEvent.Message("System", "Clipboard", UiMessages.IMAGE_UNAVAILABLE, true));
+                    });
+                }
+                @Override public void copy() {
+                    TuiController controller = controllerRef.get();
+                    if (controller != null) controller.copySelectionOrLastReply();
+                }
+            };
+            var editor = new Editor(keys, listener);
+            editor.setCompletionProvider(settings.tui().commandSuggestions() ? catalog.completionProvider() : null);
+            editor.setCompletionMaxVisible(settings.tui().autocompleteMaxVisible());
+            editorRef.set(editor);
+            state.editor = editor;
+
+            // 3. 每份运行时的显示通知带同一代次；装配通知先暂存，恢复历史后再采用。
             host = new SessionHost(new WorkspacePaths(Path.of("").toRealPath()), generation -> {
-                Consumer<UiEvent> scoped = event -> events.accept(new UiEvent.Scoped(generation, event));
+                Consumer<UiEvent> scoped = event -> sink.accept(new UiEvent.Scoped(generation, event));
                 var bridge = new ExecutionUiBridge(scoped);
                 return factory.create(new Wiring(text -> bridge.message(text, false), text -> bridge.message(text, true),
                         () -> new StreamingAdapter(scoped), bridge, settings, permissions));
-            }, warning -> events.accept(new UiEvent.Message("System", "Warning", warning, true)));
+            }, warning -> sink.accept(new UiEvent.Message("System", "Warning", warning, true)));
             SessionHost sessions = host;
-            TerminalSession screen = terminal;
-            shutdownHook = new Thread(() -> {
-                broker.close();
-                try { sessions.close(); }
-                finally {
-                    accepting.set(false); System.setOut(originalOut); System.setErr(originalErr);
-                    try { screen.close(); } catch (java.io.IOException ignored) { }
-                    farewell(originalOut, sessions, farewellPrinted);
-                }
-            }, "jade-tui-shutdown");
-            Runtime.getRuntime().addShutdownHook(shutdownHook);
-            var closing = new AtomicBoolean();
+
             Runnable shutdown = () -> {
-                if (!closing.compareAndSet(false, true)) return;
-                // close 可能逐个等待队友，不持 UI 锁等待；清理期间仍处理显示通知。
+                if (!closeStarted.compareAndSet(false, true)) return;
                 Thread.ofVirtual().name("jade-tui-close").start(() -> {
-                    try { sessions.close(); }
-                    finally {
-                        normalRoute.finish(); errorRoute.finish();
+                    try {
+                        sessions.close();
                         try { preferences.awaitWrites(); }
-                        catch (java.io.IOException failed) { events.accept(new UiEvent.Message("System", "Warning", failed.getMessage(), true)); }
-                        events.accept(new UiEvent.Stopped());
-                    }
+                        catch (IOException saveFailure) {
+                            sink.accept(new UiEvent.Message("System", "Warning", saveFailure.getMessage(), true));
+                        }
+                    } finally { events.offer(new UiEvent.Stopped()); }
                 });
             };
-            // 2. 组件和控制器只交给本线程使用。业务线程只能往 queue 放不可变的显示资料。
-            renderer = new InlineRenderer(terminal.writer()); var view = new ConversationView();
-            var controller = new TuiController(state, sessions, broker, renderer, preferences, events, shutdown);
-            var scheduler = new RenderScheduler();
-            terminal.start(input -> events.accept(new UiEvent.Input(input)));
+            var controller = new TuiController(state, sessions, broker, chat, editor, preferences, keys, catalog,
+                    settingsMenu, themes, sink, shutdown, new TuiController.TerminalActions() {
+                        @Override public void suspend() {
+                            TerminalHandoff edge = handoffRef.get();
+                            if (edge == null) return;
+                            Thread.ofVirtual().name("jade-suspend").start(() -> {
+                                String error = edge.suspend();
+                                if (!error.isEmpty()) sink.accept(new UiEvent.Message("System", "Suspend", error, true));
+                            });
+                        }
+                        @Override public void openExternalEditor(String draft, Consumer<String> success, Consumer<String> failure) {
+                            TerminalHandoff edge = handoffRef.get();
+                            if (edge == null) { failure.accept("Terminal handoff unavailable"); return; }
+                            Thread.ofVirtual().name("jade-external-editor").start(() -> {
+                                edge.edit(draft, settingsMenu.current().externalEditor(), success, failure);
+                                // 编辑器可能改写了屏幕/终端模式；请求一次完整重绘（同 resize 路径）。
+                                long epoch = term.bumpEpoch();
+                                events.offer(new UiEvent.Input(InputEvent.resize(Long.MAX_VALUE, epoch)));
+                            });
+                        }
+                        @Override public void pasteClipboard(Editor target) {
+                            ClipboardService service = clipboardRef.get();
+                            ImageClipboard images = imageClipboardRef.get();
+                            if (service == null) return;
+                            Thread.ofVirtual().name("jade-clipboard").start(() -> {
+                                var text = service.readText();
+                                if (text.isPresent()) { sink.accept(new UiEvent.ClipboardText(text.get())); return; }
+                                var image = images == null ? java.util.Optional.<java.nio.file.Path>empty()
+                                        : images.saveFromClipboard();
+                                if (image.isPresent()) sink.accept(new UiEvent.ClipboardText(image.get().toString() + " "));
+                                else sink.accept(new UiEvent.Message("System", "Clipboard", UiMessages.IMAGE_UNAVAILABLE, true));
+                            });
+                        }
+                        @Override public void copy(String text, boolean explicit) {
+                            ClipboardService service = clipboardRef.get();
+                            if (service == null) return;
+                            Thread.ofVirtual().name("jade-copy").start(() -> {
+                                var result = service.copy(text);
+                                String message = switch (result) {
+                                    case DESKTOP -> UiMessages.COPIED;
+                                    case OSC52_SENT -> UiMessages.COPY_SENT;
+                                    default -> UiMessages.COPY_FAILED + "no clipboard backend";
+                                };
+                                sink.accept(new UiEvent.Message("System", "Clipboard", message, result
+                                        == ClipboardService.CopyResult.FAILED));
+                            });
+                        }
+                        @Override public void setMode(String value) { mode.set(value); }
+                        @Override public void openLink(String uri) {
+                            sink.accept(new UiEvent.Message("System", "Link", "Link target: " + uri, false));
+                        }
+                    });
+            controllerRef.set(controller);
+
+            // 4. 终端协议/输入组装/读取线程；查询回复分流，绝不进入编辑器。
+            var decoder = new InputDecoder(term.epoch());
+            var buffer = new com.jadecode.tui.input.StdinBuffer(caps.escapeTimeoutMillis(),
+                    chunk -> { for (InputEvent decoded : decoder.decode(chunk)) events.offer(new UiEvent.Input(decoded)); },
+                    System::nanoTime);
+            var queries = new TerminalQueries(text -> { term.write(text); });
+            term.start(event -> {
+                switch (event) {
+                    case TerminalEvent.InputChunk chunk -> { decoder.setEpoch(event.terminalEpoch()); buffer.feed(chunk.bytes()); }
+                    case TerminalEvent.Resize resize -> {
+                        long epoch = term.bumpEpoch();
+                        events.offer(new UiEvent.Input(InputEvent.resize(event.sequence(), epoch)));
+                    }
+                    case TerminalEvent.Eof eof -> events.offer(new UiEvent.Input(InputEvent.eof(event.sequence(), event.terminalEpoch())));
+                    case TerminalEvent.Failure failure -> sink.accept(new UiEvent.TerminalFailure(failure.message()));
+                }
+            });
+            // 孤立 Esc 需要定时器；Buffer 方法已同步，读线程/定时器不会交错拆包。
+            Thread.ofVirtual().name("jade-esc-timer").start(() -> {
+                while (!term.state().equals(TerminalSession.State.CLOSED) && accepting.get()) {
+                    try { Thread.sleep(10); } catch (InterruptedException stop) { return; }
+                    buffer.tick();
+                }
+            });
+
+            var port = new TerminalPort(term, colors);
+            var initial = createRenderer(mode.get(), port, settings.tui().showHardwareCursor());
+            renderer = initial;
+            initial.start();
+
+            handoff = new TerminalHandoff(term, new PosixJobControl());
+            handoffRef.set(handoff);
+            clipboard = new ClipboardService(text -> term.write(text), caps.hyperlinks());
+            clipboardRef.set(clipboard);
+            imageClipboard = new ImageClipboard(prefs.toAbsolutePath().getParent().resolve("images"));
+            imageClipboardRef.set(imageClipboard);
+            queries.start();
+
+            // 5. 启动会话（resume=null 创建新会话；空串打开选择器）。
             controller.resume(resume);
-            if (state.hint.isEmpty()) state.hint = "Enter 提交 · Alt+Enter 换行 · /help · 窗口重排可能清除终端滚动历史";
-            loadBranch(events, state.directory);
-            boolean running = true; long animated = 0;
+            loadBranch(sink);
+
+            var scheduler = new RenderScheduler();
+            boolean running = true;
+            boolean sawStopped = false;
+            long revision = 0;
             while (running) {
-                // 3. 一次取有限数量的事件，再给屏幕刷新机会。积攒片段不会丢掉任何正文；
-                //    输入需要立即显示，纯流式更新则可合并到下一帧，避免逐字刷屏。
-                UiEvent event = queue.poll(16, TimeUnit.MILLISECONDS);
-                boolean input = false;
-                // 有限批处理防止高频模型增量让屏幕永远没有机会刷新。
-                for (int count = 0; event != null && count < 128; count++) {
-                    input |= event instanceof UiEvent.Input;
-                    if (event instanceof UiEvent.Message m && m.label().equals("GitBranch")) state.branch = m.text();
-                    else running = controller.accept(event);
+                UiEvent event = events.poll(16, TimeUnit.MILLISECONDS);
+                boolean immediate = false;
+                for (int count = 0; event != null && count < 64; count++) {
+                    immediate |= event instanceof UiEvent.Input
+                            || (event instanceof UiEvent.Scoped scoped && scoped.event() instanceof UiEvent.Input);
+                    // 先让 TerminalQueries 消费回复；只有能力/色板变化才重绘。
+                    if (event instanceof UiEvent.Input input && input.input().kind() == InputEvent.Kind.REPLY) {
+                        boolean changed = queries.accept(input.input().reply(), input.input().terminalEpoch());
+                        if (changed) applyQueries(queries, themes, capabilities, terminal);
+                        scheduler.request();
+                    } else {
+                        boolean accepted = controller.accept(event);
+                        if (!accepted) sawStopped = true;
+                        running = accepted;
+                        scheduler.request();
+                    }
+                    // CONT/fg 返回：TerminalSession 会发 Resize；在消费任何输入前恢复终端/epoch。
+                    if (event instanceof UiEvent.Input input && input.input().kind() == InputEvent.Kind.RESIZE) {
+                        // 尺寸/CONT 后二维码/渲染器坐标全部失效；全屏 renderer 必须全量重写，
+                        // 否则 shell/编辑器在暂退期间写入的内容会残留在旧行上。
+                        renderer.invalidate();
+                        if (handoff.suspended() && handoff.resumeAfterContinue()) {
+                            controller.invalidateActions();
+                            queries.newEpoch(terminal.epoch());
+                            queries.restart();
+                            scheduler.request();
+                        }
+                    }
+                    if (!running || count == 63) break;
+                    event = events.poll();
+                }
+                // 切换模式：先失效旧证据，关闭旧 renderer，再启动新模式；Host/草稿不动。
+                if (!mode.get().equals(renderer.mode() == ScreenRenderer.Mode.FULLSCREEN ? "fullscreen" : "regular")) {
+                    controller.invalidateActions();
+                    try { renderer.finish(); } catch (IOException ignored) { }
+                    try { renderer.close(); } catch (IOException ignored) { }
+                    renderer = createRenderer(mode.get(), port, settingsMenu.current().showHardwareCursor());
+                    renderer.start();
                     scheduler.request();
-                    if (!running || count == 127) break;
-                    event = queue.poll();
                 }
-                // 没有流式片段、正在审批或等必需后台结果时，整轮计数仍要前进。
-                if (System.nanoTime() - animated >= ConversationView.ANIMATION_INTERVAL_NANOS
-                        && (state.hasActiveTurn() || state.actors.containsValue("RUNNING"))) {
-                    scheduler.request(); animated = System.nanoTime();
-                }
-                // 仅读取不可变内存快照，不读日志/网络。只有统计或设置真的变化才要求重绘。
+                controller.applyPendingExternalEditor();
                 if (controller.refreshSession()) scheduler.request();
-                if (scheduler.ready(input || !running)) {
-                    // 最后一列留给终端，避免写满后自动折行，使光标和点击坐标整体偏移。
-                    var context = new RenderContext(Math.max(1, terminal.columns() - 1), terminal.rows(), new Theme(state.theme, terminal.colors()));
-                    renderer.render(view.render(state, context), context); scheduler.rendered();
+                if (state.hasActiveTurn()) scheduler.requestAnimation(System.nanoTime() + RenderScheduler.ANIMATION_INTERVAL_NANOS);
+                if (scheduler.ready(immediate || !running)) {
+                    int columns = terminal.columns() > 0 ? terminal.columns() : 80;
+                    int rows = terminal.rows() > 0 ? terminal.rows() : 24;
+                    var context = new RenderContext(columns, rows, themes.preview(), capabilities.get(),
+                            System.nanoTime(), ++revision);
+                    var composed = compose(state, context, columns, rows, chat, conversation, editor, settingsMenu,
+                            themes, controller, renderer.mode(), terminal);
+                    try {
+                        PresentedFrame presented = renderer.present(composed.frame(), context);
+                        controller.presented(presented, composed.frame());
+                        scheduler.rendered();
+                    } catch (IOException outputFailure) {
+                        failureMessage = "Terminal output failed: " + outputFailure.getMessage();
+                        running = false;
+                    }
                 }
+            }
+            // 6. 等清理事件（Stopped）完成；即使 pending 也由 finally 兜底关闭。
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+            while (!sawStopped && accepting.get() && System.nanoTime() < deadline) {
+                UiEvent stop = events.poll(20, TimeUnit.MILLISECONDS);
+                if (stop instanceof UiEvent.Stopped) break;
+                if (stop != null) controller.accept(stop);
+                if (state.closing && !events.contains(new UiEvent.Stopped())) { /* 等待关闭线程。 */ }
+            }
+            // 7. 全屏退出转录重放（可配置 resume-hint）；只在正常 UI 退出时输出一次。
+            boolean fullscreen = renderer.mode() == ScreenRenderer.Mode.FULLSCREEN;
+            try { renderer.finish(); } catch (IOException failure) { failureMessage = failure.getMessage(); }
+            if (fullscreen && settingsMenu.current().fullscreenExitOutput().equals("transcript")) {
+                replayTranscript(terminal, conversation.document(), capabilities.get());
             }
             return 0;
         } catch (Exception failure) {
-            failureMessage = "TUI 未完成：" + failure.getMessage(); return 1;
+            failureMessage = "TUI did not start: " + failure.getMessage();
+            return 1;
         } finally {
-            // 不关闭全局 System.in。正常路径的 Stopped 已表示业务清理结束；异常路径在此补清理。
             broker.close();
+            stopping.set(true);
             try { if (host != null) host.close(); }
+            catch (RuntimeException failure) { originalErr.println("Session close failed: " + failure.getMessage()); }
             finally {
                 accepting.set(false);
-                try { if (renderer != null) renderer.finish(); }
-                finally {
-                    System.setOut(originalOut); System.setErr(originalErr);
-                    try { if (terminal != null) terminal.close(); }
-                    catch (java.io.IOException cleanup) { originalErr.println("终端恢复失败：" + cleanup.getMessage()); }
-                    farewell(originalOut, host, farewellPrinted);
-                    if (failureMessage != null) originalErr.println(failureMessage);
-                    if (shutdownHook != null) {
-                        try { Runtime.getRuntime().removeShutdownHook(shutdownHook); }
-                        catch (IllegalStateException exiting) { /* JVM 已在执行关闭钩子。 */ }
-                    }
+                try { if (renderer != null) renderer.close(); }
+                catch (IOException ignored) { }
+                try { if (themes != null) themes.close(); } catch (RuntimeException ignored) { }
+                try { if (catalog != null) catalog.close(); } catch (RuntimeException ignored) { }
+                try { if (handoff != null) handoff.close(); } catch (RuntimeException ignored) { }
+                try { if (imageClipboard != null) imageClipboard.close(); } catch (RuntimeException ignored) { }
+                System.setOut(originalOut); System.setErr(originalErr);
+                try { if (terminal != null) terminal.close(); }
+                catch (IOException cleanup) { originalErr.println("Terminal restore failed: " + cleanup.getMessage()); }
+                farewell(originalOut, host, farewellPrinted);
+                if (failureMessage != null) originalErr.println(failureMessage);
+                if (shutdownHook != null) {
+                    try { Runtime.getRuntime().removeShutdownHook(shutdownHook); }
+                    catch (IllegalStateException exiting) { }
                 }
             }
         }
     }
 
-    /** 终端恢复后输出一次身份；启动失败且没有打开会话时不打印无效 ID。 */
+    /** 终端 renderer 的最小端口；唯一 writer/尺寸/epoch。 */
+    private record TerminalPort(TerminalSession session, boolean colors) implements ScreenRenderer.Port {
+        @Override public int columns() { return session.columns(); }
+        @Override public int rows() { return session.rows(); }
+        @Override public long epoch() { return session.epoch(); }
+        @Override public PrintWriter writer() { return session.writer(); }
+        @Override public boolean outputFailed() { return session.outputFailed(); }
+        @Override public boolean colorsEnabled() { return colors; }
+    }
+
+    /** 由配置创建 renderer；两次模式共用唯一 port。 */
+    private ScreenRenderer createRenderer(String mode, ScreenRenderer.Port port, boolean hardwareCursor) {
+        boolean fullscreen = !"regular".equals(mode);
+        boolean trueColor = port.colorsEnabled() && System.getenv().getOrDefault("COLORTERM", "").toLowerCase().contains("true");
+        boolean links = port.colorsEnabled() && ("1".equals(System.getenv("JADE_TUI_HYPERLINKS"))
+                || System.getenv().getOrDefault("TERM_PROGRAM", "").matches("(?i).*(wezterm|iterm).*")
+                || System.getenv().getOrDefault("TERM", "").matches("(?i).*(kitty|wezterm|ghostty).*"));
+        return fullscreen
+                ? new FullscreenRenderer(port, trueColor, links, hardwareCursor, true)
+                : new RegularRenderer(port, trueColor, links, hardwareCursor);
+    }
+
+    /** 终端协商结果合入主题/能力；晚回复只影响新帧。 */
+    private void applyQueries(TerminalQueries queries, ThemeManager themes, AtomicReference<TerminalCapabilities> caps,
+            TerminalSession terminal) {
+        var snapshot = queries.snapshot();
+        boolean dark = snapshot.darkBackground() == null ? themes.preview().isLight() : snapshot.darkBackground();
+        themes.updateTerminalColors(dark, snapshot.foreground(), snapshot.background(), snapshot.ansi());
+        var values = caps.get();
+        caps.set(values.withQueries(snapshot.cellWidth(), snapshot.cellHeight(), snapshot.keyboard(), null, null, null, null));
+    }
+
+    /** 一次布局：视口与 dock 共用 RenderContext；光标/命中与文本同帧。 */
+    private Composed compose(TuiState state, RenderContext context, int columns, int rows,
+            ChatViewport chat, ConversationView conversation, Editor editor, SettingsMenu settings,
+            ThemeManager themes, TuiController controller, ScreenRenderer.Mode mode, TerminalSession terminal) {
+        var dock = new DockView().render(state, context, columns);
+        var lines = new ArrayList<StyledLine>();
+        int cursorRow = 0, cursorColumn = 0;
+        boolean cursorVisible = false;
+        var hits = new ArrayList<Frame.Hit>();
+        if (mode == ScreenRenderer.Mode.FULLSCREEN) {
+            int dockRows = Math.min(dock.lines().size(), Math.max(1, rows - 1));
+            int viewportHeight = Math.max(1, rows - dockRows);
+            List<String> resources = List.of();
+            var viewport = chat.render(state, context.withHeight(viewportHeight), viewportHeight, resources,
+                    controller.welcomeExpanded(), true);
+            // 搜索 Overlay 覆盖视口，点击不能穿透；关闭后回到原编辑器草稿。
+            if (controller.searchOpen()) {
+                var overlay = controller.searchOverlay();
+                Rect rect = overlay.rect(new Rect(0, 0, columns, viewport.size()));
+                var overlayLines = overlay.render(context, rect.width());
+                if (!overlayLines.isEmpty()) {
+                    int top = rect.y();
+                    for (int i = 0; i < overlayLines.size() && top + i < viewport.size(); i++)
+                        viewport.set(top + i, overlayLines.get(i).padTo(rect.width(), context.theme().style("text")));
+                    cursorRow = top + 1;
+                    cursorColumn = Math.min(rect.width() - 1, 2 + overlay.cursorColumn(Math.max(1, rect.width() - 4)));
+                    cursorVisible = true;
+                }
+            }
+            lines.addAll(viewport);
+            lines.addAll(dock.lines().subList(0, dockRows));
+            if (!cursorVisible && dock.cursorVisible() && dock.cursorRow() < dockRows) {
+                cursorRow = viewport.size() + dock.cursorRow();
+                cursorColumn = dock.cursorColumn();
+                cursorVisible = true;
+            }
+            for (var hit : dock.hits()) {
+                if (hit.rect().y() >= dockRows) continue;
+                var rect = hit.rect().translate(0, viewport.size());
+                hits.add(new Frame.Hit(rect, hit.action()));
+            }
+        } else {
+            var document = conversation.render(state, context, List.of(), controller.welcomeExpanded());
+            lines.addAll(document);
+            lines.addAll(dock.lines());
+            if (dock.cursorVisible()) {
+                cursorRow = document.size() + dock.cursorRow(); cursorColumn = dock.cursorColumn(); cursorVisible = true;
+            }
+            for (var hit : dock.hits()) {
+                var rect = hit.rect().translate(0, document.size());
+                hits.add(new Frame.Hit(rect, hit.action()));
+            }
+        }
+        if (lines.size() > rows) lines = new ArrayList<>(lines.subList(0, rows));
+        var cropped = lines.stream().map(line -> line.crop(columns)).toList();
+        int safeRow = Math.max(0, Math.min(cursorRow, Math.max(0, cropped.size() - 1)));
+        int safeColumn = Math.max(0, Math.min(cursorColumn, Math.max(0, columns - 1)));
+        var cursor = cursorVisible ? new Frame.Cursor(safeRow, safeColumn, true) : Frame.NO_CURSOR;
+        var frame = new Frame(++frameCounter, terminal.epoch(), context.revision(), cropped, cursor, hits);
+        controller.layout(columns, rows, 0, Math.max(1, rows - dock.lines().size()), rows - dock.lines().size());
+        return new Composed(frame, dock);
+    }
+
+    private long frameCounter;
+    private record Composed(Frame frame, DockView.Layout dock) { }
+
+    /** 全屏退出后把最终转录重放到主屏；最多按 1MiB 块输出，正文不拆代理对。 */
+    private void replayTranscript(TerminalSession terminal, List<StyledLine> document,
+            TerminalCapabilities caps) {
+        var writer = terminal.writer();
+        var chunk = new StringBuilder();
+        for (StyledLine line : document) {
+            chunk.append(AnsiEncoder.encode(line, caps.trueColor(), caps.colorsEnabled(), caps.hyperlinks()))
+                    .append("\r\n");
+            if (chunk.length() >= 1_048_576) { writer.print(chunk); writer.flush(); chunk.setLength(0); }
+        }
+        writer.print(chunk); writer.flush();
+        if (terminal.outputFailed()) throw new IllegalStateException("Terminal write failed during transcript replay");
+    }
+
+    /** 终端恢复后的唯一身份告别；启动失败/未打开会话不打印无效 ID。 */
     private static void farewell(PrintStream output, SessionHost host, AtomicBoolean printed) {
         var session = host == null ? null : host.display();
         if (session == null || session.id().isBlank() || !printed.compareAndSet(false, true)) return;
-        output.println("\nSession: " + com.jadecode.tui.text.DisplayWidth.clean(session.title()).replace('\n', ' '));
+        String title = session.title() == null || session.title().isBlank() || session.title().equals("新会话")
+                ? "New session" : TextSafe.oneLine(session.title());
+        output.println("\nSession: " + DisplayWidth.ellipsize(title, 100));
         output.println("ID: " + session.id());
         output.println("Resume: ./jade repl --resume " + session.id());
     }
 
-    /** 页脚的 Git 元数据异步读取，不走模型 bash 工具，也不阻塞键盘。非仓库不报错。 */
-    private void loadBranch(Consumer<UiEvent> events, String directory) {
-        Thread.ofVirtual().name("jade-tui-git").start(() -> {
+    /** 页脚 Git 元数据异步读取；非仓库不报错。 */
+    private void loadBranch(Consumer<UiEvent> sink) {
+        String directory = Path.of("").toAbsolutePath().normalize().toString();
+        Thread.ofVirtual().name("jade-git").start(() -> {
             try {
-                var process = new ProcessBuilder("git", "-C", directory, "symbolic-ref", "--quiet", "--short", "HEAD")
+                Process process = new ProcessBuilder("git", "-C", directory, "symbolic-ref", "--quiet", "--short", "HEAD")
                         .redirectError(ProcessBuilder.Redirect.DISCARD).start();
                 if (!process.waitFor(2, TimeUnit.SECONDS)) { process.destroyForcibly(); return; }
-                if (process.exitValue() == 0) events.accept(new UiEvent.Message("System", "GitBranch",
-                        new String(process.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8).strip(), false));
+                if (process.exitValue() == 0) sink.accept(new UiEvent.Branch(new String(
+                        process.getInputStream().readAllBytes(), StandardCharsets.UTF_8).strip()));
             } catch (Exception unavailable) { /* Git 不存在或非仓库不影响 Agent 使用。 */ }
         });
+    }
+
+    /** 告别标题只显示单行，不删除原标题内容。 */
+    private static final class TextSafe {
+        static String oneLine(String value) {
+            return com.jadecode.tui.text.TextSanitizer.singleLine(value == null ? "" : value);
+        }
     }
 }

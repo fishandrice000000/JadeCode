@@ -1,226 +1,185 @@
 package com.jadecode.cli.tui;
 
 import java.util.ArrayDeque;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import com.jadecode.cli.tui.approval.ApprovalViewState;
+import com.jadecode.cli.tui.model.TranscriptEntry;
+import com.jadecode.cli.tui.model.TranscriptModel;
+import com.jadecode.cli.tui.model.ToolDisplayState;
 import com.jadecode.execution.ExecutionNotice;
 import com.jadecode.tui.components.Editor;
 import com.jadecode.tui.components.SelectList;
-import com.jadecode.tui.text.StyledLine;
 
 /**
- * 单一界面线程拥有的显示状态，不是 Session history，也不是另一个任务调度器。
- * 条目的原文在模型压缩后仍保留；缓存仅保存排版，不用于重新请求模型。
+ * 单 UI 线程拥有的显示聚合态：转录、编辑器、审批、菜单、计时与只读会话快照。
+ *
+ * <p>不是模型 history、不是任务调度器、不是用量账本。异步事件只有在 UI 线程采用后才修改
+ * 这里；旧 generation 的迟到事件由控制器丢弃。计时来自执行线程的真实 TURN_START/PAUSE/
+ * RESUME/TURN_END 通知，不从卡片建立时刻或工具耗时反推；历史 unknown 不补 0.0s。</p>
  */
 public final class TuiState {
-    /** 一条消息／卡片。只在界面线程修改，version 用于使排版缓存失效。 */
-    public static final class Entry {
-        public final String id, actor, kind;
-        public final StringBuilder body = new StringBuilder();
-        public String title, arguments = "", status = "";
-        public boolean expanded;
-        public long version;
-        public int cacheWidth = -1;
-        public String cacheActor = "";
-        public long cacheVersion = -1;
-        public List<StyledLine> cached = List.of();
-        public long elapsed;
-        Entry(String id, String actor, String kind, String title) { this.id = id; this.actor = actor; this.kind = kind; this.title = title; }
-        public void replace(String text) { body.setLength(0); body.append(text); version++; }
-    }
-    public final Editor editor = new Editor();
+    /** 有界 widget slot 上限（F090）；超过时由 DockView 裁剪并报告。 */
+    public static final int MAX_WIDGET_ROWS = 10;
+
+    /** 显示转录（消息/工具/流式块）。 */
+    public final TranscriptModel transcript = new TranscriptModel();
+    /** Pi 多行编辑器；由 root 装配后替换/设置 listener。 */
+    public Editor editor;
+    /** 当前审批显示状态；未审批时无 request。 */
+    public final ApprovalViewState approval = new ApprovalViewState();
+    /** 排队中的审批快照；只用于显示“还有 N 项”。 */
+    public final ArrayDeque<UiEvent.ApprovalRequested> approvals = new ArrayDeque<>();
+    public SelectList selector;
+    public String selectorKind = "";
+    public com.jadecode.cli.tui.SessionPicker sessionPicker;
+    public SelectList commands;
+    public boolean commandsDismissed = true;
+
     public long generation;
-    public boolean loadingResume;
     public String sessionId = "";
-    public SessionPicker sessionPicker;
-    public final List<Entry> entries = new ArrayList<>();
-    public final Map<String, Entry> tools = new LinkedHashMap<>();
-    public final Map<String, List<Entry>> streams = new LinkedHashMap<>();
+    public boolean loadingResume, closing;
+    public String hint = "";
+    public String pending = "", pendingKind = "";
+    public String model = "", modelInfo = "", branch = "", directory = "";
+    public String permissionProfile = "Workspace";
+    public boolean thinkingVisible = true, toolsExpanded;
+    public com.jadecode.session.SessionRuntime.Display session;
+    /** 只读 MCP 服务快照；由 root 每次刷新时更新，不在这里连接。 */
+    public List<com.jadecode.mcp.McpManager.ServerSnapshot> mcpServers = List.of();
+    /** 上方/下方 widget 行（通用 UI slot），最多 MAX_WIDGET_ROWS 行。 */
+    public final List<com.jadecode.tui.text.StyledLine> upperWidgets = new java.util.ArrayList<>();
+    public final List<com.jadecode.tui.text.StyledLine> lowerWidgets = new java.util.ArrayList<>();
+    /** 输入生产者序号/终端代次水位，审批/点击证据使用。 */
+    public long inputSequence;
+    public long terminalEpoch;
+    /** 最近一次成功呈现的帧（由 root 在 renderer 返回后安装）。 */
+    public com.jadecode.tui.core.PresentedFrame presented;
+
     public final Map<String, String> actors = new LinkedHashMap<>();
     public final Map<String, String> background = new LinkedHashMap<>();
-    /** 每个 Agent 当前大轮次的显示关联；不保存模型历史，也不据此调度下一项任务。 */
     private final Map<String, TurnView> turns = new LinkedHashMap<>();
-    /** 每个 Agent 最近一轮已冻结的用时，不是所有轮次累计，也不累加工具卡的耗时。 */
     private final Map<String, Long> completedTurnTimes = new LinkedHashMap<>();
+
     private static final class TurnView {
         final String id;
         final long startedNanos;
-        long sampledAt, sampledElapsed;
+        long sampledAt;
+        long sampledElapsed;
         boolean paused;
-        Entry lastReply;
-        TurnView(String id, long startedNanos) { this.id = id; this.startedNanos = startedNanos; sampledAt = startedNanos; }
-    }
-    public final ArrayDeque<UiEvent.ApprovalRequested> approvals = new ArrayDeque<>();
-    public int approvalChoice = -1;
-    /** 审批正文的显示行偏移及最近布局的页大小；只供阅读，不改变待批准操作。 */
-    public int approvalOffset, approvalPageSize = 1, approvalTotalLines;
-
-    /** 新申请或新队首不能沿用上一份的选项与滚动位置；原输入草稿保持不变。 */
-    public void resetApprovalView() {
-        approvalChoice = -1; approvalOffset = 0; approvalPageSize = 1; approvalTotalLines = 0;
-    }
-    public SelectList selector;
-    /** 命令候选只辅助编辑，不与审批／主题选择器共用焦点；Esc 后等下一次编辑再显示。 */
-    public SelectList commands;
-    public boolean commandsDismissed, commandSuggestions = true;
-    public String selectorKind = "", theme = "dark", pending = "", pendingKind = "", hint = "";
-    public boolean thinkingVisible = true, toolsExpanded, closing;
-    /** 来自会话的只读快照；UI 不累加通知，恢复和重复显示不会再次算花费。 */
-    public com.jadecode.session.SessionRuntime.Display session;
-    public String model = "", branch = "", directory = "";
-    public String modelInfo = "";
-    public String permissionProfile = "Workspace";
-
-    /** 增加一条界面消息，不回灌模型历史。 */
-    public Entry add(String actor, String kind, String title, String body) {
-        var entry = new Entry(java.util.UUID.randomUUID().toString(), actor, kind, title);
-        entry.replace(body); entries.add(entry); return entry;
+        TranscriptEntry lastReply;
+        TurnView(String id, long startedNanos) {
+            this.id = id; this.startedNanos = startedNanos; sampledAt = startedNanos;
+        }
     }
 
-    /**
-     * 采用程序输出的整条消息。非流式 Reply 的文字本来就已生成完，先标记 DONE；
-     * 整轮时间仍等 TURN_END 提供，不能在这里根据卡片刚建立的时间算出一个近零耗时。
-     */
+    /** 新运行时代次：清空转录/计时/审批/菜单，保留草稿与主题等 UI 偏好。 */
+    public void installGeneration(long value) {
+        generation = value; transcript.reset(value); actors.clear(); background.clear();
+        turns.clear(); completedTurnTimes.clear(); approvals.clear(); approval.clear();
+        pending = ""; pendingKind = ""; loadingResume = false;
+    }
+
+    /** 采用程序整条消息。Reply 已完成；错误保留真实状态。 */
     public void message(UiEvent.Message message) {
-        String kind = message.label().equals("Error") || message.label().equals("Rejected") ? "Error" : message.label();
-        Entry entry = add(message.actor(), kind, message.label(), message.text());
-        if (kind.equals("Reply")) { entry.status = "DONE"; rememberReply(message.actor(), entry); }
+        var entry = transcript.message(message.actor(), message.label(), message.text(), message.error());
+        TurnView turn = turns.get(message.actor());
+        if (turn != null && entry.kind() == TranscriptEntry.Kind.REPLY) turn.lastReply = entry;
     }
 
-    /** 只关联当前轮次的最后一张文字回复，阶段回复仍在界面中，不会被覆盖。 */
-    private void rememberReply(String actor, Entry entry) {
-        TurnView turn = turns.get(actor);
-        if (turn != null) turn.lastReply = entry;
+    /** 采用流式增量。 */
+    public void delta(UiEvent.Delta delta) {
+        var entry = transcript.delta(delta.request(), delta.actor(), delta.kind(), delta.text());
+        TurnView turn = turns.get(delta.actor());
+        if (turn != null && entry.kind() == TranscriptEntry.Kind.REPLY) turn.lastReply = entry;
     }
 
-    /** 切换/恢复会话时丢弃旧显示关联，不能把新轮次时间标到 HISTORICAL 回复上。 */
-    public void resetTurns() { turns.clear(); completedTurnTimes.clear(); }
-    /** 是否还有尚未结束的轮次；等待后台也要持续刷新计时，不依赖收到新的流式文字。 */
-    boolean hasActiveTurn() { return !turns.isEmpty(); }
-    /** 主会话有活动轮次时不把“正在写完成记录”的短暂 IDLE 通知误显示成已经计时结束。 */
-    boolean turnActive(String actor) { return turns.containsKey(actor); }
+    /** 请求结束；失败片段保留，不写成功。 */
+    public void end(UiEvent.StreamEnd end) { transcript.endStream(end.request(), end.failed(), end.stopReason()); }
+
+    /** 是否还有未冻结的大轮次。 */
+    public boolean hasActiveTurn() { return !turns.isEmpty(); }
+
+    /** @return 指定 actor 是否有活动轮次。 */
+    public boolean turnActive(String actor) { return turns.containsKey(actor); }
+
     /**
-     * 返回本轮当前或已冻结的纳秒用时，不修改状态；null 表示没有可靠的计时资料。
-     * 活动期间从执行线程的最近快照继续计时；人工审批时暂停，记忆与必等后台仍计入。
-     * 结束后采用同一起点测出的 TURN_END 耗时，后续重绘、其它队友工作都不再增加它。
-     * nowNanos 须来自同一 JVM 的 System.nanoTime；拆成参数便于离线检查而不用真实等待。
+     * @return 本轮当前/冻结耗时（纳秒）；null 表示没有可靠计时。
+     * 审批暂停时不增长；完成后冻结，不因后续重绘/队友工作增长。
      */
-    Long turnElapsed(String actor, long nowNanos) {
+    public Long turnElapsed(String actor, long nowNanos) {
         TurnView active = turns.get(actor);
         if (active != null) return active.startedNanos == 0 ? null : active.sampledElapsed
                 + (active.paused ? 0 : Math.max(0, nowNanos - active.sampledAt));
         return completedTurnTimes.get(actor);
     }
-    /**
-     * 追加一次请求的片段。同类连续片段拼在当前块，类型变化时另开一块，以保留思考／正文顺序。
-     * request 标识一次显示请求，不是工具调用 ID；新请求不能接到上一请求尚未完成的卡片里。
-     */
-    public void delta(UiEvent.Delta delta) {
-        var blocks = streams.computeIfAbsent(delta.request(), ignored -> new ArrayList<>());
-        Entry entry;
-        if (blocks.isEmpty() || !blocks.getLast().kind.equals(delta.kind())) {
-            entry = add("leader", delta.kind(), delta.kind(), ""); entry.status = "STREAMING"; blocks.add(entry);
-            if (delta.kind().equals("Reply")) rememberReply("leader", entry);
-        } else entry = blocks.getLast();
-        entry.body.append(delta.text()); entry.version++;
-    }
-    /** 完整响应与失败分别收尾；失败片段仍显示，但不能写成成功回复。 */
-    public void end(UiEvent.StreamEnd end) {
-        for (Entry entry : streams.getOrDefault(end.request(), List.of())) {
-            entry.status = end.failed() ? "INCOMPLETE" : "DONE"; entry.version++;
-        }
-        streams.remove(end.request());
-    }
-    /**
-     * 采用运行组件发来的事实。这里只记录“已经发生什么”，不据此启动工具或推进任务图。
-     * 工具按 Agent 身份加调用编号找回原卡；同名工具甚至相同模型 ID 也不会串到别的 Agent。
-     * 结束状态由执行器提供，不通过结果字符串猜测；用量另从会话账本的快照读取。
-     */
+
+    /** 采用运行事实：计时/模型/身份/后台/工具；工具卡片细节委托给 TranscriptModel。 */
     public void execution(ExecutionNotice notice) {
         String actor = notice.actor();
         switch (notice.kind()) {
             case MODEL -> { if (actor.equals("leader")) modelInfo = notice.detail(); }
             case TURN_START -> {
-                completedTurnTimes.remove(actor); // 新轮次不能在缺少计时时退回显示上一轮的数值。
+                completedTurnTimes.remove(actor);
                 turns.put(actor, new TurnView(notice.id(), notice.startedNanos()));
             }
             case TURN_END -> {
                 TurnView turn = turns.get(actor);
-                // 运行编号必须匹配；失败、不含最终正文、或中断流都不能给阶段回复补上假 DONE。
                 if (turn != null && turn.id.equals(notice.id())) {
-                    // 先冻结这一轮，失败/无正文也可以显示真实用时，但不能冒称业务成功。
                     if (turn.startedNanos != 0 || notice.elapsedNanos() > 0)
                         completedTurnTimes.put(actor, notice.elapsedNanos());
-                    Entry reply = turn.lastReply;
-                    if (notice.state().equals("DONE") && notice.name().equals("Reply") && reply != null && reply.status.equals("DONE")) {
-                        reply.elapsed = notice.elapsedNanos(); reply.version++;
-                    }
+                    TranscriptEntry reply = turn.lastReply;
+                    if (notice.state().equals("DONE") && notice.name().equals("Reply") && reply != null
+                            && reply.status().equals("DONE")) reply.elapsed(notice.elapsedNanos());
                     turns.remove(actor);
                 }
             }
             case TURN_PAUSE, TURN_RESUME -> {
                 TurnView turn = turns.get(actor);
                 if (turn != null && turn.id.equals(notice.id())) {
-                    // 已扣过的区间不再在 UI 累加或相减，使用计时器的累计工作时间即可。
                     turn.sampledElapsed = notice.elapsedNanos(); turn.sampledAt = notice.startedNanos();
                     turn.paused = notice.kind() == ExecutionNotice.Kind.TURN_PAUSE;
                 }
             }
             case SESSION -> {
-                actors.put(actor, notice.state());
+                if (!actor.isBlank()) actors.put(actor, notice.state());
                 if (actor.equals("leader") && !notice.detail().isBlank()) model = notice.detail();
                 if (notice.state().equals("CLOSED")) {
                     turns.remove(actor);
-                    // 子代理异常可能没有正常工具结束事件，不能让它的卡片永久显示执行中。
-                    tools.values().stream().filter(e -> e.actor.equals(actor) && (e.status.equals("RUNNING") || e.status.equals("QUEUED")))
-                            .forEach(e -> { e.status = e.status.equals("QUEUED") ? "NOT_RUN" : "STOP_REQUESTED"; e.version++; });
+                    transcript.execution(notice);
                 }
             }
-            case TOOL_START, TOOL_END -> {
-                // START 和 END 更新同一张卡，结果到达时不会再多插一份重复的调用记录。
-                String key = actor + "/" + notice.id();
-                Entry entry = tools.computeIfAbsent(key, ignored -> {
-                    Entry created = add(actor, "Tool", notice.name(), ""); created.expanded = toolsExpanded; return created;
-                });
-                if (notice.kind() == ExecutionNotice.Kind.TOOL_START) entry.arguments = notice.detail();
-                else {
-                    entry.replace(notice.detail());
-                    // 执行线程已经排除了批次排队时间，不能改用界面处理通知的时间差。
-                    entry.elapsed = notice.elapsedNanos();
-                }
-                entry.status = notice.state(); entry.version++;
-            }
-            case USAGE -> {
-                // 兼容旧观察通知，但不在界面里再累计；唯一用量事实归 SessionUsage 所有。
-            }
-            case COMPACT -> add(actor, "Notice", "Context", notice.detail());
+            case TOOL_START, TOOL_END -> transcript.execution(notice);
             case BUFFER -> {
-                // 终端输入交给 Leader。队友也会报告自己的空缓冲，不能因此清掉 Leader 尚未消费的输入。
                 if (actor.equals("leader")) { pending = notice.detail(); pendingKind = notice.state(); }
             }
             case BACKGROUND -> background.put(actor + "/" + notice.id(), notice.state());
-            case SUBAGENT -> add(actor, "Notice", "Subagent", notice.detail());
+            case COMPACT -> transcript.addNotice(actor, "Context", notice.detail(), false);
+            case SUBAGENT -> transcript.addNotice(actor, "Subagent", notice.detail(), false);
+            case USAGE -> { /* 用量只从 SessionUsage 快照读取，不在 UI 累加。 */ }
         }
     }
-    public static String actorName(String actor) {
-        return actor.equals("leader") ? "Leader" : actor.startsWith("leader/") ? "Leader / " + actor.substring(7) : actor;
-    }
 
-    /**
-     * 仅在存在未关闭的常驻队友时显示 Team 身份。普通 task 子代理的 actor 含斜杠，
-     * 不是 Team 成员；CLOSED 成员仍保留历史，但不让单人会话继续显示 Leader。
-     * 这是展示判断，不创建／关闭 Team，也不改变真实身份和权限。
-     */
+    /** @return 是否存在未关闭的常驻队友；单人会话不显示 Leader 前缀。 */
     public boolean teamActive() {
-        return actors.entrySet().stream().anyMatch(e -> e.getKey().startsWith("agent_")
-                && !e.getKey().contains("/") && !e.getValue().equals("CLOSED"));
+        return actors.entrySet().stream().anyMatch(entry -> entry.getKey().startsWith("agent_")
+                && !entry.getKey().contains("/") && !entry.getValue().equals("CLOSED"));
     }
 
-    /** 单人模式省略主 Agent 前缀，子代理仍保留自己的名字；实际 actor ID 不被改写。 */
+    /** 单人模式省略 leader；子代理保留自身名字，真实 actor ID 不被改写。 */
     public String displayActor(String actor) {
+        if (actor == null) return "";
         if (teamActive()) return actorName(actor);
         return actor.equals("leader") ? "" : actor.startsWith("leader/") ? actor.substring(7) : actor;
     }
+
+    /** actor 的可读名称（Team 模式）。 */
+    public static String actorName(String actor) {
+        return actor == null ? "" : actor.equals("leader") ? "Leader"
+                : actor.startsWith("leader/") ? "Leader / " + actor.substring(7) : actor;
+    }
+
+    /** @return 活跃工具卡数量（状态栏提示）。 */
+    public long activeTools() { return transcript.tools().stream().filter(ToolDisplayState::active).count(); }
 }

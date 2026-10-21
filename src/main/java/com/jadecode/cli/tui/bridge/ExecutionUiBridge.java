@@ -14,6 +14,7 @@ public final class ExecutionUiBridge implements ExecutionObserver {
     public void message(String value, boolean error) {
         String actor = "System", body = value, label = error ? "Error" : "Notice";
         if (body.startsWith("[Leader] ")) { actor = "leader"; body = body.substring(9); }
+        else if (body.startsWith("[Leader]")) { actor = "leader"; body = body.substring(8); }
         else if (body.startsWith("[Teammate ")) {
             int end = body.indexOf("] ");
             if (end > 0) { actor = body.substring(10, end); body = body.substring(end + 2); }
@@ -22,6 +23,8 @@ public final class ExecutionUiBridge implements ExecutionObserver {
             int end = body.indexOf(']');
             if (end > 0) { label = body.substring(1, end); body = body.substring(end + 1); if (body.startsWith(" ")) body = body.substring(1); }
         }
+        // 最终非流式回复由 Session 输出，没有 Leader 前缀；它仍属于 Leader，不能显示成 System。
+        if (actor.equals("System") && label.equals("Reply")) actor = "leader";
         sink.accept(new UiEvent.Message(actor, label, body, error));
     }
 }

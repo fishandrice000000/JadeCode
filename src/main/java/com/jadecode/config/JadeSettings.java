@@ -70,8 +70,57 @@ public record JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimit
     public JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimits limits, Memory memory) {
         this(tui, compaction, limits, memory, new Models(true, 24, 2000, Map.of()));
     }
-    /** 仅是界面的初始选择；本次运行中的快捷键切换不会改写这些默认值。 */
-    public record Tui(String theme, boolean thinkingVisible, boolean toolsExpanded, boolean commandSuggestions) { }
+    /**
+     * 非秘密 TUI 设置快照。旧四字段构造继续有效；新增字段都有兼容默认值。主题、模式、
+     * 图片/候选等只影响显示，不改变 Agent/压缩/认证策略。{@code keybindings} 为动作 ID→
+     * 键列表的局部覆盖；{@code externalEditor} 为未配置空串。
+     */
+    public record Tui(String theme, String mode, String fullscreenExitOutput, String fullscreenScrollbar,
+            boolean fullscreenCopyOnSelect, int fullscreenWheelScrollLines, boolean showHardwareCursor,
+            int editorPaddingX, int outputPad, int autocompleteMaxVisible, boolean thinkingVisible,
+            boolean toolsExpanded, boolean commandSuggestions, String mermaidRendering, boolean showImages,
+            int imageWidthCells, boolean clearOnShrink, boolean showTerminalProgress, boolean quietStartup,
+            String codeBlockIndent, String externalEditor, java.util.Map<String, java.util.List<String>> keybindings,
+            int escapeTimeoutMillis, String lightTheme, String darkTheme) {
+        public Tui {
+            theme = theme == null || theme.isBlank() ? "system" : theme;
+            mode = mode == null || mode.isBlank() ? "fullscreen" : mode;
+            if (!mode.equals("fullscreen") && !mode.equals("regular"))
+                throw new IllegalArgumentException("tui.mode must be fullscreen or regular");
+            fullscreenExitOutput = fullscreenExitOutput == null || fullscreenExitOutput.isBlank() ? "transcript" : fullscreenExitOutput;
+            if (!fullscreenExitOutput.equals("transcript") && !fullscreenExitOutput.equals("resume-hint"))
+                throw new IllegalArgumentException("tui.fullscreenExitOutput must be transcript or resume-hint");
+            fullscreenScrollbar = fullscreenScrollbar == null || fullscreenScrollbar.isBlank() ? "auto" : fullscreenScrollbar;
+            if (!java.util.Set.of("auto", "always", "hidden").contains(fullscreenScrollbar))
+                throw new IllegalArgumentException("tui.fullscreenScrollbar must be auto, always or hidden");
+            if (fullscreenWheelScrollLines < 0 || fullscreenWheelScrollLines > 100)
+                throw new IllegalArgumentException("tui.fullscreenWheelScrollLines must be auto (0) or 1-100");
+            if (editorPaddingX < 0 || editorPaddingX > 3) throw new IllegalArgumentException("tui.editorPaddingX must be 0-3");
+            if (outputPad < 0 || outputPad > 1) throw new IllegalArgumentException("tui.outputPad must be 0 or 1");
+            if (autocompleteMaxVisible < 3 || autocompleteMaxVisible > 20)
+                throw new IllegalArgumentException("tui.autocompleteMaxVisible must be 3-20");
+            mermaidRendering = mermaidRendering == null || mermaidRendering.isBlank() ? "streaming" : mermaidRendering;
+            if (!java.util.Set.of("streaming", "off", "final").contains(mermaidRendering))
+                throw new IllegalArgumentException("tui.mermaidRendering must be streaming, off or final");
+            if (imageWidthCells < 1) throw new IllegalArgumentException("tui.imageWidthCells must be positive");
+            codeBlockIndent = codeBlockIndent == null ? "  " : codeBlockIndent;
+            externalEditor = externalEditor == null ? "" : externalEditor;
+            keybindings = keybindings == null ? java.util.Map.of() : java.util.Map.copyOf(keybindings);
+            if (escapeTimeoutMillis < 0) throw new IllegalArgumentException("tui.escapeTimeoutMillis must be positive or 0 for auto");
+            lightTheme = lightTheme == null || lightTheme.isBlank() ? "light" : lightTheme;
+            darkTheme = darkTheme == null || darkTheme.isBlank() ? "dark" : darkTheme;
+        }
+
+        /** 旧四字段配置的兼容构造；其余字段取 Pi/Jade 批准默认值。 */
+        public Tui(String theme, boolean thinkingVisible, boolean toolsExpanded, boolean commandSuggestions) {
+            this(theme, "fullscreen", "transcript", "auto", true, 0, false, 0, 1,
+                    5, thinkingVisible, toolsExpanded, commandSuggestions, "streaming", true, 60,
+                    false, false, false, "  ", "", java.util.Map.of(), 0, "light", "dark");
+        }
+
+        /** @return 是否安静启动。 */
+        public boolean quietStartup() { return quietStartup; }
+    }
 
     /**
      * 记忆辅助请求的独立额度；token 是输出上限，char 是 UTF-16 输入预算，不改变正式请求。
@@ -101,6 +150,6 @@ public record JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimit
 
     /** 无配置文件或某项未填写时使用；离线装配也从此处取得与机器无关的默认值。 */
     public static JadeSettings defaults() {
-        return new JadeSettings(new Tui("dark", true, false, true), CompactionPolicy.defaults(), CompactionLimits.defaults());
+        return new JadeSettings(new Tui("system", true, false, true), CompactionPolicy.defaults(), CompactionLimits.defaults());
     }
 }

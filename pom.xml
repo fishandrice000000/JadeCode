@@ -31,17 +31,34 @@
       <artifactId>mcp-json-jackson2</artifactId>
       <version>2.1.0</version>
     </dependency>
-    <!-- TUI 解析 Markdown 为语法树；终端排版由本项目负责，不自行重造 Markdown 解析器。 -->
+    <!-- TUI：Unicode 17 字素分段。锁定 78.3，避免终端编辑/换行规则随系统 JDK 漂移。 -->
     <dependency>
-      <groupId>org.commonmark</groupId>
-      <artifactId>commonmark</artifactId>
-      <version>0.27.1</version>
+      <groupId>com.ibm.icu</groupId>
+      <artifactId>icu4j</artifactId>
+      <version>78.3</version>
     </dependency>
-    <!-- 基础 CommonMark 不包含管道表格；语法扩展与主解析器使用同一版本。 -->
+    <!-- TUI：Markdown/高亮/Mermaid 固定纯计算库运行在封闭 GraalJS Context 中；Java 仍拥有布局与终端。 -->
     <dependency>
-      <groupId>org.commonmark</groupId>
-      <artifactId>commonmark-ext-gfm-tables</artifactId>
-      <version>0.27.1</version>
+      <groupId>org.graalvm.polyglot</groupId>
+      <artifactId>polyglot</artifactId>
+      <version>24.1.2</version>
+    </dependency>
+    <dependency>
+      <groupId>org.graalvm.polyglot</groupId>
+      <artifactId>js-community</artifactId>
+      <version>24.1.2</version>
+      <type>pom</type>
+    </dependency>
+    <!-- TUI：JDK 只有 PNG/GIF 解码，JPEG/WebP 由 TwelveMonkeys ImageIO provider 补齐。 -->
+    <dependency>
+      <groupId>com.twelvemonkeys.imageio</groupId>
+      <artifactId>imageio-jpeg</artifactId>
+      <version>3.12.0</version>
+    </dependency>
+    <dependency>
+      <groupId>com.twelvemonkeys.imageio</groupId>
+      <artifactId>imageio-webp</artifactId>
+      <version>3.12.0</version>
     </dependency>
     <!-- LLM 客户端:官方 Anthropic Java SDK(课程用官方 Python SDK 的镜像),baseUrl 指向 DeepSeek /anthropic 端点 -->
     <dependency>
