@@ -113,6 +113,8 @@ public final class SessionRuntime implements AutoCloseable {
     private java.util.concurrent.atomic.AtomicReference<ThinkingSettings> requestThinking =
             new java.util.concurrent.atomic.AtomicReference<>(ThinkingSettings.DEFAULT);
     private volatile ContextUsage contextUsage;
+    /** 只读 MCP 服务快照；工厂在装配时绑定 McpManager.snapshot，UI 不直接依赖 mcp 包。 */
+    private java.util.function.Supplier<List<com.jadecode.mcp.McpManager.ServerSnapshot>> mcpSnapshot = List::of;
 
     /** 界面读取的纯资料，不包含可修改的消息列表、日志写者、线程或审批授权。 */
     public record Display(String id, String title, String model, ModelMetadata metadata, ThinkingSettings thinking,
@@ -133,6 +135,20 @@ public final class SessionRuntime implements AutoCloseable {
         if (consumer != null || journal != null) throw new IllegalStateException("会话已经启动");
         usage = java.util.Objects.requireNonNull(value); ownsUsage = owner;
         profile = java.util.Objects.requireNonNull(client); requestThinking = java.util.Objects.requireNonNull(thinking);
+    }
+
+    /**
+     * 装配只读服务快照端口；必须在会话启动前调用。供应商只能做纯内存复制，不能连接服务。
+     */
+    public void services(java.util.function.Supplier<List<com.jadecode.mcp.McpManager.ServerSnapshot>> supplier) {
+        if (consumer != null || journal != null) throw new IllegalStateException("会话已经启动");
+        mcpSnapshot = supplier == null ? List::of : supplier;
+    }
+
+    /** @return 当前 MCP 服务只读快照；空列表表示没有配置或尚未装配。 */
+    public List<com.jadecode.mcp.McpManager.ServerSnapshot> mcpServers() {
+        try { return List.copyOf(mcpSnapshot.get()); }
+        catch (RuntimeException failure) { return List.of(); }
     }
 
     /** 只读当前已发布的快照，不读盘、不请求模型；允许 TUI 在自己的线程采用。 */

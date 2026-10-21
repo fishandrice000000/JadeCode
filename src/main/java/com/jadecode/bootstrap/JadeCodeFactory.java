@@ -375,6 +375,8 @@ public final class JadeCodeFactory {
                 com.jadecode.execution.ExecutionNotice.Kind.SESSION, "", role, config.model(), "IDLE"));
         // 所有权在这里交给 session；CLI 不再另外关闭 engine/background/cron。
         SessionRuntime runtime = new SessionRuntime(engine, memory, background, cron, output, errors);
+        // 只读服务快照：MCP 页面不会触发连接/认证，也不会把配置中的命令/凭据暴露给 UI。
+        runtime.services(mcp::snapshot);
         runtime.onClose(mcp::close);
         runtime.permissions(permissions);
         runtime.historyState(manager, config.model(), isLeader ? team::hasLiveMembers : () -> false);

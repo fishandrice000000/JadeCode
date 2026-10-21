@@ -73,6 +73,31 @@ public final class McpManager implements AutoCloseable {
         }
     }
 
+    /**
+     * 一个服务的只读展示快照。只含名称/启用/连接状态/工具名，不含启动命令、env、凭据或
+     * 错误详情；0 个工具的已连接服务仍标记 connected=true，可与“配置但未连接”区分。
+     */
+    public record ServerSnapshot(String name, boolean enabled, boolean connected, List<String> tools) {
+        public ServerSnapshot { tools = tools == null ? List.of() : List.copyOf(tools); }
+    }
+
+    /**
+     * 纯内存快照，供 UI 只读显示。锁内复制，不触发连接/discovery/网络，也不暴露凭据。
+     * 已关闭时仍报告配置和最后已知连接状态，但不重新连接。
+     */
+    public synchronized List<ServerSnapshot> snapshot() {
+        var result = new ArrayList<ServerSnapshot>();
+        for (var entry : configurations.entrySet()) {
+            String name = entry.getKey();
+            boolean connected = connections.containsKey(name) || discovered.containsKey(name);
+            List<String> toolNames = discovered.getOrDefault(name, List.of()).stream()
+                    .map(McpToolDescriptor::name).toList();
+            result.add(new ServerSnapshot(name, entry.getValue().enabled(), connected && !closed, toolNames));
+        }
+        result.sort(java.util.Comparator.comparing(ServerSnapshot::name));
+        return List.copyOf(result);
+    }
+
     /** 给工具目录本次请求使用的完整数据快照；已关闭时不再暴露可用工具。 */
     public synchronized List<McpToolDescriptor> tools() {
         return closed ? List.of() : discovered.values().stream().flatMap(List::stream).toList();

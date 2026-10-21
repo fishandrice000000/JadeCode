@@ -17,6 +17,34 @@ public interface ResponseStream {
     /** @param text 接口实际返回的可展示 thinking 增量，不代表全部内部推理 */
     default void thinking(String text) { }
 
+    /**
+     * 每次正式请求尝试开始时调用；retry 必须生成新 ID。
+     * 默认无操作，旧调用方不需要实现。
+     */
+    default void requestStarted(String requestId) { }
+
+    /**
+     * SDK 已识别到一个 tool_use 块并开始累计参数。
+     * 只用于建立显示预览，不代表参数完整或会执行。
+     * @param blockIndex 本响应内的块下标
+     * @param callId 模型给出的 tool_use ID；执行阶段仍使用同一真实 ID
+     * @param name 工具名，仅用于显示
+     * @param initialInputJson 初始参数片段（可能为空对象），不是最终参数
+     */
+    default void toolBlockStarted(int blockIndex, String callId, String name, String initialInputJson) { }
+
+    /** 合法 openBlock 的 input_json 增量；只用于预览，可能不完整，禁止据此执行。 */
+    default void toolInputDelta(int blockIndex, String fragment) { }
+
+    /** 该工具块的参数已通过原 JSON 闭合/校验；只表示参数结束，不是整响应可执行。 */
+    default void toolBlockClosed(int blockIndex) { }
+
+    /**
+     * 完整响应已拼好并通过角色/调用 ID 校验，结束预览；不是任务或工具执行成功。
+     * @param stopReason 服务端真实停止原因；unknown 保持原值，不能根据正文猜
+     */
+    default void complete(String stopReason) { complete(); }
+
     /** 完整响应已拼好并通过调用方校验，结束预览；不是任务或工具执行成功。 */
     default void complete() { }
 

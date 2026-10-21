@@ -63,6 +63,12 @@ public final class SessionHost implements AutoCloseable {
 
     /** 退出后仍可读取已保存身份，不调用已关闭运行时的执行方法。 */
     public SessionRuntime.Display display() { SessionRuntime runtime = current; return runtime == null ? null : runtime.display(); }
+    /** @return 当前会话的 MCP 只读服务快照；未打开会话时为空，不连接服务。 */
+    public java.util.List<com.jadecode.mcp.McpManager.ServerSnapshot> mcpServers() {
+        SessionRuntime runtime = current;
+        return runtime == null ? java.util.List.of() : runtime.mcpServers();
+    }
+
     /** 只读权限快照在关闭期间仍可显示；不能用要求“会话可操作”的 current() 来刷新页脚。 */
     public com.jadecode.safety.PermissionState.Snapshot permissionSnapshot() {
         SessionRuntime runtime = current; return runtime == null ? null : runtime.permissionState().snapshot();

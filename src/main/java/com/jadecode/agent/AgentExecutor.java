@@ -179,7 +179,11 @@ public class AgentExecutor implements AutoCloseable {
 
             ResponseStream display = java.util.Objects.requireNonNull(streams.get());
             boolean[] textDisplayed = { false };
+            // 每次尝试（含压缩重试）生成独立观察 ID；旧预览不能续写到新请求。
+            String observationRequestId = java.util.UUID.randomUUID().toString();
+            display.requestStarted(observationRequestId);
             // 回调只更新屏幕，不碰 history；用户退出后不再打印晚到片段。
+            // 工具参数预览与最终正文走同一观察对象，但都只是只读展示，不能触发执行。
             ResponseStream observed = display == ResponseStream.NONE ? display : new ResponseStream() {
                 @Override public void text(String text) {
                     ensureOpen();
@@ -187,6 +191,13 @@ public class AgentExecutor implements AutoCloseable {
                     textDisplayed[0] |= !text.isEmpty();
                 }
                 @Override public void thinking(String text) { ensureOpen(); display.thinking(text); }
+                @Override public void toolBlockStarted(int blockIndex, String callId, String name, String initialInputJson) {
+                    ensureOpen(); display.toolBlockStarted(blockIndex, callId, name, initialInputJson);
+                }
+                @Override public void toolInputDelta(int blockIndex, String fragment) {
+                    ensureOpen(); display.toolInputDelta(blockIndex, fragment);
+                }
+                @Override public void toolBlockClosed(int blockIndex) { ensureOpen(); display.toolBlockClosed(blockIndex); }
             };
             try {
                 ensureOpen();
@@ -202,9 +213,10 @@ public class AgentExecutor implements AutoCloseable {
                 }
                 List<ToolUseBlock> calls = response.message().blocksOfType(ToolUseBlock.class);
                 ToolExchangeProtocol.requireDistinctCallIds(calls);
-                display.complete();
+                display.complete(response.stopReason());
                 // 用量已由客户端包装统一保存；这里仅带回本次报告，供 Session 更新自己的占用快照。
-                return new ModelReply(response.message(), calls, textDisplayed[0], response.usage(), snapshot);
+                return new ModelReply(response.message(), calls, textDisplayed[0], response.usage(), snapshot,
+                        observationRequestId);
             } catch (LlmException failure) {
                 display.failed();
                 // 配置关闭就直接暴露本次错误，不额外重试同一历史。开启时也只补救真正的上下文超限。
@@ -243,20 +255,36 @@ public class AgentExecutor implements AutoCloseable {
 
     /** 正式会话用请求时的快照执行；旧手工构造的 ModelReply 沿用即时目录，不影响旧离线调用。 */
     public ToolBatch executeTools(ModelReply reply, ExecutionContext context, int previousRounds) {
-        return executeTools(reply.calls(), context, previousRounds, reply.tools() == null ? tools.snapshot() : reply.tools());
+        return executeTools(reply.calls(), context, previousRounds, reply.tools() == null ? tools.snapshot() : reply.tools(),
+                reply.observationRequestId());
     }
 
     /** 在固定目录中先查成员再走权限，结果统一返回；不修改会话历史或外部目录。 */
     private ToolBatch executeTools(List<ToolUseBlock> calls, ExecutionContext context, int previousRounds,
             com.jadecode.tools.ToolCatalog.Snapshot snapshot) {
+        return executeTools(calls, context, previousRounds, snapshot, "");
+    }
+
+    /**
+     * 执行固定目录的一批工具。observationRequestId 为预览请求前缀：它只用于显示关联，
+     * 不进入模型/工具 ID、日志或权限判断；旧调用传空串时仍生成独立批次前缀。
+     */
+    private ToolBatch executeTools(List<ToolUseBlock> calls, ExecutionContext context, int previousRounds,
+            com.jadecode.tools.ToolCatalog.Snapshot snapshot, String observationRequestId) {
         List<ContentBlock> results = new ArrayList<>();
         boolean usedTodo = false;
         boolean compact = false;
         RuntimeException failure = null;
-        // 一批内的调用 ID 合法，不代表它在整个会话唯一；再加本批显示编号，避免重复模型 ID 串卡。
-        String batchId = java.util.UUID.randomUUID().toString();
-        for (ToolUseBlock call : calls) notice(ExecutionNotice.event(ExecutionNotice.Kind.TOOL_START,
-                batchId + "/" + call.id(), call.name(), call.input() == null ? "{}" : call.input().toString(), "QUEUED"));
+        // 预览与执行共用同一个请求观察前缀；同一 actor 的重试/跨批同名工具也不会串卡。
+        // 真实 tool_use ID 仍是 call.id()，观察 ID 不进入 wire/历史。
+        String batchId = observationRequestId == null || observationRequestId.isBlank()
+                ? java.util.UUID.randomUUID().toString() : observationRequestId;
+        for (ToolUseBlock call : calls) {
+            var queuedEntry = snapshot.entries().get(call.name());
+            notice(ExecutionNotice.event(ExecutionNotice.Kind.TOOL_START,
+                    batchId + "/" + call.id(), call.name(), call.input() == null ? "{}" : call.input().toString(), "QUEUED")
+                    .withIdentity(queuedEntry == null ? null : queuedEntry.identity()));
+        }
         int executing = -1;
         boolean attempted = false;
         long toolStarted = 0;
@@ -279,7 +307,8 @@ public class AgentExecutor implements AutoCloseable {
                         Map.of(Hooks.PARAM_BLOCK, call, Hooks.PARAM_CONTEXT, context, Hooks.PARAM_TOOL_IDENTITY, entry.identity()));
                 if (blocked != null) {
                     results.add(new ToolResultBlock(call.id(), blocked, true));
-                    notice(ExecutionNotice.event(ExecutionNotice.Kind.TOOL_END, batchId + "/" + call.id(), call.name(), blocked, "BLOCKED"));
+                    notice(ExecutionNotice.event(ExecutionNotice.Kind.TOOL_END, batchId + "/" + call.id(), call.name(), blocked, "BLOCKED")
+                            .withIdentity(entry.identity()));
                     continue;
                 }
                 Tool tool = entry.tool();
@@ -287,7 +316,8 @@ public class AgentExecutor implements AutoCloseable {
                 ensureOpen();
                 if (context.isCancelled()) throw new IllegalStateException("Parent session is closed");
                 ObjectNode input = call.input() instanceof ObjectNode node ? node : Json.mapper().createObjectNode();
-                notice(ExecutionNotice.event(ExecutionNotice.Kind.TOOL_START, batchId + "/" + call.id(), call.name(), input.toString(), "RUNNING"));
+                notice(ExecutionNotice.event(ExecutionNotice.Kind.TOOL_START, batchId + "/" + call.id(), call.name(), input.toString(), "RUNNING")
+                        .withIdentity(entry.identity()));
                 // 权限检查和审批已经结束，现在才开始计工具执行时间。
                 // 整轮用时另由 Session 的 TurnTimer 统计，并扣除人工审批等待，不能在这里累加。
                 toolStarted = System.nanoTime();
@@ -297,7 +327,7 @@ public class AgentExecutor implements AutoCloseable {
                 // 先记下工具确实返回的结果，再显示日志，免得日志出错后连执行结果都丢掉。
                 results.add(new ToolResultBlock(call.id(), output, outcome.isError()));
                 notice(ExecutionNotice.event(ExecutionNotice.Kind.TOOL_END, batchId + "/" + call.id(), call.name(), output, outcome.isError() ? "ERROR" : "RETURNED")
-                        .timed(System.nanoTime() - toolStarted));
+                        .timed(System.nanoTime() - toolStarted).withIdentity(entry.identity()));
                 usedTodo |= call.name().equals(TODO_TOOL);
                 compact |= call.name().equals(COMPACT_TOOL) && CompactTool.OUTPUT.equals(output);
                 hooks.trigger(Hooks.POST_TOOL_USE,
@@ -369,11 +399,17 @@ public class AgentExecutor implements AutoCloseable {
      * @param tools 本次请求使用的执行目录；只在内存传递，不随 message 持久化
      */
     public record ModelReply(Message message, List<ToolUseBlock> calls, boolean textDisplayed, ModelResponse.Usage usage,
-            com.jadecode.tools.ToolCatalog.Snapshot tools) {
+            com.jadecode.tools.ToolCatalog.Snapshot tools, String observationRequestId) {
         /** 兼容旧调用；正式请求始终提供本次工具快照，不把它写进模型消息或历史。 */
         public ModelReply(Message message, List<ToolUseBlock> calls, boolean textDisplayed, ModelResponse.Usage usage) {
-            this(message, calls, textDisplayed, usage, null);
+            this(message, calls, textDisplayed, usage, null, "");
         }
+        /** 兼容没有观察 ID 的旧离线调用；执行仍生成独立批次前缀。 */
+        public ModelReply(Message message, List<ToolUseBlock> calls, boolean textDisplayed, ModelResponse.Usage usage,
+                com.jadecode.tools.ToolCatalog.Snapshot tools) {
+            this(message, calls, textDisplayed, usage, tools, "");
+        }
+
         /** 兼容没有报告用量的旧离线调用，不伪造实际数字。 */
         public ModelReply(Message message, List<ToolUseBlock> calls, boolean textDisplayed) { this(message, calls, textDisplayed, null); }
         /** 普通非流式调用保持原构造方式，完成时仍由 Session 显示正文。 */
@@ -385,7 +421,10 @@ public class AgentExecutor implements AutoCloseable {
          * @param textDisplayed 只表示本次响应正文已展示，不表示 thinking 已显示或整个任务已完成
          * @throws NullPointerException calls 或其中元素为 null
          */
-        public ModelReply { calls = List.copyOf(calls); }
+        public ModelReply {
+            calls = List.copyOf(calls);
+            if (observationRequestId == null) observationRequestId = "";
+        }
     }
 
     /**

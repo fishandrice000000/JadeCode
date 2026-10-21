@@ -131,18 +131,29 @@ public class AnthropicSdkLlmClient implements LlmClient {
                 if (event.isContentBlockStart()) {
                     var start = event.asContentBlockStart();
                     openBlocks.add(start.index());
-                    if (start.contentBlock().isToolUse()) toolJson.put(start.index(), new StringBuilder());
+                    if (start.contentBlock().isToolUse()) {
+                        toolJson.put(start.index(), new StringBuilder());
+                        var tool = start.contentBlock().asToolUse();
+                        // 只建立预览：完整参数仍要等 JSON 闭合与整响应校验后才执行。
+                        display.toolBlockStarted(Math.toIntExact(start.index()), tool.id(), tool.name(),
+                                tool._input() == null ? "{}" : tool._input().toString());
+                    }
                 } else if (event.isContentBlockDelta()) {
                     var update = event.asContentBlockDelta();
                     if (!openBlocks.contains(update.index())) throw new LlmException("收到未开始或已结束内容块的增量");
                     if (update.delta().isInputJson() && toolJson.containsKey(update.index())) {
-                        toolJson.get(update.index()).append(update.delta().asInputJson().partialJson());
+                        String fragment = update.delta().asInputJson().partialJson();
+                        toolJson.get(update.index()).append(fragment);
+                        display.toolInputDelta(Math.toIntExact(update.index()), fragment);
                     }
                 } else if (event.isContentBlockStop()) {
                     long index = event.asContentBlockStop().index();
                     if (!openBlocks.remove(index)) throw new LlmException("收到未开始或重复的内容块结束事件");
                     StringBuilder json = toolJson.remove(index);
-                    if (json != null) validateToolJson(json.toString());
+                    if (json != null) {
+                        validateToolJson(json.toString());
+                        display.toolBlockClosed(Math.toIntExact(index));
+                    }
                 } else if (event.isMessageStop() && !openBlocks.isEmpty()) {
                     throw new LlmException("模型流结束时仍有未闭合的内容块");
                 }

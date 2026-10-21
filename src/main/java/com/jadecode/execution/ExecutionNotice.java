@@ -14,18 +14,26 @@ package com.jadecode.execution;
  * @param elapsedNanos 执行线程用单调时钟测得的耗时；零表示未提供，不是历史任务耗时为零
  * @param startedNanos TURN_START 的本轮起点，取自执行线程的 System.nanoTime；零表示未提供。
  *                     只在同一 JVM 内给实时计时使用，不保存为墙上时钟或跨进程恢复
+ * @param identity 宿主注册的可信工具身份；模型参数不能填写，未知/旧构造为 null。只供
+ *                 选择 renderer/来源标签，不改变权限/Gate 结果
  */
 public record ExecutionNotice(String actor, Kind kind, String id, String name, String detail,
-        String state, long inputTokens, long outputTokens, long elapsedNanos, long startedNanos) {
+        String state, long inputTokens, long outputTokens, long elapsedNanos, long startedNanos,
+        ToolIdentity identity) {
+    /** 兼容旧构造：没有可信工具身份时走 fallback renderer。 */
+    public ExecutionNotice(String actor, Kind kind, String id, String name, String detail,
+            String state, long inputTokens, long outputTokens, long elapsedNanos, long startedNanos) {
+        this(actor, kind, id, name, detail, state, inputTokens, outputTokens, elapsedNanos, startedNanos, null);
+    }
     /** 仅提供完成耗时的旧调用仍有效；不会用界面收到事件的时刻伪造执行起点。 */
     public ExecutionNotice(String actor, Kind kind, String id, String name, String detail,
             String state, long inputTokens, long outputTokens, long elapsedNanos) {
-        this(actor, kind, id, name, detail, state, inputTokens, outputTokens, elapsedNanos, 0);
+        this(actor, kind, id, name, detail, state, inputTokens, outputTokens, elapsedNanos, 0, null);
     }
     /** 旧调用未提供计时，保持原通知构造方式，不伪造耗时。 */
     public ExecutionNotice(String actor, Kind kind, String id, String name, String detail,
             String state, long inputTokens, long outputTokens) {
-        this(actor, kind, id, name, detail, state, inputTokens, outputTokens, 0);
+        this(actor, kind, id, name, detail, state, inputTokens, outputTokens, 0, 0, null);
     }
     public enum Kind {
         /** 启动取得的模型限额及来源，不包含认证、思考或完整 HTTP 响应。 */ MODEL,
@@ -47,17 +55,24 @@ public record ExecutionNotice(String actor, Kind kind, String id, String name, S
     }
     /** 工厂绑定真实 Agent 身份，不由模型填写。 */
     public ExecutionNotice actor(String value) {
-        return new ExecutionNotice(value, kind, id, name, detail, state, inputTokens, outputTokens, elapsedNanos, startedNanos);
+        return new ExecutionNotice(value, kind, id, name, detail, state, inputTokens, outputTokens, elapsedNanos, startedNanos, identity);
     }
     /** 补充已测得的处理耗时，不复用 Token 字段存时间，也不改变协议消息。 */
     public ExecutionNotice timed(long nanos) {
-        return new ExecutionNotice(actor, kind, id, name, detail, state, inputTokens, outputTokens, Math.max(0, nanos), startedNanos);
+        return new ExecutionNotice(actor, kind, id, name, detail, state, inputTokens, outputTokens,
+                Math.max(0, nanos), startedNanos, identity);
+    }
+    /** 附加宿主可信工具身份；只读展示用，不参与工具执行。 */
+    public ExecutionNotice withIdentity(ToolIdentity value) {
+        return new ExecutionNotice(actor, kind, id, name, detail, state, inputTokens, outputTokens,
+                elapsedNanos, startedNanos, value);
     }
     /**
      * 在轮次开始时附上执行线程已有的计时起点，界面由此显示“现在减起点”。
      * nanoTime 的绝对值允许为负，不能像耗时一样截成零；这里只传递，不另开计时器。
      */
     public ExecutionNotice started(long nanos) {
-        return new ExecutionNotice(actor, kind, id, name, detail, state, inputTokens, outputTokens, elapsedNanos, nanos);
+        return new ExecutionNotice(actor, kind, id, name, detail, state, inputTokens, outputTokens,
+                elapsedNanos, nanos, identity);
     }
 }
