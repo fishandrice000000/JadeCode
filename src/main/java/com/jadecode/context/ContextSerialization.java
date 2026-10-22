@@ -41,7 +41,7 @@ final class ContextSerialization {
         try {
             return Json.mapper().writeValueAsString(value);
         } catch (JsonProcessingException e) {
-            throw new IllegalStateException("序列化消息失败", e);
+            throw new IllegalStateException("Failed to serialize messages", e);
         }
     }
 }

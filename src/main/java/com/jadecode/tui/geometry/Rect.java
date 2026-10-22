@@ -13,7 +13,7 @@ public record Rect(int x, int y, int width, int height) {
     public static final Rect EMPTY = new Rect(0, 0, 0, 0);
 
     public Rect {
-        if (width < 0 || height < 0) throw new IllegalArgumentException("矩形宽高不能为负: " + width + "x" + height);
+        if (width < 0 || height < 0) throw new IllegalArgumentException("Rect width/height cannot be negative: " + width + "x" + height);
     }
 
     /** @return 右边界（不含），等于 x + width。 */

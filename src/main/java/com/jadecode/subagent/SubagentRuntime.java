@@ -128,8 +128,8 @@ public class SubagentRuntime {
     public SubagentRuntime(LlmClient client, Map<String, Tool> tools, String system, int maxTokens, Hooks hooks,
             ContextCompactor compactor) {
         if (compactor == null && tools.containsKey(COMPACT_TOOL)) {
-            throw new IllegalArgumentException("工具表注册了 " + COMPACT_TOOL
-                    + " 但构造时未提供 ContextCompactor:压缩请求将无人处理,请注入压缩器或移除该工具");
+            throw new IllegalArgumentException("Tool table registered " + COMPACT_TOOL
+                    + " but construction did not provide a ContextCompactor: compaction requests would be unhandled. Inject a compactor or remove the tool");
         }
         this.client = client;
         this.tools = tools;

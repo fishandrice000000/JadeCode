@@ -21,7 +21,7 @@ public final class SessionUsage {
             long reportedRequests, long missingRequests) {
         public Totals {
             if (inputTokens < 0 || outputTokens < 0 || cacheReadTokens < 0 || cacheWriteTokens < 0 || reportedRequests < 0 || missingRequests < 0)
-                throw new IllegalArgumentException("累计用量不能为负数");
+                throw new IllegalArgumentException("Accumulated usage cannot be negative");
         }
         public static Totals empty() { return new Totals(0, 0, 0, 0, 0, 0); }
         /** 缺报告也记一次，避免把“未报告”算成一次已报告为零的请求。 */
@@ -51,14 +51,14 @@ public final class SessionUsage {
 
     /** 恢复只读的旧事实，不再写一次日志；必须在新请求开始前调用。 */
     public synchronized void restore(SessionJournal writer, Iterable<com.jadecode.session.history.JournalEntry> entries) {
-        if (journal != null || !seen.isEmpty() || closed) throw new IllegalStateException("用量账本已使用");
+        if (journal != null || !seen.isEmpty() || closed) throw new IllegalStateException("Usage ledger is already in use");
         for (var entry : entries) if (entry.usage() != null) adopt(entry.usage());
         journal = java.util.Objects.requireNonNull(writer);
     }
 
     /** 请求前检查；不能在日志已经损坏后继续付费请求而只显示一份内存累计数。 */
     public synchronized void ensureOpen() {
-        if (closed || failed) throw new IllegalStateException("会话用量账本已关闭或保存失败");
+        if (closed || failed) throw new IllegalStateException("Session usage ledger is closed or failed to save");
     }
 
     /**
@@ -67,7 +67,7 @@ public final class SessionUsage {
      */
     public synchronized void record(UsageRecord record) {
         if (closed) {
-            if (!lateWarning) warnings.accept("[Warning] 会话已关闭，迟到的模型用量未保存；统计可能不完整。");
+            if (!lateWarning) warnings.accept("[Warning] Session is closed; late model usage was not saved. Statistics may be incomplete.");
             lateWarning = true; return;
         }
         ensureOpen();
@@ -77,8 +77,8 @@ public final class SessionUsage {
             adopt(record);
         } catch (IOException | RuntimeException failure) {
             failed = true;
-            warnings.accept("[Error] 会话用量保存失败，停止后续模型请求。");
-            throw new IllegalStateException("会话用量保存失败", failure);
+            warnings.accept("[Error] Failed to save session usage; later model requests are stopped.");
+            throw new IllegalStateException("Failed to save session usage", failure);
         }
     }
 

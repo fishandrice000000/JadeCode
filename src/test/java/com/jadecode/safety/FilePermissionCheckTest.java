@@ -44,7 +44,7 @@ class FilePermissionCheckTest {
     /** ③ ../ 越界:硬拒不命中,问询命中 */
     @Test
     void dotDotEscapeAsks() {
-        assertTrue(check("../x.txt", false).contains("工作区外"));
+        assertTrue(check("../x.txt", false).contains("outside the workspace"));
     }
 
     /** symlink 指向 /etc：写保护依真实目标生效。 */
@@ -62,7 +62,7 @@ class FilePermissionCheckTest {
         try {
             Files.createSymbolicLink(ws.resolve("link.txt"), outside);
 
-            assertTrue(check("link.txt", false).contains("工作区外"));
+            assertTrue(check("link.txt", false).contains("outside the workspace"));
         } finally {
             Files.deleteIfExists(outside);
         }

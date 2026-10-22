@@ -45,8 +45,8 @@ public final class PlainApproval implements Approval, AutoCloseable {
             var data = request.data();
             // 路径和工具参数可能包含控制字符；文本 run 也不能让它们改写审批画面。
             System.err.println(com.jadecode.tui.text.TextSanitizer.display("[Approval] " + data.actor() + " · " + data.reason() + "\n" + data.tool() + "(" + data.input() + ")"));
-            System.err.println(com.jadecode.tui.text.TextSanitizer.display(data.suggestion() == null ? "[1] 仅本次  [2] 允许此类命令（不可用）  [3] 拒绝"
-                    : "保存范围：" + data.suggestion().description() + "\n[1] 仅本次  [2] 允许此类命令  [3] 拒绝"));
+            System.err.println(com.jadecode.tui.text.TextSanitizer.display(data.suggestion() == null ? "[1] Once  [2] Allow this kind (unavailable)  [3] Deny"
+                    : "Long-term scope: " + data.suggestion().description() + "\n[1] Once  [2] Allow this kind  [3] Deny"));
             String answer = reader.readLine();
             if (answer == null) close();
             else {

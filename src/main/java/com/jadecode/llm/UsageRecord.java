@@ -15,6 +15,6 @@ public record UsageRecord(String requestId, String model, String actor, Purpose 
 
     public UsageRecord {
         if (requestId == null || requestId.isBlank() || model == null || actor == null || actor.isBlank() || purpose == null)
-            throw new IllegalArgumentException("用量记录缺少调用身份");
+            throw new IllegalArgumentException("Usage record is missing a call identity");
     }
 }

@@ -13,7 +13,7 @@ public interface LlmClient {
     /** 只列确实适配的请求设置；未知后端保留默认，不发送猜测参数。 */
     default java.util.List<ThinkingSettings> thinkingChoices() { return java.util.List.of(ThinkingSettings.DEFAULT); }
     /** DEFAULT 是否有已知服务商含义由适配器说明，不由 TUI 按模型名猜测。 */
-    default String thinkingLabel(ThinkingSettings value) { return value == ThinkingSettings.DEFAULT ? "默认" : value.value(); }
+    default String thinkingLabel(ThinkingSettings value) { return value == ThinkingSettings.DEFAULT ? "default" : value.value(); }
     /**
      * 同步调用一次模型。
      *

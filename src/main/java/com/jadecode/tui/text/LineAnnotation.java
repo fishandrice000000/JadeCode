@@ -17,8 +17,8 @@ public record LineAnnotation(Kind kind, String id, int columns, int rows) {
     public enum Kind { IMAGE, CURSOR, SOURCE_MAP }
 
     public LineAnnotation {
-        if (kind == null || id == null) throw new IllegalArgumentException("标记种类和 ID 不能为空");
-        if (columns < 0 || rows < 0) throw new IllegalArgumentException("占位尺寸不能为负");
+        if (kind == null || id == null) throw new IllegalArgumentException("Annotation kind and id cannot be empty");
+        if (columns < 0 || rows < 0) throw new IllegalArgumentException("Placeholder size cannot be negative");
     }
 
     /** 一张需要占 rows 行、columns 列的终端图片。 */

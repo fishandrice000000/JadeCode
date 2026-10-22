@@ -61,7 +61,7 @@ public final class TranscriptModel {
      */
     public TranscriptEntry delta(String request, String actor, TranscriptEntry.Kind kind, String text) {
         if (kind != TranscriptEntry.Kind.REPLY && kind != TranscriptEntry.Kind.THINKING)
-            throw new IllegalArgumentException("只有 Reply/Thinking 支持流式增量");
+            throw new IllegalArgumentException("Only Reply/Thinking support streaming deltas");
         TranscriptEntry entry = lastStream.get(request);
         if (entry == null || entry.kind() != kind) {
             entry = create(actor, kind, kind == TranscriptEntry.Kind.REPLY ? "Reply" : "Thinking");

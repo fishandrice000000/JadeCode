@@ -15,7 +15,7 @@ public record ModelMetadata(Limits limits, String source) {
     public record Limits(Integer contextWindowTokens, Integer maxInputTokens, Integer maxOutputTokens) {
         public Limits {
             for (Integer value : new Integer[] { contextWindowTokens, maxInputTokens, maxOutputTokens })
-                if (value != null && value < 1) throw new IllegalArgumentException("模型限额必须为正整数或未填写");
+                if (value != null && value < 1) throw new IllegalArgumentException("Model limits must be positive integers or left blank");
         }
         public static Limits unknown() { return new Limits(null, null, null); }
         public boolean known() { return contextWindowTokens != null || maxInputTokens != null || maxOutputTokens != null; }
@@ -29,9 +29,9 @@ public record ModelMetadata(Limits limits, String source) {
     /** 只展示已知值；来源仍留在元数据供诊断，不把未知占位与预算说明反复塞进 /model。 */
     public String describe() {
         var lines = new java.util.ArrayList<String>();
-        if (limits.contextWindowTokens() != null) lines.add("总上下文窗口：" + limits.contextWindowTokens() + " token");
-        if (limits.maxInputTokens() != null) lines.add("最大输入：" + limits.maxInputTokens() + " token");
-        if (limits.maxOutputTokens() != null) lines.add("最大输出：" + limits.maxOutputTokens() + " token");
+        if (limits.contextWindowTokens() != null) lines.add("Total context window: " + limits.contextWindowTokens() + " token");
+        if (limits.maxInputTokens() != null) lines.add("Max input: " + limits.maxInputTokens() + " token");
+        if (limits.maxOutputTokens() != null) lines.add("Max output: " + limits.maxOutputTokens() + " token");
         return String.join("\n", lines);
     }
 }

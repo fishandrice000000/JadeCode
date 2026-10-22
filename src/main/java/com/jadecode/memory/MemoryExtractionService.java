@@ -68,7 +68,7 @@ public final class MemoryExtractionService {
     public MemoryExtractionService(LlmClient client, MemoryStore store, int maxOutputTokens, int catalogChars) {
         this.client = Objects.requireNonNull(client, "client");
         this.store = Objects.requireNonNull(store, "store");
-        if (maxOutputTokens < 1 || catalogChars < 1) throw new IllegalArgumentException("记忆提取额度必须为正整数");
+        if (maxOutputTokens < 1 || catalogChars < 1) throw new IllegalArgumentException("Memory extraction budget must be a positive integer");
         this.maxOutputTokens = maxOutputTokens;
         this.catalogChars = catalogChars;
     }
@@ -161,7 +161,7 @@ public final class MemoryExtractionService {
     private static String requiredText(JsonNode candidate, String field) {
         JsonNode value = candidate.get(field);
         if (value == null || !value.isTextual() || value.textValue().isBlank()) {
-            throw new IllegalArgumentException("候选缺少文本字段: " + field);
+            throw new IllegalArgumentException("Candidate is missing a text field: " + field);
         }
         return value.textValue().strip();
     }
@@ -175,13 +175,13 @@ public final class MemoryExtractionService {
      */
     private static String dialogueText(List<Message> messages) {
         if (messages == null) {
-            throw new IllegalArgumentException("messages 不能为 null");
+            throw new IllegalArgumentException("messages cannot be null");
         }
         StringBuilder text = new StringBuilder();
         for (int i = Math.max(0, messages.size() - RECENT_MESSAGES); i < messages.size(); i++) {
             Message message = messages.get(i);
             if (message == null || message.role() == null || message.content() == null) {
-                throw new IllegalArgumentException("提取输入消息形状非法");
+                throw new IllegalArgumentException("Extraction input messages have an invalid shape");
             }
             List<String> parts = new ArrayList<>();
             for (ContentBlock block : message.content()) {
@@ -226,12 +226,12 @@ public final class MemoryExtractionService {
 
     /** 供用户辨别辅助能力为何失败；说明均由程序固定生成，不含任何模型／对话正文。 */
     public enum FailureReason {
-        NONE("无错误"), REQUEST_FAILED("辅助模型请求失败"), MISSING_RESPONSE("模型未返回消息"),
-        INVALID_BLOCKS("回复角色或内容块不符合 JSON 提取要求"), EMPTY_TEXT("回复没有正文，可能只有思考"),
-        OUTPUT_LIMIT("达到输出上限，候选可能被截断，请检查提取额度与模型最大输出限额"),
-        CONTEXT_LIMIT("辅助请求超过模型上下文窗口"), REFUSAL("模型拒绝了辅助提取请求"),
-        NOT_ARRAY("回复顶层不是 JSON 数组"), INVALID_JSON("正文不是完整 JSON，或存在额外说明／尾随数据"),
-        INPUT_LIMIT("完整已有目录超过配置额度，未发送截断目录；可调整 extractionCatalogChars");
+        NONE("No error"), REQUEST_FAILED("Auxiliary model request failed"), MISSING_RESPONSE("Model returned no message"),
+        INVALID_BLOCKS("Reply role or content blocks do not meet the JSON extraction contract"), EMPTY_TEXT("Reply has no text, possibly only thinking"),
+        OUTPUT_LIMIT("Output limit reached; candidates may be truncated. Check the extraction budget and the model output limit"),
+        CONTEXT_LIMIT("Auxiliary request exceeds the model context window"), REFUSAL("Model refused the auxiliary extraction request"),
+        NOT_ARRAY("Reply top level is not a JSON array"), INVALID_JSON("Text is not complete JSON, or contains extra explanation/trailing data"),
+        INPUT_LIMIT("The full existing catalog exceeds the configured budget; no truncated catalog was sent. Adjust extractionCatalogChars");
         private final String description;
         FailureReason(String description) { this.description = description; }
         public String description() { return description; }

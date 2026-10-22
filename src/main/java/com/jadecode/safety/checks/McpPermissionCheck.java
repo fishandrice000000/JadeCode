@@ -31,7 +31,7 @@ public final class McpPermissionCheck {
                 if (input.has("start_index") && (!input.path("start_index").isIntegralNumber()
                         || !input.path("start_index").canConvertToInt() || input.path("start_index").intValue() < 0))
                     throw new IllegalArgumentException();
-            } catch (IllegalArgumentException invalid) { error = "Fetch 需要无用户名密码的 HTTP(S) URL；max_length 为 1–10000，start_index 非负"; }
+            } catch (IllegalArgumentException invalid) { error = "Fetch requires an HTTP(S) URL without user info; max_length is 1–10000 and start_index must be non-negative"; }
         }
         // hostReadOnly 来自用户配置中的原始工具名白名单；没有声明就不能靠名字 search/get 自动放行。
         return new Analysis(modelName, resolver.workspaceReal(), List.of(), List.of(), !identity.hostReadOnly(),

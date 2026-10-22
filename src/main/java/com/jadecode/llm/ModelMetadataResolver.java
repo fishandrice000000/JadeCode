@@ -63,16 +63,16 @@ public final class ModelMetadataResolver {
     public ModelMetadata resolve(AppConfig config, JadeSettings.Models settings) {
         Limits official = Limits.unknown(); String source;
         Target target = target(config);
-        if (!settings.autoDiscover()) source = "自动查询已关闭，沿用现有配置";
-        else if (target == null) source = "未适配此端点的官方查询，沿用现有配置";
+        if (!settings.autoDiscover()) source = "Automatic discovery is off; using the existing configuration";
+        else if (target == null) source = "No official lookup is adapted for this endpoint; using the existing configuration";
         else {
             // 1. 缓存按实际端点和精确请求模型区分；命中有效记录才免去查询。
             Path cache = cacheFile(config, target);
             CatalogMatch cached = readCache(cache, target, config.model(), settings.cacheTtlHours());
             official = cached.limits();
-            if (official.known()) source = "有效官方参数缓存" + cached.matchNote(config.model());
+            if (official.known()) source = "Valid official parameter cache" + cached.matchNote(config.model());
             else {
-                source = "官方参数未取得，沿用现有配置";
+                source = "Official parameters were not obtained; using the existing configuration";
                 try {
                     Map<String, String> headers = target.deepseek()
                             ? Map.of("Authorization", "Bearer " + config.apiKey())
@@ -81,14 +81,14 @@ public final class ModelMetadataResolver {
                     CatalogMatch matched = parse(body, target.deepseek(), config.model());
                     official = matched.limits();
                     if (official.known()) {
-                        source = "官方 API" + matched.matchNote(config.model());
-                        if (!writeCache(cache, target, config.model(), matched)) source += "（缓存未写入，本次仍可使用）";
+                        source = "Official API" + matched.matchNote(config.model());
+                        if (!writeCache(cache, target, config.model(), matched)) source += " (cache not written; still usable for this run)";
                     } else source = matched.fallbackReason() + matched.matchNote(config.model());
                 } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt(); source = "参数查询被中断，沿用现有配置";
+                    Thread.currentThread().interrupt(); source = "Parameter lookup was interrupted; using the existing configuration";
                 } catch (IOException | RuntimeException unavailable) {
                     // 不能输出异常正文：第三方响应、URL 或 HTTP 调试信息可能含敏感资料。
-                    source = "官方参数查询失败，沿用现有配置";
+                    source = "Official parameter lookup failed; using the existing configuration";
                 }
             }
         }
@@ -96,7 +96,7 @@ public final class ModelMetadataResolver {
         Limits manual = settings.overrides().getOrDefault(config.model(), Limits.unknown());
         Limits effective = new Limits(choose(manual.contextWindowTokens(), official.contextWindowTokens()),
                 choose(manual.maxInputTokens(), official.maxInputTokens()), choose(manual.maxOutputTokens(), official.maxOutputTokens()));
-        if (manual.known()) source += "；合并此模型的手动限额（不超过已知官方值）";
+        if (manual.known()) source += "; merged manual limits for this model (never above known official values)";
         return new ModelMetadata(effective, source);
     }
 
@@ -136,15 +136,15 @@ public final class ModelMetadataResolver {
      * Anthropic retrieve 本身解析别名，返回的规范 ID 因而可以不同于请求名。
      */
     private static CatalogMatch parse(JsonNode root, boolean deepseek, String model) {
-        if (root == null || !root.isObject()) return CatalogMatch.absent("官方目录响应不是 JSON 对象，沿用现有配置");
+        if (root == null || !root.isObject()) return CatalogMatch.absent("Official catalog response is not a JSON object; using the existing configuration");
         if (!deepseek) {
             if (!root.path("id").isTextual() || root.path("id").textValue().isBlank())
-                return CatalogMatch.absent("官方目录未返回模型标识，沿用现有配置");
+                return CatalogMatch.absent("Official catalog returned no model identifiers; using the existing configuration");
             return new CatalogMatch(new Limits(null, positive(root, "max_input_tokens"), positive(root, "max_tokens")),
-                    root.path("id").textValue(), "官方目录包含模型，但未提供可用 token 限额，沿用现有配置");
+                    root.path("id").textValue(), "Official catalog contains the model but no usable token limits; using the existing configuration");
         }
         JsonNode data = root.path("data");
-        if (!data.isArray()) return CatalogMatch.absent("官方目录缺少模型 data 数组，沿用现有配置");
+        if (!data.isArray()) return CatalogMatch.absent("Official catalog is missing the model data array; using the existing configuration");
         // 即使官方兼容别名表有映射，也优先采用目录实际给出的精确记录，避免覆盖更明确的服务端事实。
         JsonNode item = findModel(data, model);
         String lookupModel = model;
@@ -152,9 +152,9 @@ public final class ModelMetadataResolver {
             lookupModel = deepseekAlias(model);
             if (!lookupModel.equals(model)) item = findModel(data, lookupModel);
         }
-        if (item == null) return CatalogMatch.absent("官方目录没有当前模型或其已确认兼容别名，沿用现有配置");
+        if (item == null) return CatalogMatch.absent("Official catalog has no current model or confirmed compatible alias; using the existing configuration");
         return new CatalogMatch(new Limits(positive(item, "context_window"), null, positive(item, "max_output_tokens")),
-                lookupModel, "官方目录包含模型，但未提供可用 token 限额，沿用现有配置");
+                lookupModel, "Official catalog contains the model but no usable token limits; using the existing configuration");
     }
 
     /** 只寻找完全相等的服务端模型 ID；结果缺字段仍是这个模型，不能偷换成另一项。 */
@@ -180,7 +180,7 @@ public final class ModelMetadataResolver {
     private record CatalogMatch(Limits limits, String lookupModel, String fallbackReason) {
         private static CatalogMatch absent(String reason) { return new CatalogMatch(Limits.unknown(), "", reason); }
         private String matchNote(String requested) {
-            return lookupModel.isEmpty() || lookupModel.equals(requested) ? "" : "（目录匹配：" + requested + " → " + lookupModel + "）";
+            return lookupModel.isEmpty() || lookupModel.equals(requested) ? "" : " (catalog match: " + requested + " → " + lookupModel + ")";
         }
     }
 
@@ -195,7 +195,7 @@ public final class ModelMetadataResolver {
         try {
             byte[] bytes = (config.baseUrl() + "\n" + target.endpoint() + "\n" + config.model()).getBytes(StandardCharsets.UTF_8);
             return cacheDirectory.resolve(HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)) + ".json");
-        } catch (java.security.NoSuchAlgorithmException impossible) { throw new IllegalStateException("JDK 缺少 SHA-256", impossible); }
+        } catch (java.security.NoSuchAlgorithmException impossible) { throw new IllegalStateException("The JDK does not provide SHA-256", impossible); }
     }
 
     /** 缓存只是一份可丢弃的派生资料；坏文件、过期或时钟倒退不会阻止查询及原会话启动。 */
@@ -247,10 +247,10 @@ public final class ModelMetadataResolver {
             headers.forEach(builder::header);
             pending = http.sendAsync(builder.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
             var response = pending.get(timeoutMillis, TimeUnit.MILLISECONDS);
-            if (response.statusCode() != 200 || response.body().length() > 2_000_000) throw new IOException("模型目录查询未成功");
+            if (response.statusCode() != 200 || response.body().length() > 2_000_000) throw new IOException("Model catalog lookup did not succeed");
             return Json.mapper().reader().with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS).readTree(response.body());
         } catch (java.util.concurrent.ExecutionException | java.util.concurrent.TimeoutException failure) {
-            throw new IOException("模型目录查询失败或超时");
+            throw new IOException("Model catalog lookup failed or timed out");
         } finally {
             // shutdownNow 不像 close 那样无限等外部服务，初始化不能因元数据连接挂住。
             if (pending != null) pending.cancel(true);

@@ -18,12 +18,12 @@ import picocli.CommandLine.Option;
  * <p>主线程只在操作需要用户同意时读终端，不接收第二项任务。
  * 当前任务必须等待的后台结果仍要处理完；结束后关闭会话，所有剩余命令也会停止。</p>
  */
-@Command(name = "run", description = "执行一次任务并退出")
+@Command(name = "run", description = "Run one task and exit")
 public class RunCommand implements Callable<Integer> {
     /** picocli 解析到的任务文字，一次只执行这一项。 */
-    @Parameters(paramLabel = "PROMPT", description = "任务描述(含空格请加引号)")
+    @Parameters(paramLabel = "PROMPT", description = "Task description (quote it if it contains spaces)")
     private String prompt;
-    @Option(names = "--permission", description = "本次权限：read-only / workspace / auto-review / full-access")
+    @Option(names = "--permission", description = "Permission for this run: read-only / workspace / auto-review / full-access")
     private String permission;
 
     /**
@@ -38,7 +38,7 @@ public class RunCommand implements Callable<Integer> {
     public Integer call() {
         // 没有任务就直接报错，不先读配置；执行中出的参数错误不能在这里当成空请求处理。
         if (prompt == null || prompt.isBlank()) {
-            System.err.println("任务描述不能为空");
+            System.err.println("Task description cannot be empty");
             return 1;
         }
         com.jadecode.safety.PermissionProfile override;
@@ -59,14 +59,14 @@ public class RunCommand implements Callable<Integer> {
         } catch (ExecutionException failure) {
             // 运行器已经显示执行错误，不重复打印；拿到后台 ID 本身也不能当成任务成功。
             if (failure.getCause() instanceof java.util.concurrent.RejectedExecutionException) {
-                System.err.println("请求未被接收: " + failure.getCause().getMessage());
+                System.err.println("Request was not accepted: " + failure.getCause().getMessage());
             }
             return 1;
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             return 1;
         } catch (Exception failure) {
-            System.err.println("执行未完成: " + failure.getMessage());
+            System.err.println("Execution did not finish: " + failure.getMessage());
             return 1;
         } finally {
             com.jadecode.util.Ansi.useTerminal(previousColors);

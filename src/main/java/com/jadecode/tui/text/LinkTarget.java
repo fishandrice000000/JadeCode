@@ -16,18 +16,18 @@ public record LinkTarget(String uri) {
     private static final int MAX_LENGTH = 4096;
 
     public LinkTarget {
-        if (uri == null || uri.isBlank()) throw new IllegalArgumentException("链接不能为空");
-        if (uri.length() > MAX_LENGTH) throw new IllegalArgumentException("链接过长");
+        if (uri == null || uri.isBlank()) throw new IllegalArgumentException("Link cannot be empty");
+        if (uri.length() > MAX_LENGTH) throw new IllegalArgumentException("Link is too long");
         for (int i = 0; i < uri.length(); i++) {
             char c = uri.charAt(i);
             if (Character.isISOControl(c) || Character.isWhitespace(c) || c == 0x7f)
-                throw new IllegalArgumentException("链接含空白或控制字符");
+                throw new IllegalArgumentException("Link contains whitespace or control characters");
         }
         int colon = uri.indexOf(':');
         if (colon <= 0 || !uri.substring(0, colon).matches("[A-Za-z][A-Za-z0-9+.\\-]*"))
-            throw new IllegalArgumentException("链接缺少合法 scheme");
+            throw new IllegalArgumentException("Link is missing a valid scheme");
         if (uri.regionMatches(true, 0, "javascript:", 0, 11))
-            throw new IllegalArgumentException("不允许可执行的 javascript 链接");
+            throw new IllegalArgumentException("Executable javascript links are not allowed");
     }
 
     /**

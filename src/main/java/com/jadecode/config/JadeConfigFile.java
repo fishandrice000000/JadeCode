@@ -95,13 +95,13 @@ public final class JadeConfigFile implements com.jadecode.safety.rules.Permissio
     /** 严格读取 TUI 键位覆盖：动作 ID→非空字符串数组，空数组允许清除默认键。 */
     private static java.util.Map<String, java.util.List<String>> keybindings(ObjectNode ui) throws IOException {
         if (!ui.has("keybindings")) return java.util.Map.of();
-        if (!ui.path("keybindings").isObject()) throw new IOException("config.tui.keybindings 必须是对象");
+        if (!ui.path("keybindings").isObject()) throw new IOException("config.tui.keybindings must be an object");
         var result = new java.util.LinkedHashMap<String, java.util.List<String>>();
         for (var entry : ui.path("keybindings").properties()) {
-            if (!entry.getValue().isArray()) throw new IOException("config.tui.keybindings." + entry.getKey() + " 必须是数组");
+            if (!entry.getValue().isArray()) throw new IOException("config.tui.keybindings." + entry.getKey() + " must be an array");
             var keys = new java.util.ArrayList<String>();
             for (var item : entry.getValue()) {
-                if (!item.isTextual()) throw new IOException("config.tui.keybindings 只能包含字符串");
+                if (!item.isTextual()) throw new IOException("config.tui.keybindings may only contain strings");
                 keys.add(item.textValue());
             }
             result.put(entry.getKey(), java.util.List.copyOf(keys));
@@ -111,14 +111,14 @@ public final class JadeConfigFile implements com.jadecode.safety.rules.Permissio
 
     /** 必填字符串字段；空串允许。 */
     private static String string(ObjectNode node, String key, String path) throws IOException {
-        if (!node.path(key).isTextual()) throw new IOException("config." + path.substring(path.indexOf('.') + 1) + " 必须为字符串");
+        if (!node.path(key).isTextual()) throw new IOException("config." + path.substring(path.indexOf('.') + 1) + " must be a string");
         return node.path(key).textValue();
     }
 
     /** 可选字符串：字段存在时必须是字符串，null 不写入。 */
     private static String optionalString(ObjectNode node, String key, String path) throws IOException {
         if (!node.has(key)) return "";
-        if (!node.path(key).isTextual()) throw new IOException("config." + path + " 必须为字符串");
+        if (!node.path(key).isTextual()) throw new IOException("config." + path + " must be a string");
         return node.path(key).textValue();
     }
 
@@ -161,7 +161,7 @@ public final class JadeConfigFile implements com.jadecode.safety.rules.Permissio
     /** 将可选覆盖值合成完整快照，不修改读取的树，也不把配置正文写入异常。 */
     private static JadeSettings parse(ObjectNode root) throws IOException {
         if (root.has("version") && (!root.get("version").isInt() || root.get("version").intValue() != 1))
-            throw new IOException("config.version 必须为 1");
+            throw new IOException("config.version must be 1");
         JadeSettings d = JadeSettings.defaults();
         ObjectNode ui = section(root, "tui"), c = section(root, "compaction"), l = section(c, "limits");
         // 1. 未填写的 UI 字段用默认值；显式写错则报错，不能把 "false" 字符串当作布尔值。
@@ -193,7 +193,7 @@ public final class JadeConfigFile implements com.jadecode.safety.rules.Permissio
                     ui.has("lightTheme") ? string(ui, "lightTheme", "tui.lightTheme") : dt.lightTheme(),
                     ui.has("darkTheme") ? string(ui, "darkTheme", "tui.darkTheme") : dt.darkTheme());
         } catch (IllegalArgumentException invalid) {
-            throw new IOException("config.tui 设置无效: " + invalid.getMessage(), invalid);
+            throw new IOException("Invalid config.tui settings: " + invalid.getMessage(), invalid);
         }
         CompactionPolicy p = d.compaction();
         // 2. 开关与数值分开：保存某层的阈值不意味着已经打开那层策略。
@@ -220,7 +220,7 @@ public final class JadeConfigFile implements com.jadecode.safety.rules.Permissio
             var field = fields.next();
             String path = "config.modelMetadata.overrides." + field.getKey();
             if (field.getKey().isBlank() || !(field.getValue() instanceof ObjectNode values))
-                throw new IOException("config.modelMetadata.overrides 必须按非空模型 ID 填写对象");
+                throw new IOException("config.modelMetadata.overrides must map non-empty model ids to objects");
             overrides.put(field.getKey(), new com.jadecode.llm.ModelMetadata.Limits(
                     optionalLimit(values, "contextWindowTokens", path), optionalLimit(values, "maxInputTokens", path),
                     optionalLimit(values, "maxOutputTokens", path)));
@@ -233,9 +233,9 @@ public final class JadeConfigFile implements com.jadecode.safety.rules.Permissio
         ObjectNode reasoning = section(root, "thinking");
         com.jadecode.llm.ThinkingSettings thinking = d.thinking();
         if (reasoning.has("effort")) {
-            if (!reasoning.get("effort").isTextual()) throw new IOException("config.thinking.effort 必须是字符串");
+            if (!reasoning.get("effort").isTextual()) throw new IOException("config.thinking.effort must be a string");
             try { thinking = com.jadecode.llm.ThinkingSettings.parse(reasoning.get("effort").textValue()); }
-            catch (IllegalArgumentException invalid) { throw new IOException("config.thinking.effort 无效"); }
+            catch (IllegalArgumentException invalid) { throw new IOException("Invalid config.thinking.effort"); }
         }
         var memorySettings = new JadeSettings.Memory(bool(memory, "enabled", d.memory().enabled()), extractionTokens,
                 number(memory, "recallMaxOutputTokens", d.memory().recallMaxOutputTokens(), 1, "config.memory"),
@@ -256,15 +256,15 @@ public final class JadeConfigFile implements com.jadecode.safety.rules.Permissio
         ObjectNode configured = section(mcp, "servers");
         var servers = new java.util.LinkedHashMap<String, com.jadecode.mcp.McpServerConfig>();
         for (var field : configured.properties()) {
-            if (!(field.getValue() instanceof ObjectNode value)) throw new IOException("config.mcp.servers 中的服务必须为对象");
+            if (!(field.getValue() instanceof ObjectNode value)) throw new IOException("Each config.mcp.servers entry must be an object");
             // 拼错 transport 或 command 不能静默回退；第一版只支持 stdio，没有网络 transport 隐式降级。
             for (var property : value.properties()) {
                 String key = property.getKey();
                 if (!java.util.Set.of("enabled", "command", "args", "cwd", "startupTimeoutSeconds", "callTimeoutSeconds",
-                        "maxResultChars", "readOnlyTools").contains(key)) throw new IOException("config.mcp.servers 包含不支持的字段");
+                        "maxResultChars", "readOnlyTools").contains(key)) throw new IOException("config.mcp.servers contains an unsupported field");
             }
             if (!value.path("command").isTextual() || value.has("cwd") && !value.path("cwd").isTextual())
-                throw new IOException("config.mcp command/cwd 必须为字符串");
+                throw new IOException("config.mcp command/cwd must be strings");
             try {
                 servers.put(field.getKey(), new com.jadecode.mcp.McpServerConfig(bool(value, "enabled", true, "config.mcp"),
                         value.path("command").textValue(), mcpStrings(value, "args"), value.path("cwd").asText(""),
@@ -272,19 +272,19 @@ public final class JadeConfigFile implements com.jadecode.safety.rules.Permissio
                         number(value, "callTimeoutSeconds", 30, 1, "config.mcp"),
                         number(value, "maxResultChars", 20_000, 1, "config.mcp"),
                         new java.util.LinkedHashSet<>(mcpStrings(value, "readOnlyTools"))));
-            } catch (IllegalArgumentException invalid) { throw new IOException("config.mcp 服务参数或范围无效", invalid); }
+            } catch (IllegalArgumentException invalid) { throw new IOException("Invalid config.mcp server arguments or range", invalid); }
         }
         try { return new JadeSettings.Mcp(servers); }
-        catch (IllegalArgumentException invalid) { throw new IOException("config.mcp 服务数量或名称无效", invalid); }
+        catch (IllegalArgumentException invalid) { throw new IOException("Invalid config.mcp server count or name", invalid); }
     }
 
     /** 严格读取字符串数组；缺失为空，不把对象/数字宽松转换成可执行参数。 */
     private static java.util.List<String> mcpStrings(ObjectNode value, String key) throws IOException {
         if (!value.has(key)) return java.util.List.of();
-        if (!value.path(key).isArray() || value.path(key).size() > 64) throw new IOException("config.mcp." + key + " 必须为有限字符串数组");
+        if (!value.path(key).isArray() || value.path(key).size() > 64) throw new IOException("config.mcp." + key + " must be a bounded string array");
         var result = new java.util.ArrayList<String>();
         for (var item : value.path(key)) {
-            if (!item.isTextual() || item.textValue().length() > 8192) throw new IOException("config.mcp." + key + " 包含无效参数");
+            if (!item.isTextual() || item.textValue().length() > 8192) throw new IOException("config.mcp." + key + " contains an invalid argument");
             result.add(item.textValue());
         }
         return java.util.List.copyOf(result);
@@ -321,7 +321,7 @@ public final class JadeConfigFile implements com.jadecode.safety.rules.Permissio
                 for (var id : p.path("disabledDefaults")) { if (!id.isTextual()) throw new IllegalArgumentException(); disabled.add(id.textValue()); }
             }
             return new JadeSettings.Permissions(profile, rules, disabled);
-        } catch (Exception invalid) { throw new IOException("config.permissions 无效，请检查档位、规则及默认保护编号"); }
+        } catch (Exception invalid) { throw new IOException("Invalid config.permissions; check the profile, rules and default protection ids"); }
     }
 
     /** 手动限额允许省略／null 表示未知；其它值必须是可表示的正整数，不能把字符串数字当事实。 */
@@ -332,7 +332,7 @@ public final class JadeConfigFile implements com.jadecode.safety.rules.Permissio
     /** 缺省章节是空对象；显式填成 null／数组等则是错误，不把拼错的配置当作未填写。 */
     private static ObjectNode section(ObjectNode root, String key) throws IOException {
         if (!root.has(key)) return Json.mapper().createObjectNode();
-        if (!(root.get(key) instanceof ObjectNode object)) throw new IOException("config." + key + " 必须是对象");
+        if (!(root.get(key) instanceof ObjectNode object)) throw new IOException("config." + key + " must be an object");
         return object;
     }
     /** 只接受真正的 JSON boolean；缺省才使用 fallback，null 或字符串不是“未填写”。 */
@@ -341,7 +341,7 @@ public final class JadeConfigFile implements com.jadecode.safety.rules.Permissio
     }
     private static boolean bool(ObjectNode root, String key, boolean fallback, String section) throws IOException {
         if (!root.has(key)) return fallback;
-        if (!root.get(key).isBoolean()) throw new IOException(section + "." + key + " 必须是布尔值");
+        if (!root.get(key).isBoolean()) throw new IOException(section + "." + key + " must be a boolean");
         return root.get(key).booleanValue();
     }
     /** 限制为可装入 Java int 的整数，避免小数被截断或过大数字溢出后变成负预算。 */
@@ -353,7 +353,7 @@ public final class JadeConfigFile implements com.jadecode.safety.rules.Permissio
         if (!root.has(key)) return fallback;
         JsonNode value = root.get(key);
         if (!value.isIntegralNumber() || !value.canConvertToInt() || value.intValue() < minimum)
-            throw new IOException(section + "." + key + " 必须是大于等于 " + minimum + " 的整数");
+            throw new IOException(section + "." + key + " must be an integer greater than or equal to " + minimum + "");
         return value.intValue();
     }
     /** 目标比例必须有限且严格在 0 与 1 之间，否则不能表示“把历史缩短到多少”。 */
@@ -361,7 +361,7 @@ public final class JadeConfigFile implements com.jadecode.safety.rules.Permissio
         if (!root.has("targetRatio")) return fallback;
         JsonNode value = root.get("targetRatio"); double ratio = value.asDouble(Double.NaN);
         if (!value.isNumber() || !Double.isFinite(ratio) || ratio <= 0 || ratio >= 1)
-            throw new IOException("config.compaction.limits.targetRatio 必须在 0 与 1 之间");
+            throw new IOException("config.compaction.limits.targetRatio must be between 0 and 1");
         return ratio;
     }
     /** 主题名只采用程序提供的两项，不将配置文字拼成 ANSI 指令或任意文件路径。 */
@@ -371,7 +371,7 @@ public final class JadeConfigFile implements com.jadecode.safety.rules.Permissio
         // 这里只拒绝空值和控制字符；主题是否存在/可读由 ThemeManager 在加载时明确报错。
         if (value == null || !value.isTextual() || value.textValue().isBlank()
                 || value.textValue().chars().anyMatch(Character::isISOControl))
-            throw new IOException("config." + field + " 必须是 system/auto/dark/light 或自定义主题标识");
+            throw new IOException("config." + field + " must be system/auto/dark/light or a custom theme id");
         return value.textValue().strip();
     }
     /** 文件不存在视为缺省，已存在但空白／损坏则失败；异常不附带 JSON 正文。 */
@@ -381,9 +381,9 @@ public final class JadeConfigFile implements com.jadecode.safety.rules.Permissio
         try { node = Json.mapper().readTree(Files.readString(source)); }
         catch (com.fasterxml.jackson.core.JsonProcessingException invalid) {
             // 解析器的原始异常可能附带正文片段；配置错误只报位置，不泄漏文件内容。
-            throw new IOException("配置 JSON 无效：" + source);
+            throw new IOException("Invalid configuration JSON: " + source);
         }
-        if (!(node instanceof ObjectNode object)) throw new IOException("配置必须是 JSON 对象：" + source);
+        if (!(node instanceof ObjectNode object)) throw new IOException("Configuration must be a JSON object: " + source);
         return object;
     }
     private static ObjectNode merge(ObjectNode target, ObjectNode source) { source.fields().forEachRemaining(e -> target.set(e.getKey(), e.getValue())); return target; }

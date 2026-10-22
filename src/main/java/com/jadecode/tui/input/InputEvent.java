@@ -21,7 +21,7 @@ public record InputEvent(Kind kind, KeyChord key, String text, Mouse mouse, Term
     public enum Kind { KEY, TEXT, PASTE, MOUSE, REPLY, RESIZE, EOF, FAILURE }
 
     public InputEvent {
-        if (kind == null) throw new IllegalArgumentException("事件种类不能为空");
+        if (kind == null) throw new IllegalArgumentException("Event kind cannot be empty");
         if (kind == Kind.TEXT && text == null) text = "";
     }
 
@@ -62,7 +62,7 @@ public record InputEvent(Kind kind, KeyChord key, String text, Mouse mouse, Term
 
     /** 读取/终端故障；消息只用于诊断，不能当用户输入。 */
     public static InputEvent failure(String message, long sequence, long epoch) {
-        return new InputEvent(Kind.FAILURE, null, message == null ? "输入读取失败" : message, null, null, sequence, epoch);
+        return new InputEvent(Kind.FAILURE, null, message == null ? "Input read failed" : message, null, null, sequence, epoch);
     }
 
     /** @return 是否为可执行的动作按键（非释放、非粘贴/回复）。 */
@@ -91,7 +91,7 @@ public record InputEvent(Kind kind, KeyChord key, String text, Mouse mouse, Term
      */
     public record TerminalReply(String kind, String payload) {
         public TerminalReply {
-            if (kind == null) throw new IllegalArgumentException("回复类型不能为空");
+            if (kind == null) throw new IllegalArgumentException("Reply type cannot be empty");
             if (payload == null) payload = "";
         }
     }

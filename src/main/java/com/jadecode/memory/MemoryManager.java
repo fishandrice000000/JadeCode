@@ -87,16 +87,16 @@ public final class MemoryManager {
         try {
             var result = recall.recall(request);
             if (result.usedFallback()) {
-                warnings.accept("[Warning] [Memory] 召回选择未完成：" + result.reason().description() + "；已使用全库关键词降级");
+                warnings.accept("[Warning] [Memory] Recall selection did not finish: " + result.reason().description() + "; fell back to keyword search over the full library");
             }
             if (!result.background().isEmpty()) {
                 system += "\n\nRecalled memory reference data (JSON):\n" + result.background();
             }
         } catch (IOException failure) {
             // 记忆是辅助知识，不让库故障阻止用户执行当前任务；只报错误类别，不回显正文。
-            reportIo("召回", failure);
+            reportIo("recall", failure);
         } catch (RuntimeException failure) {
-            reportRuntime("召回", failure);
+            reportRuntime("recall", failure);
         }
         return system;
     }
@@ -119,52 +119,52 @@ public final class MemoryManager {
             var extracted = extraction.extract(messages);
             if (extracted.status() != MemoryExtractionService.Status.SUCCESS) {
                 // reason 是程序定义的说明，不回显模型回复、思考、对话或异常正文。
-                warnings.accept("[Warning] [Memory] 提取未完成: " + extracted.status() + "（" + extracted.reason().description()
-                        + "），未写入候选记忆；主任务结果保留");
+                warnings.accept("[Warning] [Memory] Extraction did not finish: " + extracted.status() + " (" + extracted.reason().description()
+                        + "); no candidate memories were written; the main task result is preserved");
                 return;
             }
             if (extracted.stored() == 0) {
                 if (extracted.ignored() > 0) {
-                    information.accept("[Memory] 未新增记忆，跳过候选 " + extracted.ignored() + skippedDetail(extracted));
+                    information.accept("[Memory] No new memories; skipped candidates " + extracted.ignored() + skippedDetail(extracted));
                 }
                 return;
             }
-            information.accept("[Memory] 已新增 " + extracted.stored() + " 条记忆，跳过候选 " + extracted.ignored() + skippedDetail(extracted));
+            information.accept("[Memory] Added " + extracted.stored() + " memories; skipped candidates " + extracted.ignored() + skippedDetail(extracted));
 
             // 2. 新增完成才检查整理阈值。整理失败不会撤销已经成功保存的新记忆。
             var result = consolidation.consolidate();
             switch (result.status()) {
-                case APPLIED -> information.accept("[Memory] 已整理记忆: " + result.before() + " → " + result.after());
+                case APPLIED -> information.accept("[Memory] Consolidated memories: " + result.before() + " → " + result.after());
                 case SKIPPED -> { /* 数量不足是正常状态，不制造一次虚假的模型调用。 */ }
-                default -> warnings.accept("[Warning] [Memory] 整理未完成: " + result.status() + "（" + result.reason().description()
-                        + "）；原库保留");
+                default -> warnings.accept("[Warning] [Memory] Consolidation did not finish: " + result.status() + " (" + result.reason().description()
+                        + "); the original library is preserved");
             }
         } catch (IOException failure) {
             // 主任务回复已经在 messages 中。报告维护失败后正常返回，由 CLI 展示原本的任务结果。
-            reportIo("提取或整理", failure);
+            reportIo("extraction or consolidation", failure);
         } catch (RuntimeException failure) {
             // 记忆是辅助能力；模型适配/解析等程序异常不能把已经生成的主回复改成任务失败。
             // 不 catch Error；内存耗尽、线程死亡等 JVM 故障不伪装成可继续的普通维护问题。
-            reportRuntime("提取或整理", failure);
+            reportRuntime("extraction or consolidation", failure);
         }
     }
 
     /** 只列已经统计出的原因，不再用“可能是……”猜测被跳过条目的性质。 */
     private static String skippedDetail(MemoryExtractionService.ExtractionResult result) {
-        return result.ignored() == 0 ? "" : "；同名 " + result.duplicateNames()
-                + "，格式无效 " + result.invalidCandidates() + "，仅限当前任务 " + result.currentTaskCandidates();
+        return result.ignored() == 0 ? "" : "; duplicate names " + result.duplicateNames()
+                + ", invalid format " + result.invalidCandidates() + ", current-task only " + result.currentTaskCandidates();
     }
 
     /** 只报异常类型，不打印可能包含正文/凭据的 message 或 cause；不谎称维护成功。 */
     private void reportRuntime(String phase, RuntimeException failure) {
-        warnings.accept("[Warning] [Memory] " + phase + "内部错误: " + failure.getClass().getSimpleName()
-                + "；主任务结果保留，记忆维护未完成");
+        warnings.accept("[Warning] [Memory] " + phase + " internal error: " + failure.getClass().getSimpleName()
+                + "; the main task result is preserved but memory maintenance did not finish");
     }
 
     /** IO 故障是辅助能力失败，不是“没有值得保存的知识”；不把异常正文或秘密写进诊断。 */
     private void reportIo(String phase, IOException failure) {
-        warnings.accept("[Warning] [Memory] " + phase + " IO 失败: " + failure.getClass().getSimpleName()
-                + "，附带清理/恢复错误 " + failure.getSuppressed().length
-                + "；主任务结果保留，记忆维护不视为成功");
+        warnings.accept("[Warning] [Memory] " + phase + " IO failure: " + failure.getClass().getSimpleName()
+                + ", with cleanup/recovery errors: " + failure.getSuppressed().length
+                + "; the main task result is preserved, but memory maintenance is not considered successful");
     }
 }

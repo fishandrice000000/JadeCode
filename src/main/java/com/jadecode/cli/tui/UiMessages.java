@@ -98,10 +98,10 @@ public final class UiMessages {
     public static String permission(String label) {
         if (label == null || label.isBlank()) return "";
         return switch (label) {
-            case "只读", "Read only", "READ_ONLY" -> "read-only";
-            case "工作区", "Workspace", "WORKSPACE" -> "workspace";
-            case "自动审查", "Auto review", "AUTO_REVIEW" -> "auto-review";
-            case "完全访问", "Full Access", "FULL_ACCESS" -> "full-access";
+            case "Read only", "READ_ONLY" -> "read-only";
+            case "Workspace", "WORKSPACE" -> "workspace";
+            case "Approve for Me", "Auto review", "AUTO_REVIEW" -> "auto-review";
+            case "Full Access", "FULL_ACCESS" -> "full-access";
             default -> label;
         };
     }

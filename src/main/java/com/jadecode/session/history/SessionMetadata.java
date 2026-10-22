@@ -23,7 +23,7 @@ public record SessionMetadata(int version, String id, String workspace, String t
     public SessionMetadata {
         requireId(id);
         if (version < 1 || version > VERSION || workspace == null || workspace.isBlank() || title == null || model == null)
-            throw new IllegalArgumentException("会话清单字段或版本无效");
+            throw new IllegalArgumentException("Session manifest fields or version are invalid");
         if (usage == null) usage = SessionUsage.Totals.empty();
         Instant.parse(createdAt); Instant.parse(updatedAt);
     }
@@ -31,17 +31,25 @@ public record SessionMetadata(int version, String id, String workspace, String t
     /** UUID.fromString 容忍部分短写形式，这里额外要求标准的小写完整形式。 */
     public static void requireId(String id) {
         if (id == null || !UUID.fromString(id).toString().equals(id))
-            throw new IllegalArgumentException("会话 ID 必须是完整 UUID");
+            throw new IllegalArgumentException("Session ID must be a complete UUID");
     }
 
     /** 新日志采用首条请求作为标题；以后只更新时间，不为标题额外请求模型。 */
     SessionMetadata updated(String firstPrompt, String time) {
         String next = title;
-        if (!customTitle && title.equals("新会话") && firstPrompt != null && !firstPrompt.isBlank()) {
+        if (!customTitle && isDefaultTitle(title) && firstPrompt != null && !firstPrompt.isBlank()) {
             next = firstPrompt.replaceAll("\\s+", " ").strip();
             next = next.substring(0, Math.min(100, next.length()));
         }
         return new SessionMetadata(VERSION, id, workspace, next, createdAt, time, model, customTitle, usage, thinking);
+    }
+
+    /**
+     * 新日志的默认标题是英文；旧版本持久化的默认标题仍按“未命名”处理，
+     * 这样恢复旧会话时首条请求仍能补上标题，同时不修改历史原文。
+     */
+    private static boolean isDefaultTitle(String value) {
+        return value.equals("New session") || value.equals("新会话");
     }
 
     /** 写入用量后更新列表用的汇总；逐次日志仍是恢复统计的依据。 */
@@ -58,10 +66,10 @@ public record SessionMetadata(int version, String id, String workspace, String t
     }
     /** 拒绝控制字符、换行及超长名称，避免列表与退出提示被名称内容扰乱。 */
     public static String validTitle(String value) {
-        if (value == null || value.isBlank()) throw new IllegalArgumentException("会话名称不能为空");
+        if (value == null || value.isBlank()) throw new IllegalArgumentException("Session name cannot be empty");
         String title = value.strip();
         if (title.codePointCount(0, title.length()) > 100 || title.codePoints().anyMatch(Character::isISOControl))
-            throw new IllegalArgumentException("会话名称限 100 个字符，不能包含换行或控制字符");
+            throw new IllegalArgumentException("Session name is limited to 100 characters and cannot contain newlines or control characters");
         return title;
     }
 }

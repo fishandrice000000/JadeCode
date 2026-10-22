@@ -12,7 +12,7 @@ public final class FilePermissionCheck implements ToolPermissionCheck {
     @Override public Analysis analyze(String tool, ObjectNode input) {
         Path cwd = resolver.workspaceReal();
         if (!input.path("path").isTextual() || input.path("path").textValue().isBlank())
-            return new Analysis(tool, cwd, List.of(), List.of(), false, false, false, "工具缺少非空 path");
+            return new Analysis(tool, cwd, List.of(), List.of(), false, false, false, "Tool is missing a non-empty path");
         // 同一份解析器交给实际文件工具，不能让检查与执行各自使用不同 cwd。
         Path target = resolver.resolve(input.path("path").textValue());
         boolean write = !tool.equals("read_file");

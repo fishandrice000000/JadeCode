@@ -101,12 +101,12 @@ public final class ThemeManager implements AutoCloseable {
         long ticket = ++request;
         try {
             Loaded candidate = load(identifier, lightTheme, darkTheme);
-            if (ticket != request) return "主题选择已变化";
+            if (ticket != request) return "Theme selection changed";
             preview = candidate.theme(); previewPanelExplicit = candidate.panelBgExplicit();
             return "";
         } catch (RuntimeException failure) {
             if (ticket == request) preview = committed;
-            return "主题无法读取: " + failure.getMessage();
+            return "Cannot read theme: " + failure.getMessage();
         }
     }
 
@@ -197,7 +197,7 @@ public final class ThemeManager implements AutoCloseable {
                     } catch (RuntimeException failure) { onError.accept(failure.getMessage()); }
                 }
             } catch (IOException | InterruptedException unavailable) {
-                if (!closed.get()) onError.accept("主题监听停止: " + unavailable.getMessage());
+                if (!closed.get()) onError.accept("Theme watcher stopped: " + unavailable.getMessage());
             }
         });
     }
@@ -249,7 +249,7 @@ public final class ThemeManager implements AutoCloseable {
         if (name.endsWith(".json") || name.contains("/") || name.contains("\\")) {
             return readDefinition(Path.of(name));
         }
-        if (customDirectory == null) throw new IllegalArgumentException("未知主题: " + name);
+        if (customDirectory == null) throw new IllegalArgumentException("Unknown theme: " + name);
         Path file = customDirectory.resolve(name + ".json");
         return readDefinition(file);
     }
@@ -264,7 +264,7 @@ public final class ThemeManager implements AutoCloseable {
             String text = java.nio.file.Files.readString(file, java.nio.charset.StandardCharsets.UTF_8);
             return ThemePalette.parse(text);
         } catch (IOException failure) {
-            throw new IllegalArgumentException("无法读取 " + file + ": " + failure.getMessage(), failure);
+            throw new IllegalArgumentException("Cannot read " + file + ": " + failure.getMessage(), failure);
         }
     }
 

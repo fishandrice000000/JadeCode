@@ -31,17 +31,17 @@ public record Task(String id, String subject, String description, Status status,
     public Task {
         if (id == null || !id.matches(ID_PATTERN) || subject == null || subject.isBlank()
                 || description == null || status == null || blockedBy == null) {
-            throw new IllegalArgumentException("任务 ID、标题、描述、状态与依赖字段必须合法");
+            throw new IllegalArgumentException("Task id, subject, description, status and dependencies must be valid");
         }
         // owner 与状态共同描述责任归属；不能出现“尚未认领却有负责者”或“执行中无人负责”。
         // owner 上的 ALWAYS 保留显式 null，覆盖共享 Json 默认省略 null 的策略，使六字段可严格往返。
         if (status == Status.PENDING ? owner != null : owner == null || owner.isBlank()) {
-            throw new IllegalArgumentException("任务 owner 与状态不一致");
+            throw new IllegalArgumentException("Task owner and status are inconsistent");
         }
         var unique = new HashSet<String>();
         for (String dependency : blockedBy) {
             if (dependency == null || !dependency.matches(ID_PATTERN) || dependency.equals(id) || !unique.add(dependency)) {
-                throw new IllegalArgumentException("依赖 ID 非法、自依赖或依赖重复");
+                throw new IllegalArgumentException("Dependency id is invalid, self-referential or duplicated");
             }
         }
         subject = subject.strip();

@@ -34,7 +34,7 @@ public final class ToolExchangeProtocol {
      */
     static void requireValidToolId(String id, String field) {
         if (id == null || id.isBlank()) {
-            throw new IllegalArgumentException(field + " 不能为 null 或空白");
+            throw new IllegalArgumentException(field + " cannot be null or blank");
         }
     }
 
@@ -147,7 +147,7 @@ public final class ToolExchangeProtocol {
     public static void requireDistinctCallIds(List<ToolUseBlock> calls) {
         String duplicateId = firstDuplicateCallId(calls);
         if (duplicateId != null) {
-            throw new IllegalArgumentException("模型回复包含重复的 tool_use id: " + duplicateId);
+            throw new IllegalArgumentException("Model reply contains a duplicate tool_use id: " + duplicateId);
         }
     }
 
@@ -172,7 +172,7 @@ public final class ToolExchangeProtocol {
                 // assistant 只能发起调用,不能携带结果
                 if (!results.isEmpty()) {
                     throw new IllegalArgumentException(
-                            "历史非法:第 " + i + " 条 assistant 消息不得包含 tool_result");
+                            "Invalid history at message #" + i + " is an assistant message and must not contain tool_result");
                 }
                 if (uses.isEmpty()) {
                     continue; // 普通 assistant 文本
@@ -181,31 +181,31 @@ public final class ToolExchangeProtocol {
                 requireDistinctCallIds(uses);
                 if (i + 1 >= messages.size()) {
                     throw new IllegalArgumentException(
-                            "历史非法:第 " + i + " 条 assistant 消息的 tool_use 缺少结果消息");
+                            "Invalid history at message #" + i + " is an assistant message whose tool_use has no result message");
                 }
 
                 Message resultMessage = messages.get(i + 1);
                 if (resultMessage.role() != Role.USER) {
                     throw new IllegalArgumentException(
-                            "历史非法:第 " + i + " 条 assistant 消息的 tool_use 后必须紧跟 user 结果消息");
+                            "Invalid history at message #" + i + " is an assistant message whose tool_use must be followed immediately by a user result message");
                 }
                 if (!resultMessage.blocksOfType(ToolUseBlock.class).isEmpty()) {
                     throw new IllegalArgumentException(
-                            "历史非法:第 " + (i + 1) + " 条 user 消息不得包含 tool_use");
+                            "Invalid history at message #" + (i + 1) + " is a user message and must not contain tool_use");
                 }
 
                 List<ToolResultBlock> resultBlocks = resultMessage.blocksOfType(ToolResultBlock.class);
                 if (resultBlocks.size() != uses.size()) {
                     throw new IllegalArgumentException(
-                            "历史非法:第 " + i + " 条 assistant 的 tool_use 数量与第 " + (i + 1)
-                                    + " 条 user 的 tool_result 数量不一致");
+                            "Invalid history at message #" + i + " assistant tool_use count does not match the user result in message #" + (i + 1)
+                                    + " user tool_result count");
                 }
                 for (int k = 0; k < uses.size(); k++) {
                     if (!uses.get(k).id().equals(resultBlocks.get(k).toolUseId())) {
                         throw new IllegalArgumentException(
-                                "历史非法:第 " + i + " 条 assistant 的 tool_use id " + uses.get(k).id()
-                                        + " 与第 " + (i + 1) + " 条 user 的第 " + k + " 个 tool_result id "
-                                        + resultBlocks.get(k).toolUseId() + " 不匹配");
+                                "Invalid history at message #" + i + " assistant tool_use id " + uses.get(k).id()
+                                        + " does not match the user result in message #" + (i + 1) + " user tool_result #" + k + " id "
+                                        + resultBlocks.get(k).toolUseId() + " mismatch");
                     }
                 }
                 i++; // 配对的 user 结果消息已经看过，跳过它
@@ -213,12 +213,12 @@ public final class ToolExchangeProtocol {
                 // user 只能回灌结果,不能发起调用
                 if (!uses.isEmpty()) {
                     throw new IllegalArgumentException(
-                            "历史非法:第 " + i + " 条 user 消息不得包含 tool_use");
+                            "Invalid history at message #" + i + " is a user message and must not contain tool_use");
                 }
                 // 走到这里说明它不是任何 assistant tool_use 的配对消息
                 if (!results.isEmpty()) {
                     throw new IllegalArgumentException(
-                            "历史非法:第 " + i + " 条 user 消息包含孤立的 tool_result");
+                            "Invalid history at message #" + i + " is a user message containing an orphan tool_result");
                 }
             }
         }

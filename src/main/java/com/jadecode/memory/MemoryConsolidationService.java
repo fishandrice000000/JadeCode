@@ -48,7 +48,7 @@ public final class MemoryConsolidationService {
     public MemoryConsolidationService(LlmClient client, MemoryStore store, int maxOutputTokens, int inputChars) {
         this.client = Objects.requireNonNull(client, "client");
         this.store = Objects.requireNonNull(store, "store");
-        if (maxOutputTokens < 1 || inputChars < 1) throw new IllegalArgumentException("整理输入和输出额度必须为正整数");
+        if (maxOutputTokens < 1 || inputChars < 1) throw new IllegalArgumentException("Consolidation input and output budgets must be positive integers");
         this.maxOutputTokens = maxOutputTokens; this.inputChars = inputChars;
     }
 
@@ -122,7 +122,7 @@ public final class MemoryConsolidationService {
     private static String requiredText(JsonNode entry, String field) {
         JsonNode value = entry.isObject() ? entry.get(field) : null;
         if (value == null || !value.isTextual() || value.textValue().isBlank()) {
-            throw new IllegalArgumentException("整理候选缺少文本字段: " + field);
+            throw new IllegalArgumentException("Consolidation candidate is missing a text field: " + field);
         }
         return value.textValue().strip();
     }

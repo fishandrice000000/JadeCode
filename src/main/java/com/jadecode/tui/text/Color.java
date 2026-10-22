@@ -15,11 +15,11 @@ public record Color(Kind kind, int red, int green, int blue, int index) {
     public static final Color DEFAULT = new Color(Kind.DEFAULT, 0, 0, 0, -1);
 
     public Color {
-        if (kind == null) throw new IllegalArgumentException("颜色类型不能为空");
+        if (kind == null) throw new IllegalArgumentException("Color kind cannot be empty");
         if (kind == Kind.RGB && (red < 0 || red > 255 || green < 0 || green > 255 || blue < 0 || blue > 255))
-            throw new IllegalArgumentException("RGB 分量必须在 0-255: " + red + "," + green + "," + blue);
+            throw new IllegalArgumentException("RGB components must be between 0 and 255: " + red + "," + green + "," + blue);
         if (kind == Kind.INDEXED && (index < 0 || index > 255))
-            throw new IllegalArgumentException("索引色必须在 0-255: " + index);
+            throw new IllegalArgumentException("Indexed color must be between 0 and 255: " + index);
     }
 
     /** 由 0-255 的 RGB 分量构造颜色。 */

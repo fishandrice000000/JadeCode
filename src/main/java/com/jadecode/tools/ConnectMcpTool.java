@@ -43,7 +43,7 @@ public final class ConnectMcpTool implements Tool {
                     + tools.stream().map(t -> ToolCatalog.mcpName(t.serverName(), t.name())).toList(), false);
         } catch (IllegalArgumentException | IllegalStateException failed) {
             return new ToolOutcome("Error: " + failed.getMessage()
-                    + ". Fetch 未安装时请先运行 scripts/install-fetch.sh，并检查 mcp.servers 配置。", true);
+                    + ". If Fetch is not installed, run scripts/install-fetch.sh and check the mcp.servers configuration.", true);
         }
     }
 }

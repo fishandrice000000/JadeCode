@@ -101,7 +101,7 @@ public final class SkillLoader {
             }
         } catch (IOException e) {
             // 真实 I/O 故障不伪装成空目录:带路径上下文抛出去,启动时 fail-fast
-            throw new IllegalStateException("扫描 skills 目录失败: " + skillsDir, e);
+            throw new IllegalStateException("Failed to scan the skills directory: " + skillsDir, e);
         }
     }
 

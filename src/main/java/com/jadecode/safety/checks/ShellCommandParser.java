@@ -36,7 +36,7 @@ public final class ShellCommandParser {
             char c = text.charAt(i);
             if (quote != 0) {
                 if (c == quote) { quote = 0; continue; }
-                if (quote == '"' && (c == '$' || c == '`')) { uncertain = true; reasons.add("双引号内含变量或命令替换"); }
+                if (quote == '"' && (c == '$' || c == '`')) { uncertain = true; reasons.add("Variable or command substitution inside double quotes"); }
                 if (quote == '"' && c == '\\' && i + 1 < text.length()) {
                     char next = text.charAt(i + 1);
                     if (next == '$' || next == '`' || next == '"' || next == '\\' || next == '\n') {
@@ -47,7 +47,7 @@ public final class ShellCommandParser {
             }
             if (c == '\'' || c == '"') { quote = c; started = true; continue; }
             if (c == '\\') {
-                if (++i == text.length()) return new Parsed(List.of(), true, "shell 转义不完整");
+                if (++i == text.length()) return new Parsed(List.of(), true, "Incomplete shell escape");
                 if (text.charAt(i) != '\n') { word.append(text.charAt(i)); started = true; }
                 continue;
             }
@@ -61,11 +61,11 @@ public final class ShellCommandParser {
                 if (plainHome && home != null && !home.isBlank() && Path.of(home).isAbsolute()) {
                     word.append(home); started = true; continue;
                 }
-                uncertain = true; reasons.add(plainHome ? "无法确定 shell 的 HOME 目录" : "含未支持的用户家目录展开或引用组合");
+                uncertain = true; reasons.add(plainHome ? "Cannot determine the shell HOME directory" : "Contains an unsupported home-directory expansion or quoting combination");
             }
-            if (c == '$' || c == '`') { uncertain = true; reasons.add("含变量或命令替换"); }
-            if (c == '(' || c == ')' || c == '{' || c == '}') { uncertain = true; reasons.add("含分组、函数或复合 shell 结构"); }
-            if (c == '*' || c == '?' || c == '[') { uncertain = true; reasons.add("含运行时文件名通配展开"); }
+            if (c == '$' || c == '`') { uncertain = true; reasons.add("Contains variable or command substitution"); }
+            if (c == '(' || c == ')' || c == '{' || c == '}') { uncertain = true; reasons.add("Contains grouping, functions or compound shell structure"); }
+            if (c == '*' || c == '?' || c == '[') { uncertain = true; reasons.add("Contains runtime filename glob expansion"); }
             boolean op = c == ';' || c == '&' || c == '|' || c == '<' || c == '>' || c == '\n';
             if (op || Character.isWhitespace(c)) {
                 // 2>/dev/null 的 2 是文件描述符，不是命令参数；但 echo 2 >file 中的 2 仍是参数。
@@ -77,12 +77,12 @@ public final class ShellCommandParser {
                 if (i + 1 < text.length() && text.charAt(i + 1) == c && (c == '&' || c == '|' || c == '>' || c == '<')) { operator += c; i++; }
                 if ((c == '<' || c == '>') && i + 1 < text.length() && text.charAt(i + 1) == '&') { operator += '&'; i++; }
                 if (operator.equals("&") || operator.startsWith("<<")) {
-                    uncertain = true; reasons.add(operator.equals("&") ? "含 shell 后台执行符 &" : "含 here-document 输入");
+                    uncertain = true; reasons.add(operator.equals("&") ? "Contains the shell background operator &" : "Contains here-document input");
                 }
                 tokens.add(new Token(fd + operator, true));
             } else { word.append(c); started = true; }
         }
-        if (quote != 0) return new Parsed(List.of(), true, "shell 引号不完整");
+        if (quote != 0) return new Parsed(List.of(), true, "Incomplete shell quoting");
         if (started) tokens.add(new Token(word.toString(), false));
         // 2. 只有操作符 token 才能分段；例如 echo ';' 中的分号仍属于 argv。
         var segments = new ArrayList<Segment>(); var argv = new ArrayList<String>(); var redirects = new ArrayList<Redirect>();
@@ -91,7 +91,7 @@ public final class ShellCommandParser {
             if (!token.operator()) { argv.add(token.value()); continue; }
             String value = token.value();
             if (value.contains(">") || value.contains("<")) {
-                if (++i >= tokens.size() || tokens.get(i).operator()) return new Parsed(List.of(), true, "重定向缺少目标");
+                if (++i >= tokens.size() || tokens.get(i).operator()) return new Parsed(List.of(), true, "Redirection is missing a target");
                 redirects.add(new Redirect(value, tokens.get(i).value()));
             } else {
                 // 连续空行合法；缺少命令的 &&、||、| 等不做“已可靠解析”的假设。
@@ -101,9 +101,9 @@ public final class ShellCommandParser {
             }
         }
         if (!argv.isEmpty() || !redirects.isEmpty()) segments.add(new Segment(argv, redirects, ""));
-        if (segments.isEmpty()) return new Parsed(List.of(), true, "命令不能为空");
+        if (segments.isEmpty()) return new Parsed(List.of(), true, "Command cannot be empty");
         if (List.of("&&", "||", "|").contains(segments.getLast().follows())) uncertain = true;
-        if (uncertain && reasons.isEmpty()) reasons.add("连接符缺少可确定的命令");
+        if (uncertain && reasons.isEmpty()) reasons.add("A connector is missing a determinable command");
         return new Parsed(List.copyOf(segments), uncertain, "", List.copyOf(reasons));
     }
 }

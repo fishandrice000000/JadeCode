@@ -51,7 +51,7 @@ public final class FullscreenRenderer implements ScreenRenderer {
                 + (captureMouse ? AnsiEncoder.enableMouse() : AnsiEncoder.disableMouse()));
         writer.print(AnsiEncoder.clearAll());
         writer.flush();
-        if (port.outputFailed()) throw new IOException("终端写入失败，停止交互会话");
+        if (port.outputFailed()) throw new IOException("Terminal write failed; stopping the interactive session");
     }
 
     @Override public PresentedFrame present(Frame frame, RenderContext context) throws IOException {
@@ -85,7 +85,7 @@ public final class FullscreenRenderer implements ScreenRenderer {
         writer.flush();
         if (port.outputFailed()) {
             actionsValid = false; previous = List.of(); presented = null;
-            throw new IOException("终端写入失败，停止交互会话");
+            throw new IOException("Terminal write failed; stopping the interactive session");
         }
         previous = lines; width = context.width(); height = context.height(); actionsValid = true;
         presented = new PresentedFrame(++frameId, frame.terminalEpoch(), context.width(), rows, frame.revision(),
@@ -111,7 +111,7 @@ public final class FullscreenRenderer implements ScreenRenderer {
         writer.print(AnsiEncoder.showCursor() + AnsiEncoder.disableMouse() + AnsiEncoder.disablePaste()
                 + AnsiEncoder.exitFullscreen());
         writer.flush();
-        if (port.outputFailed()) throw new IOException("终端在收尾时写入失败");
+        if (port.outputFailed()) throw new IOException("Terminal write failed during shutdown");
     }
 
     @Override public void close() throws IOException {
@@ -121,6 +121,6 @@ public final class FullscreenRenderer implements ScreenRenderer {
         writer.print(AnsiEncoder.showCursor() + AnsiEncoder.disableMouse() + AnsiEncoder.disablePaste()
                 + AnsiEncoder.exitFullscreen());
         writer.flush();
-        if (port.outputFailed()) throw new IOException("终端在关闭时写入失败");
+        if (port.outputFailed()) throw new IOException("Terminal write failed while closing");
     }
 }

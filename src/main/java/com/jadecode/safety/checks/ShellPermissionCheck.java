@@ -21,7 +21,7 @@ public final class ShellPermissionCheck implements ToolPermissionCheck {
      */
     @Override public Analysis analyze(String tool, ObjectNode input) {
         Path cwd = resolver.workspaceReal();
-        if (!input.path("command").isTextual()) return new Analysis(tool, cwd, List.of(), List.of(), false, false, false, "缺少文本 command");
+        if (!input.path("command").isTextual()) return new Analysis(tool, cwd, List.of(), List.of(), false, false, false, "Missing textual command");
         var parsed = parser.parse(input.path("command").textValue());
         var resources = new ArrayList<Resource>(); var commands = new ArrayList<Command>();
         boolean uncertain = parsed.uncertain(), mutating = false, readOnly = true;
@@ -36,7 +36,7 @@ public final class ShellPermissionCheck implements ToolPermissionCheck {
                 String name = executable(argv.getFirst());
                 readOnly &= QUERY.contains(name) || name.equals("cd");
                 if (argv.getFirst().contains("=") || Set.of("eval", "exec", "source", ".", "for", "while", "if", "env", "command", "xargs", "sh", "bash").contains(name)) {
-                    uncertain = true; reasons.add("含环境赋值、间接执行或嵌套 shell，不能仅凭外层参数确定操作");
+                    uncertain = true; reasons.add("Contains environment assignment, indirect execution or a nested shell; outer arguments alone cannot determine the operation");
                 }
                 boolean deletes = name.equals("rm") || name.equals("rmdir") || name.equals("mv");
                 boolean writes = deletes || Set.of("mkdir", "touch", "cp", "chmod", "chown", "dd", "tee").contains(name)
@@ -80,8 +80,8 @@ public final class ShellPermissionCheck implements ToolPermissionCheck {
                 addResource(resources, segmentCwd, redirect.target(), write ? "WRITE" : "READ"); mutating |= write;
             }
         }
-        if (uncertain && reasons.isEmpty()) reasons.add("含未支持的选项、目录切换或重定向形式");
-        return new Analysis(tool, cwd, resources, commands, mutating, readOnly, uncertain, parsed.error(), String.join("；", reasons));
+        if (uncertain && reasons.isEmpty()) reasons.add("Contains an unsupported option, directory change or redirection form");
+        return new Analysis(tool, cwd, resources, commands, mutating, readOnly, uncertain, parsed.error(), String.join("; ", reasons));
     }
     private Path resolve(Path cwd, String text) { return resolver.resolve(cwd.resolve(text)); }
     /** 原始路径和链接目标都保留，后面的 deny/ask 任一命中即成立。 */

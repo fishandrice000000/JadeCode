@@ -16,16 +16,16 @@ public final class ApprovalCoordinator {
         var snapshot = state.snapshot();
         if (snapshot.revision() != request.revision()) return new Outcome(ApprovalAnswer.RECHECK, "");
         if (snapshot.profile().policy().approval() == PermissionPolicy.ApprovalPolicy.NEVER)
-            return new Outcome(ApprovalAnswer.DENY, "当前档位不发起审批；此操作仍要求确认：" + request.reason());
+            return new Outcome(ApprovalAnswer.DENY, "The current profile does not request approval; this operation still requires confirmation: " + request.reason());
         String handoff = "";
         if (!decision.humanOnly() && snapshot.profile().policy().reviewer() == PermissionPolicy.Reviewer.MODEL && reviewer != null) {
             var result = reviewer.review(request, goal);
             if (state.snapshot().revision() != request.revision()) return new Outcome(ApprovalAnswer.RECHECK, "");
             if (result == ModelApprovalReviewer.Result.ALLOW) return new Outcome(ApprovalAnswer.ALLOW_ONCE, "");
-            if (result == ModelApprovalReviewer.Result.DENY) return new Outcome(ApprovalAnswer.DENY, "辅助审批拒绝本次操作：" + request.reason());
-            handoff = "辅助审批未能确认，转交用户。";
+            if (result == ModelApprovalReviewer.Result.DENY) return new Outcome(ApprovalAnswer.DENY, "Reviewer approval denied this operation: " + request.reason());
+            handoff = "Reviewer could not confirm; handing off to the user. ";
         }
-        if (human == null) return new Outcome(ApprovalAnswer.DENY, handoff + "当前任务没有人工审批通道：" + request.reason());
+        if (human == null) return new Outcome(ApprovalAnswer.DENY, handoff + "No human approval channel is available for this task: " + request.reason());
         try (var subscription = state.onChange(() -> human.reconsider(state.snapshot().revision()))) {
             // 先注册，再公布最新版本；防止切换恰好发生在进入等待前，导致旧申请永久挂起。
             human.reconsider(state.snapshot().revision());
@@ -34,7 +34,7 @@ public final class ApprovalCoordinator {
                     request.cwd(), handoff + request.reason(), request.revision(), request.suggestion());
             var answer = human.forActor(request.actor()).ask(display);
             return new Outcome(state.snapshot().revision() == request.revision() ? answer : ApprovalAnswer.RECHECK,
-                    "审批未批准本次操作：" + request.reason());
-        } catch (Exception failure) { return new Outcome(ApprovalAnswer.DENY, "审批未完成，操作未执行：" + request.reason()); }
+                    "Approval did not authorize this operation: " + request.reason());
+        } catch (Exception failure) { return new Outcome(ApprovalAnswer.DENY, "Approval did not finish; the operation was not executed: " + request.reason()); }
     }
 }

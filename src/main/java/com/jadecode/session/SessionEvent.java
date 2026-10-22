@@ -56,7 +56,7 @@ public sealed interface SessionEvent {
         /** 必需的身份和正文不得为空；路径可为空，用户缓冲没有正文文件。 */
         public Incoming {
             if (id == null || fromAgentId == null || toAgentId == null || kind == null
-                    || summary == null || summary.isBlank()) throw new IllegalArgumentException("消息字段不完整");
+                    || summary == null || summary.isBlank()) throw new IllegalArgumentException("Message fields are incomplete");
         }
 
         /** 给模型看的来源说明，不把外部内容伪造成工具结果或系统指令。 */

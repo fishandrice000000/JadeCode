@@ -15,8 +15,8 @@ public enum ThinkingSettings {
 
     /** 接受固定名称，拼错时明确失败，不静默当作默认强度。 */
     public static ThinkingSettings parse(String value) {
-        if (value == null) throw new IllegalArgumentException("思考强度不能为空");
+        if (value == null) throw new IllegalArgumentException("Thinking effort cannot be empty");
         try { return valueOf(value.strip().toUpperCase(Locale.ROOT)); }
-        catch (IllegalArgumentException invalid) { throw new IllegalArgumentException("无效思考强度: " + value); }
+        catch (IllegalArgumentException invalid) { throw new IllegalArgumentException("Invalid thinking effort: " + value); }
     }
 }

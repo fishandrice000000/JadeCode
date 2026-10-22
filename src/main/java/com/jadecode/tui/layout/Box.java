@@ -23,7 +23,7 @@ import com.jadecode.tui.text.StyledLine;
  */
 public record Box(Component child, Insets insets, String backgroundToken, boolean padToWidth) implements Component {
     public Box {
-        if (child == null) throw new IllegalArgumentException("Box 子组件不能为空");
+        if (child == null) throw new IllegalArgumentException("Box child component cannot be empty");
         if (insets == null) insets = Insets.ZERO;
     }
 

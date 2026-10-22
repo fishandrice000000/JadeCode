@@ -90,15 +90,15 @@ public final class TeamTools {
          */
         @Override public String execute(ObjectNode input, ExecutionContext context) {
             try {
-                if (context == null || context.isCancelled()) throw new IllegalStateException("调用方已退出或没有任务来源");
-                for (String key : required()) if (!input.has(key)) throw new IllegalArgumentException("缺少参数: " + key);
+                if (context == null || context.isCancelled()) throw new IllegalStateException("Caller exited or has no task source");
+                for (String key : required()) if (!input.has(key)) throw new IllegalArgumentException("Missing parameter: " + key);
                 var fields = input.fields();
                 while (fields.hasNext()) {
                     var field = fields.next();
                     String type = properties().get(field.getKey());
                     if (type == null || (type.equals("boolean") ? !field.getValue().isBoolean()
                             : !field.getValue().isTextual() || field.getValue().textValue().isBlank())) {
-                        throw new IllegalArgumentException("参数类型或字段非法: " + field.getKey());
+                        throw new IllegalArgumentException("Invalid parameter type or field: " + field.getKey());
                     }
                 }
                 Object result = switch (name) {
@@ -115,10 +115,10 @@ public final class TeamTools {
                     default -> {
                         String kind = input.path("kind").asText("message");
                         if (!List.of("message", "question", "progress", "supplement").contains(kind)) {
-                            throw new IllegalArgumentException("非法通信类型");
+                            throw new IllegalArgumentException("Invalid communication kind");
                         }
                         if (kind.equals("supplement") && (!input.has("task_id") || !input.has("assignment_id"))) {
-                            throw new IllegalArgumentException("任务补充必须带 task_id 与 assignment_id");
+                            throw new IllegalArgumentException("Task supplements require task_id and assignment_id");
                         }
                         yield Map.of("message_id", team.send(actor, input.path("to_agent").asText(),
                                 input.path("task_id").asText(null), input.path("assignment_id").asText(null), kind,
@@ -130,8 +130,8 @@ public final class TeamTools {
                 return Json.mapper().writeValueAsString(result);
             } catch (IOException | IllegalArgumentException | IllegalStateException failure) {
                 return "Error: " + failure.getMessage()
-                        + (failure.getSuppressed().length == 0 ? "" : "; 恢复/记录也发生失败，数量=" + failure.getSuppressed().length)
-                        + ". 部分状态或文件可能已保存；先检查 get_task 和邮件记录，不要重做业务。";
+                        + (failure.getSuppressed().length == 0 ? "" : "; recovery/recording also failed, count=" + failure.getSuppressed().length)
+                        + ". Some state or files may already be saved; check get_task and mail records first, and do not redo the business work.";
             }
         }
     }

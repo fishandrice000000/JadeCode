@@ -60,7 +60,7 @@ public final class SessionStore {
                     SessionMetadata metadata = readMetadata(directory);
                     Path events = directory.resolve("events.jsonl"); regular(events, false);
                     if (Files.size(events) > 0) result.add(metadata);
-                } catch (IOException | RuntimeException bad) { warnings.accept("忽略无法读取的会话清单: " + directory.getFileName()); }
+                } catch (IOException | RuntimeException bad) { warnings.accept("Ignoring unreadable session manifest: " + directory.getFileName()); }
             }
         }
         result.sort(Comparator.comparing((SessionMetadata item) -> Instant.parse(item.updatedAt())).reversed());
@@ -71,7 +71,7 @@ public final class SessionStore {
     public Opened create(String model) throws IOException {
         String time = Instant.now().toString();
         var metadata = new SessionMetadata(SessionMetadata.VERSION, UUID.randomUUID().toString(), paths.workspace().toString(),
-                "新会话", time, time, model);
+                "New session", time, time, model);
         Path directory = paths.sessions().resolve(metadata.id());
         paths.directory(paths.sessions(), true);
         Files.createDirectory(directory);
@@ -96,16 +96,16 @@ public final class SessionStore {
         Path lockFile = directory.resolve("session.lock"), eventFile = directory.resolve("events.jsonl");
         regular(lockFile, true); regular(eventFile, false);
         Path identity = directory.toRealPath();
-        if (!OPEN.add(identity)) throw new IOException("该会话已经由本进程打开");
+        if (!OPEN.add(identity)) throw new IOException("This session is already open in this process");
         FileChannel lockChannel = null;
         FileLock lock = null;
         FileChannel events = null;
         try {
             lockChannel = FileChannel.open(lockFile, StandardOpenOption.CREATE, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS);
             lock = lockChannel.tryLock();
-            if (lock == null) throw new IOException("该会话正由另一个进程使用");
+            if (lock == null) throw new IOException("This session is in use by another process");
             // 内存解析设清晰上限，避免坏文件撑爆 UI；更大的日志将来可改为流式读取。
-            if (Files.size(eventFile) > 256_000_000) throw new IOException("会话日志超过 256 MB，暂不支持加载");
+            if (Files.size(eventFile) > 256_000_000) throw new IOException("Session journal exceeds 256 MB and cannot be loaded yet");
             RestoredSession restored = SessionLoader.load(metadata, Files.readAllBytes(eventFile));
             events = FileChannel.open(eventFile, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS);
             if (restored.hasPartialTail()) {
@@ -118,7 +118,7 @@ public final class SessionStore {
             if (restored.repairedHistory()) journal.append(JournalEntry.Kind.REPLACE_HISTORY, restored.history(), restored.todos(), "recovery");
             if (!metadata.equals(restored.metadata())) {
                 try { SessionJournal.saveMetadata(directory, journal.metadata()); }
-                catch (IOException error) { warnings.accept("清单重建后无法更新索引，仍可按 UUID 恢复。"); }
+                catch (IOException error) { warnings.accept("Cannot update the index after rebuilding the manifest; resume by UUID is still possible."); }
             }
             return new Opened(journal, restored);
         } catch (IOException | RuntimeException error) {
@@ -127,7 +127,7 @@ public final class SessionStore {
             if (lock != null) try { lock.release(); } catch (IOException cleanup) { error.addSuppressed(cleanup); }
             if (lockChannel != null) try { lockChannel.close(); } catch (IOException cleanup) { error.addSuppressed(cleanup); }
             OPEN.remove(identity);
-            throw new IOException("不能恢复会话 " + id + ": " + error.getMessage(), error);
+            throw new IOException("Cannot resume session " + id + ": " + error.getMessage(), error);
         }
     }
 
@@ -135,18 +135,18 @@ public final class SessionStore {
     private SessionMetadata readMetadata(Path directory) throws IOException {
         paths.directory(directory, false);
         Path file = directory.resolve("session.json"); regular(file, false);
-        if (Files.size(file) > 16_384) throw new IOException("会话清单过大");
+        if (Files.size(file) > 16_384) throw new IOException("Session manifest is too large");
         SessionMetadata metadata = Json.mapper().readerFor(SessionMetadata.class)
                 .with(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
                 .readValue(Files.readAllBytes(file));
         if (!metadata.id().equals(directory.getFileName().toString()) || !metadata.workspace().equals(paths.workspace().toString()))
-            throw new IOException("会话 ID 或工作区与目录不一致");
+            throw new IOException("Session ID or workspace does not match the directory");
         return metadata;
     }
 
     /** 日志、清单和锁不跟随链接；缺锁文件可以新建，其它文件缺失就是错误。 */
     private static void regular(Path file, boolean mayBeMissing) throws IOException {
         if (mayBeMissing && Files.notExists(file, LinkOption.NOFOLLOW_LINKS)) return;
-        if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) throw new IOException("会话文件不是普通非链接文件: " + file.getFileName());
+        if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) throw new IOException("Session file is not a regular non-symlink file: " + file.getFileName());
     }
 }

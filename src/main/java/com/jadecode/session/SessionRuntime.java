@@ -59,7 +59,7 @@ public final class SessionRuntime implements AutoCloseable {
     private com.jadecode.safety.PermissionState permissions = com.jadecode.safety.PermissionState.defaults();
     /** 工厂装配一次，共享的是权限配置，不是队友的历史或工具表。 */
     public void permissions(com.jadecode.safety.PermissionState value) {
-        if (consumer != null || journal != null || closed) throw new IllegalStateException("会话已经开始或关闭");
+        if (consumer != null || journal != null || closed) throw new IllegalStateException("Session is already started or closed");
         permissions = java.util.Objects.requireNonNull(value);
     }
     /** 界面通过共享状态切换档位；不能在运行后换成与工具检查器不同的另一份状态。 */
@@ -132,7 +132,7 @@ public final class SessionRuntime implements AutoCloseable {
      */
     public void telemetry(SessionUsage value, boolean owner, LlmClient client,
             java.util.concurrent.atomic.AtomicReference<ThinkingSettings> thinking) {
-        if (consumer != null || journal != null) throw new IllegalStateException("会话已经启动");
+        if (consumer != null || journal != null) throw new IllegalStateException("Session is already started");
         usage = java.util.Objects.requireNonNull(value); ownsUsage = owner;
         profile = java.util.Objects.requireNonNull(client); requestThinking = java.util.Objects.requireNonNull(thinking);
     }
@@ -141,7 +141,7 @@ public final class SessionRuntime implements AutoCloseable {
      * 装配只读服务快照端口；必须在会话启动前调用。供应商只能做纯内存复制，不能连接服务。
      */
     public void services(java.util.function.Supplier<List<com.jadecode.mcp.McpManager.ServerSnapshot>> supplier) {
-        if (consumer != null || journal != null) throw new IllegalStateException("会话已经启动");
+        if (consumer != null || journal != null) throw new IllegalStateException("Session is already started");
         mcpSnapshot = supplier == null ? List::of : supplier;
     }
 
@@ -157,7 +157,7 @@ public final class SessionRuntime implements AutoCloseable {
         var metadata = journal == null ? null : journal.metadata();
         return new Display(sessionId(), metadata == null ? "" : metadata.title(), model,
                 profile == null ? new ModelMetadata(ModelMetadata.Limits.unknown(), "") : profile.metadata(), setting,
-                profile == null ? "默认" : profile.thinkingLabel(setting),
+                profile == null ? "default" : profile.thinkingLabel(setting),
                 profile == null ? List.of(ThinkingSettings.DEFAULT) : profile.thinkingChoices(), usage.snapshot(), contextUsage);
     }
 
@@ -171,7 +171,7 @@ public final class SessionRuntime implements AutoCloseable {
     public void changeThinking(ThinkingSettings value) throws IOException {
         synchronized (historyMonitor) {
             ensureOpen();
-            if (!display().thinkingChoices().contains(value)) throw new IllegalArgumentException("当前端点或模型不支持该思考设置");
+            if (!display().thinkingChoices().contains(value)) throw new IllegalArgumentException("This endpoint or model does not support that thinking setting");
             try { if (journal != null) journal.thinking(value); }
             catch (IOException failure) { persistenceError(); throw failure; }
             requestThinking.set(value);
@@ -183,7 +183,7 @@ public final class SessionRuntime implements AutoCloseable {
         String valid = com.jadecode.session.history.SessionMetadata.validTitle(title);
         synchronized (historyMonitor) {
             ensureOpen();
-            if (journal == null) throw new IOException("当前会话未启用持久保存");
+            if (journal == null) throw new IOException("Persistent saving is not enabled for this session");
             try { journal.rename(valid); }
             catch (IOException failure) { persistenceError(); throw failure; }
         }
@@ -209,7 +209,7 @@ public final class SessionRuntime implements AutoCloseable {
 
     /** 工厂登记真实 Todo 和模型名，不开始存盘；旧兼容调用仍可使用没有日志的运行时。 */
     public void historyState(TodoManager manager, String modelName, java.util.function.BooleanSupplier blocked) {
-        if (consumer != null || journal != null || closed) throw new IllegalStateException("会话已经开始或关闭");
+        if (consumer != null || journal != null || closed) throw new IllegalStateException("Session is already started or closed");
         todos = java.util.Objects.requireNonNull(manager);
         model = java.util.Objects.requireNonNull(modelName); switchBlocked = java.util.Objects.requireNonNull(blocked);
     }
@@ -225,7 +225,7 @@ public final class SessionRuntime implements AutoCloseable {
      * @throws IllegalStateException 运行时已经启动、已关闭或已经安装日志
      */
     public synchronized void restore(SessionJournal writer, RestoredSession restored) {
-        if (consumer != null || closed || journal != null) throw new IllegalStateException("不能向运行中的会话安装历史");
+        if (consumer != null || closed || journal != null) throw new IllegalStateException("Cannot install history into a running session");
         if (todos != null) todos.restore(restored.todos());
         history = new ArrayList<>(restored.history());
         if (!restored.entries().isEmpty()) resumeContext = "\nRestored conversation: previous background processes, teammates, inbox and approval grants were not restored."
@@ -237,7 +237,7 @@ public final class SessionRuntime implements AutoCloseable {
         ThinkingSettings saved = restored.metadata().thinking();
         if (saved != null) {
             if (display().thinkingChoices().contains(saved)) requestThinking.set(saved);
-            else errors.accept("[Warning] 当前模型不支持原会话思考设置，采用当前配置默认值。");
+            else errors.accept("[Warning] The current model does not support the restored session's thinking setting; using the current configuration default.");
         }
     }
 
@@ -794,7 +794,7 @@ public final class SessionRuntime implements AutoCloseable {
      */
     private void adoptHistory(List<Message> messages) {
         apply(new SessionEvent.HistoryPrepared(messages));
-        engine.notice(ExecutionNotice.event(ExecutionNotice.Kind.COMPACT, "", "", "模型上下文已整理，界面记录保留", ""));
+        engine.notice(ExecutionNotice.event(ExecutionNotice.Kind.COMPACT, "", "", "Model context compacted; UI history preserved", ""));
     }
 
     /** 采用执行器已验证的模型回复，写入历史，不在这里决定任务是否完成。 */
@@ -875,7 +875,7 @@ public final class SessionRuntime implements AutoCloseable {
                     else history.add(message);
                     record(merge ? JournalEntry.Kind.REPLACE_LAST : JournalEntry.Kind.APPEND, List.of(message), "notification");
                 }
-                case SessionEvent.Incoming incoming -> throw new IllegalArgumentException("Incoming 必须先排队，不能跨线程改历史");
+                case SessionEvent.Incoming incoming -> throw new IllegalArgumentException("Incoming must be queued first; history cannot be mutated across threads");
             }
         }
     }
@@ -1019,7 +1019,7 @@ public final class SessionRuntime implements AutoCloseable {
      */
     public void run(List<Message> messages) throws LlmException {
         ensureOpen();
-        if (journal != null) throw new IllegalStateException("持久会话不借用外部历史");
+        if (journal != null) throw new IllegalStateException("Persistent sessions do not borrow external history");
         if (consumer != null) throw new IllegalStateException("Session consumer is already started");
         // 只在这个同步调用内借用列表；正式会话和兼容调用都由同一 active/closed 状态管理。
         List<Message> ownedHistory = history;
@@ -1094,7 +1094,7 @@ public final class SessionRuntime implements AutoCloseable {
             if (ownsUsage) usage.close();
             if (journal != null) {
                 try { journal.close(); }
-                catch (IOException failure) { errors.accept("[Error] 会话日志关闭失败: " + failure.getMessage()); }
+                catch (IOException failure) { errors.accept("[Error] Failed to close the session journal: " + failure.getMessage()); }
             }
         }
     }

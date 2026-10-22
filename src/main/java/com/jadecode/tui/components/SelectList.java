@@ -26,7 +26,7 @@ public final class SelectList implements Component {
      */
     public record Item(String id, String label, String description) {
         public Item {
-            if (id == null) throw new IllegalArgumentException("候选 ID 不能为空");
+            if (id == null) throw new IllegalArgumentException("Candidate id cannot be empty");
             if (label == null) label = "";
             if (description == null) description = "";
         }

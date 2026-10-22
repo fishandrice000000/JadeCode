@@ -51,7 +51,7 @@ class ToolExchangeProtocolTest {
 
         IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
                 () -> ToolExchangeProtocol.validateHistory(messages));
-        assertTrue(e.getMessage().contains("孤立"));
+        assertTrue(e.getMessage().contains("orphan"));
     }
 
     /** 缺失结果:末尾 assistant(tool_use) 没有配对结果消息,拒绝 */

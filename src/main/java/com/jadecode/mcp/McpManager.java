@@ -22,7 +22,7 @@ public final class McpManager implements AutoCloseable {
     /** 保存可信配置快照；不读取 HOME、环境凭据或启动进程。 */
     public McpManager(Map<String, McpServerConfig> configurations, Path workspace, Consumer<String> diagnostics) {
         configurations.forEach((name, config) -> {
-            if (name == null || name.isBlank()) throw new IllegalArgumentException("MCP 服务名不能为空");
+            if (name == null || name.isBlank()) throw new IllegalArgumentException("MCP server name cannot be empty");
             Objects.requireNonNull(config, "server config");
         });
         this.configurations = Map.copyOf(configurations);
@@ -52,9 +52,9 @@ public final class McpManager implements AutoCloseable {
         synchronized (this) {
             if (closed) throw new IllegalStateException("MCP manager closed");
             McpServerConfig config = configurations.get(name);
-            if (config == null || !config.enabled()) throw new IllegalArgumentException("MCP 服务未配置或未启用");
+            if (config == null || !config.enabled()) throw new IllegalArgumentException("MCP server is not configured or not enabled");
             if (discovered.containsKey(name)) return discovered.get(name);
-            if (connections.containsKey(name)) throw new IllegalStateException("MCP 服务正在连接");
+            if (connections.containsKey(name)) throw new IllegalStateException("MCP server is already connecting");
             candidate = new McpConnection(name, config, workspace, diagnostics);
             connections.put(name, candidate);
         }
@@ -107,7 +107,7 @@ public final class McpManager implements AutoCloseable {
     public McpCallResult call(McpToolDescriptor descriptor, ObjectNode arguments) {
         McpConnection connection;
         synchronized (this) { connection = closed ? null : connections.get(descriptor.serverName()); }
-        if (connection == null) return McpCallResult.failure("服务未连接或会话已经关闭");
+        if (connection == null) return McpCallResult.failure("Server is not connected or the session is closed");
         McpCallResult result = connection.call(descriptor, arguments);
         // 传输失败撤下这条连接。服务返回的普通 isError 不触发这里，模型仍可修正参数继续调用。
         if (!connection.isUsable()) {

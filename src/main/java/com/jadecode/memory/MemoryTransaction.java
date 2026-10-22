@@ -71,14 +71,14 @@ final class MemoryTransaction {
             if (Files.exists(file, LinkOption.NOFOLLOW_LINKS)) {
                 String current = readPlain(file);
                 if (!current.equals(originals.get(name)) && !current.equals(replacements.get(name)))
-                    throw new IOException("记忆恢复发现未知外部修改；磁盘备份保留，未覆盖该文件");
+                    throw new IOException("Memory recovery found unknown external changes; the disk backup is preserved and the file was not overwritten");
             }
         }
         Path index = root.resolve("MEMORY.md");
         if (Files.exists(index, LinkOption.NOFOLLOW_LINKS)) {
             String current = readPlain(index);
             if (!current.equals(oldIndex) && !current.equals(newIndex))
-                throw new IOException("记忆恢复发现未知索引修改；磁盘备份保留，未覆盖该文件");
+                throw new IOException("Memory recovery found unknown index changes; the disk backup is preserved and the file was not overwritten");
         }
         // 不能先删除所有文件再写回；逐项原子替换，恢复过程中也尽量保留可用正文。
         for (var entry : originals.entrySet()) atomicReplace(root.resolve(entry.getKey()), entry.getValue());
@@ -97,44 +97,44 @@ final class MemoryTransaction {
             backups = entries.filter(p -> p.getFileName().toString().startsWith(".memory-backup-")).sorted().toList();
         }
         for (Path backup : backups) {
-            if (!Files.isDirectory(backup, LinkOption.NOFOLLOW_LINKS)) throw new IOException("记忆备份目录不是普通目录");
+            if (!Files.isDirectory(backup, LinkOption.NOFOLLOW_LINKS)) throw new IOException("Memory backup path is not a regular directory");
             if (!Files.exists(backup.resolve("READY"), LinkOption.NOFOLLOW_LINKS)
                     || Files.exists(backup.resolve("COMMITTED"), LinkOption.NOFOLLOW_LINKS)
                     || Files.exists(backup.resolve("ROLLED_BACK"), LinkOption.NOFOLLOW_LINKS)) continue;
             var manifest = Json.mapper().readTree(readPlain(backup.resolve("manifest.json")));
             if (manifest == null || manifest.path("version").asInt() != 1 || !manifest.path("hadIndex").isBoolean())
-                throw new IOException("记忆恢复清单格式无效");
+                throw new IOException("Memory recovery manifest has an invalid format");
             Map<String, String> old = readDocuments(backup, "old", manifest.get("originals"));
             Map<String, String> next = readDocuments(backup, "new", manifest.get("replacements"));
             new MemoryTransaction(root, backup, old, next,
                     manifest.path("hadIndex").booleanValue() ? readPlain(backup.resolve("index-old.txt")) : null,
                     readPlain(backup.resolve("index-new.txt"))).rollback();
-            warnings.accept("[Warning] [Memory] 已从磁盘备份恢复一次未完成的整理；备份仍保留");
+            warnings.accept("[Warning] [Memory] Recovered an unfinished consolidation from the disk backup; the backup is still retained");
         }
     }
 
     /** 校验清单后再读恢复正文，拒绝目录逃逸、重名或空清单。 */
     private static Map<String, String> readDocuments(Path backup, String directory, com.fasterxml.jackson.databind.JsonNode names) throws IOException {
-        if (names == null || !names.isArray() || names.isEmpty()) throw new IOException("记忆恢复文件清单无效");
+        if (names == null || !names.isArray() || names.isEmpty()) throw new IOException("Memory recovery file list is invalid");
         Path dir = backup.resolve(directory);
-        if (!Files.isDirectory(dir, LinkOption.NOFOLLOW_LINKS)) throw new IOException("记忆恢复正文目录无效");
+        if (!Files.isDirectory(dir, LinkOption.NOFOLLOW_LINKS)) throw new IOException("Memory recovery body directory is invalid");
         var documents = new LinkedHashMap<String, String>();
         for (var item : names) {
-            if (!item.isTextual()) throw new IOException("记忆恢复文件名不是文字");
+            if (!item.isTextual()) throw new IOException("Memory recovery filename is not text");
             String name = filename(item.textValue());
-            if (documents.putIfAbsent(name, readPlain(dir.resolve(name))) != null) throw new IOException("记忆恢复文件名重复");
+            if (documents.putIfAbsent(name, readPlain(dir.resolve(name))) != null) throw new IOException("Memory recovery filename is duplicated");
         }
         return documents;
     }
 
     private static String filename(String value) throws IOException {
         if (value.isEmpty() || !value.endsWith(".md") || value.equals("MEMORY.md") || value.contains("/") || value.contains("\\"))
-            throw new IOException("记忆恢复文件名必须是单层记录名");
+            throw new IOException("Memory recovery filename must be a single-level record name");
         return value;
     }
 
     private static String readPlain(Path file) throws IOException {
-        if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) throw new IOException("记忆备份或恢复目标不是普通文件");
+        if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) throw new IOException("Memory backup or recovery target is not a regular file");
         return Files.readString(file, StandardCharsets.UTF_8);
     }
 
@@ -149,7 +149,7 @@ final class MemoryTransaction {
 
     static void atomicReplace(Path target, String text) throws IOException {
         if (Files.exists(target, LinkOption.NOFOLLOW_LINKS) && !Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS))
-            throw new IOException("记忆发布目标不是普通文件");
+            throw new IOException("Memory publish target is not a regular file");
         Path temporary = Files.createTempFile(target.getParent(), ".memory-publish-", ".tmp");
         try {
             try (var channel = FileChannel.open(temporary, StandardOpenOption.WRITE)) {

@@ -27,7 +27,7 @@ final class MemoryLibraryLock {
         ReentrantLock local = LOCAL.computeIfAbsent(root, ignored -> new ReentrantLock());
         try { local.lockInterruptibly(); }
         catch (InterruptedException interrupted) {
-            Thread.currentThread().interrupt(); throw new java.io.InterruptedIOException("等待记忆库操作已中断");
+            Thread.currentThread().interrupt(); throw new java.io.InterruptedIOException("Interrupted while waiting for the memory library operation");
         }
         try (var channel = FileChannel.open(root.resolve(".store.lock"), StandardOpenOption.CREATE,
                 StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS); var lock = channel.lock()) {

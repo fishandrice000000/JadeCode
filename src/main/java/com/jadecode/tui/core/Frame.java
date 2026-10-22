@@ -84,7 +84,7 @@ public record Frame(long frameId, long terminalEpoch, long revision, List<Styled
     /** 矩形命中区域与动作身份；同一帧内不允许两个动作重叠（调用方保证）。 */
     public record Hit(Rect rect, ActionToken action) {
         public Hit {
-            if (rect == null || action == null) throw new IllegalArgumentException("命中区域和动作不能为空");
+            if (rect == null || action == null) throw new IllegalArgumentException("Hit region and action cannot be empty");
         }
     }
 

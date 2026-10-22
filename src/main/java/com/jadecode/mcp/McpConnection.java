@@ -85,7 +85,7 @@ final class McpConnection implements AutoCloseable {
         try {
             Future<List<McpToolDescriptor>> pending = executor.submit(() -> {
                 ensureOpen(); client.initialize();
-                if (client.getServerCapabilities().tools() == null) throw new IllegalArgumentException("服务没有 tools 能力");
+                if (client.getServerCapabilities().tools() == null) throw new IllegalArgumentException("Server has no tools capability");
                 List<McpToolDescriptor> found = new ArrayList<>();
                 Set<String> names = new HashSet<>(), cursors = new HashSet<>();
                 String cursor = null;
@@ -93,13 +93,13 @@ final class McpConnection implements AutoCloseable {
                     ensureOpen();
                     var page = client.listTools(cursor);
                     for (var tool : page.tools()) {
-                        if (found.size() >= 256 || !names.add(tool.name())) throw new IllegalArgumentException("工具数量或名称无效");
+                        if (found.size() >= 256 || !names.add(tool.name())) throw new IllegalArgumentException("Invalid tool count or name");
                         ObjectNode schema = Json.mapper().valueToTree(tool.inputSchema());
                         found.add(new McpToolDescriptor(serverName, id, tool.name(), tool.description(), schema,
                                 config.readOnlyTools().contains(tool.name())));
                     }
                     cursor = page.nextCursor();
-                    if (cursor != null && !cursors.add(cursor)) throw new IllegalArgumentException("工具分页游标重复");
+                    if (cursor != null && !cursors.add(cursor)) throw new IllegalArgumentException("Duplicate tool pagination cursor");
                 } while (cursor != null);
                 return List.copyOf(found);
             });
@@ -108,10 +108,10 @@ final class McpConnection implements AutoCloseable {
                 ensureOpen(); tools = found; return found;
             } catch (InterruptedException interrupted) {
                 pending.cancel(true); Thread.currentThread().interrupt();
-                throw new IllegalStateException("MCP 初始化被中断");
+                throw new IllegalStateException("MCP initialization was interrupted");
             } catch (ExecutionException | TimeoutException failed) {
                 pending.cancel(true);
-                throw new IllegalStateException("MCP 初始化/发现失败（" + failed.getClass().getSimpleName() + "），请检查安装、配置与超时");
+                throw new IllegalStateException("MCP initialization/discovery failed (" + failed.getClass().getSimpleName() + "); check installation, configuration and timeouts");
             }
         } finally { executor.shutdownNow(); }
     }
@@ -122,27 +122,27 @@ final class McpConnection implements AutoCloseable {
      */
     McpCallResult call(McpToolDescriptor descriptor, ObjectNode input) {
         if (!isUsable() || !id.equals(descriptor.connectionId()) || tools.stream().noneMatch(t -> t.equals(descriptor)))
-            return McpCallResult.failure("工具来自已关闭或不同的连接，请重新连接并发现");
+            return McpCallResult.failure("Tool belongs to a closed or different connection; reconnect and discover again");
         try {
             Map<String, Object> arguments = Json.mapper().convertValue(input, new TypeReference<>() { });
             var result = client.callTool(McpSchema.CallToolRequest.builder(descriptor.name()).arguments(arguments).build());
             StringBuilder text = new StringBuilder();
             for (var block : result.content()) {
                 if (!(block instanceof McpSchema.TextContent value))
-                    return McpCallResult.failure("当前只支持文本 content，服务返回了其它内容类型");
+                    return McpCallResult.failure("Only text content is supported; the server returned another content type");
                 // 在追加前限制总量，不把超限内容无标记截断后当成完整结果。
                 if ((long) text.length() + value.text().length() + (text.isEmpty() ? 0 : 1) > config.maxResultChars())
-                    return McpCallResult.failure("结果超过字符上限，请减小 max_length 或分段读取");
+                    return McpCallResult.failure("Result exceeds the character limit; reduce max_length or read in segments");
                 if (!text.isEmpty()) text.append('\n');
                 text.append(value.text());
             }
             if (result.structuredContent() != null)
-                return McpCallResult.failure("当前不支持 structuredContent，请使用文本工具");
+                return McpCallResult.failure("structuredContent is not supported; use a text tool");
             return new McpCallResult(text.toString(), Boolean.TRUE.equals(result.isError()));
         } catch (RuntimeException failed) {
             broken = true;
             // SDK 异常可能带原始报文，不将 getMessage() 直接暴露给模型或界面。
-            return McpCallResult.failure("调用未取得结果（" + failed.getClass().getSimpleName() + "）；可能超时或断开，不会自动重放");
+            return McpCallResult.failure("Call returned no result (" + failed.getClass().getSimpleName() + "); it may have timed out or disconnected and will not be replayed automatically");
         }
     }
 
@@ -156,9 +156,9 @@ final class McpConnection implements AutoCloseable {
     @Override public void close() {
         closed = true;
         try {
-            if (!client.closeGracefully()) diagnostics.accept("[MCP " + serverName + "] 关闭未确认，需检查服务进程");
+            if (!client.closeGracefully()) diagnostics.accept("[MCP " + serverName + "] close was not confirmed; check the server process");
         } catch (RuntimeException failed) {
-            diagnostics.accept("[MCP " + serverName + "] 关闭失败（" + failed.getClass().getSimpleName() + "）");
+            diagnostics.accept("[MCP " + serverName + "] close failed (" + failed.getClass().getSimpleName() + ")");
         }
     }
 }

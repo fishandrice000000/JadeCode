@@ -11,7 +11,7 @@ public enum PermissionProfile {
     /** 只接受明确名称，拼错不能默默退回更宽权限。 */
     public static PermissionProfile parse(String text) {
         for (var p : values()) if (p.value.equals(text) || p.name().equals(text) || p.label.equals(text)) return p;
-        throw new IllegalArgumentException("权限档位须为 read-only / workspace / auto-review / full-access");
+        throw new IllegalArgumentException("Permission profile must be read-only / workspace / auto-review / full-access");
     }
     /** 审批策略与审查者分别保存；只有 Full Access 不发起审批。 */
     public PermissionPolicy policy() {

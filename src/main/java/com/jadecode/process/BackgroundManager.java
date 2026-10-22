@@ -135,12 +135,12 @@ public final class BackgroundManager implements AutoCloseable {
                 allowInsertion, wakeWhenIdle, context);
         // 先存 Job 再开线程，免得命令很快跑完或用户同时退出时，管理器里还找不到它。
         jobs.put(id, job);
-        display(id, "RUNNING", "后台命令已登记，不代表执行成功");
+        display(id, "RUNNING", "Background command registered; this does not mean it succeeded");
         try {
             Thread.ofVirtual().name("jade-" + id).start(() -> run(job));
         } catch (RuntimeException failure) {
             jobs.remove(id);
-            display(id, "ERROR", "未能启动");
+            display(id, "ERROR", "Failed to start");
             job.shell().close();
             throw failure;
         }
@@ -279,7 +279,7 @@ public final class BackgroundManager implements AutoCloseable {
             cancelled.forEach(job -> jobs.remove(job.id()));
             ready.removeIf(result -> result.required() && result.owner().equals(owner));
         }
-        cancelled.forEach(job -> { display(job.id(), "CANCELLED", "所属任务不能继续"); job.shell().close(); });
+        cancelled.forEach(job -> { display(job.id(), "CANCELLED", "Owning task cannot continue"); job.shell().close(); });
     }
 
     /**
@@ -333,6 +333,6 @@ public final class BackgroundManager implements AutoCloseable {
             ready.clear();
         }
         foreground.close();
-        active.forEach(job -> { display(job.id(), "CLOSED", "会话退出"); job.shell().close(); });
+        active.forEach(job -> { display(job.id(), "CLOSED", "Session exited"); job.shell().close(); });
     }
 }

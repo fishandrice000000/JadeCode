@@ -34,7 +34,7 @@ public final class OverlayManager {
     public record Overlay(String id, Component component, Anchor anchor, double percentX, double percentY,
             Insets margin, Integer width, Integer height, Integer maxHeight, boolean captureFocus) {
         public Overlay {
-            if (id == null || component == null) throw new IllegalArgumentException("浮层 ID/组件不能为空");
+            if (id == null || component == null) throw new IllegalArgumentException("Overlay id/component cannot be empty");
             if (margin == null) margin = Insets.ZERO;
         }
     }

@@ -36,7 +36,7 @@ public final class TeamMailbox {
             String summary, String body, boolean insertion, boolean wake) throws IOException {
         if (summary == null || summary.isBlank() || summary.length() > 2000
                 || body == null || body.isBlank() || body.length() > 200_000) {
-            throw new IllegalArgumentException("摘要须为 1–2000 字符，正文须为 1–200000 字符");
+            throw new IllegalArgumentException("Summary must be 1–2000 characters and body must be 1–200000 characters");
         }
         // teams 的祖先也检查，避免 .jadecode 被换成链接后写到工作区外。
         paths.directory(root.resolve("messages"), true);
@@ -58,7 +58,7 @@ public final class TeamMailbox {
 
     /** 只接受程序格式 ID，不把模型字符串直接拼成任意文件路径。 */
     private Path pending(String id) {
-        if (!id.matches("mail_[0-9a-f-]{36}")) throw new IllegalArgumentException("非法消息 ID");
+        if (!id.matches("mail_[0-9a-f-]{36}")) throw new IllegalArgumentException("Invalid message ID");
         return root.resolve("pending").resolve(id + ".json");
     }
 }

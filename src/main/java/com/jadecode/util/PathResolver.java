@@ -28,7 +28,7 @@ public class PathResolver {
             this.workspaceReal = this.workspace.toRealPath();
         } catch (IOException e) {
             // 工作区都解析不了,程序没必要继续跑
-            throw new IllegalStateException("工作区不存在或不可访问: " + workspace, e);
+            throw new IllegalStateException("Workspace does not exist or is inaccessible: " + workspace, e);
         }
     }
 

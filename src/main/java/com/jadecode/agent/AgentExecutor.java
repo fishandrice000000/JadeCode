@@ -123,8 +123,8 @@ public class AgentExecutor implements AutoCloseable {
             ContextCompactor compactor, Supplier<ResponseStream> streams) {
         // 有控制工具却没有处理器会形成假成功，仍在构造时拒绝这种装配。
         if (compactor == null && tools.hasBuiltin(COMPACT_TOOL)) {
-            throw new IllegalArgumentException("工具表注册了 " + COMPACT_TOOL
-                    + " 但构造时未提供 ContextCompactor:压缩请求将无人处理,请注入压缩器或移除该工具");
+            throw new IllegalArgumentException("Tool table registered " + COMPACT_TOOL
+                    + " but construction did not provide a ContextCompactor: compaction requests would be unhandled. Inject a compactor or remove the tool");
         }
         this.client = client;
         this.tools = tools;
@@ -340,7 +340,7 @@ public class AgentExecutor implements AutoCloseable {
             for (int index = results.size(); index < calls.size(); index++) {
                 ToolUseBlock unfinished = calls.get(index);
                 notice(ExecutionNotice.event(ExecutionNotice.Kind.TOOL_END, batchId + "/" + unfinished.id(), unfinished.name(),
-                        index == executing && attempted ? "未正常取得结果，可能已有副作用：" + unexpected.getMessage() : "批次中断，未执行",
+                        index == executing && attempted ? "did not return normally and may already have side effects: " + unexpected.getMessage() : "batch interrupted; not executed",
                         index == executing && attempted ? "ERROR" : "NOT_RUN")
                         .timed(index == executing && attempted ? System.nanoTime() - toolStarted : 0));
                 results.add(new ToolResultBlock(calls.get(index).id(),

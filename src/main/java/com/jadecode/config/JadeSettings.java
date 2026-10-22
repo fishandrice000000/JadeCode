@@ -36,7 +36,7 @@ public record JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimit
         public Mcp {
             servers = Map.copyOf(servers);
             if (servers.size() > 16 || servers.keySet().stream().anyMatch(n -> n.isBlank() || n.length() > 128))
-                throw new IllegalArgumentException("MCP 服务数量或名称无效");
+                throw new IllegalArgumentException("Invalid MCP server count or name");
         }
 
         /**
@@ -55,8 +55,8 @@ public record JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimit
             java.util.List<com.jadecode.safety.rules.PermissionRule> rules, java.util.Set<String> disabledDefaults) {
         public Permissions {
             java.util.Objects.requireNonNull(defaultProfile); rules = java.util.List.copyOf(rules); disabledDefaults = java.util.Set.copyOf(disabledDefaults);
-            if (!com.jadecode.safety.rules.DefaultPermissionRules.IDS.containsAll(disabledDefaults)) throw new IllegalArgumentException("未知默认权限规则编号");
-            if (rules.stream().map(com.jadecode.safety.rules.PermissionRule::id).distinct().count() != rules.size()) throw new IllegalArgumentException("权限规则 id 重复");
+            if (!com.jadecode.safety.rules.DefaultPermissionRules.IDS.containsAll(disabledDefaults)) throw new IllegalArgumentException("Unknown default permission rule id");
+            if (rules.stream().map(com.jadecode.safety.rules.PermissionRule::id).distinct().count() != rules.size()) throw new IllegalArgumentException("Duplicate permission rule id");
         }
         public com.jadecode.safety.PermissionState state(com.jadecode.safety.rules.PermissionRuleStore store) {
             return new com.jadecode.safety.PermissionState(defaultProfile, rules, disabledDefaults, store);
@@ -133,7 +133,7 @@ public record JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimit
         public Memory {
             if (extractionMaxOutputTokens < 1 || recallMaxOutputTokens < 1 || consolidationMaxOutputTokens < 1
                     || consolidationInputChars < 1 || extractionCatalogChars < 1)
-                throw new IllegalArgumentException("memory 输出与输入额度必须为正整数");
+                throw new IllegalArgumentException("memory output and input budgets must be positive integers");
         }
     }
 
@@ -143,7 +143,7 @@ public record JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimit
      */
     public record Models(boolean autoDiscover, int cacheTtlHours, int timeoutMillis, Map<String, Limits> overrides) {
         public Models {
-            if (cacheTtlHours < 1 || timeoutMillis < 1) throw new IllegalArgumentException("模型缓存时效和超时必须为正整数");
+            if (cacheTtlHours < 1 || timeoutMillis < 1) throw new IllegalArgumentException("Model cache TTL and timeout must be positive integers");
             overrides = Map.copyOf(overrides);
         }
     }

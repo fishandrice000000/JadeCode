@@ -71,11 +71,11 @@ public final class SessionJournal implements AutoCloseable {
 
     /** 所有生产者经过同一把锁写完整行；只有历史事件才保存 Todo，避免队友覆盖主会话计划。 */
     private void write(JournalEntry record) throws IOException {
-        if (closed || failed) throw new IOException("会话日志已关闭或发生过写入失败");
+        if (closed || failed) throw new IOException("Session journal is closed or a write has failed");
         try {
             ByteBuffer bytes = ByteBuffer.wrap((Json.mapper().writeValueAsString(record) + "\n").getBytes(StandardCharsets.UTF_8));
             if (events.position() + bytes.remaining() > 256_000_000)
-                throw new IOException("会话日志即将超过当前 256 MB 恢复上限，请开启新会话");
+                throw new IOException("Session journal is approaching the 256 MB recovery limit; start a new session");
             while (bytes.hasRemaining()) events.write(bytes);
             events.force(true);
             sequence++;
@@ -87,12 +87,12 @@ public final class SessionJournal implements AutoCloseable {
             metadata = next;
         } catch (IOException | RuntimeException error) {
             failed = true;
-            throw new IOException("会话日志保存失败，后续操作已停止；已执行的工具不会回滚", error);
+            throw new IOException("Failed to save the session journal; later operations are stopped. Executed tools are not rolled back", error);
         }
         // 索引失败不否定刚才已可靠写出的日志，不得为了更新标题重试工具或主请求。
         try { saveMetadata(directory, metadata); }
         catch (IOException error) {
-            if (!indexWarning) warnings.accept("会话列表索引未更新，日志仍已保存；可按 UUID 恢复。");
+            if (!indexWarning) warnings.accept("Session list index was not updated, but the journal was saved; resume by UUID.");
             indexWarning = true;
         }
     }

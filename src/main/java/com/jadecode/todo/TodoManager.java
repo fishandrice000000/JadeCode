@@ -43,10 +43,10 @@ public class TodoManager {
      * @throws IllegalArgumentException 快照字段或计划约束非法
      */
     public void restore(ArrayNode snapshot) {
-        if (snapshot == null) throw new IllegalArgumentException("Todo 快照缺失");
+        if (snapshot == null) throw new IllegalArgumentException("Todo snapshot is missing");
         for (JsonNode item : snapshot) {
             if (!item.isObject() || item.size() != 2 || !item.path("content").isTextual() || !item.path("status").isTextual())
-                throw new IllegalArgumentException("Todo 快照字段无效");
+                throw new IllegalArgumentException("Todo snapshot fields are invalid");
         }
         String result = update(snapshot.deepCopy());
         if (result.startsWith("Error:")) throw new IllegalArgumentException(result);

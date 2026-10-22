@@ -171,7 +171,7 @@ public final class KeyBindings {
 
     /** 解析 `ctrl+shift+enter` 形式的键；未知修饰抛出明确异常。 */
     public static KeyChord parseChord(String value) {
-        if (value == null || value.isBlank()) throw new IllegalArgumentException("空键绑定");
+        if (value == null || value.isBlank()) throw new IllegalArgumentException("Empty key binding");
         String[] parts = value.trim().toLowerCase(Locale.ROOT).split("\\+");
         var modifiers = java.util.EnumSet.noneOf(KeyChord.Modifier.class);
         for (int i = 0; i < parts.length - 1; i++) {
@@ -181,10 +181,10 @@ public final class KeyBindings {
             else if (modifier.equals("shift")) modifiers.add(KeyChord.Modifier.SHIFT);
             else if (modifier.equals("super") || modifier.equals("cmd")) modifiers.add(KeyChord.Modifier.SUPER);
             else if (modifier.equals("meta")) modifiers.add(KeyChord.Modifier.META);
-            else throw new IllegalArgumentException("未知修饰键: " + modifier);
+            else throw new IllegalArgumentException("Unknown modifier: " + modifier);
         }
         String key = parts[parts.length - 1].trim();
-        if (key.isEmpty()) throw new IllegalArgumentException("缺少按键: " + value);
+        if (key.isEmpty()) throw new IllegalArgumentException("Missing key: " + value);
         return new KeyChord(key, modifiers, KeyChord.Phase.PRESS);
     }
 

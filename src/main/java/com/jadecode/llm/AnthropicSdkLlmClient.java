@@ -51,7 +51,7 @@ public class AnthropicSdkLlmClient implements LlmClient {
      * @param config 运行期配置(见 {@link AppConfig})
      */
     public AnthropicSdkLlmClient(AppConfig config) {
-        this(config, new ModelMetadata(ModelMetadata.Limits.unknown(), "未提供模型参数，使用原请求额度"));
+        this(config, new ModelMetadata(ModelMetadata.Limits.unknown(), "No model parameters provided; using the original request budget"));
     }
 
     /**
@@ -140,7 +140,7 @@ public class AnthropicSdkLlmClient implements LlmClient {
                     }
                 } else if (event.isContentBlockDelta()) {
                     var update = event.asContentBlockDelta();
-                    if (!openBlocks.contains(update.index())) throw new LlmException("收到未开始或已结束内容块的增量");
+                    if (!openBlocks.contains(update.index())) throw new LlmException("Received a delta for a content block that is not open");
                     if (update.delta().isInputJson() && toolJson.containsKey(update.index())) {
                         String fragment = update.delta().asInputJson().partialJson();
                         toolJson.get(update.index()).append(fragment);
@@ -148,14 +148,14 @@ public class AnthropicSdkLlmClient implements LlmClient {
                     }
                 } else if (event.isContentBlockStop()) {
                     long index = event.asContentBlockStop().index();
-                    if (!openBlocks.remove(index)) throw new LlmException("收到未开始或重复的内容块结束事件");
+                    if (!openBlocks.remove(index)) throw new LlmException("Received a stop event for a content block that is not open or was already stopped");
                     StringBuilder json = toolJson.remove(index);
                     if (json != null) {
                         validateToolJson(json.toString());
                         display.toolBlockClosed(Math.toIntExact(index));
                     }
                 } else if (event.isMessageStop() && !openBlocks.isEmpty()) {
-                    throw new LlmException("模型流结束时仍有未闭合的内容块");
+                    throw new LlmException("The model stream ended with unclosed content blocks");
                 }
                 // 先拼协议数据，再显示预览。签名和部分 JSON 不进入展示回调。
                 accumulator.accumulate(event);
@@ -180,9 +180,9 @@ public class AnthropicSdkLlmClient implements LlmClient {
         } catch (AnthropicServiceException failure) {
             throw new LlmException(failure.getMessage(), failure.statusCode(), failure);
         } catch (AnthropicException failure) {
-            throw new LlmException("模型流读取或拼装失败: " + failure.getMessage(), failure);
+            throw new LlmException("Failed to read or assemble the model stream: " + failure.getMessage(), failure);
         } catch (IllegalStateException failure) {
-            throw new LlmException("模型流未形成完整响应", failure);
+            throw new LlmException("The model stream did not form a complete response", failure);
         }
     }
 
@@ -195,9 +195,9 @@ public class AnthropicSdkLlmClient implements LlmClient {
         if (json.isBlank()) return;
         try {
             JsonNode value = Json.mapper().reader().with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS).readTree(json);
-            if (value == null || !value.isObject()) throw new LlmException("模型工具参数不是完整 JSON 对象");
+            if (value == null || !value.isObject()) throw new LlmException("Model tool arguments are not a complete JSON object");
         } catch (com.fasterxml.jackson.core.JsonProcessingException invalid) {
-            throw new LlmException("模型流包含不完整或非法的工具 JSON，未执行工具", invalid);
+            throw new LlmException("The model stream contained incomplete or invalid tool JSON; the tool was not executed", invalid);
         }
     }
 
@@ -222,7 +222,7 @@ public class AnthropicSdkLlmClient implements LlmClient {
         // 这是实际请求字段，不是提示词，也与 Ctrl+T 是否显示思考无关。
         // DEFAULT 完全省略，辅助请求保持原行为；SDK 支持追加标准协议字段，无需升级依赖。
         ThinkingSettings thinking = request.thinking();
-        if (!thinkingChoices.contains(thinking)) throw new IllegalArgumentException("当前端点或模型尚未适配该思考强度");
+        if (!thinkingChoices.contains(thinking)) throw new IllegalArgumentException("This endpoint or model is not adapted for that thinking effort");
         if (thinking != ThinkingSettings.DEFAULT) {
             String type = thinking == ThinkingSettings.OFF ? "disabled" : deepseek ? "enabled" : "adaptive";
             builder.putAdditionalBodyProperty("thinking", JsonValue.from(Map.of("type", type)));
@@ -321,7 +321,7 @@ public class AnthropicSdkLlmClient implements LlmClient {
             } else if (b.isToolUse()) {
                 com.anthropic.models.messages.ToolUseBlock u = b.asToolUse();
                 JsonNode input = u._input().convert(JsonNode.class);
-                if (!input.isObject()) throw new LlmException("模型工具参数不是 JSON 对象，未执行工具");
+                if (!input.isObject()) throw new LlmException("Model tool arguments are not a JSON object; the tool was not executed");
                 blocks.add(new ToolUseBlock(u.id(), u.name(), input));
             } else if (b.isThinking()) {
                 var thinking = b.asThinking();

@@ -41,6 +41,6 @@ public enum Role {
             }
         }
 
-        throw new IllegalArgumentException("未知的 role 值:" + wire);
+        throw new IllegalArgumentException("Unknown role value:" + wire);
     }
 }

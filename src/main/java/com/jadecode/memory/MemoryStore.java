@@ -64,12 +64,12 @@ public final class MemoryStore {
     /** 将坏文件与恢复提示送到所属 Agent 的告警通道，构造不读正文、不写盘。 */
     public MemoryStore(Path workspaceRoot, java.util.function.Consumer<String> warnings) throws IOException {
         if (workspaceRoot == null) {
-            throw new IllegalArgumentException("workspaceRoot 不能为 null");
+            throw new IllegalArgumentException("workspaceRoot cannot be null");
         }
         // 先解析工作区自身的链接，再派生内部记忆目录；比较实际路径，不是字符串前缀。
         this.workspaceRoot = workspaceRoot.toRealPath();
         if (!Files.readAttributes(this.workspaceRoot, BasicFileAttributes.class).isDirectory()) {
-            throw new IOException("Memory 工作区不是目录: " + this.workspaceRoot);
+            throw new IOException("Memory workspace is not a directory: " + this.workspaceRoot);
         }
         this.memoryDir = new com.jadecode.config.WorkspacePaths(this.workspaceRoot).memory();
         this.warnings = java.util.Objects.requireNonNull(warnings);
@@ -111,7 +111,7 @@ public final class MemoryStore {
                     // 3. 先检查真实位置与文件类型，再读正文；目录分组本身不能防止越界软链。
                     Path real = entry.toRealPath();
                     if (!real.startsWith(root)) {
-                        warnOnce(filename, "忽略越界记忆文件");
+                        warnOnce(filename, "Ignoring out-of-bounds memory file");
                         continue;
                     }
                     if (!Files.readAttributes(real, BasicFileAttributes.class).isRegularFile()) {
@@ -121,7 +121,7 @@ public final class MemoryStore {
                     MemoryRecord record = parseRecord(filename, content);
                     if (record == null) {
                         // 只报文件名，不回显原文；坏文件不妨碍其它合法知识被召回。
-                        warnOnce(filename, "忽略格式无效的记忆文件");
+                        warnOnce(filename, "Ignoring memory file with invalid format");
                     } else {
                         reportedProblems.remove(filename);
                         records.add(record);
@@ -130,7 +130,7 @@ public final class MemoryStore {
                     // 悬空链接 / 列举后删除，与权限或磁盘故障不同，不制造不存在的记录。
                 } catch (CharacterCodingException badEncoding) {
                     // 坏 UTF-8 与坏 YAML 一样只是这一条不合法；权限/磁盘故障仍向上抛出。
-                    warnOnce(filename, "忽略非 UTF-8 记忆文件");
+                    warnOnce(filename, "Ignoring non-UTF-8 memory file");
                 }
             }
         } catch (UncheckedIOException listingFailure) {
@@ -214,7 +214,7 @@ public final class MemoryStore {
                             StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
                 } catch (FileAlreadyExistsException conflict) {
                     // 外部非协作写者抢占了已分配的目标。不能把它说成“同名记忆”，也不能覆盖。
-                    throw new IOException("记忆写入目标在分配后被占用", conflict);
+                    throw new IOException("Memory write target was claimed after allocation", conflict);
                 }
                 // 创建成功即登记，即使 write 或 close 失败，也能清理自己的半成品。
                 created.add(target);
@@ -277,7 +277,7 @@ public final class MemoryStore {
         List<MemoryRecord> snapshot = List.copyOf(expected);
         List<MemoryDraft> candidates = List.copyOf(drafts);
         if (snapshot.isEmpty() || candidates.size() > snapshot.size())
-            throw new IllegalArgumentException("整理只能替换非空旧库，不能增加记录数量");
+            throw new IllegalArgumentException("Consolidation may only replace a non-empty library and cannot increase the record count");
         Path root = checkedRoot();
         MemoryLibraryLock.run(root, () -> {
             MemoryTransaction.recover(root, warnings);
@@ -291,7 +291,7 @@ public final class MemoryStore {
      * 候选不是增量，任何非法条目都拒绝整批，不能用丢弃坏条目的方式误删旧知识。
      */
     private void replaceLocked(Path root, List<MemoryRecord> snapshot, List<MemoryDraft> drafts) throws IOException {
-        if (!snapshot.equals(scanRecords())) throw new IOException("整理期间记忆库发生变化，未发布旧快照的整理结果");
+        if (!snapshot.equals(scanRecords())) throw new IOException("The memory library changed during consolidation; results from the old snapshot were not published");
         var documents = new LinkedHashMap<String, String>();
         var occupied = new java.util.HashSet<String>();
         var preferred = new java.util.HashMap<String, String>();
@@ -302,19 +302,19 @@ public final class MemoryStore {
         }
         var names = new java.util.HashSet<String>();
         for (MemoryDraft draft : drafts) {
-            if (!names.add(draft.name())) throw new IllegalArgumentException("整理后的记忆名称重复");
+            if (!names.add(draft.name())) throw new IllegalArgumentException("Consolidated memory names are duplicated");
             String oldName = preferred.get(draft.name());
             String filename = oldName != null && occupied.add(oldName) ? oldName : availableFilename(draft.name(), occupied);
             documents.put(filename, memoryDocument(draft));
         }
-        if (documents.isEmpty()) throw new IllegalArgumentException("不允许用空整理结果清空记忆库");
+        if (documents.isEmpty()) throw new IllegalArgumentException("An empty consolidation result cannot clear the memory library");
         Path index = root.resolve("MEMORY.md");
         checkIndexTarget(index);
         var originals = new LinkedHashMap<String, String>();
         for (MemoryRecord record : snapshot) {
             Path path = root.resolve(record.filename());
             if (!Files.readAttributes(path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS).isRegularFile()) {
-                throw new IOException("整理只允许替换普通非链接记忆文件: " + record.filename());
+                throw new IOException("Consolidation may only replace regular non-symlink memory files: " + record.filename());
             }
             originals.put(record.filename(), record.content());
         }
@@ -322,13 +322,13 @@ public final class MemoryStore {
         StringBuilder catalog = new StringBuilder();
         for (var entry : documents.entrySet()) {
             MemoryRecord record = parseRecord(entry.getKey(), entry.getValue());
-            if (record == null) throw new IOException("候选编码后不能读回为合法记忆");
+            if (record == null) throw new IOException("An encoded candidate could not be read back as a valid memory");
             catalog.append("- [").append(indexText(record.name())).append("](")
                     .append(record.filename()).append(") - ").append(indexText(record.description())).append('\n');
         }
         MemoryTransaction transaction = MemoryTransaction.prepare(root, originals, documents, catalog.toString());
         try {
-            if (!snapshot.equals(scanRecords())) throw new IOException("准备整理候选期间记忆库发生变化");
+            if (!snapshot.equals(scanRecords())) throw new IOException("The memory library changed while preparing consolidation candidates");
             for (String name : originals.keySet()) Files.delete(root.resolve(name));
             for (var entry : documents.entrySet()) {
                 // 候选先完整写到临时文件再原子发布，进程中断不会留下半个新正文妨碍恢复。
@@ -350,7 +350,7 @@ public final class MemoryStore {
         Path root = memoryDir.toRealPath();
         if (!root.startsWith(workspaceRoot)
                 || !Files.readAttributes(root, BasicFileAttributes.class).isDirectory()) {
-            throw new IOException("Memory 库根不是工作区内的目录: " + memoryDir);
+            throw new IOException("Memory library root is not a directory inside the workspace: " + memoryDir);
         }
         return root;
     }
@@ -359,7 +359,7 @@ public final class MemoryStore {
     private static void checkIndexTarget(Path index) throws IOException {
         try {
             if (!Files.readAttributes(index, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS).isRegularFile()) {
-                throw new IOException("Memory 索引不是普通非链接文件: " + index);
+                throw new IOException("Memory index is not a regular non-symlink file: " + index);
             }
         } catch (NoSuchFileException absent) {
             // 索引尚不存在，允许本次正常发布。
@@ -384,7 +384,7 @@ public final class MemoryStore {
         String base = memoryFilename(name);
         if (occupied.add(base)) return base;
         String alternative = base.substring(0, base.length() - 3) + "-" + nameHash(name) + ".md";
-        if (!occupied.add(alternative)) throw new IllegalArgumentException("不同记忆的目标文件仍冲突，未覆盖任何记录");
+        if (!occupied.add(alternative)) throw new IllegalArgumentException("Target files for different memories still conflict; no records were overwritten");
         return alternative;
     }
 
@@ -393,7 +393,7 @@ public final class MemoryStore {
         try {
             return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
                     .digest(name.getBytes(StandardCharsets.UTF_8))).substring(0, 12);
-        } catch (java.security.NoSuchAlgorithmException impossible) { throw new IllegalStateException("JDK 缺少 SHA-256", impossible); }
+        } catch (java.security.NoSuchAlgorithmException impossible) { throw new IllegalStateException("The JDK does not provide SHA-256", impossible); }
     }
 
     /** 在 UTF-8 字节预算内取最长完整码点前缀，不会制造半个汉字或 emoji。 */
@@ -522,14 +522,14 @@ public final class MemoryStore {
         public MemoryDraft {
             if (name == null || name.isBlank() || type == null || description == null || description.isBlank()
                     || body == null || body.isBlank()) {
-                throw new IllegalArgumentException("记忆 name / type / description / body 必须完整");
+                throw new IllegalArgumentException("Memory name / type / description / body must all be present");
             }
             name = name.strip();
             type = type.strip();
             description = description.strip();
             body = body.strip();
             if (!TYPES.contains(type)) {
-                throw new IllegalArgumentException("未知的记忆类型: " + type);
+                throw new IllegalArgumentException("Unknown memory type: " + type);
             }
         }
     }

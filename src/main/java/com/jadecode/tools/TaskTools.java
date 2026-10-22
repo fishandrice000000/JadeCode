@@ -191,7 +191,7 @@ public final class TaskTools {
         /** 整体形状检查无 IO 副作用；数组元素也逐个判型，ID 语法与图关系交给存储层。 */
         private void validate(ObjectNode input) {
             if (input == null) {
-                throw new IllegalArgumentException("参数必须是对象");
+                throw new IllegalArgumentException("Arguments must be an object");
             }
             for (String required : required()) {
                 if (!input.has(required)) {
@@ -212,11 +212,11 @@ public final class TaskTools {
                 }
                 if (value.isArray()) {
                     if (value.isEmpty()) {
-                        throw new IllegalArgumentException("addBlockedBy 不能为空");
+                        throw new IllegalArgumentException("addBlockedBy cannot be empty");
                     }
                     for (JsonNode id : value) {
                         if (!id.isTextual()) {
-                            throw new IllegalArgumentException("依赖必须是文本 ID");
+                            throw new IllegalArgumentException("Dependencies must be text ids");
                         }
                     }
                 }

@@ -70,7 +70,7 @@ public final class Env {
         try {
             return load(dotenv);
         } catch (IOException e) {
-            throw new UncheckedIOException("读取 .env 失败", e);
+            throw new UncheckedIOException("Failed to read .env", e);
         }
     }
 
@@ -102,6 +102,6 @@ public final class Env {
         if (result != null)
             return result;
         else
-            throw new IllegalStateException("必填配置不存在: " + key);
+            throw new IllegalStateException("Required configuration is missing: " + key);
     }
 }

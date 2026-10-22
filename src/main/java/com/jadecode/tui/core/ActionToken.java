@@ -16,7 +16,7 @@ public record ActionToken(Kind kind, String objectId, long revision) {
     public enum Kind { APPROVE, ALLOW_SIMILAR, DENY, TOGGLE_ENTRY, SELECT_ITEM, OPEN_LINK, COPY, SCROLL }
 
     public ActionToken {
-        if (kind == null || objectId == null) throw new IllegalArgumentException("动作身份不能为空");
+        if (kind == null || objectId == null) throw new IllegalArgumentException("Action identity cannot be empty");
     }
 
     /** @return 该动作在给定当前 revision 下是否仍有效。 */

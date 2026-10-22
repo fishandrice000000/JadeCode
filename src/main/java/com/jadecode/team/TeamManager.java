@@ -55,7 +55,7 @@ public final class TeamManager implements AutoCloseable {
 
     /** 工厂先装配 Leader，再安装队友工厂；启动模型前只能绑定一次。 */
     public synchronized void bind(SessionRuntime leader, BiFunction<String, String, SessionRuntime> factory) {
-        if (this.leader != null) throw new IllegalStateException("Team 已绑定");
+        if (this.leader != null) throw new IllegalStateException("Team is already bound");
         this.leader = leader;
         this.factory = factory;
     }
@@ -74,8 +74,8 @@ public final class TeamManager implements AutoCloseable {
      */
     public synchronized String spawn(String role) throws IOException {
         ensureOpen();
-        if (role == null || role.isBlank() || role.length() > 4000) throw new IllegalArgumentException("队友职责不能为空或过长");
-        if (members.values().stream().filter(m -> !m.closed).count() >= 3) throw new IllegalStateException("至多三个常驻队友");
+        if (role == null || role.isBlank() || role.length() > 4000) throw new IllegalArgumentException("Teammate role must not be empty or too long");
+        if (members.values().stream().filter(m -> !m.closed).count() >= 3) throw new IllegalStateException("At most three persistent teammates");
         String id;
         do { id = "agent_" + UUID.randomUUID().toString().substring(0, 8); }
         while (members.containsKey(id));
@@ -105,7 +105,7 @@ public final class TeamManager implements AutoCloseable {
      */
     public synchronized String assign(String to, String taskId, String summary, String body, ExecutionContext context) throws IOException {
         ensureOpen();
-        if (context == null || context.isCancelled()) throw new IllegalStateException("派工来源不存在或已退出");
+        if (context == null || context.isCancelled()) throw new IllegalStateException("Assignment source does not exist or has exited");
         member(to);
         Task task = tasks.claim(taskId, to);
         String id = "assignment_" + UUID.randomUUID();
@@ -143,15 +143,15 @@ public final class TeamManager implements AutoCloseable {
     public synchronized String send(String from, String to, String taskId, String assignmentId, String kind,
             String summary, String body, boolean insertion, boolean wake, ExecutionContext context) throws IOException {
         ensureOpen();
-        if (!from.equals(LEADER) && !to.equals(LEADER)) throw new IllegalArgumentException("队友只能给 Leader 发消息");
-        if (from.equals(to)) throw new IllegalArgumentException("不能给自己投递");
+        if (!from.equals(LEADER) && !to.equals(LEADER)) throw new IllegalArgumentException("Teammates may only message the Leader");
+        if (from.equals(to)) throw new IllegalArgumentException("Cannot deliver a message to self");
         if (!from.equals(LEADER)) member(from);
         if (!to.equals(LEADER)) member(to);
         if (taskId != null) tasks.load(taskId);
         if (assignmentId != null) {
             Assignment assignment = assignment(assignmentId);
             if (!assignment.owner.equals(from.equals(LEADER) ? to : from)
-                    || !assignment.task.equals(taskId)) throw new IllegalArgumentException("任务或派工与通信对象不匹配");
+                    || !assignment.task.equals(taskId)) throw new IllegalArgumentException("Task or assignment does not match the communication target");
         }
         Incoming incoming = prepare(from, to, taskId, assignmentId, kind, summary, body, insertion, wake);
         deliver(incoming, context);
@@ -167,13 +167,13 @@ public final class TeamManager implements AutoCloseable {
         ensureOpen();
         Assignment assignment = assignment(id);
         if (!assignment.owner.equals(actor) || !id.equals(current.get(assignment.task)) || assignment.abandoned) {
-            throw new IllegalArgumentException("旧派工或非原负责者不能更新任务状态");
+            throw new IllegalArgumentException("An old assignment or non-owner cannot update task status");
         }
         if (status != Task.Status.COMPLETED && status != Task.Status.FAILED && status != Task.Status.BLOCKED) {
-            throw new IllegalArgumentException("报告状态只能是 completed/failed/blocked");
+            throw new IllegalArgumentException("Report status must be completed/failed/blocked");
         }
         if (status == Task.Status.COMPLETED && member(actor).runtime.hasRequiredBackground()) {
-            throw new IllegalStateException("当前派工仍有必须处理的后台结果，不能先报告成功");
+            throw new IllegalStateException("The assignment still has required background results; cannot report success yet");
         }
         if (assignment.report == null) {
             assignment.report = prepare(actor, LEADER, assignment.task, id, "result", summary, body, true, true);
@@ -181,14 +181,14 @@ public final class TeamManager implements AutoCloseable {
             assignment.body = body;
             persist(assignment);
         } else if (assignment.status != status || !assignment.report.summary().equals(summary) || !assignment.body.equals(body)) {
-            throw new IllegalArgumentException("重试必须使用相同报告；补充内容请另发消息");
+            throw new IllegalArgumentException("Retries must use the same report; send additional content as a separate message");
         }
         Task task = tasks.load(assignment.task);
         if (task.status() == Task.Status.IN_PROGRESS) {
             if (status == Task.Status.COMPLETED) tasks.complete(task.id(), actor);
             else tasks.stop(task.id(), actor, status);
         } else if (task.status() != status || !actor.equals(task.owner())) {
-            throw new IllegalArgumentException("任务状态已改变，不能覆盖");
+            throw new IllegalArgumentException("Task status changed; cannot overwrite it");
         }
         persist(assignment);
         deliver(assignment.report, assignment.context);
@@ -201,7 +201,7 @@ public final class TeamManager implements AutoCloseable {
     public synchronized Task reopen(String taskId) throws IOException {
         Task task = tasks.load(taskId);
         if (task.status() != Task.Status.FAILED && task.status() != Task.Status.BLOCKED) {
-            throw new IllegalArgumentException("只能重新打开 failed/blocked 任务");
+            throw new IllegalArgumentException("Only failed/blocked tasks can be reopened");
         }
         Task reopened = tasks.release(taskId, task.owner());
         current.remove(taskId);
@@ -214,12 +214,12 @@ public final class TeamManager implements AutoCloseable {
      */
     public synchronized String retry(String actor, String messageId, ExecutionContext context) throws IOException {
         Incoming incoming = pending.get(messageId);
-        if (incoming == null || !incoming.fromAgentId().equals(actor)) throw new IllegalArgumentException("没有本发送者可重试的消息");
+        if (incoming == null || !incoming.fromAgentId().equals(actor)) throw new IllegalArgumentException("No retryable message for this sender");
         if (incoming.assignmentId() != null) {
             Assignment assignment = assignment(incoming.assignmentId());
-            if (assignment.abandoned || !assignment.id.equals(current.get(assignment.task))) throw new IllegalArgumentException("派工已失效");
+            if (assignment.abandoned || !assignment.id.equals(current.get(assignment.task))) throw new IllegalArgumentException("Assignment is no longer valid");
             if (incoming.kind().equals("result") && tasks.load(assignment.task).status() != assignment.status) {
-                throw new IllegalStateException("先用原参数重试 submit_task_result，完成任务状态登记");
+                throw new IllegalStateException("Retry submit_task_result with the original arguments first to register the task status");
             }
         }
         deliver(incoming, context);
@@ -275,11 +275,11 @@ public final class TeamManager implements AutoCloseable {
         // 投递前重新读取并检查文件里的元数据，正文仍留给接收模型按需读取。
         Path pendingPath = mailbox.root().resolve("pending").resolve(incoming.id() + ".json");
         Incoming stored = Json.mapper().readValue(Files.readString(pendingPath), Incoming.class);
-        if (!stored.equals(incoming)) throw new IOException("邮箱元数据已改变，拒绝投递");
+        if (!stored.equals(incoming)) throw new IOException("Mailbox metadata changed; delivery refused");
         ExecutionContext origin = origins.computeIfAbsent(incoming.id(), id -> context);
         var accepted = target.tryReceive(stored, origin);
-        if (accepted == null) throw new IllegalStateException("消息 " + incoming.id() + " 未送达：接收方已关闭或 Inbox 已满；"
-                + (incoming.kind().equals("assignment") ? "认领将尝试撤销，请重新 assign_task 并取得新编号" : "可重试提交/投递"));
+        if (accepted == null) throw new IllegalStateException("Message " + incoming.id() + " was not delivered: the receiver is closed or the Inbox is full; "
+                + (incoming.kind().equals("assignment") ? "the claim will be rolled back; assign_task again for a new assignment id" : "submission or delivery can be retried"));
         delivered.add(incoming.id());
         try { mailbox.delivered(incoming); }
         catch (IOException cleanup) { errors.accept("[Warning] Mail enqueued; pending cleanup failed: " + incoming.id()); }
@@ -292,7 +292,7 @@ public final class TeamManager implements AutoCloseable {
         if (closed || assignment == null || assignment.finished || assignment.abandoned || assignment.report != null
                 || members.get(assignment.owner).closed) return;
         try {
-            submitResult(assignment.owner, id, Task.Status.FAILED, "队友执行异常，需 Leader 决策",
+            submitResult(assignment.owner, id, Task.Status.FAILED, "Teammate execution failed; Leader decision required",
                     "Execution failed: " + failure.getClass().getSimpleName() + ": " + failure.getMessage());
         } catch (IOException | RuntimeException reportFailure) {
             errors.accept("[Error] Cannot register teammate failure for " + id + ": " + reportFailure.getMessage());
@@ -308,7 +308,7 @@ public final class TeamManager implements AutoCloseable {
         if (closed || assignment == null || assignment.abandoned || members.get(assignment.owner).closed) return;
         try {
             Incoming incoming = prepare(assignment.owner, LEADER, assignment.task, id, "idle",
-                    "队友本轮已返回；这不等于任务验收通过，请结合正式报告与任务状态判断。",
+                    "The teammate returned this turn; this is not task acceptance. Use the formal report and task status.",
                     answer == null || answer.isBlank() ? "No final text" : answer, false, false);
             deliver(incoming, assignment.context);
         } catch (IOException | RuntimeException failure) {
@@ -342,16 +342,16 @@ public final class TeamManager implements AutoCloseable {
     /** 拒绝不存在或已经关闭的身份，不能静默改投 Leader 或另一个队友。 */
     private Member member(String id) {
         Member member = members.get(id);
-        if (member == null || member.closed) throw new IllegalArgumentException("队友不存在或已关闭: " + id);
+        if (member == null || member.closed) throw new IllegalArgumentException("Teammate does not exist or is closed: " + id);
         return member;
     }
     /** 查派工而不是猜测当前最近一项任务。 */
     private Assignment assignment(String id) {
         Assignment assignment = assignments.get(id);
-        if (assignment == null) throw new IllegalArgumentException("未知派工: " + id);
+        if (assignment == null) throw new IllegalArgumentException("Unknown assignment: " + id);
         return assignment;
     }
-    private void ensureOpen() { if (closed || leader == null) throw new IllegalStateException("Team 已关闭或未装配"); }
+    private void ensureOpen() { if (closed || leader == null) throw new IllegalStateException("Team is closed or not wired"); }
 
     /** 只管理一个独立 Session 的身份与生命周期，不另写一份 teammate loop。 */
     private static final class Member {

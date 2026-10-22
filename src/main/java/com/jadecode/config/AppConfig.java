@@ -32,7 +32,7 @@ public record AppConfig(String apiKey, String baseUrl, String model, int maxToke
         try {
             return env.required("ANTHROPIC_API_KEY");
         } catch (IllegalStateException e) {
-            System.err.println("复制 .env.example 为 .env 并填入");
+            System.err.println("Copy .env.example to .env and fill it in");
             throw e;
         }
     }
@@ -58,7 +58,7 @@ public record AppConfig(String apiKey, String baseUrl, String model, int maxToke
         try {
             return Integer.parseInt(s);
         } catch (NumberFormatException e) {
-            throw new IllegalStateException("MAX_TOKENS 必须是数字,当前值:" + s);
+            throw new IllegalStateException("MAX_TOKENS must be a number; current value:" + s);
         }
     }
 }

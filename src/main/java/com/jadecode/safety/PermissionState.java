@@ -41,8 +41,8 @@ public final class PermissionState {
     /** 先持久化，再发布内存规则。IO 失败时不生成一次虚假的长期批准。 */
     public void remember(PermissionRule rule, long expectedRevision) throws IOException {
         synchronized (this) {
-            if (revision != expectedRevision) throw new IOException("权限已变化，请重新确认");
-            if (store == null) throw new IOException("此运行未配置长期权限存储");
+            if (revision != expectedRevision) throw new IOException("Permissions changed; confirm again");
+            if (store == null) throw new IOException("No long-term permission store is configured for this run");
             store.save(rule); rules.add(rule); revision++;
             published = new Snapshot(profile, List.copyOf(rules), disabled, revision);
         }

@@ -25,7 +25,7 @@ public record KeyChord(String key, Set<Modifier> modifiers, Phase phase) {
     public enum Phase { PRESS, REPEAT, RELEASE }
 
     public KeyChord {
-        if (key == null || key.isEmpty()) throw new IllegalArgumentException("按键名不能为空");
+        if (key == null || key.isEmpty()) throw new IllegalArgumentException("Key name cannot be empty");
         key = key.length() == 1 ? key.toLowerCase(Locale.ROOT) : key;
         modifiers = modifiers == null ? Set.of() : Set.copyOf(modifiers);
         phase = phase == null ? Phase.PRESS : phase;

@@ -16,8 +16,8 @@ public record ToolIdentity(Kind kind, String serverName, String originalName, bo
     public ToolIdentity {
         Objects.requireNonNull(kind); Objects.requireNonNull(serverName);
         if (originalName == null || originalName.isBlank() || kind == Kind.MCP && serverName.isBlank())
-            throw new IllegalArgumentException("工具身份无效");
-        if (kind == Kind.BUILTIN && (!serverName.isEmpty() || hostReadOnly)) throw new IllegalArgumentException("内置工具身份无效");
+            throw new IllegalArgumentException("Invalid tool identity");
+        if (kind == Kind.BUILTIN && (!serverName.isEmpty() || hostReadOnly)) throw new IllegalArgumentException("Invalid builtin tool identity");
     }
     /** 内置工具沿用现有权限解释，不能借此自称 MCP 只读工具。 */
     public static ToolIdentity builtin(String name) { return new ToolIdentity(Kind.BUILTIN, "", name, false); }

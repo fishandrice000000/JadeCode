@@ -61,7 +61,7 @@ class PermissionGateTest {
         assertNull(gate.check("bash", input("command", "rm foo.txt")));
 
         approval.allow = false;
-        assertTrue(gate.check("bash", input("command", "rm foo.txt")).contains("删除目标"));
+        assertTrue(gate.check("bash", input("command", "rm foo.txt")).contains("Deletion target requires confirmation"));
     }
 
     /** ③ 审批收到的参数透传:工具名与命中理由 */
@@ -103,7 +103,7 @@ class PermissionGateTest {
             t.start();
             t.join();
         });
-        assertTrue(result.get().contains("删除目标"));
+        assertTrue(result.get().contains("Deletion target requires confirmation"));
         assertTrue(approval.calls.isEmpty());
     }
 
@@ -127,7 +127,7 @@ class PermissionGateTest {
         assertNull(gate.check("write_file", input("path", "/tmp/jadecode-v2-test.txt")));
 
         approval.allow = false;
-        assertTrue(gate.check("write_file", input("path", "/tmp/jadecode-v2-test.txt")).contains("工作区外"));
+        assertTrue(gate.check("write_file", input("path", "/tmp/jadecode-v2-test.txt")).contains("outside the workspace"));
     }
 
     /** ⑧ bash 触碰高危目录(cat /etc/hostname):走审批,堵旁路洞 */

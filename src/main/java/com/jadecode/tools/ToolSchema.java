@@ -39,7 +39,7 @@ public final class ToolSchema {
             }
         }
         if (!lostKeys.isEmpty()) {
-            throw new IllegalArgumentException("properties 中缺少 required 中已声明的属性: " + lostKeys);
+            throw new IllegalArgumentException("properties is missing an attribute declared in required: " + lostKeys);
         }
 
         // 2. 创建 root

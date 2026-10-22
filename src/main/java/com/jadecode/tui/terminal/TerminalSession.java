@@ -95,8 +95,8 @@ public final class TerminalSession implements AutoCloseable {
      * 重复调用只保留一个 reader。
      */
     public void start(Consumer<TerminalEvent> events) {
-        if (state == State.CLOSED) throw new IllegalStateException("终端已经关闭");
-        if (state == State.HANDOFF) throw new IllegalStateException("终端暂退中");
+        if (state == State.CLOSED) throw new IllegalStateException("Terminal is already closed");
+        if (state == State.HANDOFF) throw new IllegalStateException("Terminal is suspended");
         this.sink = events == null ? ignored -> { } : events;
         if (reader != null) return;
         previousTerm = org.jline.utils.Signals.register("TERM", () -> emitEof());
@@ -146,7 +146,7 @@ public final class TerminalSession implements AutoCloseable {
      * 不关闭 Terminal/Host；恢复由 {@link #resume()} 完成。失败时保持 HANDOFF 并抛出。
      */
     public synchronized void pauseForHandoff() throws IOException {
-        if (state != State.ACTIVE && state != State.NEW) throw new IllegalStateException("当前状态不能暂退: " + state);
+        if (state != State.ACTIVE && state != State.NEW) throw new IllegalStateException("Cannot suspend from the current state: " + state);
         state = State.HANDOFF;
         running = false;
         if (reader != null) {
@@ -157,12 +157,12 @@ public final class TerminalSession implements AutoCloseable {
         writer.print("\u001b[<u\u001b[>4;0m\u001b[?2004l\u001b[?25h\u001b[0m\u001b[m");
         writer.flush();
         terminal.setAttributes(original);
-        if (writer.checkError()) throw new IOException("终端在暂退时写入失败");
+        if (writer.checkError()) throw new IOException("Terminal write failed while suspended");
     }
 
     /** 从暂退恢复：重新 raw、清屏并重启唯一 reader；epoch 递增使旧动作失效。 */
     public synchronized void resume() throws IOException {
-        if (state != State.HANDOFF) throw new IllegalStateException("终端不在暂退状态: " + state);
+        if (state != State.HANDOFF) throw new IllegalStateException("Terminal is not suspended: " + state);
         enterRaw();
         state = State.ACTIVE;
         epoch.incrementAndGet();
@@ -180,7 +180,7 @@ public final class TerminalSession implements AutoCloseable {
         terminal.setAttributes(raw);
         writer.print("\u001b[?1000l\u001b[?1002l\u001b[?1003l\u001b[?1006l\u001b[?2004h\u001b[?25h");
         writer.flush();
-        if (writer.checkError()) throw new IOException("终端输出不可用");
+        if (writer.checkError()) throw new IOException("Terminal output is unavailable");
     }
 
     /**
@@ -199,7 +199,7 @@ public final class TerminalSession implements AutoCloseable {
         try {
             writer.print("\u001b[<u\u001b[>4;0m\u001b[?2026l\u001b[0m\u001b[?25h\u001b[?1000l\u001b[?1002l\u001b[?1003l\u001b[?1006l\u001b[?2004l\r\n");
             writer.flush();
-            if (writer.checkError()) throw new IOException("终端在关闭时写入失败");
+            if (writer.checkError()) throw new IOException("Terminal write failed while closing");
             terminal.setAttributes(original);
         } catch (IOException error) { failure = error; }
         finally {
@@ -219,6 +219,6 @@ public final class TerminalSession implements AutoCloseable {
     public void write(String value) {
         writer.print(value);
         writer.flush();
-        if (writer.checkError()) throw new IllegalStateException("终端写入失败，停止交互会话");
+        if (writer.checkError()) throw new IllegalStateException("Terminal write failed; stopping the interactive session");
     }
 }

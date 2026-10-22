@@ -24,7 +24,7 @@ public record ModelResponse(Message message, Usage usage, String stopReason) {
         public Usage(long inputTokens, long outputTokens) { this(inputTokens, outputTokens, 0, 0); }
         public Usage {
             if (inputTokens < 0 || outputTokens < 0 || cacheReadInputTokens < 0 || cacheCreationInputTokens < 0)
-                throw new IllegalArgumentException("模型用量不能为负数");
+                throw new IllegalArgumentException("Model usage cannot be negative");
         }
         /** Anthropic wire 的普通输入不包含缓存读写；总输入才可用于占用与累计。 */
         public long totalInputTokens() { return Math.addExact(Math.addExact(inputTokens, cacheReadInputTokens), cacheCreationInputTokens); }

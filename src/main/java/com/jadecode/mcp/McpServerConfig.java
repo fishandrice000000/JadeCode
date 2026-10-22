@@ -20,13 +20,13 @@ public record McpServerConfig(boolean enabled, String command, List<String> args
     /** 复制集合、检查边界；错误只指出字段，不回显可能包含敏感值的启动参数。 */
     public McpServerConfig {
         if (command == null || command.isBlank() || command.indexOf('\0') >= 0)
-            throw new IllegalArgumentException("MCP command 必须为非空程序名");
+            throw new IllegalArgumentException("MCP command must be a non-empty program name");
         args = List.copyOf(args); readOnlyTools = Set.copyOf(readOnlyTools);
         if (cwd == null || args.stream().anyMatch(a -> a.indexOf('\0') >= 0))
-            throw new IllegalArgumentException("MCP cwd/args 无效");
+            throw new IllegalArgumentException("Invalid MCP cwd/args");
         if (startupTimeoutSeconds < 1 || startupTimeoutSeconds > 120 || callTimeoutSeconds < 1 || callTimeoutSeconds > 300
                 || maxResultChars < 1 || maxResultChars > 100_000)
-            throw new IllegalArgumentException("MCP 超时或结果长度超出允许范围");
-        if (readOnlyTools.stream().anyMatch(String::isBlank)) throw new IllegalArgumentException("MCP 只读工具名不能为空");
+            throw new IllegalArgumentException("MCP timeout or result length is outside the allowed range");
+        if (readOnlyTools.stream().anyMatch(String::isBlank)) throw new IllegalArgumentException("MCP read-only tool names cannot be empty");
     }
 }

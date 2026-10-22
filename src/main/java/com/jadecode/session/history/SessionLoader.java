@@ -43,17 +43,17 @@ public final class SessionLoader {
                         .decode(ByteBuffer.wrap(bytes, start, end - start)).toString();
                 com.fasterxml.jackson.databind.JsonNode node = Json.mapper().reader().with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS).readTree(line);
                 if (node == null || !node.path("sequence").isIntegralNumber() || !node.path("version").isInt())
-                    throw new IllegalArgumentException("日志序号或版本不是整数");
+                    throw new IllegalArgumentException("Journal sequence or version is not an integer");
                 JournalEntry entry = Json.mapper().readerFor(JournalEntry.class)
                         .with(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES).readValue(line);
                 if (!entry.sessionId().equals(metadata.id()) || entry.sequence() != sequence + 1)
-                    throw new IllegalArgumentException("日志身份不符或序号不连续");
+                    throw new IllegalArgumentException("Journal identity mismatch or non-consecutive sequence");
                 // 只恢复实际快照；用独立临时账本验证，不能部分更新调用者的 TodoManager。
                 if (!entry.metadataOnly()) new TodoManager().restore(entry.todos());
                 switch (entry.kind()) {
                     case APPEND -> history.add(entry.messages().getFirst());
                     case REPLACE_LAST -> {
-                        if (history.isEmpty()) throw new IllegalArgumentException("空历史不能替换末条");
+                        if (history.isEmpty()) throw new IllegalArgumentException("Empty history cannot replace the last entry");
                         history.set(history.size() - 1, entry.messages().getFirst());
                     }
                     case REPLACE_HISTORY -> { history.clear(); history.addAll(entry.messages()); }
@@ -68,16 +68,16 @@ public final class SessionLoader {
                         ? entry.messages().getFirst().extractText() : null, entry.time());
                 entries.add(entry); sequence++;
             } catch (Exception invalid) {
-                throw new IOException("会话第 " + (sequence + 1) + " 条记录损坏，已保留原文件", invalid);
+                throw new IOException("Session record " + (sequence + 1) + " is corrupted; the original file was preserved", invalid);
             }
             start = end + 1;
         }
-        if (start != bytes.length) warnings.add("上次日志末尾写入中断；仅恢复完整记录，原文件将保留恢复副本。");
+        if (start != bytes.length) warnings.add("The last journal write was interrupted; only complete records were recovered and a recovery copy is preserved.");
         boolean repaired = repairTail(history);
         try { ToolExchangeProtocol.validateHistory(history); }
-        catch (IllegalArgumentException invalid) { throw new IOException("历史中存在非末尾工具交换损坏，不能自动恢复", invalid); }
-        if (repaired) warnings.add("上次工具调用结果未完整记录，操作可能已执行；已补中断说明，不会重跑工具。");
-        if (unfinished) warnings.add("上次大轮次未正常结束；恢复后等待新输入，不自动继续执行。");
+        catch (IllegalArgumentException invalid) { throw new IOException("History contains a non-terminal corrupted tool exchange and cannot be recovered automatically", invalid); }
+        if (repaired) warnings.add("The previous tool result was not fully recorded; the operation may have run. An interruption note was added and the tool will not be rerun.");
+        if (unfinished) warnings.add("The previous large turn did not finish normally; after recovery, new input is awaited and execution is not resumed automatically.");
         // 不为每次正常恢复添加固定提示。上面的日志中断、工具结果缺失等实际异常仍须告知用户；
         // 这里只减少界面噪声，不改变恢复范围，也不让旧进程、审批或业务文件回到过去的状态。
         // 清单可能在日志写完之后更新失败。从日志重算标题/更新时间，不让旧索引成为历史事实。
@@ -101,7 +101,7 @@ public final class SessionLoader {
         var results = last == calls ? List.<ToolResultBlock>of() : last.blocksOfType(ToolResultBlock.class);
         if (results.size() >= uses.size()) return false;
         for (int i = 0; i < results.size(); i++) {
-            if (!uses.get(i).id().equals(results.get(i).toolUseId())) throw new IOException("末尾工具结果 ID 错序，不能自动修复");
+            if (!uses.get(i).id().equals(results.get(i).toolUseId())) throw new IOException("Trailing tool result ids are out of order and cannot be repaired automatically");
         }
         List<ContentBlock> blocks = new ArrayList<>(results);
         for (int i = results.size(); i < uses.size(); i++) blocks.add(new ToolResultBlock(uses.get(i).id(),

@@ -11,7 +11,7 @@ public record Insets(int top, int right, int bottom, int left) {
 
     public Insets {
         if (top < 0 || right < 0 || bottom < 0 || left < 0)
-            throw new IllegalArgumentException("内边距不能为负");
+            throw new IllegalArgumentException("Insets cannot be negative");
     }
 
     /** 四边相同的内边距。 */

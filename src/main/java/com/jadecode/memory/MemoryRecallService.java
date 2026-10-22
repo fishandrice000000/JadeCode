@@ -58,7 +58,7 @@ public final class MemoryRecallService {
     public MemoryRecallService(LlmClient client, MemoryStore store, int maxOutputTokens) {
         this.client = Objects.requireNonNull(client, "client");
         this.store = Objects.requireNonNull(store, "store");
-        if (maxOutputTokens < 1) throw new IllegalArgumentException("召回输出额度必须为正整数");
+        if (maxOutputTokens < 1) throw new IllegalArgumentException("Recall output budget must be a positive integer");
         this.maxOutputTokens = maxOutputTokens;
     }
 

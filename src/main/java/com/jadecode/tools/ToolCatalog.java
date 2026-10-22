@@ -20,7 +20,7 @@ public final class ToolCatalog {
     public ToolCatalog(Map<String, Tool> builtins, Supplier<List<Entry>> external) {
         this.builtins = Map.copyOf(builtins); this.external = Objects.requireNonNull(external);
         builtins.forEach((name, tool) -> {
-            if (!name.equals(tool.name()) || name.startsWith("mcp__")) throw new IllegalArgumentException("内置工具名称无效或占用 MCP 命名空间");
+            if (!name.equals(tool.name()) || name.startsWith("mcp__")) throw new IllegalArgumentException("Invalid builtin tool name or it occupies the MCP namespace");
         });
     }
     /** 兼容旧工具表与离线调用；不增加外部服务或读取配置。 */
@@ -37,12 +37,12 @@ public final class ToolCatalog {
         builtins.forEach((name, tool) -> entries.put(name, new Entry(tool, ToolIdentity.builtin(name))));
         for (Entry entry : external.get()) {
             String name = entry.tool().name();
-            if (entries.putIfAbsent(name, entry) != null) throw new IllegalArgumentException("工具名称冲突：" + name);
+            if (entries.putIfAbsent(name, entry) != null) throw new IllegalArgumentException("Tool name conflict: " + name);
         }
         List<ToolDefinition> definitions = new ArrayList<>();
         entries.forEach((name, entry) -> {
             ToolDefinition definition = entry.tool().definition();
-            if (!name.equals(definition.name())) throw new IllegalArgumentException("工具名称在生成定义时改变");
+            if (!name.equals(definition.name())) throw new IllegalArgumentException("Tool name changed while generating its definition");
             definitions.add(definition);
         });
         return new Snapshot(entries, definitions);
@@ -51,7 +51,7 @@ public final class ToolCatalog {
     /** 服务与原始工具名分别规范化；不从规范化结果还原真实身份，冲突必须另行检查。 */
     public static String mcpName(String server, String tool) {
         String name = "mcp__" + server.replaceAll("[^a-zA-Z0-9_-]", "_") + "__" + tool.replaceAll("[^a-zA-Z0-9_-]", "_");
-        if (name.length() > 64) throw new IllegalArgumentException("MCP 工具规范化后超过 64 字符");
+        if (name.length() > 64) throw new IllegalArgumentException("Normalized MCP tool name exceeds 64 characters");
         return name;
     }
 
@@ -59,7 +59,7 @@ public final class ToolCatalog {
     public static void validateMcpNames(List<McpToolDescriptor> descriptors) {
         Set<String> names = new HashSet<>();
         for (var descriptor : descriptors) {
-            if (!names.add(mcpName(descriptor.serverName(), descriptor.name()))) throw new IllegalArgumentException("MCP 工具规范化后名称冲突");
+            if (!names.add(mcpName(descriptor.serverName(), descriptor.name()))) throw new IllegalArgumentException("Normalized MCP tool names conflict");
         }
     }
 

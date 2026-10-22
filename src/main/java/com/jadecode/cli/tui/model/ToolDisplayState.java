@@ -74,7 +74,7 @@ public final class ToolDisplayState {
 
     /** 进入排队/运行；detail 是原始参数 JSON。 */
     public void executing(Status next, String value) {
-        if (next != Status.QUEUED && next != Status.RUNNING) throw new IllegalArgumentException("非执行状态");
+        if (next != Status.QUEUED && next != Status.RUNNING) throw new IllegalArgumentException("Not an execution state");
         status = next;
         if (value != null && !value.isBlank()) arguments = value;
         version++;

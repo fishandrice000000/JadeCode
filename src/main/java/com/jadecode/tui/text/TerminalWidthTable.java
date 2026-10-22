@@ -23,7 +23,7 @@ public final class TerminalWidthTable {
 
     static {
         try (InputStream input = TerminalWidthTable.class.getResourceAsStream(RESOURCE)) {
-            if (input == null) throw new IllegalStateException("缺少终端宽度表资源: " + RESOURCE);
+            if (input == null) throw new IllegalStateException("Missing terminal width table resource: " + RESOURCE);
             JsonNode root = new ObjectMapper().readTree(input);
             VERSION = root.path("version").asText("unknown");
             WIDE = ranges(root.path("wide"));
@@ -55,11 +55,11 @@ public final class TerminalWidthTable {
     public static boolean isWide(int codePoint) { return eastAsianWidth(codePoint) == 2; }
 
     private static int[] ranges(JsonNode node) {
-        if (!node.isArray()) throw new IllegalStateException("宽度表区间必须是数组");
+        if (!node.isArray()) throw new IllegalStateException("Width table ranges must be arrays");
         int[] values = new int[node.size()];
         int i = 0;
         for (JsonNode item : node) values[i++] = item.asInt();
-        if (values.length % 2 != 0) throw new IllegalStateException("宽度表区间必须成对");
+        if (values.length % 2 != 0) throw new IllegalStateException("Width table ranges must come in pairs");
         return values;
     }
 

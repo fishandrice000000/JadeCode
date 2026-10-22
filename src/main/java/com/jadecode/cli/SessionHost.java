@@ -36,7 +36,7 @@ public final class SessionHost implements AutoCloseable {
     /** 获取当前运行时只用于提交新输入；未选定会话时不会隐式创建或调用模型。 */
     public SessionRuntime current() {
         SessionRuntime runtime = current;
-        if (runtime == null || closed.get()) throw new IllegalStateException("尚未打开会话或已经退出");
+        if (runtime == null || closed.get()) throw new IllegalStateException("No session is open, or it has exited");
         return runtime;
     }
 
@@ -51,13 +51,13 @@ public final class SessionHost implements AutoCloseable {
 
     /** 本地元数据操作仍落在当前运行时；与切换互斥，不把改名写入稍后打开的别的会话。 */
     public synchronized void rename(String expectedId, String title) throws IOException {
-        if (changing || !current().sessionId().equals(expectedId)) throw new IOException("会话已经切换，未修改另一会话的名称");
+        if (changing || !current().sessionId().equals(expectedId)) throw new IOException("The session switched; another session's name was not changed");
         current().rename(title);
     }
 
     /** CLI 在工作线程调用，当前网络响应不受影响，下一次请求采用新值。 */
     public synchronized void thinking(String expectedId, com.jadecode.llm.ThinkingSettings value) throws IOException {
-        if (changing || !current().sessionId().equals(expectedId)) throw new IOException("会话已经切换，未修改另一会话的设置");
+        if (changing || !current().sessionId().equals(expectedId)) throw new IOException("The session switched; another session's settings were not changed");
         current().changeThinking(value);
     }
 
@@ -83,8 +83,8 @@ public final class SessionHost implements AutoCloseable {
         SessionRuntime old;
         long next;
         synchronized (this) {
-            if (closed.get() || changing) throw new IOException("会话正在切换或 CLI 已退出");
-            if (id != null && current != null && id.equals(current.sessionId())) throw new IOException("该会话已经打开");
+            if (closed.get() || changing) throw new IOException("The session is switching or the CLI has exited");
+            if (id != null && current != null && id.equals(current.sessionId())) throw new IOException("That session is already open");
             changing = true; old = current; next = ++generation;
         }
         SessionStore.Opened prepared = null;
@@ -95,22 +95,22 @@ public final class SessionHost implements AutoCloseable {
             if (id != null) prepared = store.open(id);
             if (old != null) {
                 frozen = old.freezeForSwitch();
-                if (!frozen) throw new IOException("当前仍有任务、排队消息、后台结果或存活队友，请处理完后再 /resume");
+                if (!frozen) throw new IOException("Tasks, queued messages, background results or live teammates remain; finish them before /resume");
             }
             candidate = factory.create(next);
             if (prepared == null) prepared = store.create(candidate.model());
             candidate.restore(prepared.journal(), prepared.restored());
             synchronized (this) {
-                if (closed.get()) throw new IOException("CLI 已退出，取消会话切换");
+                if (closed.get()) throw new IOException("CLI exited; session switch cancelled");
                 if (old != null) {
                     old.close();
-                    if (!old.isStopped()) throw new IOException("旧会话线程尚未停止，未启用目标会话；请退出 CLI 后恢复");
+                    if (!old.isStopped()) throw new IOException("The old session thread has not stopped; the target session was not enabled. Exit the CLI and resume");
                 }
                 current = candidate; committed = true;
             }
             return new Opened(next, prepared.restored(), candidate.model());
         } catch (IOException | RuntimeException failure) {
-            throw new IOException("打开会话失败: " + failure.getMessage(), failure);
+            throw new IOException("Failed to open session: " + failure.getMessage(), failure);
         } finally {
             if (!committed) {
                 try {

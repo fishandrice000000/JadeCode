@@ -13,27 +13,27 @@ public record PermissionRule(String id, Effect effect, Kind kind, String tool, S
     public enum Kind { TOOL, PATH, COMMAND }
     public PermissionRule {
         if (id == null || id.isBlank() || effect == null || kind == null || tool == null || tool.isBlank())
-            throw new IllegalArgumentException("权限规则缺少 id/effect/kind/tool");
+            throw new IllegalArgumentException("Permission rule is missing id/effect/kind/tool");
         workspace = workspace == null ? "" : workspace;
         operation = operation == null ? "" : operation;
         path = path == null ? "" : path;
         argvPrefix = argvPrefix == null ? List.of() : List.copyOf(argvPrefix);
-        if (!workspace.isEmpty() && !Path.of(workspace).isAbsolute()) throw new IllegalArgumentException("workspace 须为绝对路径");
+        if (!workspace.isEmpty() && !Path.of(workspace).isAbsolute()) throw new IllegalArgumentException("workspace must be an absolute path");
         if (kind == Kind.COMMAND && (argvPrefix.isEmpty() || !tool.equals("bash") || argvPrefix.getFirst().isBlank()))
-            throw new IllegalArgumentException("命令规则须指定 bash 和非空 argvPrefix");
+            throw new IllegalArgumentException("Command rules must specify bash and a non-empty argvPrefix");
         if (kind == Kind.PATH && (path.isBlank() || !Path.of(path).isAbsolute()
                 || !List.of("READ", "WRITE", "DELETE").contains(operation)))
-            throw new IllegalArgumentException("路径规则须指定绝对路径和 READ/WRITE/DELETE");
+            throw new IllegalArgumentException("Path rules must specify an absolute path and READ/WRITE/DELETE");
         if (kind != Kind.PATH && (!operation.isEmpty() || !path.isEmpty() || recursive)
                 || kind != Kind.COMMAND && !argvPrefix.isEmpty())
-            throw new IllegalArgumentException("规则不能混填不同种类的匹配字段");
+            throw new IllegalArgumentException("A rule cannot mix matching fields from different kinds");
     }
     /** 给审批界面展示准确范围，不把“此类”隐藏成整把工具授权。 */
     public String description() {
         return switch (kind) {
-            case COMMAND -> "cwd=" + workspace + "；argv 前缀=" + com.jadecode.util.Json.mapper().valueToTree(argvPrefix);
-            case PATH -> operation + " " + path + (recursive ? "/**" : "") + "；工作区=" + workspace;
-            case TOOL -> "工具=" + tool + "；工作区=" + workspace;
+            case COMMAND -> "cwd=" + workspace + "; argv prefix=" + com.jadecode.util.Json.mapper().valueToTree(argvPrefix);
+            case PATH -> operation + " " + path + (recursive ? "/**" : "") + "; workspace=" + workspace;
+            case TOOL -> "tool=" + tool + "; workspace=" + workspace;
         };
     }
 }

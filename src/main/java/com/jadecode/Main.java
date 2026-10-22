@@ -10,7 +10,7 @@ import picocli.CommandLine.Command;
 
 /** JadeCode 的 picocli 顶层入口；run/repl 自行从 bootstrap 取得会话。 */
 @Command(name = "jadecode", version = "jadecode 0.1.0-SNAPSHOT", mixinStandardHelpOptions = true,
-        subcommands = { RunCommand.class, ReplCommand.class }, description = "JadeCode:学习用 CLI coding agent")
+        subcommands = { RunCommand.class, ReplCommand.class }, description = "JadeCode: a CLI coding agent for learning")
 public class Main implements Callable<Integer> {
     /**
      * 让 picocli 解析命令行并执行，最后把返回码交给操作系统。

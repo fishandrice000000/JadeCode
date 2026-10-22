@@ -70,7 +70,7 @@ final class ToolOutputStore {
         try {
             Files.createDirectories(toolResultsDir);
         } catch (IOException e) {
-            throw new IllegalStateException("创建工具结果目录失败: " + toolResultsDir, e);
+            throw new IllegalStateException("Failed to create tool result directory: " + toolResultsDir, e);
         }
 
         // 3. 先创建一个只属于本次调用的新文件,再往这个刚建出来的文件里写。
@@ -88,7 +88,7 @@ final class ToolOutputStore {
                     e.addSuppressed(cleanupFailure);
                 }
             }
-            throw new IllegalStateException("写入工具结果失败: " + toolResultsDir, e);
+            throw new IllegalStateException("Failed to write tool result: " + toolResultsDir, e);
         }
     }
 
@@ -180,7 +180,7 @@ final class ToolOutputStore {
      */
     private static String readHead(Path path, int previewChars) {
         if (previewChars < 0) {
-            throw new IllegalArgumentException("预览长度不能为负: " + previewChars);
+            throw new IllegalArgumentException("Preview length cannot be negative: " + previewChars);
         }
         if (previewChars == 0) {
             return "";
@@ -198,7 +198,7 @@ final class ToolOutputStore {
                 head.append(chunk, 0, read);
             }
         } catch (IOException e) {
-            throw new IllegalStateException("读取落盘预览失败: " + path, e);
+            throw new IllegalStateException("Failed to read persisted preview: " + path, e);
         }
         return head.toString();
     }
@@ -213,7 +213,7 @@ final class ToolOutputStore {
      */
     private static String head(String output, int previewChars) {
         if (previewChars < 0) {
-            throw new IllegalArgumentException("预览长度不能为负: " + previewChars);
+            throw new IllegalArgumentException("Preview length cannot be negative: " + previewChars);
         }
         return output.length() <= previewChars ? output : output.substring(0, previewChars);
     }

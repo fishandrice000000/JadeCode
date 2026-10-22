@@ -46,11 +46,11 @@ public final class TaskStore {
      */
     public TaskStore(Path workspaceRoot) throws IOException {
         if (workspaceRoot == null) {
-            throw new IllegalArgumentException("workspaceRoot 不能为 null");
+            throw new IllegalArgumentException("workspaceRoot cannot be null");
         }
         this.workspaceRoot = workspaceRoot.toRealPath();
         if (!Files.isDirectory(this.workspaceRoot)) {
-            throw new IOException("Task 工作区不是目录");
+            throw new IOException("Task workspace is not a directory");
         }
         taskDir = new com.jadecode.config.WorkspacePaths(this.workspaceRoot).tasks();
     }
@@ -65,7 +65,7 @@ public final class TaskStore {
      */
     public synchronized Task create(String subject, String description) throws IOException {
         if (subject == null || subject.isBlank() || description == null) {
-            throw new IllegalArgumentException("subject 必须为非空文本，description 必须为文本");
+            throw new IllegalArgumentException("subject must be non-empty text and description must be text");
         }
         Path root = checkedRoot(true);
         // 1. ID 由 Harness 生成。CREATE_NEW 才是碰撞保护，不能先 exists 再普通覆盖写。
@@ -89,7 +89,7 @@ public final class TaskStore {
             }
             return task;
         }
-        throw new IOException("无法分配唯一任务 ID");
+        throw new IOException("Cannot allocate a unique task id");
     }
 
     /**
@@ -142,13 +142,13 @@ public final class TaskStore {
     public synchronized Task updateDependencies(String id, List<String> additions) throws IOException {
         requireId(id);
         if (additions == null || additions.isEmpty()) {
-            throw new IllegalArgumentException("addBlockedBy 必须是非空 ID 列表");
+            throw new IllegalArgumentException("addBlockedBy must be a non-empty id list");
         }
         // 1. 用同一份图检查所有候选边；模型参数不能绕过“先创建节点再连边”的约定。
         Map<String, Task> graph = snapshot();
         Task task = requireTask(graph, id);
         if (task.status() != Status.PENDING || task.owner() != null) {
-            throw new IllegalArgumentException("只能修改 pending 且无人认领的任务依赖");
+            throw new IllegalArgumentException("Only dependencies of pending, unclaimed tasks can be changed");
         }
         var dependencies = new LinkedHashSet<>(task.blockedBy());
         for (String dependency : additions) {
@@ -156,7 +156,7 @@ public final class TaskStore {
             requireTask(graph, dependency);
             // 新增 id → dependency 前，若 dependency 已经能走回 id，新增这条边就形成环。
             if (dependency.equals(id) || dependsOn(graph, dependency, id)) {
-                throw new IllegalArgumentException("任务不能自依赖或形成依赖环");
+                throw new IllegalArgumentException("A task cannot depend on itself or form a dependency cycle");
             }
             dependencies.add(dependency);
         }
@@ -180,7 +180,7 @@ public final class TaskStore {
         Map<String, Task> graph = snapshot();
         Task task = requireTask(graph, id);
         if (task.status() != Status.PENDING) {
-            throw new IllegalArgumentException("只能认领 pending 任务");
+            throw new IllegalArgumentException("Only pending tasks can be claimed");
         }
         List<String> blocked = incompleteDependencies(task, graph);
         if (!blocked.isEmpty()) {
@@ -209,7 +209,7 @@ public final class TaskStore {
         Map<String, Task> graph = snapshot();
         Task task = requireTask(graph, id);
         if (task.status() != Status.IN_PROGRESS || !owner.equals(task.owner())) {
-            throw new IllegalArgumentException("只能由原负责者完成 in_progress 任务");
+            throw new IllegalArgumentException("Only the original owner can complete an in_progress task");
         }
         // 1. 记录之前就可开始的任务；否则每次完成都会反复把它们误报为“刚解锁”。
         var readyBefore = new HashSet<String>();
@@ -244,11 +244,11 @@ public final class TaskStore {
      */
     public synchronized Task stop(String id, String owner, Status status) throws IOException {
         if (status != Status.FAILED && status != Status.BLOCKED) {
-            throw new IllegalArgumentException("只能登记 failed 或 blocked");
+            throw new IllegalArgumentException("Only failed or blocked can be recorded");
         }
         Task task = load(id);
         if (task.status() != Status.IN_PROGRESS || !owner.equals(task.owner())) {
-            throw new IllegalArgumentException("只能更新原负责者的 in_progress 任务");
+            throw new IllegalArgumentException("Only the original owner's in_progress task can be updated");
         }
         Task updated = new Task(id, task.subject(), task.description(), status, owner, task.blockedBy());
         save(updated);
@@ -266,7 +266,7 @@ public final class TaskStore {
         Task task = load(id);
         if (task.status() == Status.PENDING || task.status() == Status.COMPLETED
                 || !owner.equals(task.owner())) {
-            throw new IllegalArgumentException("任务不允许由此负责者恢复");
+            throw new IllegalArgumentException("This owner cannot reopen the task");
         }
         Task pending = new Task(id, task.subject(), task.description(), Status.PENDING, null, task.blockedBy());
         save(pending);
@@ -339,16 +339,16 @@ public final class TaskStore {
                 || !document.path("description").isTextual() || !document.path("status").isTextual()
                 || !(document.path("owner").isNull() || document.path("owner").isTextual())
                 || !document.path("blockedBy").isArray()) {
-            throw new IOException("任务记录字段形状无效: " + id);
+            throw new IOException("Invalid task record field shape: " + id);
         }
         for (JsonNode dependency : document.get("blockedBy")) {
             if (!dependency.isTextual()) {
-                throw new IOException("任务依赖不是文本 ID: " + id);
+                throw new IOException("Task dependency is not a text id: " + id);
             }
         }
         Task task = Json.mapper().treeToValue(document, Task.class);
         if (!task.id().equals(id)) {
-            throw new IOException("任务文件 ID 与文件名不一致: " + id);
+            throw new IOException("Task file id does not match its filename: " + id);
         }
         return task;
     }
@@ -358,7 +358,7 @@ public final class TaskStore {
         new com.jadecode.config.WorkspacePaths(workspaceRoot).directory(taskDir, create);
         Path root = taskDir.toRealPath();
         if (!root.startsWith(workspaceRoot) || !Files.isDirectory(root)) {
-            throw new IOException("Task 库根不是工作区内目录");
+            throw new IOException("Task store root is not a directory inside the workspace");
         }
         return root;
     }
@@ -366,7 +366,7 @@ public final class TaskStore {
     /** 任务记录一律拒绝软链与目录，不跟随模型可能借助其它工具放置的链接读写目标。 */
     private static void requireRegular(Path path) throws IOException {
         if (!Files.readAttributes(path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS).isRegularFile()) {
-            throw new IOException("任务记录不是普通非链接文件: " + path.getFileName());
+            throw new IOException("Task record is not a regular non-symlink file: " + path.getFileName());
         }
     }
 
@@ -380,7 +380,7 @@ public final class TaskStore {
     /** owner 只是责任标签；匹配用原字符串，不隐式冒充真实用户或进程身份。 */
     private static void requireOwner(String owner) {
         if (owner == null || owner.isBlank()) {
-            throw new IllegalArgumentException("owner 必须是非空标签");
+            throw new IllegalArgumentException("owner must be a non-empty label");
         }
     }
 

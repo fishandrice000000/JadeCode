@@ -35,18 +35,18 @@ public final class WorkspaceDataMigration {
         if (moves.isEmpty()) { paths.directory(paths.root(), false); return; }
         paths.directory(paths.root(), true);
         Path lockPath = paths.root().resolve("migration.lock");
-        if (Files.isSymbolicLink(lockPath)) throw new IOException("迁移锁不能是链接");
+        if (Files.isSymbolicLink(lockPath)) throw new IOException("Migration lock cannot be a symlink");
         try (var channel = FileChannel.open(lockPath, StandardOpenOption.CREATE, StandardOpenOption.WRITE,
                 LinkOption.NOFOLLOW_LINKS); var lock = channel.tryLock()) {
-            if (lock == null) throw new IOException("另一个进程正在迁移工作区");
+            if (lock == null) throw new IOException("Another process is migrating the workspace");
             // 全部检查通过才开始移动，避免一个明显冲突直到迁移一半才被发现。
             for (var move : moves) {
                 paths.directory(move.getValue().getParent(), false);
                 if (Files.exists(move.getValue(), LinkOption.NOFOLLOW_LINKS))
-                    throw new IOException("新旧数据同时存在，请人工处理后重试: " + move.getKey() + " / " + move.getValue());
+                    throw new IOException("Old and new data exist together; resolve them manually and retry: " + move.getKey() + " / " + move.getValue());
                 try (var tree = Files.walk(move.getKey())) {
                     if (tree.anyMatch(Files::isSymbolicLink))
-                        throw new IOException("旧数据包含链接，不能安全自动迁移: " + move.getKey());
+                        throw new IOException("Old data contains symlinks and cannot be migrated safely: " + move.getKey());
                 }
             }
             for (var move : moves) {
@@ -62,7 +62,7 @@ public final class WorkspaceDataMigration {
                 }
             }
         } catch (java.nio.channels.OverlappingFileLockException busy) {
-            throw new IOException("工作区正在迁移", busy);
+            throw new IOException("Workspace migration is in progress", busy);
         }
     }
 }

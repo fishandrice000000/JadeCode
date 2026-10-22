@@ -14,7 +14,7 @@ import com.jadecode.tui.text.StyledLine;
  */
 public record Spacer(int rows) implements Component {
     public Spacer {
-        if (rows < 0) throw new IllegalArgumentException("Spacer 行数不能为负");
+        if (rows < 0) throw new IllegalArgumentException("Spacer row count cannot be negative");
     }
 
     /** 固定行数空白。 */

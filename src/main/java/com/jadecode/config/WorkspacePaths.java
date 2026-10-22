@@ -39,13 +39,13 @@ public record WorkspacePaths(Path workspace) {
      */
     public void directory(Path directory, boolean create) throws IOException {
         Path target = directory.toAbsolutePath().normalize();
-        if (!target.startsWith(root())) throw new IOException("数据目录不在 .jadecode 内: " + target);
+        if (!target.startsWith(root())) throw new IOException("Data directory is outside .jadecode: " + target);
         Path cursor = workspace;
         for (Path part : workspace.relativize(target)) {
             cursor = cursor.resolve(part);
             if (Files.exists(cursor, LinkOption.NOFOLLOW_LINKS)) {
                 if (!Files.isDirectory(cursor, LinkOption.NOFOLLOW_LINKS))
-                    throw new IOException("数据目录不能是链接或普通文件: " + cursor);
+                    throw new IOException("Data directory cannot be a symlink or regular file: " + cursor);
             } else if (create) {
                 // 逐级创建，不让 createDirectories 偷偷跟随某个未检查过的父链接。
                 try { Files.createDirectory(cursor); }
@@ -83,7 +83,7 @@ public record WorkspacePaths(Path workspace) {
             directory(target.getParent(), false);
             if (Files.exists(target)) {
                 Path real = target.toRealPath();
-                if (!real.startsWith(root().toRealPath())) throw new IOException("迁移引用越出数据目录");
+                if (!real.startsWith(root().toRealPath())) throw new IOException("Migration reference escapes the data directory");
                 return real;
             }
             break;

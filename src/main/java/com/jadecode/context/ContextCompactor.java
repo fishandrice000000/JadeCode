@@ -551,10 +551,10 @@ public final class ContextCompactor {
     public static String extractActiveRequest(List<Message> messages) {
         // 1. 列表本身:入口至少要有一条"人类请求"可言。
         if (messages == null) {
-            throw new IllegalArgumentException("messages 不能为 null:入口至少需要一条人类请求");
+            throw new IllegalArgumentException("messages cannot be null: the entry point requires at least one human request");
         }
         if (messages.isEmpty()) {
-            throw new IllegalArgumentException("messages 不能为空:入口至少需要一条人类请求");
+            throw new IllegalArgumentException("messages cannot be empty: the entry point requires at least one human request");
         }
 
         // 2. 末条消息:必须存在、来自 USER,并且 content 不为 null。
@@ -562,13 +562,13 @@ public final class ContextCompactor {
         //    (例如 extractText 直接在 null content 上迭代)。
         Message last = messages.getLast();
         if (last == null) {
-            throw new IllegalArgumentException("最后一条消息不能为 null");
+            throw new IllegalArgumentException("The last message cannot be null");
         }
         if (last.role() != Role.USER) {
-            throw new IllegalArgumentException("最后一次请求必须是 USER 消息,实际是 " + last.role());
+            throw new IllegalArgumentException("The last request must be a USER message, but was " + last.role());
         }
         if (last.content() == null) {
-            throw new IllegalArgumentException("最后一次请求的 content 不能为 null");
+            throw new IllegalArgumentException("The last request content cannot be null");
         }
 
         // 3. 逐块检查末条 content:拒绝工具结果与 null 结构,同时记录"是否存在非空白文本"。
@@ -577,16 +577,16 @@ public final class ContextCompactor {
         boolean hasNonBlankText = false;
         for (ContentBlock block : last.content()) {
             if (block == null) {
-                throw new IllegalArgumentException("最后一次请求的 content 不能包含 null 块");
+                throw new IllegalArgumentException("The last request content cannot contain null blocks");
             }
             if (block instanceof ToolResultBlock) {
                 throw new IllegalArgumentException(
-                        "最后一次请求不得包含 tool_result:工具结果也使用 USER 角色,不能当作人类请求");
+                        "The last request must not contain tool_result: tool results also use the USER role and cannot be treated as a human request");
             }
             if (block instanceof TextBlock text) {
                 String value = text.text();
                 if (value == null) {
-                    throw new IllegalArgumentException("最后一次请求的文本块 text 不能为 null");
+                    throw new IllegalArgumentException("The last request text block text cannot be null");
                 }
                 if (!value.isBlank()) {
                     hasNonBlankText = true;
@@ -598,7 +598,7 @@ public final class ContextCompactor {
         //    空 content、只含非文本块、或只含空串 / 纯空白,都不是人类请求。
         if (!hasNonBlankText) {
             throw new IllegalArgumentException(
-                    "最后一次请求至少需要一个非空白文本块(空串、纯空白、null 文本都不算请求)");
+                    "The last request needs at least one non-blank text block (empty, whitespace-only or null text does not count as a request)");
         }
 
         // 5. 通过校验:交给 Message.extractText() 按出现顺序用 "\n" 连接全部 TextBlock,

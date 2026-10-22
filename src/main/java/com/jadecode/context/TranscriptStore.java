@@ -59,7 +59,7 @@ final class TranscriptStore {
         try {
             Files.createDirectories(transcriptDir);
         } catch (IOException e) {
-            throw new IllegalStateException("创建 transcript 目录失败: " + transcriptDir, e);
+            throw new IllegalStateException("Failed to create transcript directory: " + transcriptDir, e);
         }
 
         // 2. 先创建本次专属的新文件(createTempFile 底层 CREATE_NEW,同名换名重试),
@@ -76,7 +76,7 @@ final class TranscriptStore {
             return created.toAbsolutePath();
         } catch (IOException e) {
             deleteCreated(created, e);
-            throw new IllegalStateException("写入 transcript 失败: " + transcriptDir, e);
+            throw new IllegalStateException("Failed to write transcript: " + transcriptDir, e);
         } catch (IllegalStateException e) {
             // 序列化失败:同样只清理本次自己创建的新文件,并原样抛出保留原始 cause。
             deleteCreated(created, e);

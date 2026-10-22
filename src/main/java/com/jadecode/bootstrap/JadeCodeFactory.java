@@ -141,7 +141,7 @@ public final class JadeCodeFactory {
             Supplier<ResponseStream> streams, ExecutionObserver observer) {
         JadeSettings settings;
         try { settings = new JadeConfigFile(JadeConfigFile.defaultPath()).load(); }
-        catch (IOException invalid) { throw new IllegalStateException("用户配置读取失败：" + invalid.getMessage(), invalid); }
+        catch (IOException invalid) { throw new IllegalStateException("Failed to read user configuration: " + invalid.getMessage(), invalid); }
         return create(presentation, output, errors, streams, observer, settings);
     }
 
@@ -241,7 +241,7 @@ public final class JadeCodeFactory {
             TeamManager team = new TeamManager(workspace, tasks, errors);
             var usage = new com.jadecode.session.SessionUsage(errors);
             if (!client.thinkingChoices().contains(settings.thinking()))
-                throw new IllegalArgumentException("config.thinking.effort 尚未适配当前端点或模型");
+                throw new IllegalArgumentException("config.thinking.effort is not adapted for the current endpoint or model");
             SessionRuntime leader = assemble(config, workspace, client,
                     text -> output.accept("[Leader] " + text), text -> errors.accept("[Leader] " + text),
                     presentation, team, TeamManager.LEADER, "Leader", streams, observer.scoped(TeamManager.LEADER), settings,
@@ -254,7 +254,7 @@ public final class JadeCodeFactory {
             leader.onClose(team::close);
             return leader;
         } catch (IOException failure) {
-            throw new IllegalStateException("无法绑定 Team 任务存储", failure);
+            throw new IllegalStateException("Cannot bind the Team task store", failure);
         }
     }
 
@@ -304,7 +304,7 @@ public final class JadeCodeFactory {
             tasks = team.tasks();
             cron = isLeader ? new CronScheduler(cwd) : null;
         } catch (IOException failure) {
-            throw new IllegalStateException("无法绑定工作区状态存储", failure);
+            throw new IllegalStateException("Cannot bind the workspace state store", failure);
         }
 
         // 子代理工具表(D1):五把基础工具 + compact——不含 task(只有一层委派)、
@@ -395,7 +395,7 @@ public final class JadeCodeFactory {
         Path file = cwd.resolve("AGENTS.md");
         if (!java.nio.file.Files.exists(file)) return "";
         try { return "\n\nRepository instructions:\n" + java.nio.file.Files.readString(file); }
-        catch (IOException failure) { throw new IllegalStateException("无法读取项目 AGENTS.md", failure); }
+        catch (IOException failure) { throw new IllegalStateException("Cannot read the project AGENTS.md", failure); }
     }
 
     /** 队友从空历史开始，通过派工摘要和正文路径理解任务，不启用 Memory/cron。 */

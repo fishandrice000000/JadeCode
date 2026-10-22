@@ -24,7 +24,7 @@ public final class FocusManager {
      */
     public record FocusToken(String id, Component component, boolean modal, boolean capturesPointer, String restore) {
         public FocusToken {
-            if (id == null || component == null) throw new IllegalArgumentException("焦点 ID 和组件不能为空");
+            if (id == null || component == null) throw new IllegalArgumentException("Focus id and component cannot be empty");
         }
     }
 

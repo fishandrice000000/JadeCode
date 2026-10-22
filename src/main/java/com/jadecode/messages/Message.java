@@ -91,7 +91,7 @@ public record Message(Role role, List<ContentBlock> content) {
      */
     public <T extends ContentBlock> List<T> blocksOfType(Class<T> type) {
         if (type == null) {
-            throw new IllegalArgumentException("type 不能为 null");
+            throw new IllegalArgumentException("type cannot be null");
         }
         List<T> matched = new ArrayList<>();
         for (ContentBlock block : content) {

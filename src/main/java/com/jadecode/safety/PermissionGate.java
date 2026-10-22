@@ -66,17 +66,17 @@ public final class PermissionGate {
     public String check(String tool, ObjectNode input, ExecutionContext context, com.jadecode.execution.ToolIdentity identity) {
         ObjectNode exact = input.deepCopy();
         while (!Thread.currentThread().isInterrupted() && (context == null || !context.isCancelled())) {
-            if (!input.equals(exact)) return "待执行参数已经变化，请重新发起工具调用";
+            if (!input.equals(exact)) return "The pending parameters changed; re-issue the tool call";
             // 1. 每次重判都重新解析真实路径，并同时拿到规则和版本的同一份快照。
             Analysis action;
             try { action = analyze(tool, exact, identity); }
-            catch (RuntimeException invalid) { return "无法解析工具目标：" + invalid.getClass().getSimpleName(); }
+            catch (RuntimeException invalid) { return "Cannot resolve tool target: " + invalid.getClass().getSimpleName(); }
             var snapshot = state.snapshot();
             var decision = evaluate(action, snapshot);
             if (decision.kind() == PermissionDecision.Kind.DENY) return decision.reason();
             if (decision.kind() == PermissionDecision.Kind.ALLOW) {
                 if (state.snapshot().revision() != snapshot.revision()) continue;
-                if (!input.equals(exact)) return "待执行参数已经变化，请重新发起工具调用";
+                if (!input.equals(exact)) return "The pending parameters changed; re-issue the tool call";
                 return null;
             }
             // 2. 模型不能通过 input.source 把定时任务冒充成人工任务。
@@ -88,25 +88,25 @@ public final class PermissionGate {
                     (context == null ? "" : context.goal()) + "\nTask origin=" + (context == null ? "unknown" : context.source()));
             var answer = outcome.answer();
             if (answer == ApprovalAnswer.RECHECK) continue;
-            if (context != null && context.isCancelled()) return "会话已经关闭";
+            if (context != null && context.isCancelled()) return "The session is closed";
             if (answer == ApprovalAnswer.DENY) return outcome.reason();
             if (answer != ApprovalAnswer.ALLOW_ONCE && answer != ApprovalAnswer.ALLOW_SIMILAR)
-                return "审批没有给出有效答复，操作未执行";
+                return "Approval returned no valid answer; the operation was not executed";
             if (state.snapshot().revision() != snapshot.revision()) continue;
-            if (!input.equals(exact)) return "审批期间工具参数已经变化，旧批准不适用";
+            if (!input.equals(exact)) return "Tool parameters changed during approval; the old approval no longer applies";
             // 仅本次和长期授权都要核对目标；不能先保存旧目标的批准，再发现链接已经变了。
             try { if (!action.equals(analyze(tool, exact, identity))) continue; }
-            catch (RuntimeException changed) { return "审批后无法重新解析工具目标"; }
+            catch (RuntimeException changed) { return "Cannot re-resolve the tool target after approval"; }
             if (answer == ApprovalAnswer.ALLOW_SIMILAR) {
                 // 3. 建议由解释过参数的权限层生成，界面只选答案，不能自行扩大范围。
-                if (suggestion == null) return "本次操作没有可保存的安全授权范围";
+                if (suggestion == null) return "This operation has no safe long-term scope to save";
                 try { state.remember(suggestion, snapshot.revision()); }
-                catch (java.io.IOException failed) { return "规则未保存，操作未执行：" + failed.getMessage(); }
+                catch (java.io.IOException failed) { return "Rule was not saved; the operation was not executed: " + failed.getMessage(); }
                 continue;
             }
             return null;
         }
-        return "会话已经关闭或执行被中断";
+        return "The session is closed or execution was interrupted";
     }
     /** 解释各类已知工具；新工具未声明检查时进入不确定判断，不静默信任。 */
     private Analysis analyze(String tool, ObjectNode input, com.jadecode.execution.ToolIdentity identity) {
@@ -119,14 +119,14 @@ public final class PermissionGate {
     public PermissionDecision evaluate(Analysis action, PermissionState.Snapshot snapshot) {
         if (!action.error().isEmpty()) return PermissionDecision.deny("input.invalid", action.error());
         var denied = matcher.first(snapshot.rules(), PermissionRule.Effect.DENY, action);
-        if (denied != null) return PermissionDecision.deny(denied.id(), "命中拒绝规则：" + denied.id());
+        if (denied != null) return PermissionDecision.deny(denied.id(), "Matched deny rule: " + denied.id());
         var asked = matcher.first(snapshot.rules(), PermissionRule.Effect.ASK, action);
-        if (asked != null) return PermissionDecision.ask(asked.id(), "命中强制询问规则：" + asked.id(), true);
+        if (asked != null) return PermissionDecision.ask(asked.id(), "Matched required-ask rule: " + asked.id(), true);
         var protection = defaults.protectedDecision(action, snapshot);
         if (protection != null) return protection;
         // 尚未声明检查方式的新工具，不能因 Full Access 绕过集成时的显式确认。
         if (action.commands().isEmpty() && action.resources().isEmpty() && action.uncertain())
-            return PermissionDecision.ask("tool.unknown", "此工具尚未声明权限检查方式", true);
+            return PermissionDecision.ask("tool.unknown", "This tool has not declared a permission check", true);
         if (matcher.covers(snapshot.rules(), action)) return PermissionDecision.allow();
         return defaults.ordinary(action, snapshot);
     }

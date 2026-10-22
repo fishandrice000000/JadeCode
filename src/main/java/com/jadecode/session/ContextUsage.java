@@ -10,7 +10,7 @@ import com.jadecode.llm.ModelResponse;
  */
 public record ContextUsage(long occupiedTokens, int windowTokens) {
     public ContextUsage {
-        if (occupiedTokens < 0 || windowTokens < 1) throw new IllegalArgumentException("上下文占用无效");
+        if (occupiedTokens < 0 || windowTokens < 1) throw new IllegalArgumentException("Invalid context occupancy");
     }
 
     /** 只有总窗口和本次用量均已知才生成；最大输入限额不能冒充总窗口。 */

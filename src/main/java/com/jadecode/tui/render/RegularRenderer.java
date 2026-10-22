@@ -58,7 +58,7 @@ public final class RegularRenderer implements ScreenRenderer {
         var writer = port.writer();
         writer.print(AnsiEncoder.disableMouse() + AnsiEncoder.disablePaste() + "\u001b[?7h");
         writer.flush();
-        if (port.outputFailed()) throw new IOException("终端写入失败，停止交互会话");
+        if (port.outputFailed()) throw new IOException("Terminal write failed; stopping the interactive session");
     }
 
     @Override public PresentedFrame present(Frame frame, RenderContext context) throws IOException {
@@ -133,7 +133,7 @@ public final class RegularRenderer implements ScreenRenderer {
         writer.flush();
         if (port.outputFailed()) {
             actionsValid = false; previous = List.of(); presented = null;
-            throw new IOException("终端写入失败，停止交互会话");
+            throw new IOException("Terminal write failed; stopping the interactive session");
         }
         previous = frame.lines(); width = context.width(); height = context.height(); actionsValid = true;
         presented = new PresentedFrame(++frameId, frame.terminalEpoch(), context.width(),
@@ -264,7 +264,7 @@ public final class RegularRenderer implements ScreenRenderer {
         // 让 shell 提示符出现在最后一行内容之后，不覆盖编辑器/页脚。
         writer.print(AnsiEncoder.showCursor() + "\r\n");
         writer.flush();
-        if (port.outputFailed()) throw new IOException("终端在收尾时写入失败");
+        if (port.outputFailed()) throw new IOException("Terminal write failed during shutdown");
     }
 
     @Override public void close() throws IOException {
@@ -273,6 +273,6 @@ public final class RegularRenderer implements ScreenRenderer {
         var writer = port.writer();
         writer.print(AnsiEncoder.showCursor() + AnsiEncoder.disablePaste() + AnsiEncoder.disableMouse());
         writer.flush();
-        if (port.outputFailed()) throw new IOException("终端在关闭时写入失败");
+        if (port.outputFailed()) throw new IOException("Terminal write failed while closing");
     }
 }
