@@ -28,6 +28,12 @@ public final class StdinBuffer {
     private static final long SEQUENCE_TIMEOUT_NANOS = 50_000_000L;
     /** 不完整 CSI/SGR 被冲刷后，短暂吞掉紧随其后的协议尾部，避免它作为正文插入。 */
     private static final long SWALLOW_TAIL_NANOS = 250_000_000L;
+    /**
+     * 孤立 Esc 的第二阶段等待：JLine/tmux 可能把 `ESC` 与 `[A` 分两次投递且间隔可达
+     * 100ms 以上（实测）。到达 escapeTimeout 后先挂起，再等这段宽限期；期间任何后续字节
+     * 都按同一序列/Alt 组合处理。超过宽限期仍无字节才作为真正 Esc 发出。
+     */
+    private static final long ESC_CONTINUATION_GRACE_NANOS = 200_000_000L;
 
     /** 组装结果的种类。SEQUENCE 是完整转义序列，TEXT 是普通 UTF-8 文字。 */
     public enum Kind { TEXT, SEQUENCE, PASTE, ESCAPE }
@@ -52,6 +58,9 @@ public final class StdinBuffer {
     /** 已冲刷的不完整 CSI/SGR 类型；其后紧跟的续尾按同一序列吞掉，不进入编辑器。 */
     private String swallowKind;
     private long swallowUntilNanos;
+    /** 已到 escapeTimeout 但仍在等可能的序列续尾的孤立 ESC。 */
+    private boolean escapeSuspended;
+    private long escapeSuspendedAt;
 
     /**
      * @param escapeTimeoutMillis 孤立 Esc 的等待期限；SSH 下通常更长
@@ -69,6 +78,8 @@ public final class StdinBuffer {
         if (bytes == null || bytes.length == 0) return;
         pending = concat(pending, bytes);
         lastByteAt = clock.getAsLong();
+        // 挂起的 ESC 等到后续字节：取消挂起，让 ESC+续尾走正常序列/Alt 组装。
+        if (escapeSuspended && pending.length > 1) escapeSuspended = false;
         if (consumeProtocolTail()) return;
         process(false);
     }
@@ -85,12 +96,23 @@ public final class StdinBuffer {
         if (pending.length == 0) return;
         long now = clock.getAsLong();
         if (pasting) return;
-        if (pending.length == 1 && pending[0] == ESC && now - lastByteAt >= escapeTimeoutNanos) {
-            emit(Kind.ESCAPE, "\u001b");
-            pending = new byte[0];
+        if (pending.length == 1) {
+            if (pending[0] != ESC || now - lastByteAt < escapeTimeoutNanos) return;
+            if (!escapeSuspended) {
+                escapeSuspended = true;
+                escapeSuspendedAt = now;
+                return;
+            }
+            if (now - escapeSuspendedAt >= ESC_CONTINUATION_GRACE_NANOS) {
+                escapeSuspended = false;
+                emit(Kind.ESCAPE, "\u001b");
+                pending = new byte[0];
+            }
             return;
         }
-        if (pending[0] != ESC || now - lastByteAt < SEQUENCE_TIMEOUT_NANOS) return;
+        // 只有长度>1 的未完整转义序列才走序列超时；孤立 ESC 永远走上面的挂起/宽限逻辑，
+        // 不能因为 SSH 的 100ms Esc 期限大于 50ms 序列期限而被当成畸形序列提前冲刷。
+        if (pending.length < 2 || pending[0] != ESC || now - lastByteAt < SEQUENCE_TIMEOUT_NANOS) return;
         // OSC/DCS/APC 回复可能很长，Pi 会一直等到终止符；不能按普通序列超时冲刷成正文。
         String raw = new String(pending, StandardCharsets.ISO_8859_1);
         if (isReplyHeader(raw)) return;

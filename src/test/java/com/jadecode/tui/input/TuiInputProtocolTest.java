@@ -127,6 +127,9 @@ class TuiInputProtocolTest {
         buffer.feed(new byte[]{27});
         clock.addAndGet(20_000_000L);
         buffer.tick();
+        // 宽限期结束前没有续尾：作为真正 Esc 发出。
+        clock.addAndGet(250_000_000L);
+        buffer.tick();
         buffer.feed("[A".getBytes(StandardCharsets.UTF_8));
         var decoder = new InputDecoder(1);
         var events = new ArrayList<InputEvent>();
@@ -138,14 +141,32 @@ class TuiInputProtocolTest {
         assertEquals("[A", text);
     }
 
-    @Test void isolatedEscapeOnlyFiresAfterTimeout() {
+    @Test void isolatedEscapeOnlyFiresAfterTimeoutAndContinuationGrace() {
         chunks.clear();
         buffer.feed(new byte[]{27});
         assertTrue(chunks.isEmpty());
         clock.addAndGet(20_000_000L);
         buffer.tick();
+        assertTrue(chunks.isEmpty(), "ESC must stay suspended for a possible split sequence");
+        clock.addAndGet(250_000_000L);
+        buffer.tick();
         assertEquals(1, chunks.size());
         assertEquals(StdinBuffer.Kind.ESCAPE, chunks.getFirst().kind());
+    }
+
+    @Test void splitEscapeSequenceWithinGraceIsDecodedAsOneKey() {
+        // JLine/tmux 实测会把 ESC 与 `[A` 分成两次投递；宽限期内必须按完整序列解码。
+        chunks.clear();
+        buffer.feed(new byte[]{27});
+        clock.addAndGet(120_000_000L);
+        buffer.tick();
+        assertTrue(chunks.isEmpty());
+        buffer.feed("[A".getBytes(StandardCharsets.UTF_8));
+        var decoder = new InputDecoder(1);
+        var events = new ArrayList<InputEvent>();
+        for (var chunk : chunks) events.addAll(decoder.decode(chunk));
+        assertEquals(1, events.size());
+        assertEquals("up", events.getFirst().key().key());
     }
 
     @Test void pasteMarkerFormatMatchesFixedPi() {

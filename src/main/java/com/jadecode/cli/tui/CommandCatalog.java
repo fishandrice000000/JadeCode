@@ -77,7 +77,7 @@ public final class CommandCatalog {
                 for (Command command : COMMANDS) {
                     if (com.jadecode.tui.completion.PathCompletionProvider.fuzzyScore(token, command.name()) < 0) continue;
                     candidates.add(new CompletionRequest.Candidate(command.name(), command.name() + " ",
-                            command.description().replace(" ", "_"), from, to, true));
+                            command.description(), from, to, true));
                 }
                 return CompletableFuture.completedFuture(CompletionRequest.Result.of(request, candidates));
             }
