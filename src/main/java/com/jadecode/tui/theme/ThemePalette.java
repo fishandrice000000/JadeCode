@@ -23,9 +23,15 @@ import com.jadecode.tui.text.Color;
  * {@link ThemeManager} 用同一 epoch 替换，不阻塞输入。</p>
  */
 public final class ThemePalette {
-    /** 解析后的主题定义；颜色表不可变。 */
-    public record Definition(String name, String appearance, Map<String, Color> colors) {
-        public Definition { colors = Map.copyOf(colors); }
+    /** 解析后的主题定义；颜色表不可变；panelBgExplicit 区分用户显式值与派生值。 */
+    public record Definition(String name, String appearance, Map<String, Color> colors, boolean panelBgExplicit) {
+        public Definition {
+            colors = Map.copyOf(colors);
+        }
+        /** 兼容旧构造：是否显式由颜色表是否自带 panelBg 推断。 */
+        public Definition(String name, String appearance, Map<String, Color> colors) {
+            this(name, appearance, colors, colors != null && colors.containsKey("panelBg"));
+        }
     }
 
     /** 主题 token 的兜底关系：缺失时使用另一个已存在 token。 */
@@ -86,7 +92,7 @@ public final class ThemePalette {
             fillFallbacks(colors);
             if (!colors.containsKey("text") || !colors.containsKey("accent"))
                 throw new IllegalArgumentException("主题至少需要 text 和 accent 颜色");
-            return new Definition(name, appearance, colors);
+            return new Definition(name, appearance, colors, colors.containsKey("panelBg"));
         } catch (IOException failure) {
             throw new IllegalArgumentException("主题 JSON 无法解析: " + failure.getMessage(), failure);
         }
@@ -117,6 +123,9 @@ public final class ThemePalette {
         if (!colors.containsKey("border")) colors.put("border", colors.getOrDefault("muted", Color.DEFAULT));
         if (!colors.containsKey("borderAccent")) colors.put("borderAccent", colors.get("border"));
         if (!colors.containsKey("accent")) colors.put("accent", colors.getOrDefault("text", Color.DEFAULT));
+        // 依赖链的中间 token 必须先有安全值，避免后续 putIfAbsent 把 null 写进不可变表。
+        colors.putIfAbsent("thinkingText", colors.getOrDefault("muted", colors.get("text")));
+        colors.putIfAbsent("mdCodeBlock", colors.getOrDefault("text", Color.DEFAULT));
         // 兜底关系可能链式引用，反复直到没有新增；数量很小，不需要复杂图算法。
         for (int pass = 0; pass < 3; pass++) {
             for (var entry : FALLBACKS.entrySet()) {
@@ -288,7 +297,7 @@ public final class ThemePalette {
         colors.put("scrollbarTrack", mix(bg, colors.get("borderMuted"), 0.4));
         colors.put("scrollbarThumb", colors.get("borderMuted"));
         fillFallbacks(colors);
-        return new Definition("system", actuallyDark ? "dark" : "light", colors);
+        return new Definition("system", actuallyDark ? "dark" : "light", colors, false);
     }
 
     /**
@@ -304,6 +313,19 @@ public final class ThemePalette {
             return okhsl(okhsl[0], saturation, lightness);
         }
         return okhsl(hue, saturation, lightness);
+    }
+
+    /**
+     * 面板底色（R6-03）：以已知/假定终端背景为基准，向对比方向中性色混合约 10%。
+     * 深色背景提亮一档、浅色背景压暗一档，不引入新的强调色。
+     * @param background 实际或假定的终端背景
+     * @param dark 该背景是否属于深色外观
+     * @return 不透明的面板背景色
+     */
+    public static Color derivePanelBg(Color background, boolean dark) {
+        Color base = background != null && background.kind() == Color.Kind.RGB
+                ? background : (dark ? Color.rgb(0, 0, 0) : Color.rgb(255, 255, 255));
+        return mix(base, dark ? Color.rgb(255, 255, 255) : Color.rgb(0, 0, 0), 0.10);
     }
 
     /** 在 sRGB 空间线性混合两个颜色，权重 weight 表示第二个颜色的比例。 */

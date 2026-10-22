@@ -2,6 +2,7 @@ package com.jadecode.tui.theme;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -33,6 +34,9 @@ public final class ThemeManager implements AutoCloseable {
     private String lightTheme;
     private String darkTheme;
     private String configuredName;
+    /** panelBg 是否来自主题显式值；派生的晚回复可重算，显式值不能被覆盖。 */
+    private boolean committedPanelExplicit;
+    private boolean previewPanelExplicit;
     private Thread watcher;
     private final AtomicBoolean closed = new AtomicBoolean();
 
@@ -50,9 +54,15 @@ public final class ThemeManager implements AutoCloseable {
         this.lightTheme = lightTheme == null || lightTheme.isBlank() ? "light" : lightTheme;
         this.darkTheme = darkTheme == null || darkTheme.isBlank() ? "dark" : darkTheme;
         this.configuredName = name == null || name.isBlank() ? "system" : name;
-        this.committed = load(this.configuredName, this.lightTheme, this.darkTheme);
+        Loaded loaded = load(this.configuredName, this.lightTheme, this.darkTheme);
+        this.committed = loaded.theme();
+        this.committedPanelExplicit = loaded.panelBgExplicit();
         this.preview = committed;
+        this.previewPanelExplicit = committedPanelExplicit;
     }
+
+    /** 已解析主题及其 panelBg 来源；派生的底色可由终端晚回复重算。 */
+    private record Loaded(Theme theme, boolean panelBgExplicit) { }
 
     /** @return 当前应绘制的主题（预览优先）。 */
     public Theme preview() { return preview; }
@@ -74,11 +84,14 @@ public final class ThemeManager implements AutoCloseable {
 
     /** 直接安装已成功保存的主题；失败时调用方保留原 committed。 */
     public void commit(Theme theme) {
-        committed = theme; preview = theme; revision++;
+        committed = theme; preview = theme;
+        committedPanelExplicit = true; previewPanelExplicit = true; revision++;
     }
 
     /** 打开列表/预览时记录恢复点，只影响内存。 */
-    public void beginPreview() { request++; preview = committed; }
+    public void beginPreview() {
+        request++; preview = committed; previewPanelExplicit = committedPanelExplicit;
+    }
 
     /**
      * 预览指定主题标识。读取自定义主题可能在磁盘上进行，调用方应在 worker 调用；
@@ -87,9 +100,9 @@ public final class ThemeManager implements AutoCloseable {
     public String preview(String identifier) {
         long ticket = ++request;
         try {
-            Theme candidate = load(identifier, lightTheme, darkTheme);
+            Loaded candidate = load(identifier, lightTheme, darkTheme);
             if (ticket != request) return "主题选择已变化";
-            preview = candidate; revision++;
+            preview = candidate.theme(); previewPanelExplicit = candidate.panelBgExplicit();
             return "";
         } catch (RuntimeException failure) {
             if (ticket == request) preview = committed;
@@ -100,7 +113,9 @@ public final class ThemeManager implements AutoCloseable {
     /** Esc/关闭选择器：放弃未提交预览。 */
     public void cancelPreview() {
         request++;
-        if (preview != committed) { preview = committed; revision++; }
+        if (preview != committed) {
+            preview = committed; previewPanelExplicit = committedPanelExplicit; revision++;
+        }
     }
 
     /**
@@ -113,21 +128,28 @@ public final class ThemeManager implements AutoCloseable {
         this.ansi = palette == null ? List.of()
                 : java.util.Collections.unmodifiableList(new java.util.ArrayList<>(palette));
         if (committed.name().equals("system")) {
-            Theme updated = Theme.from(ThemePalette.system(dark, fg, bg, ansi), colorsAvailable, ++revision);
-            committed = updated;
-            if (preview.name().equals("system")) preview = updated;
+            committed = Theme.from(ThemePalette.system(dark, fg, bg, ansi), colorsAvailable, ++revision);
+            committedPanelExplicit = false;
+            if (preview.name().equals("system")) {
+                preview = committed; previewPanelExplicit = false;
+            }
         }
         if (preview.name().equals("system")) {
             preview = Theme.from(ThemePalette.system(dark, fg, bg, ansi), colorsAvailable, ++revision);
+            previewPanelExplicit = false;
         }
+        // 终端背景晚回复后，所有非显式 panelBg 的主题都按新背景重算；显式值保持不变。
+        committed = refreshPanelBg(committed, committedPanelExplicit);
+        preview = refreshPanelBg(preview, previewPanelExplicit);
     }
 
     /** 由外部设置变更安装新主题名（例如其它窗口写入配置后的刷新）。 */
     public void reload(String name) {
         request++;
         configuredName = name == null || name.isBlank() ? "system" : name;
-        committed = load(configuredName, lightTheme, darkTheme);
-        preview = committed; revision++;
+        Loaded loaded = load(configuredName, lightTheme, darkTheme);
+        committed = loaded.theme(); committedPanelExplicit = loaded.panelBgExplicit();
+        preview = committed; previewPanelExplicit = committedPanelExplicit;
     }
 
     /**
@@ -138,8 +160,9 @@ public final class ThemeManager implements AutoCloseable {
         lightTheme = light == null || light.isBlank() ? "light" : light;
         darkTheme = dark == null || dark.isBlank() ? "dark" : dark;
         request++;
-        committed = load(configuredName, lightTheme, darkTheme);
-        preview = committed; revision++;
+        Loaded loaded = load(configuredName, lightTheme, darkTheme);
+        committed = loaded.theme(); committedPanelExplicit = loaded.panelBgExplicit();
+        preview = committed; previewPanelExplicit = committedPanelExplicit;
     }
 
     /** @return 当前逻辑主题标识（system/auto/自定义），用于诊断与状态同步。 */
@@ -167,7 +190,10 @@ public final class ThemeManager implements AutoCloseable {
                     if (!changed || closed.get()) continue;
                     try {
                         Theme reread = ThemeManager.loadFrom(file, colorsAvailable, ++revision);
-                        if (preview.name().equals(reread.name())) { preview = reread; revision++; onChanged.run(); }
+                        if (!reread.colors().containsKey("panelBg")) reread = refreshPanelBg(reread, false);
+                        if (preview.name().equals(reread.name())) {
+                            preview = reread; previewPanelExplicit = false; revision++; onChanged.run();
+                        }
                     } catch (RuntimeException failure) { onError.accept(failure.getMessage()); }
                 }
             } catch (IOException | InterruptedException unavailable) {
@@ -176,8 +202,8 @@ public final class ThemeManager implements AutoCloseable {
         });
     }
 
-    /** @return 解析主题标识：system 派生、auto 配对、内置或自定义文件。 */
-    private Theme load(String name, String lightTheme, String darkTheme) {
+    /** @return 解析主题标识：system 派生、auto 配对、内置或自定义文件；并派生 panelBg。 */
+    private Loaded load(String name, String lightTheme, String darkTheme) {
         String normalized = name == null || name.isBlank() ? "system" : name;
         ThemePalette.Definition definition;
         if (normalized.equals("system")) {
@@ -188,7 +214,34 @@ public final class ThemeManager implements AutoCloseable {
         } else {
             definition = builtinOrCustom(normalized);
         }
-        return Theme.from(definition, colorsAvailable, ++revision);
+        return new Loaded(decoratePanelBg(definition), definition.panelBgExplicit());
+    }
+
+    /**
+     * 非显式 panelBg 的主题在加载时按当前终端背景/既有明暗假定派生；派生值会随晚回复重算，
+     * 但不会被记成用户显式值，也不改变逻辑 theme 字段。
+     */
+    private Theme decoratePanelBg(ThemePalette.Definition definition) {
+        if (definition.panelBgExplicit()) return Theme.from(definition, colorsAvailable, ++revision);
+        boolean dark = definition.appearance() == null || definition.appearance().isBlank()
+                ? terminalDark : !definition.appearance().equalsIgnoreCase("light");
+        var colors = new LinkedHashMap<>(definition.colors());
+        colors.put("panelBg", ThemePalette.derivePanelBg(panelBase(dark), dark));
+        var decorated = new ThemePalette.Definition(definition.name(), definition.appearance(), colors, false);
+        return Theme.from(decorated, colorsAvailable, ++revision);
+    }
+
+    private Theme refreshPanelBg(Theme theme, boolean explicit) {
+        if (explicit) return theme;
+        boolean dark = !theme.appearance().equals("light");
+        var colors = new LinkedHashMap<>(theme.colors());
+        colors.put("panelBg", ThemePalette.derivePanelBg(panelBase(dark), dark));
+        return new Theme(theme.name(), theme.appearance(), Map.copyOf(colors), theme.enabled(), ++revision);
+    }
+
+    private Color panelBase(boolean dark) {
+        return background != null && background.kind() == Color.Kind.RGB
+                ? background : (dark ? Color.rgb(0, 0, 0) : Color.rgb(255, 255, 255));
     }
 
     private ThemePalette.Definition builtinOrCustom(String name) {
