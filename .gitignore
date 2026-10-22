@@ -32,3 +32,4 @@ tmp/
 .classpath
 .project
 .settings/
+tools/tui-text-engine/node_modules/

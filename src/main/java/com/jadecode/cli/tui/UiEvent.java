@@ -72,6 +72,9 @@ public sealed interface UiEvent {
     /** 外部编辑器返回的完整草稿；只在 UI 线程替换编辑器内容。 */
     record ExternalEditorResult(String text) implements UiEvent { }
 
+    /** 后台纯计算结果就绪，只请求一次重排；不携带 JS Value。 */
+    record Repaint() implements UiEvent { }
+
     /** 关闭清理完成，可以结束 UI 循环。 */
     record Stopped() implements UiEvent { }
 }

@@ -53,8 +53,22 @@ public record TextRenderResult(List<Token> tokens, long sourceVersion, List<Stri
     /** 单个空格/换行分隔，用于保持行内词边界。 */
     public record Space() implements Token { }
 
-    /** 行内或围栏代码；block=true 时 text 保留原始换行/空白。 */
-    public record Code(String text, String language, boolean block) implements Token { }
+    /** 一个高亮/图形作用域；cls 为 highlight.js 的 `hljs-*` 或 grok-mermaid 的语义类。 */
+    public record Scope(String text, String cls) { }
+
+    /**
+     * 行内或围栏代码；block=true 时 text 保留原始换行/空白。
+     * highlight 是按行组织的语义作用域；为空时按纯文本显示。
+     */
+    public record Code(String text, String language, boolean block, List<List<Scope>> highlight) implements Token {
+        public Code {
+            text = text == null ? "" : text;
+            language = language == null ? "" : language;
+            highlight = highlight == null ? List.of() : List.copyOf(highlight);
+        }
+        /** 兼容没有高亮作用域的调用方。 */
+        public Code(String text, String language, boolean block) { this(text, language, block, List.of()); }
+    }
 
     public record Strong(List<Token> items) implements Token {
         public Strong { items = List.copyOf(items); }

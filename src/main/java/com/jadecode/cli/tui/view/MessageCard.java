@@ -21,7 +21,18 @@ import com.jadecode.tui.text.StyledLine;
  * Markdown 容器。此卡容器是明确批准差异，不能声称与 Pi 无标题消息完全相同。</p>
  */
 public final class MessageCard {
-    private final Markdown markdown = new Markdown();
+    private final Markdown markdown;
+
+    /** 无固定引擎的组件（测试/离线）。 */
+    public MessageCard() { this(() -> null, () -> { }); }
+
+    /**
+     * @param engine 固定 JS 文本引擎供应者
+     * @param repaint 解析结果到达后的重绘请求（worker 线程调用）
+     */
+    public MessageCard(java.util.function.Supplier<com.jadecode.tui.markdown.JsTextEngine> engine, Runnable repaint) {
+        this.markdown = new Markdown(engine, repaint);
+    }
 
     /** @return 排版一条转录条目；空条目返回空列表。 */
     public List<StyledLine> render(TranscriptEntry entry, RenderContext context, int width,

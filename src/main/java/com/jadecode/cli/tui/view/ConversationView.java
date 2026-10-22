@@ -20,7 +20,7 @@ import com.jadecode.tui.text.StyledLine;
  * 渲染缓存改写。空转录时显示 WelcomeView。</p>
  */
 public final class ConversationView {
-    private final MessageCard cards = new MessageCard();
+    private final MessageCard cards;
     private final ToolRendererRegistry tools = new ToolRendererRegistry();
     private final WelcomeView welcome = new WelcomeView();
     private final Map<String, Cached> cache = new LinkedHashMap<>(64, 0.75f, true) {
@@ -30,6 +30,17 @@ public final class ConversationView {
     private List<StyledLine> lastDocument = List.of();
 
     private record Cached(long version, int width, long themeRevision, boolean thinkingVisible, List<StyledLine> lines) { }
+
+    /** 无固定引擎的组件（测试/离线）。 */
+    public ConversationView() { this(() -> null, () -> { }); }
+
+    /**
+     * @param engine 固定 JS 文本引擎供应者；null 时消息卡使用 Java 回退
+     * @param repaint 引擎结果到达后的重绘请求
+     */
+    public ConversationView(java.util.function.Supplier<com.jadecode.tui.markdown.JsTextEngine> engine, Runnable repaint) {
+        this.cards = new MessageCard(engine, repaint);
+    }
 
     /**
      * @param state 当前显示状态
@@ -89,6 +100,12 @@ public final class ConversationView {
 
     /** 主题/会话切换时丢弃排版缓存；不删除原文。 */
     public void invalidate() { cache.clear(); cards.invalidate(); lastDocument = List.of(); }
+
+    /**
+     * 只丢弃组件级排版缓存，保留已解析的固定引擎 DTO。异步解析结果到达时使用，
+     * 不能调用 {@link #invalidate()}，否则会清掉刚解析好的结果并造成重复解析循环。
+     */
+    public void invalidateLayout() { cache.clear(); lastDocument = List.of(); }
 
     private static ToolDisplayState toolFor(TuiState state, TranscriptEntry entry) {
         for (ToolDisplayState tool : state.transcript.tools())

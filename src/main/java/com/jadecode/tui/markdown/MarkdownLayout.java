@@ -39,12 +39,17 @@ public final class MarkdownLayout {
         return layout(result, Math.max(1, width), baseStyle == null ? Style.PLAIN : baseStyle);
     }
 
-    /** 渲染已解析 token；供未来 JS 结果复用。 */
+    /** 渲染已解析 token；供 JS 结果复用。 */
     public List<StyledLine> layout(TextRenderResult result, int width, Style baseStyle) {
+        return layout(result, width, baseStyle, false);
+    }
+
+    /** 渲染已解析 token；thinking 时跳过 Mermaid 图形但仍按 Markdown 排版。 */
+    public List<StyledLine> layout(TextRenderResult result, int width, Style baseStyle, boolean thinking) {
         var out = new ArrayList<StyledLine>();
         List<TextRenderResult.Token> blocks = result.tokens();
         for (int i = 0; i < blocks.size(); i++) {
-            renderBlock(blocks.get(i), width, baseStyle, out, 0);
+            renderBlock(blocks.get(i), width, baseStyle, out, 0, thinking);
             if (i + 1 < blocks.size()) out.add(StyledLine.empty());
         }
         while (!out.isEmpty() && out.getLast().isBlank()) out.removeLast();
@@ -52,6 +57,11 @@ public final class MarkdownLayout {
     }
 
     private void renderBlock(TextRenderResult.Token token, int width, Style style, List<StyledLine> out, int indent) {
+        renderBlock(token, width, style, out, indent, false);
+    }
+
+    private void renderBlock(TextRenderResult.Token token, int width, Style style, List<StyledLine> out, int indent,
+            boolean thinking) {
         String prefix = " ".repeat(Math.max(0, indent));
         switch (token) {
             case TextRenderResult.Heading heading -> {
@@ -68,13 +78,22 @@ public final class MarkdownLayout {
             case TextRenderResult.Code code -> {
                 Style codeStyle = style.merge(theme.style("mdCodeBlock"));
                 Style borderStyle = style.merge(theme.style("mdCodeBlockBorder"));
-                String fence = "```" + (code.language() == null ? "" : code.language());
-                out.add(StyledLine.of(DisplayWidth.ellipsize(prefix + fence, width), borderStyle));
-                for (String line : DisplayWidth.lines(code.text())) {
-                    String visible = prefix + "  " + line;
-                    out.add(StyledLine.of(DisplayWidth.take(visible, width), codeStyle));
+                List<String> codeLines = DisplayWidth.lines(code.text());
+                // thinking 内容跳过 Mermaid 图形，按普通代码块显示原文（Pi 行为）。
+                boolean mermaidArt = !thinking && code.language().equals("mermaid") && !code.highlight().isEmpty();
+                if (!mermaidArt) {
+                    String fence = "```" + (code.language() == null ? "" : code.language());
+                    out.add(StyledLine.of(DisplayWidth.ellipsize(prefix + fence, width), borderStyle));
                 }
-                out.add(StyledLine.of(DisplayWidth.ellipsize(prefix + "```", width), borderStyle));
+                for (int i = 0; i < codeLines.size(); i++) {
+                    List<TextRenderResult.Scope> scopes = i < code.highlight().size()
+                            ? code.highlight().get(i) : List.of();
+                    StyledLine line;
+                    if (scopes.isEmpty()) line = StyledLine.of(prefix + (mermaidArt ? "" : "  ") + codeLines.get(i), codeStyle);
+                    else line = scopedLine(prefix + (mermaidArt ? "" : "  "), scopes, codeStyle);
+                    out.add(line.crop(width));
+                }
+                if (!mermaidArt) out.add(StyledLine.of(DisplayWidth.ellipsize(prefix + "```", width), borderStyle));
             }
             case TextRenderResult.ListBlock list -> {
                 int index = list.start();
@@ -90,7 +109,8 @@ public final class MarkdownLayout {
             case TextRenderResult.Blockquote quote -> {
                 Style quoteStyle = style.merge(theme.style("mdQuote"));
                 var inner = new ArrayList<StyledLine>();
-                for (TextRenderResult.Token child : quote.items()) renderBlock(child, Math.max(1, width - 2), quoteStyle, inner, 0);
+                for (TextRenderResult.Token child : quote.items())
+                    renderBlock(child, Math.max(1, width - 2), quoteStyle, inner, 0, thinking);
                 for (StyledLine line : inner) {
                     var spans = new ArrayList<Span>();
                     spans.add(new Span("│ ", style.merge(theme.style("mdQuoteBorder")), null));
@@ -112,7 +132,7 @@ public final class MarkdownLayout {
             default -> {
                 if (!token.children().isEmpty()) {
                     for (TextRenderResult.Token child : token.children())
-                        renderBlock(child, width, style, out, indent);
+                        renderBlock(child, width, style, out, indent, thinking);
                 } else if (token instanceof TextRenderResult.Text text) {
                     out.addAll(wrapWithPrefix(List.of(new Span(text.value(), style, null)), width, prefix, prefix));
                 } else if (token instanceof TextRenderResult.Break) out.add(StyledLine.empty());
@@ -134,7 +154,9 @@ public final class MarkdownLayout {
         int content = Math.max(0, width - DisplayWidth.width(prefix) - overhead);
         int required = java.util.Arrays.stream(widths).sum();
         if (content < required) {
-            // 极窄：退回带竖线的源码行，保留全部内容而不是裁掉单元格。
+            // 极窄：退回带竖线的源码行，保留表头和全部单元格内容而不是裁掉数据。
+            for (var cell : table.header())
+                out.addAll(wrapWithPrefix(inline(cell, style), width, "| " + prefix, "| " + prefix));
             for (var row : table.rows()) {
                 for (var cell : row) out.addAll(wrapWithPrefix(inline(cell, style), width, "| " + prefix, "| " + prefix));
             }
@@ -164,6 +186,40 @@ public final class MarkdownLayout {
             spans.add(new Span(" │ ", theme.style("mdHr"), null));
         }
         return new StyledLine(spans);
+    }
+
+    /** 按语义作用域构建一行；cls 映射主题 token，未知类回退代码块样式。 */
+    private StyledLine scopedLine(String prefix, List<TextRenderResult.Scope> scopes, Style base) {
+        var spans = new ArrayList<Span>();
+        spans.add(new Span(prefix, base, null));
+        for (TextRenderResult.Scope scope : scopes) {
+            if (scope.text().isEmpty()) continue;
+            spans.add(new Span(scope.text(), scopeStyle(scope.cls(), base), null));
+        }
+        return new StyledLine(spans);
+    }
+
+    private Style scopeStyle(String cls, Style base) {
+        if (cls == null || cls.isEmpty()) return base;
+        return switch (cls) {
+            case "hljs-keyword" -> theme.style("syntaxKeyword");
+            case "hljs-string" -> theme.style("syntaxString");
+            case "hljs-comment" -> theme.style("syntaxComment");
+            case "hljs-number", "hljs-literal" -> theme.style("syntaxNumber");
+            case "hljs-function", "hljs-title" -> theme.style("syntaxFunction");
+            case "hljs-variable", "hljs-params", "hljs-attr", "hljs-attribute", "hljs-property" -> theme.style("syntaxVariable");
+            case "hljs-type", "hljs-built_in", "hljs-class" -> theme.style("syntaxType");
+            case "hljs-operator" -> theme.style("syntaxOperator");
+            case "hljs-punctuation" -> theme.style("syntaxPunctuation");
+            // grok-mermaid 的语义类
+            case "border" -> theme.style("borderMuted");
+            case "text" -> theme.style("text");
+            case "edge" -> theme.style("accent");
+            case "edgeLabel" -> theme.style("muted");
+            case "title" -> theme.style("accent").withBold(true);
+            case "none" -> base;
+            default -> base;
+        };
     }
 
     private static String border(char left, char middle, char right, int[] widths) {

@@ -102,6 +102,12 @@ public final class TuiController {
     /** @return 当前是否有屏幕级选区。 */
     public boolean selectionActive() { return fullscreen && screenSelection.active(); }
 
+    /** @return 当前屏幕级选区纯文字；无选区/无帧为空。 */
+    public String selectedText() {
+        if (!selectionActive() || lastFrame == null) return "";
+        return screenSelection.text(lastFrame.lines());
+    }
+
     /**
      * 把屏幕级选区高亮合并进帧行；只有全屏模式有效，regular 交给终端原生选择。
      * 文本、命中与选区使用同一帧坐标，resize 后由 Application 失效重建。
@@ -213,6 +219,7 @@ public final class TuiController {
                 editor.insert(text.text(), true);
             }
             case UiEvent.ExternalEditorResult text -> editor.replaceText(text.text());
+            case UiEvent.Repaint ignored -> { /* Application 已消费并请求重绘。 */ }
             case UiEvent.TerminalFailure failure -> { state.hint = failure.message(); close(); }
             case UiEvent.Stopped stopped -> { return false; }
         }
@@ -463,8 +470,8 @@ public final class TuiController {
 
     /** Ctrl+X/菜单复制：屏幕级选区优先，否则聊天选区，最后最近助手回复。 */
     public void copySelectionOrLastReply() {
-        String text = selectionActive() && lastFrame != null ? screenSelection.text(lastFrame.lines())
-                : chat.selection().active() ? chat.selection().text(chat.document())
+        String text = selectionActive() ? selectedText()
+                : chat != null && chat.selection().active() ? chat.selection().text(chat.document())
                 : state.transcript.lastReplyText();
         if (text.isBlank()) { state.hint = UiMessages.COPY_EMPTY; return; }
         terminal.copy(text, true);

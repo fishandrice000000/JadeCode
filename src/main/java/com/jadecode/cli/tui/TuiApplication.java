@@ -108,6 +108,7 @@ public final class TuiApplication {
         String failureMessage = null;
         var stopping = new AtomicBoolean();
         var closeStarted = new AtomicBoolean();
+        var textEngineRef = new AtomicReference<com.jadecode.tui.markdown.JsTextEngine>();
         try {
             // 1. 先确认真实终端，再读取配置/装配业务；非 TTY 不创建不可操作会话。
             terminal = new TerminalSession();
@@ -130,7 +131,7 @@ public final class TuiApplication {
             var keys = new KeyBindings(settings.tui().keybindings());
             catalog = new CommandCatalog(Path.of("").toAbsolutePath());
             var settingsMenu = new SettingsMenu(settings.tui(), prefs.toAbsolutePath().getParent().resolve("themes"));
-            var conversation = new ConversationView();
+            var conversation = new ConversationView(textEngineRef::get, () -> sink.accept(new UiEvent.Repaint()));
             var chat = new ChatViewport(conversation,
                     ChatViewport.Scrollbar.valueOf(settings.tui().fullscreenScrollbar().toUpperCase(java.util.Locale.ROOT)),
                     settings.tui().fullscreenCopyOnSelect());
@@ -312,6 +313,16 @@ public final class TuiApplication {
             // 5. 启动会话（resume=null 创建新会话；空串打开选择器）。
             controller.resume(resume);
             loadBranch(sink);
+            // 固定文本引擎异步冷加载：不阻塞首帧；成功后请求一次重排，失败保留 Java 回退并如实报告。
+            Thread.ofVirtual().name("jade-text-engine-init").start(() -> {
+                try {
+                    textEngineRef.set(com.jadecode.tui.markdown.JsTextEngine.create());
+                    sink.accept(new UiEvent.Repaint());
+                } catch (IOException failure) {
+                    sink.accept(new UiEvent.Message("System", "Warning",
+                            "Fixed text engine unavailable; showing readable fallback: " + failure.getMessage(), true));
+                }
+            });
 
             var scheduler = new RenderScheduler();
             boolean running = true;
@@ -324,6 +335,13 @@ public final class TuiApplication {
                     immediate |= event instanceof UiEvent.Input
                             || (event instanceof UiEvent.Scoped scoped && scoped.event() instanceof UiEvent.Input);
                     // 先让 TerminalQueries 消费回复；只有能力/色板变化才重绘。
+                    if (event instanceof UiEvent.Repaint) {
+                        // 固定引擎 DTO 已缓存；只丢弃组件排版缓存，保留解析结果并重排一次。
+                        conversation.invalidateLayout();
+                        scheduler.request();
+                        event = events.poll();
+                        continue;
+                    }
                     if (event instanceof UiEvent.Input input && input.input().kind() == InputEvent.Kind.REPLY) {
                         boolean changed = queries.accept(input.input().reply(), input.input().terminalEpoch());
                         if (changed) applyQueries(queries, themes, capabilities, terminal);
@@ -408,6 +426,8 @@ public final class TuiApplication {
                 try { if (themes != null) themes.close(); } catch (RuntimeException ignored) { }
                 try { if (catalog != null) catalog.close(); } catch (RuntimeException ignored) { }
                 try { if (handoff != null) handoff.close(); } catch (RuntimeException ignored) { }
+                com.jadecode.tui.markdown.JsTextEngine engineToClose = textEngineRef.get();
+                if (engineToClose != null) { try { engineToClose.close(); } catch (RuntimeException ignored) { } }
                 try { if (imageClipboard != null) imageClipboard.close(); } catch (RuntimeException ignored) { }
                 System.setOut(originalOut); System.setErr(originalErr);
                 try { if (terminal != null) terminal.close(); }
