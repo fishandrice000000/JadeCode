@@ -1,0 +1,882 @@
+{
+  "headings-and-lists": {
+    "source": "# Title\n\n## Sub\n\n- a\n- b\n  - nested\n\n1. one\n2. two\n",
+    "lex": {
+      "schema": 1,
+      "tokens": [
+        {
+          "type": "heading",
+          "raw": "# Title",
+          "depth": 1,
+          "text": "Title",
+          "tokens": [
+            {
+              "type": "text",
+              "raw": "Title",
+              "text": "Title",
+              "escaped": false
+            }
+          ]
+        },
+        {
+          "type": "space",
+          "raw": "\n\n"
+        },
+        {
+          "type": "heading",
+          "raw": "## Sub",
+          "depth": 2,
+          "text": "Sub",
+          "tokens": [
+            {
+              "type": "text",
+              "raw": "Sub",
+              "text": "Sub",
+              "escaped": false
+            }
+          ]
+        },
+        {
+          "type": "space",
+          "raw": "\n\n"
+        },
+        {
+          "type": "list",
+          "raw": "- a\n- b\n  - nested",
+          "ordered": false,
+          "start": "",
+          "loose": false,
+          "items": [
+            {
+              "type": "list_item",
+              "raw": "- a\n",
+              "task": false,
+              "loose": false,
+              "text": "a",
+              "tokens": [
+                {
+                  "type": "text",
+                  "raw": "a",
+                  "text": "a",
+                  "tokens": [
+                    {
+                      "type": "text",
+                      "raw": "a",
+                      "text": "a",
+                      "escaped": false
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "list_item",
+              "raw": "- b\n  - nested",
+              "task": false,
+              "loose": false,
+              "text": "b\n- nested",
+              "tokens": [
+                {
+                  "type": "text",
+                  "raw": "b\n",
+                  "text": "b",
+                  "tokens": [
+                    {
+                      "type": "text",
+                      "raw": "b",
+                      "text": "b",
+                      "escaped": false
+                    }
+                  ]
+                },
+                {
+                  "type": "list",
+                  "raw": "- nested",
+                  "ordered": false,
+                  "start": "",
+                  "loose": false,
+                  "items": [
+                    {
+                      "type": "list_item",
+                      "raw": "- nested",
+                      "task": false,
+                      "loose": false,
+                      "text": "nested",
+                      "tokens": [
+                        {
+                          "type": "text",
+                          "raw": "nested",
+                          "text": "nested",
+                          "tokens": [
+                            {
+                              "type": "text",
+                              "raw": "nested",
+                              "text": "nested",
+                              "escaped": false
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "space",
+          "raw": "\n\n"
+        },
+        {
+          "type": "list",
+          "raw": "1. one\n2. two\n",
+          "ordered": true,
+          "start": 1,
+          "loose": false,
+          "items": [
+            {
+              "type": "list_item",
+              "raw": "1. one\n",
+              "task": false,
+              "loose": false,
+              "text": "one",
+              "tokens": [
+                {
+                  "type": "text",
+                  "raw": "one",
+                  "text": "one",
+                  "tokens": [
+                    {
+                      "type": "text",
+                      "raw": "one",
+                      "text": "one",
+                      "escaped": false
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "list_item",
+              "raw": "2. two",
+              "task": false,
+              "loose": false,
+              "text": "two",
+              "tokens": [
+                {
+                  "type": "text",
+                  "raw": "two",
+                  "text": "two",
+                  "tokens": [
+                    {
+                      "type": "text",
+                      "raw": "two",
+                      "text": "two",
+                      "escaped": false
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "links": {},
+      "versions": {
+        "marked": "18.0.11",
+        "highlightJs": "10.7.3",
+        "grokMermaid": "0.2.3"
+      }
+    },
+    "highlightJava": "[[{\"text\":\"int\",\"cls\":\"hljs-keyword\"},{\"text\":\" x = \",\"cls\":null},{\"text\":\"1\",\"cls\":\"hljs-number\"},{\"text\":\";\",\"cls\":null}]]",
+    "latexAlpha": "α",
+    "mermaid": "{\"plain\":[\" ┌───┐\",\" │ A │\",\" └─┬─┘\",\"   │\",\"   ▼\",\" ┌───┐\",\" │ B │\",\" └───┘\"],\"styled\":[[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"┌───┐\",\"cls\":\"border\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"border\"},{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"A\",\"cls\":\"text\"},{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"border\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"└─┬─┘\",\"cls\":\"border\"}],[{\"text\":\"   \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"edge\"}],[{\"text\":\"   \",\"cls\":\"none\"},{\"text\":\"▼\",\"cls\":\"edge\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"┌───┐\",\"cls\":\"border\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"border\"},{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"B\",\"cls\":\"text\"},{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"border\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"└───┘\",\"cls\":\"border\"}]],\"width\":6,\"warnings\":[]}"
+  },
+  "code-java": {
+    "source": "Before\n\n```java\npublic class A { String s = \"x\"; /* c */ }\n```\n\nAfter\n",
+    "lex": {
+      "schema": 1,
+      "tokens": [
+        {
+          "type": "paragraph",
+          "raw": "Before",
+          "text": "Before",
+          "tokens": [
+            {
+              "type": "text",
+              "raw": "Before",
+              "text": "Before",
+              "escaped": false
+            }
+          ]
+        },
+        {
+          "type": "space",
+          "raw": "\n\n"
+        },
+        {
+          "type": "code",
+          "raw": "```java\npublic class A { String s = \"x\"; /* c */ }\n```",
+          "lang": "java",
+          "text": "public class A { String s = \"x\"; /* c */ }",
+          "highlight": [
+            [
+              {
+                "text": "public",
+                "cls": "hljs-keyword"
+              },
+              {
+                "text": " ",
+                "cls": null
+              },
+              {
+                "text": "class",
+                "cls": "hljs-keyword"
+              },
+              {
+                "text": " ",
+                "cls": "hljs-class"
+              },
+              {
+                "text": "A",
+                "cls": "hljs-title"
+              },
+              {
+                "text": " ",
+                "cls": "hljs-class"
+              },
+              {
+                "text": "{ String s = ",
+                "cls": null
+              },
+              {
+                "text": "\"x\"",
+                "cls": "hljs-string"
+              },
+              {
+                "text": "; ",
+                "cls": null
+              },
+              {
+                "text": "/* c */",
+                "cls": "hljs-comment"
+              },
+              {
+                "text": " }",
+                "cls": null
+              }
+            ]
+          ]
+        },
+        {
+          "type": "space",
+          "raw": "\n\n"
+        },
+        {
+          "type": "paragraph",
+          "raw": "After\n",
+          "text": "After",
+          "tokens": [
+            {
+              "type": "text",
+              "raw": "After",
+              "text": "After",
+              "escaped": false
+            }
+          ]
+        }
+      ],
+      "links": {},
+      "versions": {
+        "marked": "18.0.11",
+        "highlightJs": "10.7.3",
+        "grokMermaid": "0.2.3"
+      }
+    },
+    "highlightJava": "[[{\"text\":\"int\",\"cls\":\"hljs-keyword\"},{\"text\":\" x = \",\"cls\":null},{\"text\":\"1\",\"cls\":\"hljs-number\"},{\"text\":\";\",\"cls\":null}]]",
+    "latexAlpha": "α",
+    "mermaid": "{\"plain\":[\" ┌───┐\",\" │ A │\",\" └─┬─┘\",\"   │\",\"   ▼\",\" ┌───┐\",\" │ B │\",\" └───┘\"],\"styled\":[[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"┌───┐\",\"cls\":\"border\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"border\"},{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"A\",\"cls\":\"text\"},{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"border\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"└─┬─┘\",\"cls\":\"border\"}],[{\"text\":\"   \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"edge\"}],[{\"text\":\"   \",\"cls\":\"none\"},{\"text\":\"▼\",\"cls\":\"edge\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"┌───┐\",\"cls\":\"border\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"border\"},{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"B\",\"cls\":\"text\"},{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"border\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"└───┘\",\"cls\":\"border\"}]],\"width\":6,\"warnings\":[]}"
+  },
+  "code-unknown": {
+    "source": "```notalang\nplain text\n```\n",
+    "lex": {
+      "schema": 1,
+      "tokens": [
+        {
+          "type": "code",
+          "raw": "```notalang\nplain text\n```\n",
+          "lang": "notalang",
+          "text": "plain text"
+        }
+      ],
+      "links": {},
+      "versions": {
+        "marked": "18.0.11",
+        "highlightJs": "10.7.3",
+        "grokMermaid": "0.2.3"
+      }
+    },
+    "highlightJava": "[[{\"text\":\"int\",\"cls\":\"hljs-keyword\"},{\"text\":\" x = \",\"cls\":null},{\"text\":\"1\",\"cls\":\"hljs-number\"},{\"text\":\";\",\"cls\":null}]]",
+    "latexAlpha": "α",
+    "mermaid": "{\"plain\":[\" ┌───┐\",\" │ A │\",\" └─┬─┘\",\"   │\",\"   ▼\",\" ┌───┐\",\" │ B │\",\" └───┘\"],\"styled\":[[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"┌───┐\",\"cls\":\"border\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"border\"},{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"A\",\"cls\":\"text\"},{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"border\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"└─┬─┘\",\"cls\":\"border\"}],[{\"text\":\"   \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"edge\"}],[{\"text\":\"   \",\"cls\":\"none\"},{\"text\":\"▼\",\"cls\":\"edge\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"┌───┐\",\"cls\":\"border\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"border\"},{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"B\",\"cls\":\"text\"},{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"border\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"└───┘\",\"cls\":\"border\"}]],\"width\":6,\"warnings\":[]}"
+  },
+  "table": {
+    "source": "| Name | Value |\n|---|---:|\n| a | 1 |\n| b | 2 |\n",
+    "lex": {
+      "schema": 1,
+      "tokens": [
+        {
+          "type": "table",
+          "raw": "| Name | Value |\n|---|---:|\n| a | 1 |\n| b | 2 |\n",
+          "header": [
+            {
+              "text": "Name",
+              "tokens": [
+                {
+                  "type": "text",
+                  "raw": "Name",
+                  "text": "Name",
+                  "escaped": false
+                }
+              ],
+              "header": true,
+              "align": null
+            },
+            {
+              "text": "Value",
+              "tokens": [
+                {
+                  "type": "text",
+                  "raw": "Value",
+                  "text": "Value",
+                  "escaped": false
+                }
+              ],
+              "header": true,
+              "align": "right"
+            }
+          ],
+          "align": [
+            null,
+            "right"
+          ],
+          "rows": [
+            [
+              {
+                "text": "a",
+                "tokens": [
+                  {
+                    "type": "text",
+                    "raw": "a",
+                    "text": "a",
+                    "escaped": false
+                  }
+                ],
+                "header": false,
+                "align": null
+              },
+              {
+                "text": "1",
+                "tokens": [
+                  {
+                    "type": "text",
+                    "raw": "1",
+                    "text": "1",
+                    "escaped": false
+                  }
+                ],
+                "header": false,
+                "align": "right"
+              }
+            ],
+            [
+              {
+                "text": "b",
+                "tokens": [
+                  {
+                    "type": "text",
+                    "raw": "b",
+                    "text": "b",
+                    "escaped": false
+                  }
+                ],
+                "header": false,
+                "align": null
+              },
+              {
+                "text": "2",
+                "tokens": [
+                  {
+                    "type": "text",
+                    "raw": "2",
+                    "text": "2",
+                    "escaped": false
+                  }
+                ],
+                "header": false,
+                "align": "right"
+              }
+            ]
+          ]
+        }
+      ],
+      "links": {},
+      "versions": {
+        "marked": "18.0.11",
+        "highlightJs": "10.7.3",
+        "grokMermaid": "0.2.3"
+      }
+    },
+    "highlightJava": "[[{\"text\":\"int\",\"cls\":\"hljs-keyword\"},{\"text\":\" x = \",\"cls\":null},{\"text\":\"1\",\"cls\":\"hljs-number\"},{\"text\":\";\",\"cls\":null}]]",
+    "latexAlpha": "α",
+    "mermaid": "{\"plain\":[\" ┌───┐\",\" │ A │\",\" └─┬─┘\",\"   │\",\"   ▼\",\" ┌───┐\",\" │ B │\",\" └───┘\"],\"styled\":[[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"┌───┐\",\"cls\":\"border\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"border\"},{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"A\",\"cls\":\"text\"},{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"border\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"└─┬─┘\",\"cls\":\"border\"}],[{\"text\":\"   \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"edge\"}],[{\"text\":\"   \",\"cls\":\"none\"},{\"text\":\"▼\",\"cls\":\"edge\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"┌───┐\",\"cls\":\"border\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"border\"},{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"B\",\"cls\":\"text\"},{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"border\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"└───┘\",\"cls\":\"border\"}]],\"width\":6,\"warnings\":[]}"
+  },
+  "quote-and-emphasis": {
+    "source": "> quote **strong** _em_ `code` ~~del~~\n\n[link](https://example.com)\n",
+    "lex": {
+      "schema": 1,
+      "tokens": [
+        {
+          "type": "blockquote",
+          "raw": "> quote **strong** _em_ `code` ~~del~~",
+          "tokens": [
+            {
+              "type": "paragraph",
+              "raw": "quote **strong** _em_ `code` ~~del~~",
+              "text": "quote **strong** _em_ `code` ~~del~~",
+              "tokens": [
+                {
+                  "type": "text",
+                  "raw": "quote ",
+                  "text": "quote ",
+                  "escaped": false
+                },
+                {
+                  "type": "strong",
+                  "raw": "**strong**",
+                  "text": "strong",
+                  "tokens": [
+                    {
+                      "type": "text",
+                      "raw": "strong",
+                      "text": "strong",
+                      "escaped": false
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "raw": " ",
+                  "text": " ",
+                  "escaped": false
+                },
+                {
+                  "type": "em",
+                  "raw": "_em_",
+                  "text": "em",
+                  "tokens": [
+                    {
+                      "type": "text",
+                      "raw": "em",
+                      "text": "em",
+                      "escaped": false
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "raw": " ",
+                  "text": " ",
+                  "escaped": false
+                },
+                {
+                  "type": "codespan",
+                  "raw": "`code`",
+                  "text": "code"
+                },
+                {
+                  "type": "text",
+                  "raw": " ",
+                  "text": " ",
+                  "escaped": false
+                },
+                {
+                  "type": "del",
+                  "raw": "~~del~~",
+                  "text": "del",
+                  "tokens": [
+                    {
+                      "type": "text",
+                      "raw": "del",
+                      "text": "del",
+                      "escaped": false
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "text": "quote **strong** _em_ `code` ~~del~~"
+        },
+        {
+          "type": "space",
+          "raw": "\n\n"
+        },
+        {
+          "type": "paragraph",
+          "raw": "[link](https://example.com)\n",
+          "text": "[link](https://example.com)",
+          "tokens": [
+            {
+              "type": "link",
+              "raw": "[link](https://example.com)",
+              "href": "https://example.com",
+              "title": null,
+              "text": "link",
+              "tokens": [
+                {
+                  "type": "text",
+                  "raw": "link",
+                  "text": "link",
+                  "escaped": false
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "links": {},
+      "versions": {
+        "marked": "18.0.11",
+        "highlightJs": "10.7.3",
+        "grokMermaid": "0.2.3"
+      }
+    },
+    "highlightJava": "[[{\"text\":\"int\",\"cls\":\"hljs-keyword\"},{\"text\":\" x = \",\"cls\":null},{\"text\":\"1\",\"cls\":\"hljs-number\"},{\"text\":\";\",\"cls\":null}]]",
+    "latexAlpha": "α",
+    "mermaid": "{\"plain\":[\" ┌───┐\",\" │ A │\",\" └─┬─┘\",\"   │\",\"   ▼\",\" ┌───┐\",\" │ B │\",\" └───┘\"],\"styled\":[[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"┌───┐\",\"cls\":\"border\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"border\"},{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"A\",\"cls\":\"text\"},{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"border\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"└─┬─┘\",\"cls\":\"border\"}],[{\"text\":\"   \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"edge\"}],[{\"text\":\"   \",\"cls\":\"none\"},{\"text\":\"▼\",\"cls\":\"edge\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"┌───┐\",\"cls\":\"border\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"border\"},{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"B\",\"cls\":\"text\"},{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"border\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"└───┘\",\"cls\":\"border\"}]],\"width\":6,\"warnings\":[]}"
+  },
+  "latex": {
+    "source": "inline $x^2$ and display $$\\alpha + \\beta$$\n",
+    "lex": {
+      "schema": 1,
+      "tokens": [
+        {
+          "type": "paragraph",
+          "raw": "inline $x^2$ and display $$\\alpha + \\beta$$\n",
+          "text": "inline $x^2$ and display $$\\alpha + \\beta$$",
+          "tokens": [
+            {
+              "type": "text",
+              "raw": "inline $x^2$ and display $$\\alpha + \\beta$$",
+              "text": "inline x² and display α + β",
+              "escaped": false
+            }
+          ]
+        }
+      ],
+      "links": {},
+      "versions": {
+        "marked": "18.0.11",
+        "highlightJs": "10.7.3",
+        "grokMermaid": "0.2.3"
+      }
+    },
+    "highlightJava": "[[{\"text\":\"int\",\"cls\":\"hljs-keyword\"},{\"text\":\" x = \",\"cls\":null},{\"text\":\"1\",\"cls\":\"hljs-number\"},{\"text\":\";\",\"cls\":null}]]",
+    "latexAlpha": "α",
+    "mermaid": "{\"plain\":[\" ┌───┐\",\" │ A │\",\" └─┬─┘\",\"   │\",\"   ▼\",\" ┌───┐\",\" │ B │\",\" └───┘\"],\"styled\":[[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"┌───┐\",\"cls\":\"border\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"border\"},{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"A\",\"cls\":\"text\"},{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"border\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"└─┬─┘\",\"cls\":\"border\"}],[{\"text\":\"   \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"edge\"}],[{\"text\":\"   \",\"cls\":\"none\"},{\"text\":\"▼\",\"cls\":\"edge\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"┌───┐\",\"cls\":\"border\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"border\"},{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"B\",\"cls\":\"text\"},{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"border\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"└───┘\",\"cls\":\"border\"}]],\"width\":6,\"warnings\":[]}"
+  },
+  "mermaid": {
+    "source": "```mermaid\ngraph TD; A-->B;\n```\n",
+    "lex": {
+      "schema": 1,
+      "tokens": [
+        {
+          "type": "code",
+          "raw": "```mermaid\ngraph TD; A-->B;\n```\n",
+          "lang": "mermaid",
+          "text": "graph TD; A-->B;",
+          "mermaid": {
+            "plain": [
+              " ┌───┐",
+              " │ A │",
+              " └─┬─┘",
+              "   │",
+              "   ▼",
+              " ┌───┐",
+              " │ B │",
+              " └───┘"
+            ],
+            "styled": [
+              [
+                {
+                  "text": " ",
+                  "cls": "none"
+                },
+                {
+                  "text": "┌───┐",
+                  "cls": "border"
+                }
+              ],
+              [
+                {
+                  "text": " ",
+                  "cls": "none"
+                },
+                {
+                  "text": "│",
+                  "cls": "border"
+                },
+                {
+                  "text": " ",
+                  "cls": "none"
+                },
+                {
+                  "text": "A",
+                  "cls": "text"
+                },
+                {
+                  "text": " ",
+                  "cls": "none"
+                },
+                {
+                  "text": "│",
+                  "cls": "border"
+                }
+              ],
+              [
+                {
+                  "text": " ",
+                  "cls": "none"
+                },
+                {
+                  "text": "└─┬─┘",
+                  "cls": "border"
+                }
+              ],
+              [
+                {
+                  "text": "   ",
+                  "cls": "none"
+                },
+                {
+                  "text": "│",
+                  "cls": "edge"
+                }
+              ],
+              [
+                {
+                  "text": "   ",
+                  "cls": "none"
+                },
+                {
+                  "text": "▼",
+                  "cls": "edge"
+                }
+              ],
+              [
+                {
+                  "text": " ",
+                  "cls": "none"
+                },
+                {
+                  "text": "┌───┐",
+                  "cls": "border"
+                }
+              ],
+              [
+                {
+                  "text": " ",
+                  "cls": "none"
+                },
+                {
+                  "text": "│",
+                  "cls": "border"
+                },
+                {
+                  "text": " ",
+                  "cls": "none"
+                },
+                {
+                  "text": "B",
+                  "cls": "text"
+                },
+                {
+                  "text": " ",
+                  "cls": "none"
+                },
+                {
+                  "text": "│",
+                  "cls": "border"
+                }
+              ],
+              [
+                {
+                  "text": " ",
+                  "cls": "none"
+                },
+                {
+                  "text": "└───┘",
+                  "cls": "border"
+                }
+              ]
+            ],
+            "width": 6,
+            "warnings": []
+          }
+        }
+      ],
+      "links": {},
+      "versions": {
+        "marked": "18.0.11",
+        "highlightJs": "10.7.3",
+        "grokMermaid": "0.2.3"
+      }
+    },
+    "highlightJava": "[[{\"text\":\"int\",\"cls\":\"hljs-keyword\"},{\"text\":\" x = \",\"cls\":null},{\"text\":\"1\",\"cls\":\"hljs-number\"},{\"text\":\";\",\"cls\":null}]]",
+    "latexAlpha": "α",
+    "mermaid": "{\"plain\":[\" ┌───┐\",\" │ A │\",\" └─┬─┘\",\"   │\",\"   ▼\",\" ┌───┐\",\" │ B │\",\" └───┘\"],\"styled\":[[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"┌───┐\",\"cls\":\"border\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"border\"},{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"A\",\"cls\":\"text\"},{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"border\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"└─┬─┘\",\"cls\":\"border\"}],[{\"text\":\"   \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"edge\"}],[{\"text\":\"   \",\"cls\":\"none\"},{\"text\":\"▼\",\"cls\":\"edge\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"┌───┐\",\"cls\":\"border\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"border\"},{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"B\",\"cls\":\"text\"},{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"border\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"└───┘\",\"cls\":\"border\"}]],\"width\":6,\"warnings\":[]}"
+  },
+  "emoji-and-cjk": {
+    "source": "中文 **粗体** 🙂 text\n",
+    "lex": {
+      "schema": 1,
+      "tokens": [
+        {
+          "type": "paragraph",
+          "raw": "中文 **粗体** 🙂 text\n",
+          "text": "中文 **粗体** 🙂 text",
+          "tokens": [
+            {
+              "type": "text",
+              "raw": "中文 ",
+              "text": "中文 ",
+              "escaped": false
+            },
+            {
+              "type": "strong",
+              "raw": "**粗体**",
+              "text": "粗体",
+              "tokens": [
+                {
+                  "type": "text",
+                  "raw": "粗体",
+                  "text": "粗体",
+                  "escaped": false
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "raw": " 🙂 text",
+              "text": " 🙂 text",
+              "escaped": false
+            }
+          ]
+        }
+      ],
+      "links": {},
+      "versions": {
+        "marked": "18.0.11",
+        "highlightJs": "10.7.3",
+        "grokMermaid": "0.2.3"
+      }
+    },
+    "highlightJava": "[[{\"text\":\"int\",\"cls\":\"hljs-keyword\"},{\"text\":\" x = \",\"cls\":null},{\"text\":\"1\",\"cls\":\"hljs-number\"},{\"text\":\";\",\"cls\":null}]]",
+    "latexAlpha": "α",
+    "mermaid": "{\"plain\":[\" ┌───┐\",\" │ A │\",\" └─┬─┘\",\"   │\",\"   ▼\",\" ┌───┐\",\" │ B │\",\" └───┘\"],\"styled\":[[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"┌───┐\",\"cls\":\"border\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"border\"},{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"A\",\"cls\":\"text\"},{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"border\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"└─┬─┘\",\"cls\":\"border\"}],[{\"text\":\"   \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"edge\"}],[{\"text\":\"   \",\"cls\":\"none\"},{\"text\":\"▼\",\"cls\":\"edge\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"┌───┐\",\"cls\":\"border\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"border\"},{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"B\",\"cls\":\"text\"},{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"border\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"└───┘\",\"cls\":\"border\"}]],\"width\":6,\"warnings\":[]}"
+  },
+  "partial-fence": {
+    "source": "text\n\n```java\nint x = 1;\n",
+    "lex": {
+      "schema": 1,
+      "tokens": [
+        {
+          "type": "paragraph",
+          "raw": "text",
+          "text": "text",
+          "tokens": [
+            {
+              "type": "text",
+              "raw": "text",
+              "text": "text",
+              "escaped": false
+            }
+          ]
+        },
+        {
+          "type": "space",
+          "raw": "\n\n"
+        },
+        {
+          "type": "code",
+          "raw": "```java\nint x = 1;\n",
+          "lang": "java",
+          "text": "int x = 1;",
+          "highlight": [
+            [
+              {
+                "text": "int",
+                "cls": "hljs-keyword"
+              },
+              {
+                "text": " x = ",
+                "cls": null
+              },
+              {
+                "text": "1",
+                "cls": "hljs-number"
+              },
+              {
+                "text": ";",
+                "cls": null
+              }
+            ]
+          ]
+        }
+      ],
+      "links": {},
+      "versions": {
+        "marked": "18.0.11",
+        "highlightJs": "10.7.3",
+        "grokMermaid": "0.2.3"
+      }
+    },
+    "highlightJava": "[[{\"text\":\"int\",\"cls\":\"hljs-keyword\"},{\"text\":\" x = \",\"cls\":null},{\"text\":\"1\",\"cls\":\"hljs-number\"},{\"text\":\";\",\"cls\":null}]]",
+    "latexAlpha": "α",
+    "mermaid": "{\"plain\":[\" ┌───┐\",\" │ A │\",\" └─┬─┘\",\"   │\",\"   ▼\",\" ┌───┐\",\" │ B │\",\" └───┘\"],\"styled\":[[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"┌───┐\",\"cls\":\"border\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"border\"},{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"A\",\"cls\":\"text\"},{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"border\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"└─┬─┘\",\"cls\":\"border\"}],[{\"text\":\"   \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"edge\"}],[{\"text\":\"   \",\"cls\":\"none\"},{\"text\":\"▼\",\"cls\":\"edge\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"┌───┐\",\"cls\":\"border\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"border\"},{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"B\",\"cls\":\"text\"},{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"border\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"└───┘\",\"cls\":\"border\"}]],\"width\":6,\"warnings\":[]}"
+  },
+  "hr-and-html": {
+    "source": "---\n\n<div>raw</div>\n",
+    "lex": {
+      "schema": 1,
+      "tokens": [
+        {
+          "type": "hr",
+          "raw": "---"
+        },
+        {
+          "type": "space",
+          "raw": "\n\n"
+        },
+        {
+          "type": "html",
+          "block": true,
+          "raw": "<div>raw</div>\n",
+          "pre": false,
+          "text": "<div>raw</div>\n"
+        }
+      ],
+      "links": {},
+      "versions": {
+        "marked": "18.0.11",
+        "highlightJs": "10.7.3",
+        "grokMermaid": "0.2.3"
+      }
+    },
+    "highlightJava": "[[{\"text\":\"int\",\"cls\":\"hljs-keyword\"},{\"text\":\" x = \",\"cls\":null},{\"text\":\"1\",\"cls\":\"hljs-number\"},{\"text\":\";\",\"cls\":null}]]",
+    "latexAlpha": "α",
+    "mermaid": "{\"plain\":[\" ┌───┐\",\" │ A │\",\" └─┬─┘\",\"   │\",\"   ▼\",\" ┌───┐\",\" │ B │\",\" └───┘\"],\"styled\":[[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"┌───┐\",\"cls\":\"border\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"border\"},{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"A\",\"cls\":\"text\"},{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"border\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"└─┬─┘\",\"cls\":\"border\"}],[{\"text\":\"   \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"edge\"}],[{\"text\":\"   \",\"cls\":\"none\"},{\"text\":\"▼\",\"cls\":\"edge\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"┌───┐\",\"cls\":\"border\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"border\"},{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"B\",\"cls\":\"text\"},{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"│\",\"cls\":\"border\"}],[{\"text\":\" \",\"cls\":\"none\"},{\"text\":\"└───┘\",\"cls\":\"border\"}]],\"width\":6,\"warnings\":[]}"
+  }
+}
