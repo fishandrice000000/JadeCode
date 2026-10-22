@@ -15,8 +15,9 @@ import com.jadecode.tui.text.TextSanitizer;
  * 命令信息弹窗组件：真实分组/字段/服务列表、局部焦点和滚动，多列随宽度重排。
  *
  * <p>只消费 {@link CommandPanelModel}，不读 Host、不写终端、不把 Markdown 当页面。所有外部
- * 名称/值先经 {@link TextSanitizer#display} 净化；行宽严格限制在给定宽度内。边框内先给
- * 标题/提示留高度，再按列宽渲染分组；内容超出时只滚动正文，不截断边界。</p>
+ * 名称/值先经 {@link TextSanitizer#display} 净化；行宽严格限制在给定宽度内。标题嵌入顶边并
+ * 使用 accent+bold，正文每行有闭合侧边、左右各 2 列 padding，整块矩形（含空白与补齐）铺
+ * {@code panelBg}；宽度/高度不足时先缩 padding，再滚动正文，四角和底边始终完整。</p>
  */
 public final class CommandPanelView implements Component {
     private final CommandPanelModel model;
@@ -87,58 +88,124 @@ public final class CommandPanelView implements Component {
         int columns = Math.max(1, width);
         int budget = Math.max(1, maxRows);
         String title = oneLine(model.title());
-        if (budget < 4 || columns < 8) {
-            return List.of(StyledLine.of(DisplayWidth.ellipsize(title + " · Esc close", columns),
-                    context.theme().style("muted")));
+        if (budget < 3 || columns < 10) {
+            return List.of(panelLine(List.of(new Span(DisplayWidth.ellipsize(title + " · Esc close", columns),
+                    context.theme().style("muted"), null)), columns, context));
         }
+        Style panel = context.theme().background("panelBg");
+        int padding = columns >= 14 ? 2 : (columns >= 11 ? 1 : 0);
+        if (budget < 6 && padding == 2) padding = 1;
+        int contentWidth = Math.max(1, columns - 2 - padding * 2);
         boolean footer = budget >= 5;
         int bodyRows = Math.max(1, budget - 2 - (footer ? 1 : 0));
-        List<Section> sections = buildSections(context, columns);
-        int inner = Math.max(1, columns - 2);
-        int columnCount = Math.min(3, Math.max(1, (inner + 2) / 32));
-        if (model.kind() == CommandPanelModel.Kind.MCP) columnCount = inner >= 60 ? 2 : 1;
-        int columnWidth = Math.max(8, (inner - (columnCount - 1) * 2) / columnCount);
+
+        List<Section> sections = buildSections(contentWidth);
+        int columnCount = Math.min(3, Math.max(1, (contentWidth + 2) / 32));
+        if (model.kind() == CommandPanelModel.Kind.MCP) columnCount = contentWidth >= 60 ? 2 : 1;
+        int columnWidth = Math.max(8, (contentWidth - (columnCount - 1) * 2) / columnCount);
+        if (columnWidth * columnCount + (columnCount - 1) * 2 > contentWidth) columnCount = 1;
+        if (columnCount == 1) columnWidth = contentWidth;
         List<List<StyledLine>> columnLines = new ArrayList<>();
         for (int i = 0; i < columnCount; i++) columnLines.add(new ArrayList<>());
         int[] heights = new int[columnCount];
-        var starts = new ArrayList<Integer>();
+        var sectionShapes = new ArrayList<int[]>();
         for (Section value : sections) {
             int target = 0;
             for (int i = 1; i < columnCount; i++) if (heights[i] < heights[target]) target = i;
             if (heights[target] > 0) { columnLines.get(target).add(StyledLine.empty()); heights[target]++; }
-            starts.add(heights[target]);
             var lines = renderSection(value, context, columnWidth, value.selected());
+            sectionShapes.add(new int[]{target, lines.size()});
             columnLines.get(target).addAll(lines);
             heights[target] += lines.size();
         }
-        sectionStarts = List.copyOf(starts);
         if (model.kind() == CommandPanelModel.Kind.MCP && model.services().isEmpty()) {
             columnLines.get(0).add(StyledLine.of(DisplayWidth.ellipsize(model.emptyText(), columnWidth),
                     context.theme().style("muted")));
         }
         int bodySize = 0;
         for (var column : columnLines) bodySize = Math.max(bodySize, column.size());
+        // 高度紧张时先去掉分组间的纯装饰空行，再滚动正文；标题/底边/侧边不截断。
+        while (bodySize > bodyRows && removeDecorativeBlank(columnLines)) {
+            bodySize = 0;
+            for (var column : columnLines) bodySize = Math.max(bodySize, column.size());
+        }
+        // 去掉装饰空行后按原分组顺序重算 Tab 起点，不能沿用删除前的行号。
+        var starts = new ArrayList<Integer>();
+        int[] rebuilt = new int[columnCount];
+        for (int[] shape : sectionShapes) {
+            starts.add(rebuilt[shape[0]]);
+            rebuilt[shape[0]] += shape[1];
+        }
+        sectionStarts = List.copyOf(starts);
         lastBodySize = bodySize;
         lastBodyRows = bodyRows;
-        int maxScroll = Math.max(0, bodySize - bodyRows);
-        scroll = Math.min(scroll, maxScroll);
-        var body = new ArrayList<StyledLine>();
+        scroll = Math.min(scroll, Math.max(0, bodySize - bodyRows));
+
+        var out = new ArrayList<StyledLine>();
+        out.add(topBorder(title, columns, context, padding));
         for (int row = scroll; row < Math.min(bodySize, scroll + bodyRows); row++) {
             var spans = new ArrayList<Span>();
+            spans.add(new Span("│" + " ".repeat(padding), context.theme().style("border"), null));
             for (int i = 0; i < columnLines.size(); i++) {
-                if (i > 0) spans.add(new Span("  ", Style.PLAIN, null));
+                if (i > 0) spans.add(new Span("  ", panel.isPlain() ? Style.PLAIN : panel, null));
                 StyledLine line = row < columnLines.get(i).size() ? columnLines.get(i).get(row) : StyledLine.empty();
-                spans.addAll(line.padTo(columnWidth, Style.PLAIN).spans());
+                spans.addAll(line.padTo(columnWidth, panel.isPlain() ? Style.PLAIN : panel).crop(columnWidth).spans());
             }
-            body.add(new StyledLine(spans).crop(columns));
+            // contentWidth 已扣掉左右边框与 padding；这里只补右 padding 和右边界。
+            spans.add(new Span(" ".repeat(padding) + "│", context.theme().style("border"), null));
+            out.add(panelLine(spans, columns, context));
         }
-        var out = new ArrayList<StyledLine>();
-        out.add(borderLine('┌', title, columns, context));
-        out.addAll(body);
-        if (footer) out.add(StyledLine.of(DisplayWidth.ellipsize(hint(), columns), context.theme().style("dim")));
-        out.add(borderLine('└', "", columns, context));
+        if (footer) {
+            var spans = new ArrayList<Span>();
+            spans.add(new Span("│" + " ".repeat(padding), context.theme().style("border"), null));
+            String hint = DisplayWidth.ellipsize(hint(), contentWidth);
+            spans.add(new Span(hint + " ".repeat(Math.max(0, contentWidth - DisplayWidth.width(hint))),
+                    context.theme().style("dim"), null));
+            spans.add(new Span(" ".repeat(padding) + "│", context.theme().style("border"), null));
+            out.add(panelLine(spans, columns, context));
+        }
+        out.add(bottomBorder(columns, context, padding));
         if (out.size() > budget) out = new ArrayList<>(out.subList(0, budget));
         return out;
+    }
+
+    /** 去掉一个装饰空行；返回是否发生变化。 */
+    private static boolean removeDecorativeBlank(List<List<StyledLine>> columns) {
+        for (List<StyledLine> column : columns) {
+            for (int i = column.size() - 1; i >= 0; i--) {
+                if (column.get(i).isBlank()) { column.remove(i); return true; }
+            }
+        }
+        return false;
+    }
+
+    /** 给整行所有 Span 叠加面板背景，并补齐到恰好 width；保持前景/粗体/链接。 */
+    private static StyledLine panelLine(List<Span> spans, int width, RenderContext context) {
+        Style panel = context.theme().background("panelBg");
+        var result = new ArrayList<Span>();
+        for (Span span : spans)
+            result.add(new Span(span.text(), panel.isPlain() ? span.style() : span.style().withBg(panel.bg()), span.link()));
+        StyledLine line = new StyledLine(result);
+        return line.width() < width ? line.padTo(width, panel.isPlain() ? Style.PLAIN : panel) : line.crop(width);
+    }
+
+    /** 顶边：标题嵌入边框；边框普通字重，标题 accent+bold；总宽恰为 columns。 */
+    private static StyledLine topBorder(String title, int columns, RenderContext context, int padding) {
+        String shown = DisplayWidth.ellipsize(title, Math.max(1, columns - 5));
+        int fill = Math.max(0, columns - DisplayWidth.width(shown) - 5);
+        var spans = new ArrayList<Span>();
+        Style border = context.theme().style("border");
+        Style titleStyle = context.theme().style("accent");
+        if (context.theme().enabled()) titleStyle = titleStyle.withBold(true);
+        spans.add(new Span("┌─ ", border, null));
+        spans.add(new Span(shown, titleStyle, null));
+        spans.add(new Span(" " + "─".repeat(fill) + "┐", border, null));
+        return panelLine(spans, columns, context);
+    }
+
+    private static StyledLine bottomBorder(int columns, RenderContext context, int padding) {
+        return panelLine(List.of(new Span("└" + "─".repeat(Math.max(0, columns - 2)) + "┘",
+                context.theme().style("border"), null)), columns, context);
     }
 
     private String hint() {
@@ -149,25 +216,10 @@ public final class CommandPanelView implements Component {
         };
     }
 
-    private StyledLine borderLine(char left, String label, int columns, RenderContext context) {
-        int fill = Math.max(0, columns - 2);
-        String line;
-        if (left == '┌' && !label.isBlank()) {
-            String shown = DisplayWidth.ellipsize(label, Math.max(1, columns - 5));
-            int used = DisplayWidth.width(shown);
-            // 1(┌) + 2("─ ") + label + 1(空格) + fill + 1(┐) = columns。
-            fill = Math.max(0, columns - used - 5);
-            line = "┌─ " + shown + " " + "─".repeat(fill) + "┐";
-        } else {
-            line = left + "─".repeat(fill) + (left == '┌' ? '┐' : '┘');
-        }
-        return StyledLine.of(DisplayWidth.take(line, columns), context.theme().style("borderMuted"));
-    }
-
     private record Section(String title, List<CommandPanelModel.Entry> entries, List<CommandPanelModel.Field> fields,
             boolean selected) { }
 
-    private List<Section> buildSections(RenderContext context, int columns) {
+    private List<Section> buildSections(int columns) {
         var sections = new ArrayList<Section>();
         if (model.kind() == CommandPanelModel.Kind.MCP) {
             var services = new ArrayList<CommandPanelModel.Entry>();

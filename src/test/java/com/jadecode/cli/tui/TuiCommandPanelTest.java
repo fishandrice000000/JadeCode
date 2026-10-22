@@ -79,13 +79,13 @@ class TuiCommandPanelTest {
         String model = text(state.commandPanel.render(new RenderContext(100, 30, theme), 100, 24));
         assertTrue(model.contains("Context window") && model.contains("200000"), model);
         assertTrue(model.contains("Max input") && model.contains("180000"), model);
-        assertTrue(model.contains("Model switching") && (model.contains("unavai") || model.contains("unavailable")), model);
+        assertTrue(model.contains("Model switching") && (model.contains("able in this build") || model.contains("unavailable")), model);
         assertTrue(model.contains("No context/input/output limits") == false, model);
         controller.accept(new UiEvent.Input(key("escape")));
         assertTrue(controller.submit("/session"));
         String session = text(state.commandPanel.render(new RenderContext(100, 30, theme), 100, 24));
         assertTrue(session.contains("Actual title"), session);
-        assertTrue(session.replaceAll("\\s+", "").contains("11111111-1111-1111-1111-111111111111"), session);
+        assertTrue(session.replaceAll("[\\s│]+", "").contains("11111111-1111-1111-1111-111111111111"), session);
         assertTrue(session.contains("By actor") && session.contains("leader"), session);
         assertTrue(session.contains("Missing usage reports") && session.contains("1"), session);
     }
@@ -137,6 +137,48 @@ class TuiCommandPanelTest {
         assertEquals("KEEP_DRAFT", editor.text());
     }
 
+    @Test void panelHasClosedBordersPaddingAndOpaqueBackground(@TempDir Path dir) {
+        var state = stateWithSession();
+        var controller = controller(state, dir);
+        assertTrue(controller.submit("/hotkeys"));
+        var panelTheme = new ThemeManager("dark", null, true, "light", "dark").preview();
+        var lines = state.commandPanel.render(new RenderContext(80, 24, panelTheme), 80, 24);
+        assertTrue(lines.stream().allMatch(line -> line.width() == 80), "every panel row must be exactly W columns");
+        assertTrue(lines.getFirst().text().startsWith("┌") && lines.getFirst().text().endsWith("┐"),
+                lines.getFirst().text());
+        assertTrue(lines.getLast().text().startsWith("└") && lines.getLast().text().endsWith("┘"),
+                lines.getLast().text());
+        var background = panelTheme.color("panelBg");
+        assertTrue(lines.stream().flatMap(line -> line.spans().stream())
+                .allMatch(span -> span.style().bg().equals(background)), "all spans, padding and blank rows share panelBg");
+        var title = lines.getFirst().spans().stream().filter(span -> span.text().contains("Keys and commands"))
+                .findFirst().orElseThrow();
+        assertTrue(title.style().bold(), "embedded title must be bold");
+        assertTrue(title.style().fg().equals(panelTheme.style("accent").fg()), "embedded title must use accent");
+        var border = lines.getFirst().spans().getFirst();
+        assertFalse(border.style().bold(), "border must stay normal weight");
+        assertTrue(lines.get(1).text().startsWith("│  ") && lines.get(1).text().endsWith("  │"),
+                "body rows need two-column padding on both sides: " + lines.get(1).text());
+        // 窄屏缩减 padding 但仍保留闭合边框与可达提示。
+        var narrow = state.commandPanel.render(new RenderContext(40, 12, panelTheme), 40, 11);
+        assertTrue(narrow.stream().allMatch(line -> line.width() == 40));
+        assertTrue(narrow.getFirst().text().startsWith("┌") && narrow.getFirst().text().endsWith("┐"));
+        assertTrue(narrow.getLast().text().startsWith("└") && narrow.getLast().text().endsWith("┘"));
+    }
+
+    @Test void noColorPanelKeepsBordersWithoutAttributes(@TempDir Path dir) {
+        var state = stateWithSession();
+        var controller = controller(state, dir);
+        assertTrue(controller.submit("/hotkeys"));
+        var base = new ThemeManager("dark", null, true, "light", "dark").preview();
+        var plain = new Theme(base.name(), base.appearance(), base.colors(), false, base.revision());
+        var lines = state.commandPanel.render(new RenderContext(80, 24, plain), 80, 20);
+        assertTrue(lines.getFirst().text().startsWith("┌") && lines.getFirst().text().endsWith("┐"));
+        assertTrue(lines.getLast().text().startsWith("└") && lines.getLast().text().endsWith("┘"));
+        assertTrue(lines.stream().flatMap(line -> line.spans().stream())
+                .allMatch(span -> span.style().isPlain()), "NO_COLOR must not emit font/color attributes");
+    }
+
     @Test void approvalArrivalClosesPanelAndMouseDoesNotPenetrate(@TempDir Path dir) {
         var state = stateWithSession();
         var controller = controller(state, dir);
@@ -165,7 +207,7 @@ class TuiCommandPanelTest {
         String all = text(lines);
         assertTrue(all.contains("bad name`x") || all.contains("badname`x") || all.contains("bad"), all);
         assertTrue(lines.stream().noneMatch(line -> line.text().contains("\n")), "external control characters must be sanitized");
-        assertTrue(all.contains("connected; no tools") && all.contains("advertis"), all);
+        assertTrue(all.contains("connected; no tools") && all.contains("advert"), all);
         assertTrue(all.contains("off"), all);
     }
 }
