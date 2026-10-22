@@ -10,6 +10,7 @@ import com.jadecode.cli.tui.model.TranscriptModel;
 import com.jadecode.cli.tui.model.ToolDisplayState;
 import com.jadecode.execution.ExecutionNotice;
 import com.jadecode.tui.components.Editor;
+import com.jadecode.cli.tui.view.CommandPanelView;
 import com.jadecode.tui.components.Input;
 import com.jadecode.tui.components.SelectList;
 
@@ -41,6 +42,8 @@ public final class TuiState {
     public com.jadecode.cli.tui.SessionPicker sessionPicker;
     public SelectList commands;
     public boolean commandsDismissed = true;
+    /** 活动命令信息弹窗；只属于 UI 显示层，不写入 Transcript/history。 */
+    public CommandPanelView commandPanel;
 
     public long generation;
     public String sessionId = "";
@@ -117,6 +120,7 @@ public final class TuiState {
     public void installGeneration(long value) {
         generation = value; transcript.reset(value); actors.clear(); background.clear();
         turns.clear(); completedTurnTimes.clear(); approvals.clear(); approval.clear();
+        commandPanel = null;
         clearFlash();
         pending = ""; pendingKind = ""; loadingResume = false;
     }

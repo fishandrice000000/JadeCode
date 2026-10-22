@@ -226,7 +226,8 @@ public final class TuiController {
             case UiEvent.ApprovalRequested request -> {
                 if (state.closing) approvals.answer(request.id(), ApprovalAnswer.DENY);
                 else {
-                    // 审批优先于搜索/菜单：关闭局部搜索，避免按键继续被 Overlay 消费。
+                    // 审批优先于信息弹窗/搜索/菜单：先撤下 modal，避免按键继续被它消费。
+                    closeCommandPanel();
                     if (searchOpen) { search.close(); searchOpen = false; }
                     if (state.approvals.isEmpty()) {
                         var snapshot = new UiEvent.ApprovalRequested(request.id(), request.actor(), request.tool(),
@@ -283,6 +284,8 @@ public final class TuiController {
         }
         if (event.kind() != InputEvent.Kind.KEY && event.kind() != InputEvent.Kind.TEXT
                 && event.kind() != InputEvent.Kind.PASTE) return;
+        // 信息弹窗是前台 modal：审批未到时先消费导航/滚动/关闭，不落到编辑器、旧选区或退出逻辑。
+        if (state.commandPanel != null && state.approvals.isEmpty()) { commandPanelInput(event); return; }
         if (event.actionableKey()) {
             KeyChord key = event.key();
             // 选择器的 Ctrl+C 是取消选择，不是全局清草稿；与 KeyBindings 的 select.cancel 对齐。
@@ -394,6 +397,11 @@ public final class TuiController {
         if (!fullscreen) return;
         InputEvent.Mouse mouse = event.mouse();
         int row = mouse.y(), column = mouse.x();
+        // 命令弹窗 modal：滚轮只滚动前台页面，点击/右键不穿透到底层聊天或审批。
+        if (state.commandPanel != null && state.approvals.isEmpty()) {
+            if (mouse.wheel() && mouse.wheelDirection() != 0) state.commandPanel.scrollBy(mouse.wheelDirection());
+            return;
+        }
         if (mouse.wheel()) {
             if (state.selector != null && mouse.wheelDirection() != 0) {
                 state.selector.move(mouse.wheelDirection());
@@ -605,6 +613,42 @@ public final class TuiController {
                 var next = state.approvals.getFirst();
                 state.approval.show(next, state.inputSequence, state.terminalEpoch);
             } else state.hint = "";
+        }
+    }
+
+    /** 打开命令信息弹窗；不写 Transcript/history，不创建第二套事件循环。 */
+    private void openCommandPanel(com.jadecode.cli.tui.model.CommandPanelModel model) {
+        state.commandPanel = new com.jadecode.cli.tui.view.CommandPanelView(model);
+        state.hint = "";
+    }
+
+    /** 关闭命令信息弹窗；Esc/审批到达/会话切换/关闭路径复用。 */
+    private void closeCommandPanel() {
+        state.commandPanel = null;
+    }
+
+    /**
+     * 信息弹窗输入：只处理前台页面的滚动/分组/服务选择与关闭；其它输入（含 Ctrl+C/Ctrl+X、
+     * 字符、粘贴、旧选区复制）一律消费，不能穿透到 Editor/退出逻辑。
+     */
+    private void commandPanelInput(InputEvent event) {
+        var panel = state.commandPanel;
+        if (panel == null) return;
+        if (event.kind() == InputEvent.Kind.TEXT || event.kind() == InputEvent.Kind.PASTE) return;
+        if (event.kind() != InputEvent.Kind.KEY || !event.actionableKey()) return;
+        KeyChord key = event.key();
+        switch (key.key()) {
+            case "escape" -> { closeCommandPanel(); return; }
+            case "up" -> { panel.moveService(-1); return; }
+            case "down" -> { panel.moveService(1); return; }
+            case "pageup" -> { panel.page(-1, Math.max(1, viewportHeight - 2)); return; }
+            case "pagedown" -> { panel.page(1, Math.max(1, viewportHeight - 2)); return; }
+            case "home" -> { panel.top(); return; }
+            case "end" -> { panel.end(); return; }
+            case "tab" -> { panel.moveSection(key.has(KeyChord.Modifier.SHIFT) ? -1 : 1); return; }
+            case "left" -> { panel.moveService(-1); return; }
+            case "right" -> { panel.moveService(1); return; }
+            default -> { }
         }
     }
 
@@ -1064,13 +1108,15 @@ public final class TuiController {
                 saveLocal("Rename", id -> host.rename(id, arguments), "Session renamed: " + arguments); return true;
             }
             case "/settings" -> { openSettingsSelector(); return true; }
-            case "/session" -> { addNotice("Session", "Session", sessionInfo.markdown(state)); return true; }
-            case "/hotkeys" -> { addNotice("Hotkeys", "Hotkeys", hotkeys.markdown(keys, catalog.commands())); return true; }
+            case "/session" -> { openCommandPanel(sessionInfo.panelSession(state, state.generation,
+                    state.transcript.revision())); return true; }
+            case "/hotkeys" -> { openCommandPanel(hotkeys.panel(keys, catalog.commands(), state.generation,
+                    state.transcript.revision())); return true; }
             case "/copy" -> { copyLastReply(); return true; }
             case "/model" -> {
                 // UI 测试/无 Host 的只读展示仍可工作；生产装配中 Host 存在时刷新真实快照。
                 if (host != null) refreshSession();
-                addNotice("System", "Model", sessionInfo.modelMarkdown(state));
+                openCommandPanel(sessionInfo.panelModel(state, state.generation, state.transcript.revision()));
                 return true;
             }
             case "/thinking" -> {
@@ -1097,14 +1143,10 @@ public final class TuiController {
                 }
                 return true;
             }
-            case "/mcp" -> { addNotice("MCP", "MCP", mcpView.markdown(state.mcpServers)); return true; }
+            case "/mcp" -> { openCommandPanel(mcpView.panel(state.mcpServers, state.generation,
+                    state.transcript.revision())); return true; }
             default -> { state.hint = "Unknown command: " + name; return false; }
         }
-    }
-
-    /** 命令帮助以语义 Markdown 存入 NOTICE，由 MessageCard/固定引擎按当前主题/宽度重排。 */
-    private void addNotice(String actor, String title, String markdown) {
-        state.transcript.addNotice(actor, title, markdown == null ? "" : markdown, false);
     }
 
     /** 打开会话清单；只读清单，不解析每份日志。 */
@@ -1144,7 +1186,7 @@ public final class TuiController {
     /** 已提交本地写入先完成，再关闭业务；审批先拒绝。 */
     private void close() {
         if (state.closing) return;
-        state.closing = true; approvals.close();
+        state.closing = true; closeCommandPanel(); approvals.close();
         localWrites.whenComplete((value, failure) -> shutdown.run());
     }
 

@@ -90,5 +90,80 @@ class TuiPtySmokeTest {
         return value.length() <= 4000 ? value : value.substring(value.length() - 4000);
     }
 
+    @Test void realPtyCommandPanelOpensInFullscreenWithoutTranscript(@TempDir Path dir) throws Exception {
+        Path script = Path.of("/usr/bin/script");
+        assumeTrue(Files.isExecutable(script), "util-linux script is required for the PTY smoke test");
+        String classpath = System.getProperty("surefire.test.class.path", System.getProperty("java.class.path"));
+        String java = Path.of(System.getProperty("java.home"), "bin", "java").toString();
+        Path preferences = dir.resolve("config/config.json");
+        String command = java + " -cp " + shellQuote(classpath) + " " + TuiPtyDriver.class.getName()
+                + " " + shellQuote(preferences.toString());
+        ProcessBuilder builder = new ProcessBuilder(script.toString(), "-q", "-f", "-e", "-c", command, "/dev/null");
+        builder.environment().put("TERM", "xterm-256color");
+        builder.environment().remove("NO_COLOR");
+        Process process = builder.start();
+        var captured = new ByteArrayOutputStream();
+        Thread reader = Thread.ofVirtual().start(() -> {
+            try (InputStream input = process.getInputStream()) { input.transferTo(captured); }
+            catch (Exception ignored) { }
+        });
+        Thread.sleep(2500);
+        process.getOutputStream().write("/hotkeys\r".getBytes(StandardCharsets.UTF_8));
+        process.getOutputStream().flush();
+        Thread.sleep(1500);
+        process.getOutputStream().write("\u001b".getBytes(StandardCharsets.UTF_8));
+        process.getOutputStream().flush();
+        Thread.sleep(500);
+        process.getOutputStream().write("/quit\r".getBytes(StandardCharsets.UTF_8));
+        process.getOutputStream().flush();
+        boolean exited = process.waitFor(15, TimeUnit.SECONDS);
+        if (!exited) process.destroyForcibly();
+        reader.join(2000);
+        String output = captured.toString(StandardCharsets.UTF_8);
+        assertTrue(exited, "TUI did not exit after closing the panel; output=" + output);
+        assertEquals(0, process.exitValue(), output);
+        assertTrue(output.contains("Keys and commands"), "command panel title missing: " + output);
+        assertTrue(output.contains("Global") || output.contains("ctrl+x"), "command panel groups missing: " + output);
+    }
+
+    @Test void realPtyCommandPanelOpensInRegularAndRestoresDocument(@TempDir Path dir) throws Exception {
+        Path script = Path.of("/usr/bin/script");
+        assumeTrue(Files.isExecutable(script), "util-linux script is required for the PTY smoke test");
+        String classpath = System.getProperty("surefire.test.class.path", System.getProperty("java.class.path"));
+        String java = Path.of(System.getProperty("java.home"), "bin", "java").toString();
+        Path preferences = dir.resolve("config/config.json");
+        String command = java + " -cp " + shellQuote(classpath) + " " + TuiRegularPtyDriver.class.getName()
+                + " " + shellQuote(preferences.toString());
+        ProcessBuilder builder = new ProcessBuilder(script.toString(), "-q", "-f", "-e", "-c", command, "/dev/null");
+        builder.environment().put("TERM", "xterm-256color");
+        builder.environment().remove("NO_COLOR");
+        Process process = builder.start();
+        var captured = new ByteArrayOutputStream();
+        Thread reader = Thread.ofVirtual().start(() -> {
+            try (InputStream input = process.getInputStream()) { input.transferTo(captured); }
+            catch (Exception ignored) { }
+        });
+        Thread.sleep(2500);
+        process.getOutputStream().write("regular output\r".getBytes(StandardCharsets.UTF_8));
+        process.getOutputStream().flush();
+        Thread.sleep(2500);
+        process.getOutputStream().write("/hotkeys\r".getBytes(StandardCharsets.UTF_8));
+        process.getOutputStream().flush();
+        Thread.sleep(1500);
+        process.getOutputStream().write("\u001b".getBytes(StandardCharsets.UTF_8));
+        process.getOutputStream().flush();
+        Thread.sleep(500);
+        process.getOutputStream().write("/quit\r".getBytes(StandardCharsets.UTF_8));
+        process.getOutputStream().flush();
+        boolean exited = process.waitFor(15, TimeUnit.SECONDS);
+        if (!exited) process.destroyForcibly();
+        reader.join(2000);
+        String output = captured.toString(StandardCharsets.UTF_8);
+        assertTrue(exited, "regular TUI did not exit; output tail=" + tail(output));
+        assertEquals(0, process.exitValue(), output);
+        assertTrue(output.contains("Keys and commands"), "regular panel title missing: " + tail(output));
+        assertTrue(output.contains("line-79"), "regular document history must remain after closing the panel: " + tail(output));
+    }
+
     private static String shellQuote(String value) { return "'" + value.replace("'", "'\\''") + "'"; }
 }

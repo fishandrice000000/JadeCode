@@ -84,6 +84,25 @@ class TuiRendererTest {
         renderer.close();
     }
 
+    @Test void regularScreenLayerDrawsOverVisibleRowsAndRestoresThem() throws Exception {
+        var renderer = new RegularRenderer(port, true, true, true);
+        var lines = new java.util.ArrayList<StyledLine>();
+        for (int i = 0; i < 30; i++) lines.add(StyledLine.of("doc-" + i, Style.PLAIN));
+        var layerLines = java.util.List.of(StyledLine.of("PANEL-A", Style.PLAIN), StyledLine.of("PANEL-B", Style.PLAIN));
+        var layer = new Frame.ScreenLayer(new com.jadecode.tui.geometry.Rect(2, 3, 20, 2),
+                layerLines, Frame.NO_CURSOR, java.util.List.of(), 1);
+        var withLayer = new Frame(1, 1, 1, lines, Frame.NO_CURSOR, java.util.List.of(), null, layer);
+        renderer.present(withLayer, new RenderContext(40, 10, theme));
+        assertTrue(output.toString().contains("PANEL-A"), output.toString());
+        assertTrue(output.toString().contains("doc"), "layer must preserve document content outside its rectangle");
+        output.getBuffer().setLength(0);
+        var withoutLayer = new Frame(2, 1, 2, lines, Frame.NO_CURSOR, java.util.List.of());
+        renderer.present(withoutLayer, new RenderContext(40, 10, theme));
+        assertFalse(output.toString().contains("PANEL-A"), "layer must be removed from the visible area");
+        assertTrue(output.toString().contains("doc-24") || output.toString().contains("doc-25"), output.toString());
+        renderer.close();
+    }
+
     @Test void regularAppendsWithoutFullClearWhenTailChanges() throws Exception {
         var renderer = new RegularRenderer(port, true, true, true);
         renderer.present(frame(1, "one"), new RenderContext(40, 10, theme));

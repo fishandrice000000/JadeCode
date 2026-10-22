@@ -36,6 +36,8 @@ public final class RegularRenderer implements ScreenRenderer {
     /** 上一次画在屏幕层的 flash；只用于到期/变化时恢复该行，不属于 previous 文档。 */
     private Frame.Flash lastFlash;
     private int lastFlashLine = -1;
+    /** 上一次屏幕层（命令弹窗等）；关闭/移动/resize 时恢复覆盖处文档行。 */
+    private Frame.ScreenLayer lastLayer;
 
     /**
      * @param port 唯一终端输出/尺寸端口
@@ -78,9 +80,11 @@ public final class RegularRenderer implements ScreenRenderer {
             }
             // 首帧不清屏：从当前 shell 光标处直接输出；viewportTop 为 0 表示可寻址区从这里开始。
             viewportTop = 0; hardwareRow = 0; maxLinesRendered = 0; firstChanged = 0;
-        } else if (lastFlash != null) {
-            // flash 不是文档行的一部分；新帧没有/改变它时先恢复旧行，避免残留到历史。
-            paintDocumentLine(lastFlashLine, painted, context.width());
+            lastLayer = null;
+        } else {
+            // 屏幕层/flash 不是文档行的一部分；新帧没有/改变它们时先恢复旧行，避免残留。
+            if (lastLayer != null) restoreLayer(painted, context.width());
+            if (lastFlash != null) paintDocumentLine(lastFlashLine, painted, context.width());
         }
         int start = Math.min(firstChanged, painted.size() - 1);
         if (start <= 0) hardwareRow = 0;
@@ -107,12 +111,16 @@ public final class RegularRenderer implements ScreenRenderer {
         } else {
             lastFlash = null; lastFlashLine = -1;
         }
+        // 命令弹窗屏幕层：在基础文档/flash 之后按当前可见区叠画；关闭时已恢复底层行。
+        if (frame.layer() != null) drawLayer(frame.layer(), painted, context.width(), frameHeight);
+        else lastLayer = null;
         // 光标：regular 只显示 Editor/Approval 的真实焦点；超出可见区时夹在可寻址区底部。
         Frame.Cursor cursor = frame.cursor();
         int targetRow = Math.max(viewportTop, Math.min(painted.size() - 1, cursor.row()));
         moveTo(targetRow);
         writer.print("\u001b[" + (Math.max(0, cursor.column()) + 1) + "G");
-        writer.print(cursor.visible() && hardwareCursor ? AnsiEncoder.showCursor() : AnsiEncoder.hideCursor());
+        writer.print(cursor.visible() && hardwareCursor && frame.layer() == null
+                ? AnsiEncoder.showCursor() : AnsiEncoder.hideCursor());
         writer.print(AnsiEncoder.syncEnd());
         writer.flush();
         if (port.outputFailed()) {
@@ -136,6 +144,62 @@ public final class RegularRenderer implements ScreenRenderer {
         port.writer().print(AnsiEncoder.clearLine());
         port.writer().print(AnsiEncoder.encode(painted.get(row).crop(Math.max(0, width)),
                 trueColor, port.colorsEnabled(), hyperlinks));
+    }
+
+    /** 恢复旧屏幕层覆盖的文档行；只处理仍可见的行。 */
+    private void restoreLayer(List<StyledLine> painted, int width) {
+        Frame.ScreenLayer layer = lastLayer;
+        if (layer == null) return;
+        for (int row = 0; row < layer.rect().height(); row++) {
+            int documentRow = viewportTop + layer.rect().y() + row;
+            paintDocumentLine(documentRow, painted, width);
+        }
+        lastLayer = null;
+    }
+
+    /** 在当前可见文档行上叠画屏幕层；层关闭/移动后 restoreLayer 会重画底层。 */
+    private void drawLayer(Frame.ScreenLayer layer, List<StyledLine> painted, int width, int frameHeight) {
+        if (layer.rect().isEmpty()) { lastLayer = null; return; }
+        for (int row = 0; row < layer.rect().height(); row++) {
+            int screenRow = layer.rect().y() + row;
+            int documentRow = viewportTop + screenRow;
+            if (documentRow < 0 || documentRow >= painted.size()) continue;
+            if (screenRow < 0 || screenRow >= Math.max(1, frameHeight)) continue;
+            StyledLine line = row < layer.lines().size() ? layer.lines().get(row) : StyledLine.empty();
+            StyledLine base = documentRow < painted.size() ? painted.get(documentRow) : StyledLine.empty();
+            StyledLine composed = overlayRow(base, line, layer.rect().x(), layer.rect().width(), width);
+            moveTo(documentRow);
+            port.writer().print(AnsiEncoder.clearLine());
+            port.writer().print(AnsiEncoder.encode(composed, trueColor, port.colorsEnabled(), hyperlinks));
+        }
+        lastLayer = layer;
+    }
+
+    /** 把屏幕层行覆盖到文档行矩形内，保留矩形外底层内容。 */
+    private static StyledLine overlayRow(StyledLine base, StyledLine overlay, int x, int width, int columns) {
+        var spans = new java.util.ArrayList<Span>();
+        spans.addAll(base.crop(x).spans());
+        spans.addAll(overlay.padTo(width, Style.PLAIN).crop(width).spans());
+        if (x + width < columns) spans.addAll(dropColumns(base, x + width).spans());
+        return new StyledLine(spans, base.annotation());
+    }
+
+    /** 丢弃前 columns 列后的剩余内容，保留 overlay 右侧底层行。 */
+    private static StyledLine dropColumns(StyledLine line, int columns) {
+        if (columns <= 0) return line;
+        var spans = new java.util.ArrayList<Span>();
+        int skip = columns;
+        for (Span span : line.spans()) {
+            String text = span.text();
+            int spanWidth = DisplayWidth.width(text);
+            if (skip > 0) {
+                if (spanWidth <= skip) { skip -= spanWidth; continue; }
+                text = text.substring(DisplayWidth.offsetAtColumn(text, skip));
+                skip = 0;
+            }
+            spans.add(span.withText(text));
+        }
+        return new StyledLine(spans, line.annotation());
     }
 
     /** 把短提示右对齐叠加到一行副本；不修改传入行，也不改文档缓存。 */
@@ -177,6 +241,7 @@ public final class RegularRenderer implements ScreenRenderer {
         // 主屏无法擦掉 shell 已写入的历史；丢弃旧帧只保证下次重新输出当前内容。
         previous = List.of();
         lastFlash = null; lastFlashLine = -1;
+        lastLayer = null;
     }
 
     @Override public PresentedFrame presented() { return actionsValid ? presented : null; }
