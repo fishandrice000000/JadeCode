@@ -12,8 +12,9 @@ import java.util.function.Consumer;
  * 主动复制/读取文字剪贴板：优先桌面命令，失败回退 OSC52（只能发送请求，不能确认客户端收到）。
  *
  * <p>不自动读取敏感剪贴板；读取只在用户显式 Ctrl+V/图片粘贴时发生。命令用 ProcessBuilder
- * 参数执行，不经过 shell 插值。OSC52 输出成功只表示请求已写出，界面必须用真实反馈区分
- * desktop copy 与 remote request。图片不走本类，由 ImageClipboard 读取并保存临时文件。</p>
+ * 参数执行，不经过 shell 插值。OSC52 输出成功只表示请求已写出，不表示远端客户端已接收；
+ * 按 S32，正常 UI 对 DESKTOP/OSC52_SENT 都只显示短暂 Copied!，但内部枚举不能混淆，
+ * 失败仍必须如实返回 FAILED。图片不走本类，由 ImageClipboard 读取并保存临时文件。</p>
  */
 public final class ClipboardService {
     /** 复制结果；OSC52_SENT 不代表远端已接收。 */

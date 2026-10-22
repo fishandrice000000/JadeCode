@@ -103,6 +103,23 @@ public final class TuiController {
     /** @return 当前是否有屏幕级选区。 */
     public boolean selectionActive() { return fullscreen && screenSelection.active(); }
 
+    /**
+     * 当前前台是否可安全复制选区：必须全屏、有非空选区，且没有审批/选择器/搜索等
+     * 覆盖层。modal 下面的旧选区、resize 或 epoch 变化后的选区都不能被 Ctrl+C/右键复制。
+     * @return 可用于显式复制的选区是否存在
+     */
+    public boolean copyableSelectionActive() {
+        return selectionActive() && state.approvals.isEmpty() && !state.approval.active()
+                && state.selector == null && !searchOpen && !selectedText().isBlank();
+    }
+
+    /** resize/模式/会话切换后清除选区与拖动手势，避免复制旧坐标文本。 */
+    public void invalidateSelection() {
+        screenSelection.clear();
+        selectionDragged = false;
+        selectionPressActive = false;
+    }
+
     /** @return 当前屏幕级选区纯文字；无选区/无帧为空。 */
     public String selectedText() {
         if (!selectionActive() || lastFrame == null) return "";
@@ -164,6 +181,7 @@ public final class TuiController {
             case UiEvent.SessionOpened opened -> {
                 var session = opened.opened();
                 state.installGeneration(session.generation());
+                invalidateSelection();
                 state.sessionId = session.restored().metadata().id();
                 HistoryViewMapper.restore(state, session.restored());
                 editor.setGeneration(state.generation);
@@ -250,7 +268,7 @@ public final class TuiController {
     private void input(InputEvent event) {
         if (state.closing) return;
         switch (event.kind()) {
-            case RESIZE -> { invalidateActions(); editor.setGeneration(state.generation); return; }
+            case RESIZE -> { invalidateActions(); invalidateSelection(); editor.setGeneration(state.generation); return; }
             case EOF -> { close(); return; }
             case FAILURE -> { state.transcript.addNotice("System", "Terminal", event.text(), true); close(); return; }
             case REPLY -> { return; }
@@ -267,7 +285,11 @@ public final class TuiController {
             }
             // 全局会话动作：关闭/退出/暂退/剪贴板/展开。审批期间也不允许 Ctrl+C 清掉参数草稿。
             if (matches("app.exit", event) && state.approvals.isEmpty() && state.selector == null && editor.text().isEmpty()) { close(); return; }
-            if (key.key().equals("c") && key.has(KeyChord.Modifier.CTRL)) { ctrlC(event); return; }
+            if (key.key().equals("c") && key.has(KeyChord.Modifier.CTRL)) {
+                // S31：有效选区优先复制，且不计入连续 Ctrl+C 退出窗口；无选区才走原清稿/退出。
+                if (copySelectionIfPresent()) return;
+                ctrlC(event); return;
+            }
             if (matches("app.suspend", event)) { terminal.suspend(); return; }
             if (matches("app.editor.external", event)) {
                 terminal.openExternalEditor(editor.expandedText(), value -> {
@@ -278,7 +300,7 @@ public final class TuiController {
                 return;
             }
             if (matches("app.clipboard.pasteImage", event)) { terminal.pasteClipboard(editor); return; }
-            if (matches("app.message.copy", event)) { copyLastReply(); return; }
+            if (matches("app.message.copy", event)) { copySelectionOrLastReply(); return; }
             if (matches("app.tools.expand", event) && state.approvals.isEmpty()) {
                 state.toolsExpanded = !state.toolsExpanded;
                 state.transcript.setToolsExpanded(state.toolsExpanded);
@@ -367,13 +389,24 @@ public final class TuiController {
         InputEvent.Mouse mouse = event.mouse();
         int row = mouse.y(), column = mouse.x();
         if (mouse.wheel()) {
-            chat.wheel(mouse.wheelDirection(), mouse.alt() ? 3 : 1);
+            // auto/固定行数与 Alt 倍速都由 ChatViewport 的同一策略计算，不能再乘一次。
+            chat.wheel(mouse.wheelDirection(), mouse.alt());
             return;
         }
         PresentedFrame frame = state.presented;
         if (frame == null || lastFrame == null) return;
+        // 右键：只在当前前台有效选区上复制一次；不重建选区、不激活链接、不答复审批，
+        // 也不回退复制最后回复。必须在通用按下/审批命中之前处理。
+        if (mouse.button() == 2) {
+            if (mouse.action() == InputEvent.Mouse.Action.PRESS && copySelectionIfPresent()) {
+                return;
+            }
+            return;
+        }
+        // 只有显式左键能进入选区/链接/审批；中键等不产生动作。
+        if (mouse.button() != 0) return;
         ActionToken hit = lastFrame.actionAt(column, row);
-        // 审批优先：按下按钮必须满足显式命中/水位/已呈现；拖动与释放绝不答复。
+        // 审批优先：按下按钮必须满足显式左键/命中/水位/已呈现；拖动与释放绝不答复。
         if (state.approval.active()) {
             if (mouse.action() == InputEvent.Mouse.Action.PRESS && hit != null && hit.isApproval()
                     && state.approval.canAnswer(event.sequence(), state.terminalEpoch, frame, hit.kind())) {
@@ -476,16 +509,33 @@ public final class TuiController {
         saveLocal("Thinking", id -> host.thinking(id, next), "Thinking level: " + next.value());
     }
 
+    /** 复制最近助手回复；/copy 动作固定走这里。 */
     private void copyLastReply() {
         String text = state.transcript.lastReplyText();
         if (text.isBlank()) { state.hint = UiMessages.COPY_EMPTY; return; }
         terminal.copy(text, true);
     }
 
-    /** Ctrl+X/菜单复制：屏幕级选区优先，否则聊天选区，最后最近助手回复。 */
+    /**
+     * 复制当前屏幕选区并保留选区/草稿/退出计时；没有可复制选区返回 false。
+     * 一次调用只发起一次复制；自动 copy-on-select 与显式复制互不叠加。
+     */
+    private boolean copySelectionIfPresent() {
+        if (!copyableSelectionActive()) return false;
+        String text = selectedText();
+        if (text.isBlank()) return false;
+        terminal.copy(text, true);
+        return true;
+    }
+
+    /**
+     * Ctrl+X/菜单复制：有效屏幕选区优先；否则聊天组件选区；最后最近助手回复。
+     * 有 modal 时不复制下面隐藏的选区，但无选区时仍允许复制最后回复。
+     */
     public void copySelectionOrLastReply() {
-        String text = selectionActive() ? selectedText()
-                : chat != null && chat.selection().active() ? chat.selection().text(chat.document())
+        if (copySelectionIfPresent()) return;
+        String text = chat != null && chat.selection().active() && state.approvals.isEmpty()
+                && state.selector == null && !searchOpen ? chat.selection().text(chat.document())
                 : state.transcript.lastReplyText();
         if (text.isBlank()) { state.hint = UiMessages.COPY_EMPTY; return; }
         terminal.copy(text, true);
@@ -601,8 +651,9 @@ public final class TuiController {
                 state.selector = null; state.selectorKind = "";
                 themes.applyPreview();
                 preferences.saveLater(Map.of("theme", selectedId), failed -> {
-                    if (failed == null) events.accept(new UiEvent.Message("System", "Theme", "Theme saved", false));
-                    else events.accept(new UiEvent.Message("System", "Warning", UiMessages.NOT_SAVED + failed.getMessage(), true));
+                    // 成功静默：主题已由预览/实际色板体现；失败仍要可见。
+                    if (failed != null) events.accept(new UiEvent.Message("System", "Warning",
+                            UiMessages.NOT_SAVED + failed.getMessage(), true));
                 });
             }
             case "Thinking" -> {
@@ -635,9 +686,10 @@ public final class TuiController {
                     state.selector = settings.list();
                     state.selector.selectId("mode");
                     terminal.setMode(mode);
+                    // 成功只由菜单当前值与实际显示体现；只有真实写盘失败才进转录。
                     preferences.saveLater(Map.of("mode", mode), failed -> {
-                        if (failed == null) events.accept(new UiEvent.Message("System", "Settings", "TUI mode: " + mode, false));
-                        else events.accept(new UiEvent.Message("System", "Warning", UiMessages.NOT_SAVED + failed.getMessage(), true));
+                        if (failed != null) events.accept(new UiEvent.Message("System", "Warning",
+                                UiMessages.NOT_SAVED + failed.getMessage(), true));
                     });
                     return;
                 }
@@ -651,7 +703,12 @@ public final class TuiController {
         }
     }
 
-    private void applySettingsPatch(Map<String, Object> patch) {
+    /**
+     * 应用已由 SettingsMenu 计算好的白名单 patch：更新即时预览/行为，并异步保存。
+     * 普通设置成功保持安静，不产生 Setting saved 转录；真实写盘失败才发 Warning。
+     * 包内可见以便用临时配置验证成功/失败路径，不绕过保存队列。
+     */
+    void applySettingsPatch(Map<String, Object> patch) {
         var updated = settings.current();
         if (patch.containsKey("thinkingVisible")) state.thinkingVisible = updated.thinkingVisible();
         if (patch.containsKey("toolsExpanded")) { state.toolsExpanded = updated.toolsExpanded();
@@ -661,12 +718,14 @@ public final class TuiController {
             catch (IllegalArgumentException ignored) { }
         }
         if (patch.containsKey("fullscreenCopyOnSelect")) chat.setCopyOnSelect(updated.fullscreenCopyOnSelect());
-        if (patch.containsKey("fullscreenWheelScrollLines")) chat.wheelLines(
-                updated.fullscreenWheelScrollLines() == 0 ? 3 : updated.fullscreenWheelScrollLines());
+        if (patch.containsKey("fullscreenWheelScrollLines")) {
+            // 0 是 auto；设置变化重置手势，不能映射成常量 3。
+            chat.setWheelScrollLines(updated.fullscreenWheelScrollLines());
+        }
         if (patch.containsKey("autocompleteMaxVisible")) editor.setCompletionMaxVisible(updated.autocompleteMaxVisible());
         preferences.saveLater(patch, failed -> {
-            if (failed == null) events.accept(new UiEvent.Message("System", "Settings", "Setting saved", false));
-            else events.accept(new UiEvent.Message("System", "Warning", UiMessages.NOT_SAVED + failed.getMessage(), true));
+            if (failed != null) events.accept(new UiEvent.Message("System", "Warning",
+                    UiMessages.NOT_SAVED + failed.getMessage(), true));
         });
     }
 

@@ -44,7 +44,9 @@ public final class UiMessages {
     public static final String MCP_READ_ONLY = "Configured MCP servers (read-only)";
     public static final String NO_MCP = "No MCP servers configured";
     public static final String COPY_EMPTY = "No assistant reply to copy";
-    public static final String COPIED = "Copied";
+    /** S32：桌面成功或 OSC52 请求已发出都显示这一正常反馈，不声明客户端已确认。 */
+    public static final String COPIED = "Copied!";
+    /** 仅供诊断/底层状态说明；不再作为每次正常 OSC52 的永久或长时提示。 */
     public static final String COPY_SENT = "Copy request sent; the terminal client did not confirm receipt";
     public static final String COPY_FAILED = "Copy failed: ";
     public static final String IMAGE_UNAVAILABLE = "No image clipboard backend available";

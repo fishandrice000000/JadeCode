@@ -38,6 +38,10 @@ class TuiScreenSelectionTest {
         return InputEvent.mouse(new InputEvent.Mouse(0, action, x, y, false, false, false), 10, 1);
     }
 
+    private static InputEvent right(InputEvent.Mouse.Action action, int x, int y) {
+        return InputEvent.mouse(new InputEvent.Mouse(2, action, x, y, false, false, false), 20, 1);
+    }
+
     @Test void draggingAcrossRowsSelectsScreenText() {
         var state = new TuiState();
         state.installGeneration(0);
@@ -90,6 +94,11 @@ class TuiScreenSelectionTest {
         controller.accept(new UiEvent.Input(mouse(InputEvent.Mouse.Action.DRAG, 2, 0)));
         controller.accept(new UiEvent.Input(mouse(InputEvent.Mouse.Action.RELEASE, 2, 0)));
         assertTrue(state.approval.active(), "drag/release must not answer an approval");
+        // 右键即使落在审批按钮上，也只能是无操作；不能批准，也不能复制 modal 下面的选区。
+        controller.accept(new UiEvent.Input(right(InputEvent.Mouse.Action.PRESS, 2, 0)));
+        controller.accept(new UiEvent.Input(right(InputEvent.Mouse.Action.RELEASE, 2, 0)));
+        assertTrue(state.approval.active(), "right click must never answer an approval");
+        assertFalse(controller.copyableSelectionActive(), "selection under an approval modal is not copyable");
         controller.accept(new UiEvent.Input(mouse(InputEvent.Mouse.Action.PRESS, 2, 0)));
         assertFalse(state.approval.active(), "explicit press on the presented button may answer");
         broker.close();

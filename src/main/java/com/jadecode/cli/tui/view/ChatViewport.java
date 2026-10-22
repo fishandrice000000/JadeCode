@@ -2,6 +2,7 @@ package com.jadecode.cli.tui.view;
 
 import java.util.ArrayList;
 import java.util.List;
+import com.jadecode.cli.tui.WheelScrollPolicy;
 import com.jadecode.tui.viewport.SelectionModel;
 import com.jadecode.tui.viewport.SearchModel;
 import com.jadecode.tui.core.RenderContext;
@@ -32,7 +33,7 @@ public final class ChatViewport {
     private Scrollbar scrollbar;
     private boolean copyOnSelect;
     private long scrollbarVisibleUntil;
-    private int wheelLines = 3;
+    private final WheelScrollPolicy wheelPolicy = new WheelScrollPolicy(0);
     /** 历史阅读锚点：顶部所属条目与条目内偏移；重排/异步结果到达时保持阅读位置。 */
     private String anchorEntry = "";
     private int anchorDelta;
@@ -62,8 +63,17 @@ public final class ChatViewport {
     /** @return 是否启用 copy-on-select。 */
     public boolean copyOnSelect() { return copyOnSelect; }
 
-    /** 设置滚轮每格行数（auto 由宿主映射）。 */
-    public void wheelLines(int value) { wheelLines = Math.max(1, value); }
+    /**
+     * 设置滚轮策略：0 为 Pi auto，其余为固定行数。设置变化会重置手势，
+     * 防止上一段滚动的间隔/余量影响新策略。
+     */
+    public void setWheelScrollLines(int storedLines) { wheelPolicy.setLines(storedLines); }
+
+    /** @return 当前存储策略（0=auto），供诊断/测试。 */
+    public int wheelScrollLines() { return wheelPolicy.storedLines(); }
+
+    /** 模式切换/恢复时清除手势，但不改当前行数设置。 */
+    public void resetWheelGesture() { wheelPolicy.resetGesture(); }
 
     /** 运行时切换滚动条策略（/settings）。 */
     public void setScrollbar(Scrollbar value) { scrollbar = value == null ? Scrollbar.AUTO : value; }
@@ -238,8 +248,24 @@ public final class ChatViewport {
     public void bottom() { scroll.bottom(lastDocument.size(), lastHeight); anchorEntry = ""; }
     public void follow() { scroll.follow(true); anchorEntry = ""; }
 
-    /** 鼠标滚轮；Alt 倍速由 controller 把倍率传给 delta。 */
-    public void wheel(int direction, int multiplier) { scrollLines(direction * wheelLines * Math.max(1, multiplier)); }
+    /**
+     * 鼠标滚轮：行数由 {@link WheelScrollPolicy} 计算，Alt 倍速在策略内只应用一次。
+     * 生产入口使用单调时钟；测试可用 {@link #wheelAt(int, boolean, long)} 固定时间。
+     */
+    public void wheel(int direction, boolean alt) {
+        wheelAt(direction, alt, System.nanoTime() / 1_000_000L);
+    }
+
+    /**
+     * 可注入时间版本的滚轮，便于验证 auto 加速、停顿与反向。
+     * @param direction -1 上、1 下
+     * @param alt 是否按住 Alt
+     * @param nowMillis 单调时间毫秒
+     */
+    public void wheelAt(int direction, boolean alt, long nowMillis) {
+        int lines = wheelPolicy.lines(direction, nowMillis, alt);
+        scrollLines(direction * lines);
+    }
 
     /** 开始选区；row 为视口内行。 */
     public void startSelection(int row, int column, int clickCount) {

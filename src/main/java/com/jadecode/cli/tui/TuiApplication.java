@@ -137,7 +137,7 @@ public final class TuiApplication {
             var chat = new ChatViewport(conversation,
                     ChatViewport.Scrollbar.valueOf(settings.tui().fullscreenScrollbar().toUpperCase(java.util.Locale.ROOT)),
                     settings.tui().fullscreenCopyOnSelect());
-            chat.wheelLines(settings.tui().fullscreenWheelScrollLines() == 0 ? 3 : settings.tui().fullscreenWheelScrollLines());
+            chat.setWheelScrollLines(settings.tui().fullscreenWheelScrollLines());
             var mode = new AtomicReference<>(settings.tui().mode());
 
             // 2. 兜底路由 System.out/err；必须在 Terminal 建立后，renderer 使用原始 writer 不受截获影响。
@@ -255,16 +255,8 @@ public final class TuiApplication {
                         @Override public void copy(String text, boolean explicit) {
                             ClipboardService service = clipboardRef.get();
                             if (service == null) return;
-                            Thread.ofVirtual().name("jade-copy").start(() -> {
-                                var result = service.copy(text);
-                                // 复制结果走右上角临时提示，不进转录；OSC52 只表示请求已发送。
-                                switch (result) {
-                                    case DESKTOP -> sink.accept(new UiEvent.Flash(UiMessages.COPIED, 1000, false));
-                                    case OSC52_SENT -> sink.accept(new UiEvent.Flash(UiMessages.COPY_SENT, 1000, false));
-                                    case FAILED -> sink.accept(new UiEvent.Flash(
-                                            UiMessages.COPY_FAILED + "no clipboard backend", 5000, true));
-                                }
-                            });
+                            Thread.ofVirtual().name("jade-copy").start(() ->
+                                    sink.accept(copyFeedback(service.copy(text))));
                         }
                         @Override public void setMode(String value) { mode.set(value); }
                         @Override public void openLink(String uri) {
@@ -380,6 +372,8 @@ public final class TuiApplication {
                 // 切换模式：先失效旧证据，关闭旧 renderer，再启动新模式；Host/草稿不动。
                 if (!mode.get().equals(renderer.mode() == ScreenRenderer.Mode.FULLSCREEN ? "fullscreen" : "regular")) {
                     controller.invalidateActions();
+                    controller.invalidateSelection();
+                    chat.resetWheelGesture();
                     try { renderer.finish(); } catch (IOException ignored) { }
                     try { renderer.close(); } catch (IOException ignored) { }
                     renderer = createRenderer(mode.get(), port, settingsMenu.current().showHardwareCursor());
@@ -403,7 +397,7 @@ public final class TuiApplication {
                             themes, controller, renderer.mode(), terminal);
                     try {
                         PresentedFrame presented = renderer.present(composed.frame(), context);
-                        controller.presented(presented, composed.frame());
+                        controller.presented(presented, composed.content());
                         scheduler.rendered();
                     } catch (IOException outputFailure) {
                         failureMessage = "Terminal output failed: " + outputFailure.getMessage();
@@ -544,20 +538,46 @@ public final class TuiApplication {
                 hits.add(new Frame.Hit(rect, hit.action()));
             }
         }
-        if (lines.size() > rows) lines = new ArrayList<>(lines.subList(0, rows));
-        List<StyledLine> cropped = lines.stream().map(line -> line.crop(columns)).toList();
         boolean fullscreen = mode == ScreenRenderer.Mode.FULLSCREEN;
+        // regular 必须把完整转录 + dock 交给 renderer；只有 fullscreen 是整屏画布。
+        // 截成首屏或尾屏都会丢历史/输入区，并让终端原生 scrollback 无内容可滚。
+        if (fullscreen && lines.size() > rows) lines = new ArrayList<>(lines.subList(0, rows));
+        List<StyledLine> cropped = lines.stream().map(line -> line.crop(columns)).toList();
         if (fullscreen) cropped = controller.applySelection(cropped);
-        cropped = overlayFlash(cropped, state, context, columns);
+        // 选区文本/链接命中以不含 flash 的内容帧为准；flash 只是绘制叠层，不能进入复制文本。
+        Frame contentFrame;
         int safeRow = Math.max(0, Math.min(cursorRow, Math.max(0, cropped.size() - 1)));
         int safeColumn = Math.max(0, Math.min(cursorColumn, Math.max(0, columns - 1)));
         var cursor = cursorVisible ? new Frame.Cursor(safeRow, safeColumn, true) : Frame.NO_CURSOR;
-        var frame = new Frame(++frameCounter, terminal.epoch(), context.revision(), cropped, cursor, hits);
+        // regular 的 flash 是 renderer 屏幕层叠层：不修改任何文档行，也不进 scrollback。
+        Frame.Flash screenFlash = !fullscreen && state.flashActive()
+                ? new Frame.Flash(state.flashText(),
+                        state.flashError() ? context.theme().style("error") : context.theme().style("success"))
+                : null;
+        long frameId = ++frameCounter;
+        contentFrame = new Frame(frameId, terminal.epoch(), context.revision(), cropped, cursor, hits);
+        var displayed = fullscreen ? overlayFlash(cropped, state, context, columns) : cropped;
+        var frame = new Frame(frameId, terminal.epoch(), context.revision(), displayed, cursor, hits, screenFlash);
         int dockRows = Math.min(dock.lines().size(), Math.max(1, rows - 1));
         int viewportHeight = fullscreen ? Math.max(1, rows - dockRows) : 0;
         int dockTop = fullscreen ? viewportHeight : Math.max(0, cropped.size() - dock.lines().size());
         controller.layout(columns, rows, 0, viewportHeight, dockTop, fullscreen);
-        return new Composed(frame, dock);
+        return new Composed(frame, dock, contentFrame);
+    }
+
+    /**
+     * 复制结果到 UI 反馈：正常桌面复制或 OSC52 请求发送完成都只显示约 1 秒 Copied!；
+     * 底层枚举仍区分 DESKTOP/OSC52_SENT/FAILED，OSC52_SENT 不表示客户端已确认接收。
+     * 真正失败显示真实错误约 5 秒，绝不把失败映射成成功。
+     * @param result ClipboardService 的真实结果
+     * @return 交给 UI 线程的 flash 事件
+     */
+    static UiEvent.Flash copyFeedback(com.jadecode.tui.terminal.ClipboardService.CopyResult result) {
+        if (result == com.jadecode.tui.terminal.ClipboardService.CopyResult.DESKTOP
+                || result == com.jadecode.tui.terminal.ClipboardService.CopyResult.OSC52_SENT)
+            return new UiEvent.Flash(UiMessages.COPIED, 1000, false);
+        return new UiEvent.Flash(UiMessages.COPY_FAILED
+                + "desktop clipboard unavailable and OSC52 output failed", 5000, true);
     }
 
     /**
@@ -566,9 +586,11 @@ public final class TuiApplication {
      */
     private List<StyledLine> overlayFlash(List<StyledLine> lines, TuiState state, RenderContext context, int columns) {
         if (!state.flashActive() || lines.isEmpty()) return lines;
-        String text = state.flashText();
+        String raw = state.flashText();
         var theme = context.theme();
         Style style = state.flashError() ? theme.style("error") : theme.style("success");
+        // 窄终端/长错误不能把 flash 行撑出 Frame 宽度；只显示能放下的前缀。
+        String text = com.jadecode.tui.text.DisplayWidth.take(raw, Math.max(0, columns - 1));
         int textWidth = com.jadecode.tui.text.DisplayWidth.width(text);
         int keep = Math.max(0, columns - textWidth - 1);
         var result = new ArrayList<>(lines);
@@ -584,7 +606,7 @@ public final class TuiApplication {
     }
 
     private long frameCounter;
-    private record Composed(Frame frame, DockView.Layout dock) { }
+    private record Composed(Frame frame, DockView.Layout dock, Frame content) { }
 
     /** 全屏退出后把最终转录重放到主屏；最多按 1MiB 块输出，正文不拆代理对。 */
     private void replayTranscript(TerminalSession terminal, List<StyledLine> document,
