@@ -42,9 +42,13 @@ public final class RenderScheduler {
      * @return 当前是否应绘制
      */
     public boolean ready(boolean immediate) {
-        if (!dirty) return false;
         long now = clock.getAsLong();
-        if (immediate || now - lastFrame >= FRAME_INTERVAL_NANOS || now >= nextDeadline) return true;
+        // 动画期限到期必须独立触发一次绘制：dirty=false 只表示没有模型/输入变化，
+        // 不能阻止 spinner/计时器到期刷新。旧实现第一句直接返回 false，导致 3 秒无输出
+        // 时计时不更新。
+        if (now >= nextDeadline) return true;
+        if (!dirty) return false;
+        if (immediate || now - lastFrame >= FRAME_INTERVAL_NANOS) return true;
         return false;
     }
 

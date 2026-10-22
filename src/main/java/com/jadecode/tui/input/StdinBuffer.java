@@ -24,7 +24,10 @@ public final class StdinBuffer {
     private static final byte ESC = 0x1b;
     private static final byte[] PASTE_START = "\u001b[200~".getBytes(StandardCharsets.US_ASCII);
     private static final byte[] PASTE_END = "\u001b[201~".getBytes(StandardCharsets.US_ASCII);
-    private static final long SEQUENCE_TIMEOUT_NANOS = 200_000_000L;
+    /** 与 Pi 一致的未完整转义序列恢复期限；不能用孤立 Esc 的 10/100ms 拆开真实序列。 */
+    private static final long SEQUENCE_TIMEOUT_NANOS = 50_000_000L;
+    /** 不完整 CSI/SGR 被冲刷后，短暂吞掉紧随其后的协议尾部，避免它作为正文插入。 */
+    private static final long SWALLOW_TAIL_NANOS = 250_000_000L;
 
     /** 组装结果的种类。SEQUENCE 是完整转义序列，TEXT 是普通 UTF-8 文字。 */
     public enum Kind { TEXT, SEQUENCE, PASTE, ESCAPE }
@@ -46,6 +49,9 @@ public final class StdinBuffer {
     private long sequence;
     private boolean pasting;
     private final StringBuilder pasteBuffer = new StringBuilder();
+    /** 已冲刷的不完整 CSI/SGR 类型；其后紧跟的续尾按同一序列吞掉，不进入编辑器。 */
+    private String swallowKind;
+    private long swallowUntilNanos;
 
     /**
      * @param escapeTimeoutMillis 孤立 Esc 的等待期限；SSH 下通常更长
@@ -63,29 +69,81 @@ public final class StdinBuffer {
         if (bytes == null || bytes.length == 0) return;
         pending = concat(pending, bytes);
         lastByteAt = clock.getAsLong();
+        if (consumeProtocolTail()) return;
         process(false);
     }
 
-    /** 由输入循环定期调用；只处理已经超时的孤立 Esc，不拆完整序列。 */
+    /**
+     * 由输入循环定期调用；只处理超时的输入。
+     *
+     * <p>只有 pending 恰好是一个 ESC 字节时才按孤立 Esc 期限释放；只要后面已经跟着
+     * `[`、`O` 或其它字节，就说明用户按的是方向键/鼠标/Alt 序列，必须等到序列完整或
+     * 50ms 序列期限后整体冲刷。旧实现不检查长度，会把 `ESC[<65;29;` 拆成 Esc+正文，
+     * 造成 `[<65;29;21M` 泄漏到输入框。</p>
+     */
     public synchronized void tick() {
         if (pending.length == 0) return;
         long now = clock.getAsLong();
-        if (!pasting && pending[0] == ESC && now - lastByteAt >= escapeTimeoutNanos) {
-            // 孤立 Esc：先跳过它，后面的普通文字仍按自己的边界处理。
+        if (pasting) return;
+        if (pending.length == 1 && pending[0] == ESC && now - lastByteAt >= escapeTimeoutNanos) {
             emit(Kind.ESCAPE, "\u001b");
-            pending = java.util.Arrays.copyOfRange(pending, 1, pending.length);
-            lastByteAt = now;
-            process(false);
+            pending = new byte[0];
             return;
         }
-        if (!pasting && now - lastByteAt >= SEQUENCE_TIMEOUT_NANOS && pending[0] == ESC) {
-            // 畸形/超时的转义序列：作为一个 SEQUENCE 发出，让解码器明确忽略未知序列，
-            // 不能把 ESC 之后的字节当普通正文插入。
-            int end = Math.min(pending.length, 32);
-            emit(Kind.SEQUENCE, new String(pending, 0, end, StandardCharsets.ISO_8859_1));
-            pending = java.util.Arrays.copyOfRange(pending, end, pending.length);
-            process(false);
-        }
+        if (pending[0] != ESC || now - lastByteAt < SEQUENCE_TIMEOUT_NANOS) return;
+        // OSC/DCS/APC 回复可能很长，Pi 会一直等到终止符；不能按普通序列超时冲刷成正文。
+        String raw = new String(pending, StandardCharsets.ISO_8859_1);
+        if (isReplyHeader(raw)) return;
+        // 畸形/超时的转义序列：整体作为一个 SEQUENCE 发出，让解码器明确忽略未知序列。
+        emit(Kind.SEQUENCE, raw);
+        rememberSwallow(raw, now);
+        pending = new byte[0];
+    }
+
+    /** @return 是否识别为 OSC/DCS/APC 回复头（等待终止符，不按序列超时冲刷）。 */
+    private static boolean isReplyHeader(String raw) {
+        return raw.startsWith("\u001b]") || raw.startsWith("\u001bP")
+                || raw.startsWith("\u001b_") || raw.startsWith("\u001b^");
+    }
+
+    /**
+     * 记录不完整 CSI/SGR 前缀，供紧随其后的协议尾部吞掉。只对可识别的控制序列前缀生效；
+     * 普通正文（例如用户真的输入 `[A`）不经过 ESC，因此不会被误吞。
+     */
+    private void rememberSwallow(String raw, long now) {
+        String kind = null;
+        if (raw.matches("\\u001b\\[<\\d+(;\\d+)*;?")) kind = "sgr";
+        else if (raw.matches("\\u001b\\[[\\d;]*")) kind = "csi";
+        else if (raw.equals("\u001bO")) kind = "ss3";
+        swallowKind = kind;
+        swallowUntilNanos = kind == null ? 0 : now + SWALLOW_TAIL_NANOS;
+    }
+
+    /**
+     * 如果处于协议尾吞掉窗口，且当前 pending 正是所缺的尾部，就消费掉它。
+     * @return true 表示本次 feed 已被吞掉、无需再走普通组装
+     */
+    private boolean consumeProtocolTail() {
+        if (swallowKind == null) return false;
+        long now = clock.getAsLong();
+        if (now > swallowUntilNanos) { swallowKind = null; return false; }
+        String text = new String(pending, StandardCharsets.ISO_8859_1);
+        boolean matches = switch (swallowKind) {
+            case "sgr" -> text.matches("[\\d;]*[Mm]?");
+            case "csi" -> text.matches("[\\d;]*[A-Za-z~]?");
+            case "ss3" -> text.length() <= 1;
+            default -> false;
+        };
+        if (!matches) { swallowKind = null; return false; }
+        boolean complete = switch (swallowKind) {
+            case "sgr" -> text.endsWith("M") || text.endsWith("m");
+            case "csi" -> text.matches("[\\d;]*[A-Za-z~]");
+            case "ss3" -> text.length() == 1;
+            default -> false;
+        };
+        pending = new byte[0];
+        if (complete) swallowKind = null;
+        return true;
     }
 
     /** @return 尚未组装完成的字节数；测试/诊断用，不暴露内部数组。 */

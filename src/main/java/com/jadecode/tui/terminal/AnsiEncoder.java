@@ -131,8 +131,11 @@ public final class AnsiEncoder {
     /** @return 清屏并清 scrollback；只在 Pi 规则要求时由 renderer 发出。 */
     public static String clearAll() { return "\u001b[H\u001b[2J\u001b[3J"; }
 
-    /** @return 应用鼠标捕获（全屏使用 1000+1006，滚轮/点击由应用处理）。 */
-    public static String enableMouse() { return "\u001b[?1000h\u001b[?1006h"; }
+    /**
+     * @return 应用鼠标捕获：1000 点击 + 1002 按钮拖动报告 + 1006 SGR 坐标。
+     *         只开 1000 时终端不会发送普通拖动事件，全屏选区无法工作。
+     */
+    public static String enableMouse() { return "\u001b[?1000h\u001b[?1002h\u001b[?1006h"; }
 
     /** @return 关闭鼠标捕获，恢复终端原生选择/滚动。 */
     public static String disableMouse() { return "\u001b[?1000l\u001b[?1002l\u001b[?1003l\u001b[?1006l"; }

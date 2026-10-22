@@ -23,8 +23,10 @@ import com.jadecode.tui.input.KeyBindings;
 import com.jadecode.tui.input.KeyChord;
 import com.jadecode.tui.text.DisplayWidth;
 import com.jadecode.tui.text.LinkTarget;
+import com.jadecode.tui.text.Span;
 import com.jadecode.tui.text.StyledLine;
 import com.jadecode.tui.theme.ThemeManager;
+import com.jadecode.tui.viewport.SelectionModel;
 
 /**
  * 语义输入与 UI 事件分派器：审批 > 菜单/选择器 > 编辑器/视口；调用真实 Host 操作。
@@ -69,6 +71,12 @@ public final class TuiController {
             java.util.concurrent.CompletableFuture.completedFuture(null);
     private final java.util.Map<Long, List<UiEvent>> awaiting = new java.util.LinkedHashMap<>();
     private int viewportTop, viewportHeight, dockTop, columns, rows;
+    private boolean fullscreen;
+    /** 全屏屏幕级选区：聊天和编辑器文本都能拖选/复制，与 Pi 一致。 */
+    private final SelectionModel screenSelection = new SelectionModel();
+    private boolean selectionDragged;
+    private long lastClickNanos;
+    private int clickCount;
     private boolean searchOpen;
     private boolean welcomeExpanded;
     /** 最近成功呈现的原始帧，仅用于把点击坐标映射到同一布局的动作矩形。 */
@@ -86,9 +94,39 @@ public final class TuiController {
     }
 
     /** 每帧布局后由 Application 调用，供鼠标点击/滚轮坐标换算。 */
-    public void layout(int columns, int rows, int viewportTop, int viewportHeight, int dockTop) {
+    public void layout(int columns, int rows, int viewportTop, int viewportHeight, int dockTop, boolean fullscreen) {
         this.columns = columns; this.rows = rows; this.viewportTop = viewportTop;
-        this.viewportHeight = viewportHeight; this.dockTop = dockTop;
+        this.viewportHeight = viewportHeight; this.dockTop = dockTop; this.fullscreen = fullscreen;
+    }
+
+    /** @return 当前是否有屏幕级选区。 */
+    public boolean selectionActive() { return fullscreen && screenSelection.active(); }
+
+    /**
+     * 把屏幕级选区高亮合并进帧行；只有全屏模式有效，regular 交给终端原生选择。
+     * 文本、命中与选区使用同一帧坐标，resize 后由 Application 失效重建。
+     */
+    public List<StyledLine> applySelection(List<StyledLine> lines) {
+        if (!selectionActive()) return lines;
+        var result = new java.util.ArrayList<StyledLine>(lines.size());
+        for (int row = 0; row < lines.size(); row++) {
+            StyledLine line = lines.get(row);
+            var range = screenSelection.rangeFor(row, line.text());
+            if (range.empty()) { result.add(line); continue; }
+            var spans = new java.util.ArrayList<Span>();
+            int column = 0;
+            for (Span span : line.spans()) {
+                for (String cluster : com.jadecode.tui.text.DisplayWidth.clusters(span.text())) {
+                    int cells = com.jadecode.tui.text.DisplayWidth.clusterWidth(cluster);
+                    boolean selected = column >= range.fromColumn() && column < range.toColumn();
+                    spans.add(new Span(cluster, selected
+                            ? span.style().withBg(themes.preview().color("selectedBg")) : span.style(), span.link()));
+                    column += cells;
+                }
+            }
+            result.add(new StyledLine(spans, line.annotation()));
+        }
+        return result;
     }
 
     /** @return 搜索 Overlay 是否打开。 */
@@ -310,39 +348,96 @@ public final class TuiController {
         state.hint = "Press Ctrl+C again within 500ms to exit; Esc does not cancel the agent";
     }
 
+    /**
+     * 全屏鼠标：滚轮滚动；审批按钮只在显式按下且证据齐全时答复；
+     * 其余按下/拖动/释放走屏幕级选区，单击合成编辑器光标/链接动作。
+     * regular 不进入这里，保留终端原生选择。
+     */
     private void mouse(InputEvent event) {
+        if (!fullscreen) return;
         InputEvent.Mouse mouse = event.mouse();
-        int row = mouse.y();
+        int row = mouse.y(), column = mouse.x();
         if (mouse.wheel()) {
             chat.wheel(mouse.wheelDirection(), mouse.alt() ? 3 : 1);
             return;
         }
-        if (row < dockTop) {
-            int viewRow = row - viewportTop;
-            if (viewRow < 0 || viewRow >= viewportHeight) return;
-            if (mouse.action() == InputEvent.Mouse.Action.PRESS) {
-                LinkTarget link = chat.linkAt(viewRow, mouse.x());
-                if (link != null) { terminalsOpen(link); return; }
-                chat.startSelection(viewRow, mouse.x(), 1);
-            } else if (mouse.action() == InputEvent.Mouse.Action.DRAG) {
-                int direction = chat.dragSelection(viewRow, mouse.x());
-                if (direction != 0) chat.scrollLines(direction * 2);
-            } else if (mouse.action() == InputEvent.Mouse.Action.RELEASE) {
-                String text = chat.finishSelection();
-                if (!text.isBlank() && chat.copyOnSelect()) terminal.copy(text, false);
+        PresentedFrame frame = state.presented;
+        if (frame == null || lastFrame == null) return;
+        ActionToken hit = lastFrame.actionAt(column, row);
+        // 审批优先：按下按钮必须满足显式命中/水位/已呈现；拖动与释放绝不答复。
+        if (state.approval.active()) {
+            if (mouse.action() == InputEvent.Mouse.Action.PRESS && hit != null && hit.isApproval()
+                    && state.approval.canAnswer(event.sequence(), state.terminalEpoch, frame, hit.kind())) {
+                approvals.answer(state.approval.request().id(),
+                        hit.kind() == ActionToken.Kind.DENY ? ApprovalAnswer.DENY
+                                : hit.kind() == ActionToken.Kind.ALLOW_SIMILAR ? ApprovalAnswer.ALLOW_SIMILAR
+                                : ApprovalAnswer.ALLOW_ONCE);
+                removeApproval(state.approval.request().id());
             }
             return;
         }
-        // dock 点击来自最后成功呈现的帧；同一 Frame 的 hit 矩形与文字来自一次布局。
-        PresentedFrame frame = state.presented;
-        if (frame == null || lastFrame == null) return;
-        ActionToken action = lastFrame.actionAt(mouse.x(), row);
-        if (action == null || !action.isApproval() || !state.approval.active()) return;
-        if (!state.approval.canAnswer(event.sequence(), state.terminalEpoch, frame, action.kind())) return;
-        approvals.answer(state.approval.request().id(), action.kind() == ActionToken.Kind.DENY ? ApprovalAnswer.DENY
-                : action.kind() == ActionToken.Kind.ALLOW_SIMILAR ? ApprovalAnswer.ALLOW_SIMILAR
-                : ApprovalAnswer.ALLOW_ONCE);
-        removeApproval(state.approval.request().id());
+        switch (mouse.action()) {
+            case PRESS -> {
+                long now = System.nanoTime();
+                clickCount = now - lastClickNanos < 400_000_000L ? Math.min(3, clickCount + 1) : 1;
+                lastClickNanos = now;
+                selectionDragged = false;
+                screenSelection.start(new SelectionModel.Position(Math.max(0, row), Math.max(0, column)), clickCount);
+            }
+            case DRAG -> {
+                screenSelection.drag(new SelectionModel.Position(Math.max(0, row), Math.max(0, column)));
+                selectionDragged = true;
+                autoScrollSelection(row);
+            }
+            case RELEASE -> {
+                if (!selectionDragged) {
+                    LinkTarget link = linkAt(row, column);
+                    if (link != null) { screenSelection.clear(); terminalsOpen(link); return; }
+                    if (editorClick(row, column)) { screenSelection.clear(); return; }
+                    screenSelection.clear();
+                    return;
+                }
+                screenSelection.finish();
+                String text = screenSelection.text(lastFrame.lines());
+                if (!text.isBlank() && chat.copyOnSelect()) terminal.copy(text, false);
+            }
+            default -> { }
+        }
+    }
+
+    /** 拖出视口边缘时自动滚动聊天；焦点夹回可见边缘，避免坐标越界。 */
+    private void autoScrollSelection(int row) {
+        if (row < viewportTop) {
+            chat.scrollLines(-2);
+            screenSelection.drag(new SelectionModel.Position(viewportTop, 0));
+        } else if (row >= viewportTop + viewportHeight) {
+            chat.scrollLines(2);
+            screenSelection.drag(new SelectionModel.Position(Math.max(viewportTop, viewportTop + viewportHeight - 1),
+                    lastFrame.lines().isEmpty() ? 0
+                            : Math.max(0, lastFrame.lines().get(Math.min(lastFrame.lines().size() - 1,
+                            viewportTop + viewportHeight - 1)).width() - 1)));
+        }
+    }
+
+    /** @return 帧内该位置是否带 OSC8 链接。 */
+    private LinkTarget linkAt(int row, int column) {
+        if (lastFrame == null || row < 0 || row >= lastFrame.lines().size()) return null;
+        int used = 0;
+        for (Span span : lastFrame.lines().get(row).spans()) {
+            int width = com.jadecode.tui.text.DisplayWidth.width(span.text());
+            if (column >= used && column < used + width) return span.link();
+            used += width;
+        }
+        return null;
+    }
+
+    /** 单击编辑器可见文本时把光标放到对应字素；边框/候选区不处理。 */
+    private boolean editorClick(int row, int column) {
+        if (state.selector != null || state.editor == null) return false;
+        int contentRow = row - dockTop - 1;
+        if (contentRow < 0 || contentRow >= state.editor.visibleRows()) return false;
+        state.editor.caretForClick(contentRow, column, columns);
+        return true;
     }
 
     private void terminalsOpen(LinkTarget link) {
@@ -366,9 +461,11 @@ public final class TuiController {
         terminal.copy(text, true);
     }
 
-    /** Ctrl+X/菜单复制：有选区复制选区，否则复制最近助手回复；不含卡标题/Thinking。 */
+    /** Ctrl+X/菜单复制：屏幕级选区优先，否则聊天选区，最后最近助手回复。 */
     public void copySelectionOrLastReply() {
-        String text = chat.selection().active() ? chat.selection().text(chat.document()) : state.transcript.lastReplyText();
+        String text = selectionActive() && lastFrame != null ? screenSelection.text(lastFrame.lines())
+                : chat.selection().active() ? chat.selection().text(chat.document())
+                : state.transcript.lastReplyText();
         if (text.isBlank()) { state.hint = UiMessages.COPY_EMPTY; return; }
         terminal.copy(text, true);
     }

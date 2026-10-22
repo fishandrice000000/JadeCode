@@ -61,6 +61,26 @@ class TuiCommandsSettingsTest {
         assertEquals("fullscreen", config.load().tui().mode());
     }
 
+    @Test void selectedCandidateBackgroundCoversTextOnlyNotTrailingPadding() {
+        var theme = com.jadecode.tui.theme.Theme.from(
+                com.jadecode.tui.theme.ThemePalette.builtin("dark"), true, 1);
+        var context = new com.jadecode.tui.core.RenderContext(120, 10, theme);
+        var list = new com.jadecode.tui.components.SelectList(List.of(
+                new com.jadecode.tui.components.SelectList.Item("/quit", "/quit", "Close the session")), true);
+        var line = list.render(120, 3, context).getFirst();
+        var selectedBg = theme.color("selectedBg");
+        int column = 0;
+        boolean textHasBackground = false;
+        for (var span : line.spans()) {
+            boolean background = span.style().bg().equals(selectedBg);
+            if (column < 30 && background) textHasBackground = true;
+            if (column >= 40) assertFalse(background, "trailing padding must not be painted: " + line.text());
+            column += com.jadecode.tui.text.DisplayWidth.width(span.text());
+        }
+        assertTrue(textHasBackground);
+        assertEquals(120, line.width());
+    }
+
     @Test void keyBindingsHideUnsupportedActionsAndReportConflicts() {
         var bindings = new KeyBindings(Map.of("app.tools.expand", List.of("ctrl+t")));
         assertTrue(bindings.all().stream().anyMatch(a -> a.id().equals("app.model.select") && !a.visible()));

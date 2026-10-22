@@ -162,6 +162,17 @@ class TuiEditorBehaviorTest {
         assertTrue(cursor.visible());
     }
 
+    @Test void caretForClickMapsScreenRowAndColumnToGrapheme() {
+        var editor = editor(true);
+        editor.handle(text("ab\n中文"));
+        editor.caretForClick(0, 1, 20);
+        assertEquals(1, editor.caret());
+        editor.caretForClick(1, 2, 20);
+        assertEquals(4, editor.caret(), "wide char column maps to grapheme start");
+        editor.caretForClick(9, 0, 20);
+        assertEquals(4, editor.caret(), "out-of-range row does not move the caret");
+    }
+
     @Test void pastePathGetsLeadingSpaceAfterWord() {
         var editor = editor(true);
         editor.handle(text("word"));

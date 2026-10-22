@@ -145,6 +145,7 @@ public final class TuiApplication {
             var handoffRef = new AtomicReference<TerminalHandoff>();
             var clipboardRef = new AtomicReference<ClipboardService>();
             var imageClipboardRef = new AtomicReference<ImageClipboard>();
+            var queriesRef = new AtomicReference<TerminalQueries>();
             var controllerRef = new AtomicReference<TuiController>();
             var editorRef = new AtomicReference<Editor>();
 
@@ -216,6 +217,8 @@ public final class TuiApplication {
                             TerminalHandoff edge = handoffRef.get();
                             if (edge == null) return;
                             Thread.ofVirtual().name("jade-suspend").start(() -> {
+                                TerminalQueries queries = queriesRef.get();
+                                if (queries != null) queries.disable();
                                 String error = edge.suspend();
                                 if (!error.isEmpty()) sink.accept(new UiEvent.Message("System", "Suspend", error, true));
                             });
@@ -224,7 +227,10 @@ public final class TuiApplication {
                             TerminalHandoff edge = handoffRef.get();
                             if (edge == null) { failure.accept("Terminal handoff unavailable"); return; }
                             Thread.ofVirtual().name("jade-external-editor").start(() -> {
+                                TerminalQueries queries = queriesRef.get();
+                                if (queries != null) queries.disable();
                                 edge.edit(draft, settingsMenu.current().externalEditor(), success, failure);
+                                if (queries != null) queries.restart();
                                 // 编辑器可能改写了屏幕/终端模式；请求一次完整重绘（同 resize 路径）。
                                 long epoch = term.bumpEpoch();
                                 events.offer(new UiEvent.Input(InputEvent.resize(Long.MAX_VALUE, epoch)));
@@ -270,6 +276,7 @@ public final class TuiApplication {
                     chunk -> { for (InputEvent decoded : decoder.decode(chunk)) events.offer(new UiEvent.Input(decoded)); },
                     System::nanoTime);
             var queries = new TerminalQueries(text -> { term.write(text); });
+            queriesRef.set(queries);
             term.start(event -> {
                 switch (event) {
                     case TerminalEvent.InputChunk chunk -> { decoder.setEpoch(event.terminalEpoch()); buffer.feed(chunk.bytes()); }
@@ -334,7 +341,7 @@ public final class TuiApplication {
                         renderer.invalidate();
                         if (handoff.suspended() && handoff.resumeAfterContinue()) {
                             controller.invalidateActions();
-                            queries.newEpoch(terminal.epoch());
+                            queries.newEpoch(term.epoch());
                             queries.restart();
                             scheduler.request();
                         }
@@ -441,7 +448,9 @@ public final class TuiApplication {
     private void applyQueries(TerminalQueries queries, ThemeManager themes, AtomicReference<TerminalCapabilities> caps,
             TerminalSession terminal) {
         var snapshot = queries.snapshot();
-        boolean dark = snapshot.darkBackground() == null ? themes.preview().isLight() : snapshot.darkBackground();
+        // 缺明暗报告时按当前主题外观推断：light 主题对应浅色终端，dark=false；
+        // 旧实现把 isLight() 直接当 dark，方向相反。
+        boolean dark = snapshot.darkBackground() == null ? !themes.preview().isLight() : snapshot.darkBackground();
         themes.updateTerminalColors(dark, snapshot.foreground(), snapshot.background(), snapshot.ansi());
         var values = caps.get();
         caps.set(values.withQueries(snapshot.cellWidth(), snapshot.cellHeight(), snapshot.keyboard(), null, null, null, null));
@@ -501,12 +510,17 @@ public final class TuiApplication {
             }
         }
         if (lines.size() > rows) lines = new ArrayList<>(lines.subList(0, rows));
-        var cropped = lines.stream().map(line -> line.crop(columns)).toList();
+        List<StyledLine> cropped = lines.stream().map(line -> line.crop(columns)).toList();
+        boolean fullscreen = mode == ScreenRenderer.Mode.FULLSCREEN;
+        if (fullscreen) cropped = controller.applySelection(cropped);
         int safeRow = Math.max(0, Math.min(cursorRow, Math.max(0, cropped.size() - 1)));
         int safeColumn = Math.max(0, Math.min(cursorColumn, Math.max(0, columns - 1)));
         var cursor = cursorVisible ? new Frame.Cursor(safeRow, safeColumn, true) : Frame.NO_CURSOR;
         var frame = new Frame(++frameCounter, terminal.epoch(), context.revision(), cropped, cursor, hits);
-        controller.layout(columns, rows, 0, Math.max(1, rows - dock.lines().size()), rows - dock.lines().size());
+        int dockRows = Math.min(dock.lines().size(), Math.max(1, rows - 1));
+        int viewportHeight = fullscreen ? Math.max(1, rows - dockRows) : 0;
+        int dockTop = fullscreen ? viewportHeight : Math.max(0, cropped.size() - dock.lines().size());
+        controller.layout(columns, rows, 0, viewportHeight, dockTop, fullscreen);
         return new Composed(frame, dock);
     }
 

@@ -409,6 +409,18 @@ public final class Editor implements Component {
     /** @return 当前可见内容行数，供宿主滚动/翻页。 */
     public int visibleRows() { return lastVisibleRows; }
 
+    /**
+     * 把全屏单击坐标（编辑器内容第 contentRow 行、终端列 column）映射为光标。
+     * 使用与绘制相同的 EditorLayout 和 scrollTop；越界/边框行不修改光标。
+     */
+    public void caretForClick(int contentRow, int column, int width) {
+        int contentWidth = Math.max(1, width - 1);
+        EditorLayout layout = EditorLayout.of(buffer.text(), contentWidth);
+        int visualRow = scrollTop + contentRow;
+        if (visualRow < 0 || visualRow >= layout.lines().size()) return;
+        buffer.setCaret(layout.offsetAt(visualRow, Math.max(0, column)));
+    }
+
     /** @return 编辑器布局（当前宽度）；测试/宿主定位使用。 */
     public EditorLayout layout() { return EditorLayout.of(buffer.text(), lastColumns); }
 

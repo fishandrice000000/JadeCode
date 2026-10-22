@@ -42,12 +42,19 @@ public final class ScrollView {
         return document.subList(offset, Math.min(document.size(), offset + visible));
     }
 
-    /** 滚动指定行数；正数向下。任何手动滚动都暂停跟随。 */
+    /**
+     * 滚动指定行数；正数向下。
+     *
+     * <p>手动上滚会暂停跟随，避免新输出抢走阅读位置；一旦滚动位置重新到达末端
+     * （例如向下滚回底部、Ctrl+End），必须恢复 follow-end，否则追加内容不会自动跟随。
+     * 旧实现每次都把 followEnd 置 false，滚到底也不恢复。</p>
+     */
     public void scroll(int lines, int documentHeight, int height) {
         if (lines == 0) return;
-        followEnd = false;
         int max = Math.max(0, documentHeight - Math.max(1, height));
-        offset = Math.max(0, Math.min(max, offset + lines));
+        int next = Math.max(0, Math.min(max, offset + lines));
+        offset = next;
+        followEnd = next >= max;
     }
 
     /** 翻页；正数向下。 */

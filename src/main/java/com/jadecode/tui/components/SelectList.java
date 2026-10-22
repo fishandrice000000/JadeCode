@@ -139,7 +139,16 @@ public final class SelectList implements Component {
                 spans.add(new Span("  " + description, context.theme().style("muted"), null));
             }
             StyledLine line = new StyledLine(spans);
-            if (chosen) line = line.padTo(width, context.theme().style("selectedBg").withBg(context.theme().color("selectedBg")));
+            if (chosen) {
+                // Pi 只给选中项的“文字范围”加 selectedText 背景（含前缀与描述），
+                // 不把行尾 padding 也涂成背景条。旧实现 padTo(width, selectedBg) 会把
+                // 说明之后的整段空白染成浅色长条。
+                var selectedSpans = new ArrayList<Span>();
+                for (Span span : line.spans())
+                    selectedSpans.add(new Span(span.text(),
+                            span.style().withBg(context.theme().color("selectedBg")), span.link()));
+                line = new StyledLine(selectedSpans).padTo(width, context.theme().style("text"));
+            }
             result.add(line);
         }
         String count = "  (" + (selected + 1) + "/" + filtered.size() + ")";

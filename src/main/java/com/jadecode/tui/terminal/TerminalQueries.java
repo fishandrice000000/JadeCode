@@ -37,9 +37,15 @@ public final class TerminalQueries {
         }
     }
 
+    /** Pi 固定的 Kitty 键盘 flags：1 消歧义 + 2 事件类型 + 4 备用键。 */
+    private static final int DESIRED_KITTY_FLAGS = 7;
     private final Consumer<String> output;
     private final List<String> pending = new ArrayList<>();
     private Stage stage = Stage.NEW;
+    /** 已 push Kitty 协议/已启用 modifyOtherKeys，用于退出与暂退时精确恢复。 */
+    private boolean kittyPushed;
+    private boolean modifyOtherKeysActive;
+    private boolean daWithoutKitty;
     private long epoch;
     private TerminalCapabilities.KeyboardSupport keyboard = TerminalCapabilities.KeyboardSupport.LEGACY;
     private Integer cellWidth, cellHeight;
@@ -54,8 +60,29 @@ public final class TerminalQueries {
     /** @param output 唯一终端写入口（通常是 renderer/terminal session 的 writer）。 */
     public TerminalQueries(Consumer<String> output) { this.output = output; }
 
-    /** 恢复/模式切换后重新协商：清空未完成查询并重发，不创建第二读取者。 */
-    public void restart() { stage = Stage.NEW; pending.clear(); start(); }
+    /**
+     * 恢复/模式切换后重新协商：先退栈旧协议（避免 shell/编辑器看到残留 flags），
+     * 再重发查询。不创建第二读取者。
+     */
+    public void restart() { disable(); stage = Stage.NEW; pending.clear(); start(); }
+
+    /**
+     * 退出/暂退前恢复键盘协议：pop Kitty flags 并关闭 modifyOtherKeys。
+     * 幂等；不确认客户端是否支持，只保证发送配对序列。
+     */
+    public void disable() {
+        // 无论当前判定为 Kitty 还是 modifyOtherKeys，都发配对退栈；未启用的序列无害，
+        // 但漏发会让 shell/编辑器继承 flags 或 27;~ 序列。
+        if (kittyPushed || keyboard != TerminalCapabilities.KeyboardSupport.LEGACY)
+            output.accept("\u001b[<u");
+        output.accept("\u001b[>4;0m");
+        kittyPushed = false;
+        modifyOtherKeysActive = false;
+        keyboard = TerminalCapabilities.KeyboardSupport.LEGACY;
+    }
+
+    /** @return 是否已启用 Kitty 键盘协议（诊断/测试）。 */
+    public boolean kittyActive() { return keyboard == TerminalCapabilities.KeyboardSupport.KITTY; }
 
     /** @return 当前协商快照。 */
     public State snapshot() {
@@ -77,8 +104,12 @@ public final class TerminalQueries {
     public void start() {
         if (stage != Stage.NEW) return;
         stage = Stage.SENT;
-        // 顺序与 Pi 接近：先键盘能力与 DA 哨兵，再尺寸/明暗/颜色；回复可能乱序。
-        output.accept("\u001b[?u\u001b[>0;0;0c\u001b[c\u001b[16t\u001b[?996n");
+        // Pi 顺序：先 push 期望的 Kitty flags 再查询，DA 作为哨兵；不支持 Kitty 的终端
+        // 会先回 DA，据此启用 modifyOtherKeys 回退。旧实现只发 `CSI ? u`，终端不知道要
+        // 上报哪个 flags，Shift+Enter 等 CSI-u 永远不会到达。
+        kittyPushed = true;
+        daWithoutKitty = false;
+        output.accept("\u001b[>" + DESIRED_KITTY_FLAGS + "u\u001b[?u\u001b[>0;0;0c\u001b[c\u001b[16t\u001b[?996n");
         output.accept("\u001b]10;?\u0007\u001b]11;?\u0007");
         StringBuilder palette = new StringBuilder();
         for (int i = 0; i < 16; i++) palette.append("\u001b]4;").append(i).append(";?\u0007");
@@ -95,15 +126,33 @@ public final class TerminalQueries {
         boolean changed = false;
         switch (reply.kind()) {
             case "KEYBOARD_FLAGS" -> {
-                // Kitty 键盘协议回复形如 `?3u`（flags=3）或空；只有包含 `?` 才是我们的回复。
-                if (reply.payload().startsWith("?") && reply.payload().endsWith("u")) {
-                    String flags = reply.payload().substring(1, reply.payload().length() - 1);
-                    if (!flags.isEmpty() && flags.chars().allMatch(Character::isDigit)) {
-                        keyboard = TerminalCapabilities.KeyboardSupport.KITTY; changed = true;
+                // InputDecoder 已剥离 CSI 外壳：payload 是规范化数字（如 "3"）。
+                // 兼容旧格式 `?3u` 以防未来有调用方直接投递原始回复。
+                String flags = reply.payload();
+                if (flags.startsWith("?") && flags.endsWith("u"))
+                    flags = flags.substring(1, flags.length() - 1);
+                if (!flags.isEmpty() && flags.chars().allMatch(Character::isDigit)) {
+                    int value = Integer.parseInt(flags);
+                    if (value != 0) {
+                        disableModifyOtherKeys();
+                        keyboard = TerminalCapabilities.KeyboardSupport.KITTY;
+                    } else {
+                        enableModifyOtherKeys();
+                        keyboard = TerminalCapabilities.KeyboardSupport.MODIFY_OTHER_KEYS;
                     }
+                    changed = true;
                 }
             }
-            case "DA" -> { stage = Stage.DA_RECEIVED; changed = true; }
+            case "DA" -> {
+                stage = Stage.DA_RECEIVED; changed = true;
+                // DA 先到说明终端不理解 Kitty flags：启用 xterm modifyOtherKeys 回退，
+                // 让 Shift+Enter 仍能以 CSI 27;2;13~ 到达。晚到的 Kitty 回复会覆盖它。
+                if (!kittyActive() && keyboard != TerminalCapabilities.KeyboardSupport.MODIFY_OTHER_KEYS) {
+                    daWithoutKitty = true;
+                    enableModifyOtherKeys();
+                    keyboard = TerminalCapabilities.KeyboardSupport.MODIFY_OTHER_KEYS;
+                }
+            }
             case "CELL_SIZE" -> {
                 String[] parts = reply.payload().split(";");
                 try {
@@ -126,9 +175,19 @@ public final class TerminalQueries {
 
     /** 解析 OSC 10/11/4 颜色回复。颜色值格式在 Pi 与常见终端间有 hex/rgb:/16 位差异。 */
     private boolean acceptColor(String payload) {
+        // OSC 10/11 回复只有 `10;rgb:...` / `11;rgb:...` 两段；旧实现按三段切分，
+        // 导致背景/前景永远解析失败，system 主题只能一直用假定色。OSC 4 才是三段
+        // `4;索引;rgb:...`。这里按字段数分别解析。
         String[] parts = payload.split(";", 3);
-        if (parts.length < 3) return false;
-        Color color = parseColor(parts[2]);
+        if (parts.length < 2) return false;
+        Color color;
+        if (parts[0].equals("10") || parts[0].equals("11")) {
+            if (parts.length != 2) return false;
+            color = parseColor(parts[1]);
+        } else if (parts[0].equals("4")) {
+            if (parts.length != 3) return false;
+            color = parseColor(parts[2]);
+        } else return false;
         if (parts[0].equals("10")) { foreground = color; colorReplyComplete = true; return true; }
         if (parts[0].equals("11")) {
             background = color;
@@ -174,6 +233,18 @@ public final class TerminalQueries {
         int parsed = Integer.parseInt(text);
         // 终端可能上报 0-255 或 16 位 0-65535；按数值范围选择比例。
         return parsed <= 255 ? parsed : Math.round(parsed * 255f / 65535);
+    }
+
+    private void enableModifyOtherKeys() {
+        if (modifyOtherKeysActive) return;
+        output.accept("\u001b[>4;2m");
+        modifyOtherKeysActive = true;
+    }
+
+    private void disableModifyOtherKeys() {
+        if (!modifyOtherKeysActive) return;
+        output.accept("\u001b[>4;0m");
+        modifyOtherKeysActive = false;
     }
 
     /** @return 尚未收到的查询说明；用于诊断而不是用户界面。 */

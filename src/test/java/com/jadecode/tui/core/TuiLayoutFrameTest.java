@@ -100,6 +100,38 @@ class TuiLayoutFrameTest {
         assertTrue(model.isCurrent(1, 5));
     }
 
+    @Test void expiredAnimationRefreshesEvenWithoutDirtyState() {
+        long[] now = {0};
+        var scheduler = new RenderScheduler(() -> now[0]);
+        now[0] = 16_000_000L;
+        scheduler.request();
+        assertTrue(scheduler.ready(false));
+        scheduler.rendered();
+        assertFalse(scheduler.ready(false), "idle must not redraw");
+        scheduler.requestAnimation(80_000_000L);
+        now[0] = 100_000_000L;
+        assertTrue(scheduler.ready(false), "expired animation deadline must trigger a frame");
+        scheduler.rendered();
+        assertFalse(scheduler.ready(false), "after the frame there is no deadline until requested again");
+    }
+
+    @Test void scrollingBackToBottomRestoresFollowEnd() {
+        var doc = new java.util.ArrayList<StyledLine>();
+        for (int i = 0; i < 30; i++) doc.add(StyledLine.of("line " + i, Style.PLAIN));
+        var view = new ScrollView();
+        view.view(doc, 10);
+        assertEquals(20, view.offset());
+        assertTrue(view.following());
+        view.scroll(-1, doc.size(), 10);
+        assertFalse(view.following());
+        view.scroll(1, doc.size(), 10);
+        assertEquals(20, view.offset());
+        assertTrue(view.following(), "returning to the end must resume follow");
+        doc.add(StyledLine.of("line 30", Style.PLAIN));
+        view.view(doc, 10);
+        assertEquals(21, view.offset());
+    }
+
     @Test void extremeWidthsDoNotThrowOrOverflow() {
         var context = new RenderContext(1, 1, theme);
         var text = Text.line("中文🙂", Style.PLAIN).render(context, 1);

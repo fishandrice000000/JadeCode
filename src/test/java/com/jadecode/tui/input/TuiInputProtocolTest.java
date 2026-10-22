@@ -93,6 +93,51 @@ class TuiInputProtocolTest {
         assertEquals("18;9", cell.reply().payload());
     }
 
+    @Test void incompleteSgrPrefixIsFlushedAsSequenceAndTailIsSwallowed() {
+        chunks.clear();
+        buffer.feed("\u001b[<65;29;".getBytes(StandardCharsets.UTF_8));
+        clock.addAndGet(105_000_000L);
+        buffer.tick();
+        // 前缀整体作为 SEQUENCE 发出（不是 Esc + 正文），解码器忽略未知序列。
+        assertEquals(1, chunks.size());
+        assertEquals(StdinBuffer.Kind.SEQUENCE, chunks.getFirst().kind());
+        chunks.clear();
+        buffer.feed("21M".getBytes(StandardCharsets.UTF_8));
+        // 紧随其后的鼠标坐标尾部在恢复窗口内吞掉，不能进入编辑器。
+        assertTrue(chunks.isEmpty(), "mouse tail leaked: " + chunks);
+        var decoder = new InputDecoder(1);
+        var events = new ArrayList<InputEvent>();
+        for (var chunk : chunks) events.addAll(decoder.decode(chunk));
+        assertTrue(events.isEmpty());
+    }
+
+    @Test void arrowAfterIdleIsNotSplitWhenBytesArriveTogether() {
+        // 空闲后方向键的完整序列仍必须一次解码；不能因为上次 tick 被拆成 Esc+正文。
+        for (int round = 0; round < 20; round++) {
+            chunks.clear();
+            buffer.feed("\u001b[A".getBytes(StandardCharsets.UTF_8));
+            var events = decode("\u001b[A");
+            assertEquals(1, events.size(), "round=" + round);
+            assertEquals("up", events.getFirst().key().key());
+        }
+    }
+
+    @Test void genuineEscapeThenTypedBracketTextIsPreserved() {
+        chunks.clear();
+        buffer.feed(new byte[]{27});
+        clock.addAndGet(20_000_000L);
+        buffer.tick();
+        buffer.feed("[A".getBytes(StandardCharsets.UTF_8));
+        var decoder = new InputDecoder(1);
+        var events = new ArrayList<InputEvent>();
+        for (var chunk : chunks) events.addAll(decoder.decode(chunk));
+        assertEquals(InputEvent.Kind.KEY, events.getFirst().kind());
+        assertEquals("escape", events.getFirst().key().key());
+        String text = events.stream().filter(e -> e.kind() == InputEvent.Kind.TEXT)
+                .map(InputEvent::text).reduce("", String::concat);
+        assertEquals("[A", text);
+    }
+
     @Test void isolatedEscapeOnlyFiresAfterTimeout() {
         chunks.clear();
         buffer.feed(new byte[]{27});

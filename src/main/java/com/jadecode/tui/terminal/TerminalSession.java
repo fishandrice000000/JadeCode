@@ -153,7 +153,8 @@ public final class TerminalSession implements AutoCloseable {
             try { reader.join(500); } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
             reader = null;
         }
-        writer.print("\u001b[?2004l\u001b[?25h\u001b[0m\u001b[m");
+        // 同时退出键盘协商模式，避免 shell 收到 Kitty release/modifyOtherKeys 序列。
+        writer.print("\u001b[<u\u001b[>4;0m\u001b[?2004l\u001b[?25h\u001b[0m\u001b[m");
         writer.flush();
         terminal.setAttributes(original);
         if (writer.checkError()) throw new IOException("终端在暂退时写入失败");
@@ -196,7 +197,7 @@ public final class TerminalSession implements AutoCloseable {
         reader = null;
         IOException failure = null;
         try {
-            writer.print("\u001b[?2026l\u001b[0m\u001b[?25h\u001b[?1000l\u001b[?1002l\u001b[?1003l\u001b[?1006l\u001b[?2004l\r\n");
+            writer.print("\u001b[<u\u001b[>4;0m\u001b[?2026l\u001b[0m\u001b[?25h\u001b[?1000l\u001b[?1002l\u001b[?1003l\u001b[?1006l\u001b[?2004l\r\n");
             writer.flush();
             if (writer.checkError()) throw new IOException("终端在关闭时写入失败");
             terminal.setAttributes(original);
