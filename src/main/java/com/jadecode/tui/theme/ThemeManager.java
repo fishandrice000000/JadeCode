@@ -30,6 +30,9 @@ public final class ThemeManager implements AutoCloseable {
     private Color foreground, background;
     private List<Color> ansi = List.of();
     private boolean terminalDark = true;
+    private String lightTheme;
+    private String darkTheme;
+    private String configuredName;
     private Thread watcher;
     private final AtomicBoolean closed = new AtomicBoolean();
 
@@ -44,7 +47,10 @@ public final class ThemeManager implements AutoCloseable {
             String lightTheme, String darkTheme) {
         this.colorsAvailable = colorsAvailable;
         this.customDirectory = customDirectory;
-        this.committed = load(name, lightTheme, darkTheme);
+        this.lightTheme = lightTheme == null || lightTheme.isBlank() ? "light" : lightTheme;
+        this.darkTheme = darkTheme == null || darkTheme.isBlank() ? "dark" : darkTheme;
+        this.configuredName = name == null || name.isBlank() ? "system" : name;
+        this.committed = load(this.configuredName, this.lightTheme, this.darkTheme);
         this.preview = committed;
     }
 
@@ -81,7 +87,7 @@ public final class ThemeManager implements AutoCloseable {
     public String preview(String identifier) {
         long ticket = ++request;
         try {
-            Theme candidate = load(identifier, "light", "dark");
+            Theme candidate = load(identifier, lightTheme, darkTheme);
             if (ticket != request) return "主题选择已变化";
             preview = candidate; revision++;
             return "";
@@ -119,9 +125,25 @@ public final class ThemeManager implements AutoCloseable {
     /** 由外部设置变更安装新主题名（例如其它窗口写入配置后的刷新）。 */
     public void reload(String name) {
         request++;
-        committed = load(name, "light", "dark");
+        configuredName = name == null || name.isBlank() ? "system" : name;
+        committed = load(configuredName, lightTheme, darkTheme);
         preview = committed; revision++;
     }
+
+    /**
+     * 更新 auto 的 light/dark 配对并重新解析当前逻辑主题；设置页切换配对时使用。
+     * 用户当前选择仍由 configuredName 保存，不把解析后的具体色板名写回逻辑设置。
+     */
+    public void setPair(String light, String dark) {
+        lightTheme = light == null || light.isBlank() ? "light" : light;
+        darkTheme = dark == null || dark.isBlank() ? "dark" : dark;
+        request++;
+        committed = load(configuredName, lightTheme, darkTheme);
+        preview = committed; revision++;
+    }
+
+    /** @return 当前逻辑主题标识（system/auto/自定义），用于诊断与状态同步。 */
+    public String logicalName() { return configuredName; }
 
     /**
      * 监听自定义主题目录的变化，变化后重新读取当前预览/已提交同名主题。

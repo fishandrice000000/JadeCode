@@ -72,10 +72,22 @@ public final class SettingsMenu {
             case "theme" -> "Choose system, dark, light, auto, or a custom theme file.";
             case "mode" -> "Switch between fullscreen and regular without restarting the session.";
             case "lightTheme", "darkTheme" -> "Theme used by the auto pair.";
-            case "fullscreenCopyOnSelect" -> "Copy a fullscreen selection when released.";
+            case "fullscreenCopyOnSelect" -> "Copy a fullscreen selection automatically when released.";
+            case "fullscreenScrollbar" -> "Scrollbar behavior in fullscreen; no effect in regular mode.";
+            case "fullscreenWheelScrollLines" -> "Lines per fullscreen wheel event; auto accelerates fast spins.";
             case "showHardwareCursor" -> "Show the real cursor for IME positioning.";
+            case "editorPaddingX" -> "Horizontal padding inside the editor.";
+            case "outputPad" -> "Add breathing room around tool output.";
+            case "autocompleteMaxVisible" -> "Maximum completion rows shown below the editor.";
+            case "mermaidRendering" -> "Render Mermaid diagrams while streaming, only when final, or never.";
+            case "showImages" -> "Allow terminal image placeholders when the host supports them.";
             case "imageWidthCells" -> "Maximum terminal image width in cells.";
-            case "quietStartup" -> "Show only the compact brand line at startup.";
+            case "clearOnShrink" -> "Clear empty rows when content shrinks; may cause flicker.";
+            case "showTerminalProgress" -> "Show terminal progress in the tab title when supported.";
+            case "quietStartup" -> "Hide the loaded-resources hint at startup; branding remains.";
+            case "thinkingVisible" -> "Show thinking blocks in the transcript.";
+            case "toolsExpanded" -> "Expand tool results by default when supported.";
+            case "commandSuggestions" -> "Show slash-command completion suggestions.";
             default -> "Enter to change this setting; changes are saved to cli config.";
         };
     }
@@ -149,12 +161,14 @@ public final class SettingsMenu {
         Object clear = patch.getOrDefault("clearOnShrink", value.clearOnShrink());
         Object progress = patch.getOrDefault("showTerminalProgress", value.showTerminalProgress());
         Object quiet = patch.getOrDefault("quietStartup", value.quietStartup());
+        Object light = patch.getOrDefault("lightTheme", value.lightTheme());
+        Object dark = patch.getOrDefault("darkTheme", value.darkTheme());
         return new JadeSettings.Tui((String) theme, (String) mode, (String) exit, (String) scrollbar,
                 (Boolean) copy, (Integer) wheel, (Boolean) hardware, (Integer) padX, (Integer) outputPad,
                 (Integer) autoMax, (Boolean) thinking, (Boolean) tools, (Boolean) suggestions, (String) mermaid,
                 (Boolean) images, (Integer) imageWidth, (Boolean) clear, (Boolean) progress, (Boolean) quiet,
                 value.codeBlockIndent(), value.externalEditor(), value.keybindings(), value.escapeTimeoutMillis(),
-                value.lightTheme(), value.darkTheme());
+                (String) light, (String) dark);
     }
 
     private static String next(String value, List<String> values) {

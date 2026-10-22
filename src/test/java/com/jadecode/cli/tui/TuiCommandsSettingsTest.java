@@ -58,6 +58,19 @@ class TuiCommandsSettingsTest {
                 "custom candidate list must wrap back to auto");
     }
 
+    @Test void pairedThemePatchIsAppliedAndAutoUsesTheUpdatedPair(@TempDir Path dir) throws Exception {
+        var base = JadeSettings.defaults().tui();
+        var paired = SettingsMenu.apply(base, Map.of("lightTheme", "light", "darkTheme", "light"));
+        assertEquals("light", paired.lightTheme());
+        assertEquals("light", paired.darkTheme());
+        assertEquals("light", base.lightTheme(), "apply must not mutate the old snapshot");
+        var manager = new com.jadecode.tui.theme.ThemeManager("auto", null, true, "light", "dark");
+        assertEquals("dark", manager.preview().name());
+        manager.setPair("dark", "light");
+        assertEquals("light", manager.preview().name(), "auto must re-resolve using the updated pair");
+        manager.close();
+    }
+
     @Test void configDefaultsToSystemThemeButKeepsExplicitDarkAndUnknownFields(@TempDir Path dir) throws Exception {
         Path file = dir.resolve("config.json");
         Files.writeString(file, "{\"version\":1,\"tui\":{\"theme\":\"dark\",\"futureField\":true},\"custom\":{\"x\":1}}");

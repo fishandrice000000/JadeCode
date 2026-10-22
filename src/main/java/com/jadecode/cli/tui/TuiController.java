@@ -3,6 +3,7 @@ package com.jadecode.cli.tui;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
+import com.jadecode.config.JadeSettings;
 import com.jadecode.cli.SessionHost;
 import com.jadecode.cli.tui.approval.ApprovalViewState;
 import com.jadecode.cli.tui.bridge.ApprovalBroker;
@@ -14,6 +15,7 @@ import com.jadecode.cli.tui.view.SessionInfoView;
 import com.jadecode.safety.PermissionProfile;
 import com.jadecode.safety.approval.ApprovalAnswer;
 import com.jadecode.tui.components.Editor;
+import com.jadecode.tui.components.Input;
 import com.jadecode.tui.components.SelectList;
 import com.jadecode.tui.core.ActionToken;
 import com.jadecode.tui.core.Frame;
@@ -65,7 +67,10 @@ public final class TuiController {
     private final McpStatusView mcpView = new McpStatusView();
 
     private long ctrlC;
-    private String originalTheme;
+    private JadeSettings.Tui themeSnapshot;
+    private final java.util.ArrayDeque<SelectorParent> selectorParents = new java.util.ArrayDeque<>();
+    private record SelectorParent(String kind, SelectList list, String filter, String selectedId, String hint,
+            String title, String description, String footer, String status) { }
     private boolean savePermissionDefault;
     private java.util.concurrent.CompletableFuture<Void> localWrites =
             java.util.concurrent.CompletableFuture.completedFuture(null);
@@ -192,10 +197,11 @@ public final class TuiController {
                 host.start(state.generation);
             }
             case UiEvent.SessionList list -> {
-                state.loadingResume = false; state.selectorKind = "Resume";
+                state.loadingResume = false;
                 state.sessionPicker = new SessionPicker(list.sessions());
-                state.selector = state.sessionPicker.choices();
-                state.hint = list.sessions().isEmpty() ? UiMessages.NO_SESSIONS : "Select a session · Enter to resume";
+                openResumeSelector(state.sessionPicker.choices());
+                if (list.sessions().isEmpty()) state.selectorStatus = UiMessages.NO_SESSIONS;
+                refreshSelectorMeta();
             }
             case UiEvent.ResumeFailed failed -> {
                 state.loadingResume = false; awaiting.clear();
@@ -389,6 +395,12 @@ public final class TuiController {
         InputEvent.Mouse mouse = event.mouse();
         int row = mouse.y(), column = mouse.x();
         if (mouse.wheel()) {
+            if (state.selector != null && mouse.wheelDirection() != 0) {
+                state.selector.move(mouse.wheelDirection());
+                if (state.selectorKind.equals("Theme")) previewSelector();
+                refreshSelectorMeta();
+                return;
+            }
             // auto/固定行数与 Alt 倍速都由 ChatViewport 的同一策略计算，不能再乘一次。
             chat.wheel(mouse.wheelDirection(), mouse.alt());
             return;
@@ -406,6 +418,16 @@ public final class TuiController {
         // 只有显式左键能进入选区/链接/审批；中键等不产生动作。
         if (mouse.button() != 0) return;
         ActionToken hit = lastFrame.actionAt(column, row);
+        // 选择器打开时点击只作用于面板候选；点击搜索/说明区也不穿透成聊天选区。
+        if (state.selector != null && !state.approval.active()) {
+            if (mouse.action() == InputEvent.Mouse.Action.PRESS && hit != null
+                    && hit.kind() == ActionToken.Kind.SELECT_ITEM && hit.validAt(frame.revision())) {
+                state.selector.selectId(hit.objectId());
+                if (state.selectorKind.equals("Theme")) previewSelector();
+                refreshSelectorMeta();
+            }
+            return;
+        }
         // 审批优先：按下按钮必须满足显式左键/命中/水位/已呈现；拖动与释放绝不答复。
         if (state.approval.active()) {
             if (mouse.action() == InputEvent.Mouse.Action.PRESS && hit != null && hit.isApproval()
@@ -586,121 +608,343 @@ public final class TuiController {
         }
     }
 
-    /** 选择器输入：Esc 回滚；上下移动；输入文字过滤；Enter 分派。 */
+    /**
+     * 选择器输入：搜索框使用 Input（字素/光标/水平滚动），上下/翻页/Enter/Esc 由这里处理。
+     * 设置页查询为空时 Space 切值；非空查询里的空格属于搜索文本，不吞成切换。释放事件
+     * 由 actionableKey 过滤，不会重复执行。
+     */
     private void selectorInput(InputEvent event) {
+        if (state.selector == null) return;
+        // 测试/恢复路径可能只有候选而没有 Input；按当前 kind 延迟建立，保持同一语义。
+        if (state.selectorInput == null) initSelectorInput(selectorPlaceholder(state.selectorKind), state.selector.filter());
         if (event.kind() == InputEvent.Kind.TEXT) {
-            state.selector.filter(state.selector.filter() + event.text()); return;
+            if (event.text().equals(" ") && state.selectorKind.equals("Settings")
+                    && state.selectorInput.text().isEmpty()) {
+                chooseSelector();
+                return;
+            }
+            if (state.selectorInput.handle(event)) syncSelectorFilter();
+            return;
         }
-        if (event.kind() == InputEvent.Kind.PASTE) return;
+        if (event.kind() == InputEvent.Kind.PASTE) {
+            if (state.selectorInput.handle(event)) syncSelectorFilter();
+            return;
+        }
         if (event.kind() != InputEvent.Kind.KEY || !event.actionableKey()) return;
         KeyChord key = event.key();
         switch (key.key()) {
             case "escape" -> { cancelSelector(); return; }
-            case "up" -> { state.selector.move(-1); previewSelector(); return; }
-            case "down" -> { state.selector.move(1); previewSelector(); return; }
-            case "pageup" -> { state.selector.page(-1, 5); return; }
-            case "pagedown" -> { state.selector.page(1, 5); return; }
-            case "backspace" -> {
-                String filter = state.selector.filter();
-                if (!filter.isEmpty()) state.selector.filter(DisplayWidth.take(filter, DisplayWidth.width(filter) - 1));
-                return;
-            }
+            case "up" -> { state.selector.move(-1); previewSelector(); refreshSelectorMeta(); return; }
+            case "down" -> { state.selector.move(1); previewSelector(); refreshSelectorMeta(); return; }
+            case "pageup" -> { state.selector.page(-1, 5); refreshSelectorMeta(); return; }
+            case "pagedown" -> { state.selector.page(1, 5); refreshSelectorMeta(); return; }
             case "enter" -> { chooseSelector(); return; }
             default -> { }
         }
         if (key.key().equals("n") && key.has(KeyChord.Modifier.CTRL) && state.selectorKind.equals("Resume")) {
-            state.sessionPicker.toggleNamedOnly(); state.selector = state.sessionPicker.choices(); return;
+            state.sessionPicker.toggleNamedOnly(); rebuildSessionSelector(); return;
         }
         if (key.key().equals("p") && key.has(KeyChord.Modifier.CTRL) && state.selectorKind.equals("Resume")) {
-            state.sessionPicker.togglePath(); state.selector = state.sessionPicker.choices(); return;
+            state.sessionPicker.togglePath(); rebuildSessionSelector(); return;
         }
         if (key.key().equals("s") && key.has(KeyChord.Modifier.CTRL) && state.selectorKind.equals("Resume")) {
-            state.sessionPicker.toggleSort(); state.selector = state.sessionPicker.choices(); return;
+            state.sessionPicker.toggleSort(); rebuildSessionSelector(); return;
+        }
+        // 左右/Home/End/退格/删除等编辑键交给 Input，保持字素边界与搜索光标。
+        if (state.selectorInput.handle(event)) syncSelectorFilter();
+    }
+
+    /** 搜索框文字是唯一查询源；过滤后重新计算说明和窗口。 */
+    private void syncSelectorFilter() {
+        if (state.selector == null || state.selectorInput == null) return;
+        state.selector.filter(state.selectorInput.text());
+        refreshSelectorMeta();
+    }
+
+    private void initSelectorInput(String placeholder, String filter) {
+        state.selectorInput = new Input(placeholder, text -> { });
+        state.selectorInput.setText(filter == null ? "" : filter);
+    }
+
+    private String selectorPlaceholder(String kind) {
+        return switch (kind) {
+            case "Settings" -> "Search settings";
+            case "Theme" -> "Search themes";
+            case "Resume" -> "Search sessions";
+            case "Thinking" -> "Search thinking levels";
+            case "Permission" -> "Search permissions";
+            case "PermissionConfirm" -> "Search";
+            default -> "Search";
+        };
+    }
+
+    private void openSettingsSelector() {
+        selectorParents.clear();
+        state.selectorKind = "Settings";
+        state.selector = settings.list();
+        state.selectorTitle = "";
+        state.selectorFooter = "Type to search · Enter/Space to change · Esc to cancel";
+        state.selectorStatus = "";
+        state.hint = "";
+        initSelectorInput(selectorPlaceholder("Settings"), "");
+        refreshSelectorMeta();
+    }
+
+    /** 打开 Theme 子菜单；父 Settings 的筛选/选中和逻辑设置快照在栈中保存。 */
+    private void openThemeSelector() {
+        pushSelectorParent();
+        themeSnapshot = settings.current();
+        themes.beginPreview();
+        state.selectorKind = "Theme";
+        var items = new java.util.ArrayList<SelectList.Item>();
+        for (String choice : settings.themeChoices())
+            items.add(new SelectList.Item(choice, choice, ""));
+        state.selector = new SelectList(items, true);
+        state.selector.selectId(settings.current().theme());
+        state.selectorTitle = "Theme";
+        state.selectorFooter = "Enter apply · Esc back";
+        state.selectorStatus = "";
+        state.hint = "";
+        initSelectorInput(selectorPlaceholder("Theme"), "");
+        refreshSelectorMeta();
+    }
+
+    private void openResumeSelector(SelectList choices) {
+        selectorParents.clear();
+        state.selectorKind = "Resume";
+        state.selector = choices;
+        state.selectorTitle = "Resume session";
+        state.selectorFooter = "Enter resume · Ctrl+N named · Ctrl+P path · Ctrl+S sort · Esc cancel";
+        state.hint = "";
+        initSelectorInput(selectorPlaceholder("Resume"), "");
+        refreshSelectorMeta();
+    }
+
+    private void openThinkingSelector() {
+        selectorParents.clear();
+        state.selectorKind = "Thinking";
+        var items = new java.util.ArrayList<SelectList.Item>();
+        var current = state.session == null ? null : state.session.thinking();
+        for (var thinking : state.session.thinkingChoices())
+            items.add(new SelectList.Item(thinking.value(),
+                    (thinking.equals(current) ? "✓ " : "  ") + thinking.value(),
+                    thinking.value()));
+        state.selector = new SelectList(items, true);
+        state.selector.selectId(current == null ? "" : current.value());
+        state.selectorTitle = "Thinking level";
+        state.selectorFooter = "Enter select · Esc back";
+        state.selectorStatus = "";
+        state.hint = "";
+        initSelectorInput(selectorPlaceholder("Thinking"), "");
+        refreshSelectorMeta();
+    }
+
+    private void openPermissionSelector() {
+        selectorParents.clear();
+        state.selectorKind = "Permission";
+        state.selector = PermissionMenu.choices(host.current().permissionState().snapshot().profile());
+        state.selectorTitle = "Permission";
+        state.selectorFooter = "Enter select · Esc cancel";
+        state.selectorStatus = "";
+        state.hint = "";
+        initSelectorInput(selectorPlaceholder("Permission"), "");
+        refreshSelectorMeta();
+    }
+
+    /** Full Access 的二次确认是 Permission 子页；Esc 返回父页，不直接扩大授权。 */
+    private void openPermissionConfirm() {
+        pushSelectorParent();
+        state.selectorKind = "PermissionConfirm";
+        state.selector = PermissionMenu.confirm();
+        state.selectorTitle = "Enable Full Access?";
+        state.selectorFooter = "Enter confirm · Esc back";
+        state.selectorStatus = "";
+        state.hint = "";
+        initSelectorInput(selectorPlaceholder("PermissionConfirm"), "");
+        refreshSelectorMeta();
+    }
+
+    private void pushSelectorParent() {
+        if (state.selector == null) return;
+        selectorParents.push(new SelectorParent(state.selectorKind, state.selector, state.selector.filter(),
+                state.selector.selected(), state.hint, state.selectorTitle, state.selectorDescription,
+                state.selectorFooter, state.selectorStatus));
+    }
+
+    /**
+     * 返回父选择器并保留筛选/选中；Settings 父页用当前设置快照重建，Theme 确认后行值立即更新。
+     */
+    private void restoreSelectorParent(boolean rebuildSettings) {
+        SelectorParent parent = selectorParents.poll();
+        if (parent == null) { closeSelector(); return; }
+        state.selectorKind = parent.kind();
+        state.selector = rebuildSettings && parent.kind().equals("Settings") ? settings.list() : parent.list();
+        state.selector.filter(parent.filter());
+        state.selector.selectId(parent.selectedId());
+        state.selectorTitle = parent.title();
+        state.selectorDescription = parent.description();
+        state.selectorFooter = parent.footer();
+        state.selectorStatus = parent.status();
+        state.hint = parent.hint();
+        initSelectorInput(selectorPlaceholder(parent.kind()), parent.filter());
+        refreshSelectorMeta();
+    }
+
+    private void closeSelector() {
+        state.selector = null; state.selectorInput = null; state.selectorKind = "";
+        state.selectorTitle = ""; state.selectorDescription = ""; state.selectorFooter = ""; state.selectorStatus = "";
+        state.hint = "";
+        selectorParents.clear();
+    }
+
+    /** 设置/权限/主题/思考/会话的选中说明随当前项变化。 */
+    private void refreshSelectorMeta() {
+        if (state.selector == null) return;
+        String selected = state.selector.selected();
+        String kind = state.selectorKind;
+        switch (kind) {
+            case "Settings" -> {
+                state.selectorDescription = selected == null ? "" : settings.description(selected);
+                state.selectorStatus = "";
+            }
+            case "Theme" -> {
+                String current = settings.current().theme();
+                String effective = themes.preview().name();
+                state.selectorDescription = "Current setting: " + current + " · effective palette: " + effective
+                        + (selected == null || selected.equals(current) ? "" : " · preview: " + selected);
+                state.selectorStatus = "";
+            }
+            case "Resume" -> {
+                var item = state.selector.selectedItem();
+                state.selectorDescription = item == null ? "" : "Resume: " + item.label();
+                if (state.selector.size() == 0 && !state.selectorStatus.isBlank()) {
+                    // 空列表/无匹配保留 Controller 设置的真实提示，不用排序状态覆盖。
+                } else {
+                    state.selectorStatus = (state.sessionPicker.namedOnly() ? "Named only" : "All sessions")
+                            + " · " + (state.sessionPicker.pathsVisible() ? "Paths shown" : "Paths hidden")
+                            + " · " + (state.sessionPicker.recentFirst() ? "Newest first" : "Title order");
+                }
+            }
+            case "Thinking" -> {
+                String current = state.session == null || state.session.thinking() == null ? "unknown"
+                        : state.session.thinking().value();
+                state.selectorDescription = "Current session level: " + current
+                        + ". Changes the next request; no default pool is saved.";
+                state.selectorStatus = "";
+            }
+            case "Permission" -> {
+                state.selectorDescription = PermissionMenu.description(selected);
+                state.selectorStatus = "";
+            }
+            case "PermissionConfirm" -> {
+                state.selectorDescription = "Full Access skips routine prompts; explicit denies and hard protections remain.";
+                state.selectorStatus = "";
+            }
+            default -> state.selectorDescription = "";
         }
     }
 
+    /** 主题子页只预览；Esc 会恢复原逻辑 theme+配对快照。 */
     private void previewSelector() {
         if (!state.selectorKind.equals("Theme")) return;
         String selected = state.selector.selected();
         if (selected == null) return;
         String error = themes.preview(selected);
         if (!error.isEmpty()) state.hint = error;
+        else state.hint = "";
+    }
+
+    private void rebuildSessionSelector() {
+        if (state.selector == null || state.sessionPicker == null) return;
+        String filter = state.selector.filter();
+        String selected = state.selector.selected();
+        state.selector = state.sessionPicker.choices();
+        state.selector.filter(filter);
+        if (selected != null) state.selector.selectId(selected);
+        state.selectorStatus = "";
+        refreshSelectorMeta();
     }
 
     private void cancelSelector() {
         if (state.selectorKind.equals("Theme")) {
             themes.cancelPreview();
-            if (originalTheme != null) themes.reload(originalTheme);
+            if (themeSnapshot != null) settings.reload(themeSnapshot);
+            themeSnapshot = null;
+        }
+        if (state.selectorKind.equals("PermissionConfirm") || !selectorParents.isEmpty()) {
+            restoreSelectorParent(false);
+            return;
         }
         String kind = state.selectorKind;
-        state.selector = null; state.sessionPicker = null; state.selectorKind = ""; state.hint = "";
+        closeSelector();
         if (kind.equals("Resume") && !host.hasCurrent()) close();
     }
 
     private void chooseSelector() {
-        String selectedId = state.selector.selected();
+        String selectedId = state.selector == null ? null : state.selector.selected();
         if (selectedId == null) return;
         String kind = state.selectorKind;
         switch (kind) {
             case "Resume" -> {
                 String id = state.sessionPicker.id(selectedId);
-                state.selector = null; state.sessionPicker = null; state.selectorKind = "";
+                closeSelector();
                 if (id != null) resume(id);
             }
             case "Theme" -> {
-                state.selector = null; state.selectorKind = "";
+                String error = themes.preview(selectedId);
+                if (!error.isEmpty()) { state.hint = error; refreshSelectorMeta(); return; }
                 themes.applyPreview();
+                // 逻辑值来自用户选择，不从未解析调色板 name 反推；配对字段保留在当前快照。
+                settings.reload(SettingsMenu.apply(settings.current(), Map.of("theme", selectedId)));
                 preferences.saveLater(Map.of("theme", selectedId), failed -> {
-                    // 成功静默：主题已由预览/实际色板体现；失败仍要可见。
                     if (failed != null) events.accept(new UiEvent.Message("System", "Warning",
                             UiMessages.NOT_SAVED + failed.getMessage(), true));
                 });
+                themeSnapshot = null;
+                if (!selectorParents.isEmpty()) restoreSelectorParent(true); else closeSelector();
             }
             case "Thinking" -> {
-                state.selector = null; state.selectorKind = "";
+                closeSelector();
                 try { changeThinking(com.jadecode.llm.ThinkingSettings.parse(selectedId)); }
                 catch (IllegalArgumentException invalid) { state.hint = invalid.getMessage(); }
             }
-            case "Permission" -> {
-                state.selector = null; state.selectorKind = "";
-                choosePermission(PermissionProfile.parse(selectedId));
-            }
+            case "Permission" -> choosePermission(PermissionProfile.parse(selectedId));
             case "PermissionConfirm" -> {
-                state.selector = null; state.selectorKind = "";
-                if (selectedId.equals("confirm")) applyPermission(PermissionProfile.FULL_ACCESS);
-                else state.hint = "Permission unchanged";
+                if (selectedId.equals("confirm")) { closeSelector(); applyPermission(PermissionProfile.FULL_ACCESS); }
+                else restoreSelectorParent(false);
             }
             case "Settings" -> {
+                String filter = state.selector.filter();
                 if (selectedId.equals("theme")) {
-                    originalTheme = themes.preview().name();
-                    state.selectorKind = "Theme";
-                    var items = new java.util.ArrayList<SelectList.Item>();
-                    for (String choice : settings.themeChoices())
-                        items.add(new SelectList.Item(choice, choice, ""));
-                    state.selector = new SelectList(items, true);
+                    openThemeSelector();
                     return;
                 }
                 if (selectedId.equals("mode")) {
                     String mode = settings.current().mode().equals("fullscreen") ? "regular" : "fullscreen";
                     settings.reload(SettingsMenu.apply(settings.current(), Map.of("mode", mode)));
-                    state.selector = settings.list();
-                    state.selector.selectId("mode");
                     terminal.setMode(mode);
-                    // 成功只由菜单当前值与实际显示体现；只有真实写盘失败才进转录。
                     preferences.saveLater(Map.of("mode", mode), failed -> {
                         if (failed != null) events.accept(new UiEvent.Message("System", "Warning",
                                 UiMessages.NOT_SAVED + failed.getMessage(), true));
                     });
+                    rebuildSettingsSelector(filter, selectedId);
                     return;
                 }
                 Map<String, Object> patch = settings.cycle(selectedId);
                 if (patch.isEmpty()) return;
                 applySettingsPatch(patch);
-                state.selector = settings.list();
-                state.selector.selectId(selectedId);
+                rebuildSettingsSelector(filter, selectedId);
             }
             default -> { }
         }
+    }
+
+    private void rebuildSettingsSelector(String filter, String selectedId) {
+        state.selector = settings.list();
+        state.selector.filter(filter);
+        state.selector.selectId(selectedId);
+        if (state.selectorInput != null) state.selectorInput.setText(filter);
+        refreshSelectorMeta();
     }
 
     /**
@@ -713,6 +957,7 @@ public final class TuiController {
         if (patch.containsKey("thinkingVisible")) state.thinkingVisible = updated.thinkingVisible();
         if (patch.containsKey("toolsExpanded")) { state.toolsExpanded = updated.toolsExpanded();
             state.transcript.setToolsExpanded(state.toolsExpanded); }
+        if (patch.containsKey("quietStartup")) state.quietStartup = updated.quietStartup();
         if (patch.containsKey("fullscreenScrollbar")) {
             try { chat.setScrollbar(ChatViewport.Scrollbar.valueOf(updated.fullscreenScrollbar().toUpperCase(java.util.Locale.ROOT))); }
             catch (IllegalArgumentException ignored) { }
@@ -723,6 +968,9 @@ public final class TuiController {
             chat.setWheelScrollLines(updated.fullscreenWheelScrollLines());
         }
         if (patch.containsKey("autocompleteMaxVisible")) editor.setCompletionMaxVisible(updated.autocompleteMaxVisible());
+        if (patch.containsKey("lightTheme") || patch.containsKey("darkTheme"))
+            themes.setPair(updated.lightTheme(), updated.darkTheme());
+        // 普通设置成功保持安静；写盘结果只报告真实失败。
         preferences.saveLater(patch, failed -> {
             if (failed != null) events.accept(new UiEvent.Message("System", "Warning",
                     UiMessages.NOT_SAVED + failed.getMessage(), true));
@@ -738,9 +986,11 @@ public final class TuiController {
         if (!host.hasCurrent()) { state.hint = "Open a session first"; return; }
         if (profile == PermissionProfile.FULL_ACCESS
                 && host.current().permissionState().snapshot().profile() != profile) {
-            state.selectorKind = "PermissionConfirm"; state.selector = PermissionMenu.confirm();
-            state.hint = "Full Access skips routine prompts; explicit denies remain in force";
-        } else applyPermission(profile);
+            openPermissionConfirm();
+        } else {
+            if (state.selector != null) closeSelector();
+            applyPermission(profile);
+        }
     }
 
     private void applyPermission(PermissionProfile profile) {
@@ -813,19 +1063,14 @@ public final class TuiController {
                 if (arguments.isEmpty()) { editor.replaceText("/name "); state.hint = "Type a title after /name"; return false; }
                 saveLocal("Rename", id -> host.rename(id, arguments), "Session renamed: " + arguments); return true;
             }
-            case "/settings" -> {
-                state.selectorKind = "Settings"; state.selector = settings.list();
-                state.hint = "Enter change · Esc return to draft"; return true;
-            }
-            case "/session" -> { addNotice("Session", "Session", sessionInfo.render(state, renderContext(), columns)); return true; }
-            case "/hotkeys" -> { addNotice("Hotkeys", "Hotkeys", hotkeys.render(keys, catalog.helpLines(),
-                    renderContext(), columns)); return true; }
+            case "/settings" -> { openSettingsSelector(); return true; }
+            case "/session" -> { addNotice("Session", "Session", sessionInfo.markdown(state)); return true; }
+            case "/hotkeys" -> { addNotice("Hotkeys", "Hotkeys", hotkeys.markdown(keys, catalog.commands())); return true; }
             case "/copy" -> { copyLastReply(); return true; }
             case "/model" -> {
-                refreshSession();
-                String detail = state.modelInfo == null || state.modelInfo.isBlank() ? state.model : state.modelInfo;
-                state.transcript.addNotice("System", "Model", (detail == null ? "" : detail)
-                        + (detail == null || detail.isBlank() ? "" : "\n") + UiMessages.NO_MODEL_SWITCH, false);
+                // UI 测试/无 Host 的只读展示仍可工作；生产装配中 Host 存在时刷新真实快照。
+                if (host != null) refreshSession();
+                addNotice("System", "Model", sessionInfo.modelMarkdown(state));
                 return true;
             }
             case "/thinking" -> {
@@ -833,10 +1078,7 @@ public final class TuiController {
                     if (state.session == null || state.session.thinkingChoices().size() < 2) {
                         state.hint = UiMessages.NO_THINKING; return true;
                     }
-                    var items = new java.util.ArrayList<SelectList.Item>();
-                    for (var thinking : state.session.thinkingChoices())
-                        items.add(new SelectList.Item(thinking.value(), thinking.value(), ""));
-                    state.selector = new SelectList(items, true); state.selectorKind = "Thinking";
+                    openThinkingSelector();
                 } else {
                     try { changeThinking(com.jadecode.llm.ThinkingSettings.parse(arguments)); }
                     catch (IllegalArgumentException invalid) { state.hint = invalid.getMessage(); }
@@ -848,28 +1090,21 @@ public final class TuiController {
                 String value = savePermissionDefault ? arguments.substring(8).strip() : arguments;
                 if (value.isEmpty()) {
                     if (!host.hasCurrent()) { state.hint = "Open a session first"; return true; }
-                    state.selectorKind = "Permission";
-                    state.selector = PermissionMenu.choices(host.current().permissionState().snapshot().profile());
+                    openPermissionSelector();
                 } else {
                     try { choosePermission(PermissionProfile.parse(value)); }
                     catch (IllegalArgumentException invalid) { state.hint = invalid.getMessage(); }
                 }
                 return true;
             }
-            case "/mcp" -> { addNotice("MCP", "MCP", mcpView.render(state.mcpServers, renderContext(), columns)); return true; }
+            case "/mcp" -> { addNotice("MCP", "MCP", mcpView.markdown(state.mcpServers)); return true; }
             default -> { state.hint = "Unknown command: " + name; return false; }
         }
     }
 
-    private com.jadecode.tui.core.RenderContext renderContext() {
-        return new com.jadecode.tui.core.RenderContext(Math.max(20, columns), Math.max(10, rows),
-                themes.preview(), com.jadecode.tui.terminal.TerminalCapabilities.detect(java.util.Map.of()),
-                System.nanoTime(), state.transcript.revision());
-    }
-
-    private void addNotice(String actor, String title, List<StyledLine> lines) {
-        String text = lines.stream().map(StyledLine::text).collect(java.util.stream.Collectors.joining("\n"));
-        state.transcript.addNotice(actor, title, text, false);
+    /** 命令帮助以语义 Markdown 存入 NOTICE，由 MessageCard/固定引擎按当前主题/宽度重排。 */
+    private void addNotice(String actor, String title, String markdown) {
+        state.transcript.addNotice(actor, title, markdown == null ? "" : markdown, false);
     }
 
     /** 打开会话清单；只读清单，不解析每份日志。 */
