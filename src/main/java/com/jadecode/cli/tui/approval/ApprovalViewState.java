@@ -83,22 +83,25 @@ public final class ApprovalViewState {
     }
 
     /**
-     * 采用成功呈现的帧作为证据。只有帧中确实包含本申请的任一审批按钮且 epoch 匹配才成立；
-     * 重绘未包含（例如窗口太小）时保持未显示，禁止批准。
+     * 采用成功呈现的帧作为证据。帧中必须包含本申请动作且匹配当前终端 epoch；
+     * 失效后允许同一请求绑定新 epoch/生产水位，不能永久固定为到达时的 epoch。
+     * 普通重绘只更新帧号；不含当前动作时清证据，小屏至多只存在安全 DENY 动作。
      */
     public void presented(PresentedFrame frame, long epoch, long inputWatermark) {
-        if (request == null || frame == null || epoch != request.epoch()) return;
+        if (request == null || frame == null) return;
+        if (frame.terminalEpoch() != epoch) { invalidate(); return; }
         boolean contains = frame.actions().stream().anyMatch(token -> token.isApproval()
                 && token.objectId().equals(request.id()) && token.revision() == request.revision());
         if (contains) {
+            boolean rebind = !presented || epoch != request.epoch();
             presented = true; presentedFrameId = frame.frameId();
             // 以“首次显示”的水位为准；重复呈现不抬高门槛，避免用户每移动一次都要等一帧。
-            if (request.inputWatermark() < 0) {
+            if (rebind || request.inputWatermark() < 0) {
                 request = new Request(request.id(), request.actor(), request.tool(), request.arguments(),
                         request.reason(), request.suggestion(), request.revision(), inputWatermark,
-                        request.epoch(), frame.frameId());
+                        epoch, frame.frameId());
             }
-        }
+        } else invalidate();
     }
 
     /** resize/模式切换/权限变更：立即让旧证据失效。 */
@@ -107,7 +110,7 @@ public final class ApprovalViewState {
     /** 选择导航；无 suggestion 时跳过“允许类似”选项。 */
     public void move(int direction, boolean hasSuggestion) {
         if (request == null || direction == 0) return;
-        int next = choice < 0 ? (direction > 0 ? 0 : (hasSuggestion ? 2 : 1)) : choice + direction;
+        int next = choice < 0 ? (direction > 0 ? 0 : 2) : choice + direction;
         if (!hasSuggestion && next == 1) next += direction;
         choice = Math.floorMod(next, 3);
     }
@@ -141,7 +144,7 @@ public final class ApprovalViewState {
      */
     public boolean canAnswer(long sequence, long epoch, PresentedFrame frame, ActionToken.Kind action) {
         if (request == null || !presented || frame == null) return false;
-        if (frame.frameId() != presentedFrameId || epoch != request.epoch()) return false;
+        if (frame.frameId() != presentedFrameId || epoch != request.epoch() || frame.terminalEpoch() != epoch) return false;
         if (sequence <= request.inputWatermark()) return false;
         boolean contains = frame.actions().stream().anyMatch(token -> token.kind() == action
                 && token.objectId().equals(request.id()) && token.revision() == request.revision());

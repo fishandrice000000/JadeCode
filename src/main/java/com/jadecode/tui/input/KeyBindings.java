@@ -83,6 +83,13 @@ public final class KeyBindings {
         action("tui.input.submit", "Submit input", Context.EDITOR, "enter");
         action("tui.input.tab", "Tab completion", Context.EDITOR, "tab");
         action("tui.input.copy", "Copy selection", Context.EDITOR, Support.HIDDEN);
+        // 审批是独立上下文；帮助与实际路由共享这份目录，避免竖排后仍提示左右选择/Esc无效。
+        action("approval.previous", "Previous approval option", Context.APPROVAL, "up", "left", "shift+tab");
+        action("approval.next", "Next approval option", Context.APPROVAL, "down", "right", "tab");
+        action("approval.confirm", "Confirm selected option", Context.APPROVAL, "enter");
+        action("approval.deny", "Deny current request", Context.APPROVAL, "escape");
+        action("approval.pageUp", "Read previous details", Context.APPROVAL, "pageup");
+        action("approval.pageDown", "Read next details", Context.APPROVAL, "pagedown");
         action("tui.select.up", "Previous item", Context.SELECT, "up");
         action("tui.select.down", "Next item", Context.SELECT, "down");
         action("tui.select.pageUp", "Previous page", Context.SELECT, "pageup");

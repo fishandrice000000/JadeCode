@@ -16,12 +16,21 @@ public final class HotkeysView {
     public CommandPanelModel panel(KeyBindings bindings, List<CommandCatalog.Command> commands,
             long generation, long sourceRevision) {
         var groups = new ArrayList<CommandPanelModel.Group>();
+        // 常用页只保存真实目录的索引：重绑定或隐藏动作后，这里的键名不会漂移。
+        var common = new ArrayList<CommandPanelModel.Entry>();
+        for (String id : List.of("tui.input.submit", "tui.input.newLine", "tui.input.tab", "app.tools.expand",
+                "app.thinking.toggle", "app.editor.external", "app.clipboard.pasteImage", "app.suspend")) {
+            bindings.visible().stream().filter(action -> action.id().equals(id) && !bindings.chords(id).isEmpty())
+                    .findFirst().ifPresent(action -> common.add(
+                            new CommandPanelModel.Entry(keys(bindings, action.id()), action.label(), "")));
+        }
+        if (!common.isEmpty()) groups.add(new CommandPanelModel.Group("common", "Common", common));
         String[] contexts = {"GLOBAL", "EDITOR", "SELECT", "ALT_SCREEN", "SEARCH", "APPROVAL"};
         for (String context : contexts) {
             var entries = new ArrayList<CommandPanelModel.Entry>();
             for (var action : bindings.visible()) {
-                if (!action.context().name().equals(context) || action.keys().isBlank()) continue;
-                entries.add(new CommandPanelModel.Entry(action.keys(), action.label(), ""));
+                if (!action.context().name().equals(context) || bindings.chords(action.id()).isEmpty()) continue;
+                entries.add(new CommandPanelModel.Entry(keys(bindings, action.id()), action.label(), ""));
             }
             if (!entries.isEmpty())
                 groups.add(new CommandPanelModel.Group(context.toLowerCase(java.util.Locale.ROOT),
@@ -32,8 +41,14 @@ public final class HotkeysView {
             commandEntries.add(new CommandPanelModel.Entry(command.usage(), command.description(), ""));
         if (!commandEntries.isEmpty())
             groups.add(new CommandPanelModel.Group("commands", "Commands", commandEntries));
-        return new CommandPanelModel(CommandPanelModel.Kind.HOTKEYS, "Keys and commands", generation,
+        return new CommandPanelModel(CommandPanelModel.Kind.HOTKEYS, "Hotkeys", generation,
                 sourceRevision, groups, List.of(), List.of(), "No supported keys or commands are available.");
+    }
+
+    /** 从生效绑定读取键名，配置覆盖或解绑也会反映到常用页和完整分类。 */
+    private static String keys(KeyBindings bindings, String id) {
+        return bindings.chords(id).stream().map(com.jadecode.tui.input.KeyChord::display)
+                .collect(java.util.stream.Collectors.joining(", "));
     }
 
     private static String groupTitle(String group) {

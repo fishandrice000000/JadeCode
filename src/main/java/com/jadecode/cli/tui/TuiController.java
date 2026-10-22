@@ -166,9 +166,19 @@ public final class TuiController {
 
     /** Application 成功呈现后调用，建立动作证据并让审批水位对齐。 */
     public void presented(PresentedFrame frame, Frame rawFrame) {
+        // 兼容已有内存帧调用：首次呈现前 state 可能尚未收到任何终端事件。
+        // 不能倒退已知 epoch；生产 Application 使用下方显式终端代次/生产水位入口。
+        presented(frame, rawFrame, state.inputSequence,
+                frame == null ? state.terminalEpoch : Math.max(state.terminalEpoch, frame.terminalEpoch()));
+    }
+
+    /** 成功 flush 后绑定当前代次及生产端水位；旧帧不因 UI 消费延迟而恢复资格。 */
+    public void presented(PresentedFrame frame, Frame rawFrame, long producedWatermark, long epoch) {
+        if (frame == null || frame.terminalEpoch() != epoch) { invalidateActions(); return; }
+        state.terminalEpoch = epoch;
         state.presented = frame;
         lastFrame = rawFrame;
-        if (state.approval.active()) state.approval.presented(frame, state.terminalEpoch, state.inputSequence);
+        if (state.approval.active()) state.approval.presented(frame, epoch, producedWatermark);
     }
 
     /** 模式切换/resize 立即失效旧动作。 */
@@ -209,6 +219,8 @@ public final class TuiController {
                 state.transcript.addNotice("System", "Resume", failed.message(), true);
             }
             case UiEvent.Input input -> {
+                // resize/恢复之后迟到的旧鼠标与按键不能把当前 epoch 改回去。
+                if (input.input().terminalEpoch() < state.terminalEpoch) return true;
                 state.inputSequence = Math.max(state.inputSequence, input.input().sequence());
                 state.terminalEpoch = input.input().terminalEpoch();
                 input(input.input());
@@ -571,27 +583,28 @@ public final class TuiController {
         terminal.copy(text, true);
     }
 
-    /** 审批输入：阅读键不答复；左右/Tab 改选择；Enter 需证据与显式选择。 */
+    /** 审批输入：上下/左右/Tab 选择，翻页只阅读；Enter 显式确认，Esc 安全拒绝当前项。 */
     private void approvalInput(InputEvent event) {
         if (event.kind() != InputEvent.Kind.KEY || !event.actionableKey()) return;
         KeyChord key = event.key();
         var approval = state.approval;
+        if (matches("approval.previous", event) || matches("approval.next", event)) {
+            approval.move(matches("approval.previous", event) ? -1 : 1, !approval.request().suggestion().isBlank());
+            return;
+        }
+        if (matches("approval.pageUp", event) || matches("approval.pageDown", event)) {
+            approval.scroll((matches("approval.pageUp", event) ? -1 : 1) * Math.max(1, approval.pageSize()));
+            return;
+        }
         switch (key.key()) {
-            case "up" -> { approval.scroll(-1); return; }
-            case "down" -> { approval.scroll(1); return; }
-            case "pageup" -> { approval.scroll(-Math.max(1, approval.pageSize())); return; }
-            case "pagedown" -> { approval.scroll(Math.max(1, approval.pageSize())); return; }
             case "home" -> { approval.scroll(-approval.totalLines()); return; }
             case "end" -> { approval.scroll(approval.totalLines()); return; }
             default -> { }
         }
-        if (key.key().equals("left") || key.key().equals("right") || key.key().equals("tab")) {
-            boolean backward = key.key().equals("left") || key.has(KeyChord.Modifier.SHIFT);
-            approval.move(backward ? -1 : 1, !approval.request().suggestion().isBlank());
-            return;
-        }
-        if (key.key().equals("enter")) {
-            var answer = approval.selectedAnswer();
+        // 导航可接收 repeat，确认/拒绝只接收 PRESS，避免长按连批或连拒下一请求。
+        if (key.phase() != KeyChord.Phase.PRESS) return;
+        if (matches("approval.confirm", event) || matches("approval.deny", event)) {
+            var answer = matches("approval.deny", event) ? ApprovalAnswer.DENY : approval.selectedAnswer();
             if (answer == null) return;
             ActionToken.Kind kind = answer == ApprovalAnswer.DENY ? ActionToken.Kind.DENY
                     : answer == ApprovalAnswer.ALLOW_SIMILAR ? ActionToken.Kind.ALLOW_SIMILAR : ActionToken.Kind.APPROVE;
@@ -600,7 +613,6 @@ public final class TuiController {
             removeApproval(approval.request().id());
             return;
         }
-        if (key.key().equals("escape")) { state.hint = "Esc does not answer an approval; use an explicit option"; }
         // 普通文字/粘贴/空 Enter 不批准也不拒绝。
     }
 
@@ -641,13 +653,15 @@ public final class TuiController {
             case "escape" -> { closeCommandPanel(); return; }
             case "up" -> { panel.moveService(-1); return; }
             case "down" -> { panel.moveService(1); return; }
-            case "pageup" -> { panel.page(-1, Math.max(1, viewportHeight - 2)); return; }
-            case "pagedown" -> { panel.page(1, Math.max(1, viewportHeight - 2)); return; }
+            case "pageup" -> { panel.page(-1); return; }
+            case "pagedown" -> { panel.page(1); return; }
             case "home" -> { panel.top(); return; }
             case "end" -> { panel.end(); return; }
             case "tab" -> { panel.moveSection(key.has(KeyChord.Modifier.SHIFT) ? -1 : 1); return; }
-            case "left" -> { panel.moveService(-1); return; }
-            case "right" -> { panel.moveService(1); return; }
+            case "left" -> { if (panel.model().kind() == com.jadecode.cli.tui.model.CommandPanelModel.Kind.HOTKEYS)
+                    panel.moveSection(-1); else panel.moveService(-1); return; }
+            case "right" -> { if (panel.model().kind() == com.jadecode.cli.tui.model.CommandPanelModel.Kind.HOTKEYS)
+                    panel.moveSection(1); else panel.moveService(1); return; }
             default -> { }
         }
     }

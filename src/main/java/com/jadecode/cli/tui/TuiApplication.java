@@ -66,6 +66,21 @@ import com.jadecode.tui.theme.ThemeManager;
  * 审批、停输入、等待本地写入，再按原顺序关闭 Host/终端，最后恢复全局流并输出一次告别。</p>
  */
 public final class TuiApplication {
+    /**
+     * 解码事件的唯一发布入口：序号分配与入队在同一锁内完成。
+     * 原始终端块和 StdinBuffer 有各自序号，不能混用作审批水位；重绘也不能用 MAX 哨兵。
+     * watermark 是生产端已发布水位，包含 UI 尚未消费的输入。
+     */
+    static final class InputPublisher {
+        private final Consumer<UiEvent> sink;
+        private long sequence;
+        InputPublisher(Consumer<UiEvent> sink) { this.sink = sink; }
+        synchronized void publish(InputEvent event) {
+            sink.accept(new UiEvent.Input(new InputEvent(event.kind(), event.key(), event.text(), event.mouse(),
+                    event.reply(), ++sequence, event.terminalEpoch())));
+        }
+        synchronized long watermark() { return sequence; }
+    }
     /** 装配用接收者；可注入假会话进行 PTY 验证，不读取真实凭据或调用付费模型。 */
     public record Wiring(Consumer<String> output, Consumer<String> errors, Supplier<ResponseStream> streams,
             ExecutionObserver observer, JadeSettings settings, com.jadecode.safety.PermissionState permissions) { }
@@ -98,6 +113,7 @@ public final class TuiApplication {
         var events = new LinkedBlockingQueue<UiEvent>();
         var accepting = new AtomicBoolean(true);
         Consumer<UiEvent> sink = event -> { if (accepting.get()) events.offer(event); };
+        var inputs = new InputPublisher(sink);
         var broker = new ApprovalBroker(sink);
         SessionHost host = null;
         TerminalSession terminal = null;
@@ -239,7 +255,7 @@ public final class TuiApplication {
                                 if (queries != null) queries.restart();
                                 // 编辑器可能改写了屏幕/终端模式；请求一次完整重绘（同 resize 路径）。
                                 long epoch = term.bumpEpoch();
-                                events.offer(new UiEvent.Input(InputEvent.resize(Long.MAX_VALUE, epoch)));
+                                inputs.publish(InputEvent.resize(0, epoch));
                             });
                         }
                         @Override public void pasteClipboard(Editor target) {
@@ -271,7 +287,7 @@ public final class TuiApplication {
             // 4. 终端协议/输入组装/读取线程；查询回复分流，绝不进入编辑器。
             var decoder = new InputDecoder(term.epoch());
             var buffer = new com.jadecode.tui.input.StdinBuffer(caps.escapeTimeoutMillis(),
-                    chunk -> { for (InputEvent decoded : decoder.decode(chunk)) events.offer(new UiEvent.Input(decoded)); },
+                    chunk -> { for (InputEvent decoded : decoder.decode(chunk)) inputs.publish(decoded); },
                     System::nanoTime);
             var queries = new TerminalQueries(text -> { term.write(text); });
             queriesRef.set(queries);
@@ -281,9 +297,9 @@ public final class TuiApplication {
                     case TerminalEvent.Resize resize -> {
                         long epoch = term.bumpEpoch();
                         state.clearFlash();
-                        events.offer(new UiEvent.Input(InputEvent.resize(event.sequence(), epoch)));
+                        inputs.publish(InputEvent.resize(0, epoch));
                     }
-                    case TerminalEvent.Eof eof -> events.offer(new UiEvent.Input(InputEvent.eof(event.sequence(), event.terminalEpoch())));
+                    case TerminalEvent.Eof eof -> inputs.publish(InputEvent.eof(0, event.terminalEpoch()));
                     case TerminalEvent.Failure failure -> sink.accept(new UiEvent.TerminalFailure(failure.message()));
                 }
             });
@@ -402,7 +418,8 @@ public final class TuiApplication {
                             themes, controller, renderer.mode(), terminal);
                     try {
                         PresentedFrame presented = renderer.present(composed.frame(), context);
-                        controller.presented(presented, composed.content());
+                        // 必须在成功 flush 后读取生产水位：flush 期间排队的 Enter 也属于旧输入。
+                        controller.presented(presented, composed.content(), inputs.watermark(), term.epoch());
                         scheduler.rendered();
                     } catch (IOException outputFailure) {
                         failureMessage = "Terminal output failed: " + outputFailure.getMessage();
@@ -503,10 +520,14 @@ public final class TuiApplication {
         var hits = new ArrayList<Frame.Hit>();
         if (mode == ScreenRenderer.Mode.FULLSCREEN) {
             int dockRows = Math.min(dock.lines().size(), Math.max(1, rows - 1));
-            int viewportHeight = Math.max(1, rows - dockRows);
+            int viewportHeight = Math.max(0, rows - dockRows);
             List<String> resources = List.of();
-            var viewport = chat.render(state, context.withHeight(viewportHeight), viewportHeight, resources,
-                    controller.welcomeExpanded(), true);
+            var viewport = viewportHeight == 0 ? new ArrayList<StyledLine>()
+                    : new ArrayList<>(chat.render(state, context.withHeight(viewportHeight), viewportHeight, resources,
+                            controller.welcomeExpanded(), true));
+            // 正文不足一屏时仍保留完整的可寻址区域；dock 固定在分配给它的位置，
+            // 居中弹窗也不再因正文行数太少而落到“列表之外”。这些空白不是转录内容。
+            while (viewport.size() < viewportHeight) viewport.add(StyledLine.empty());
             // 搜索 Overlay 覆盖视口，点击不能穿透；关闭后回到原编辑器草稿。
             if (controller.searchOpen()) {
                 var overlay = controller.searchOverlay();
@@ -588,7 +609,7 @@ public final class TuiApplication {
         var frame = new Frame(frameId, terminal.epoch(), context.revision(), displayed, cursor, visibleHits,
                 screenFlash, layer);
         int dockRows = Math.min(dock.lines().size(), Math.max(1, rows - 1));
-        int viewportHeight = fullscreen ? Math.max(1, rows - dockRows) : 0;
+        int viewportHeight = fullscreen ? Math.max(0, rows - dockRows) : 0;
         int dockTop = fullscreen ? viewportHeight : Math.max(0, cropped.size() - dock.lines().size());
         controller.layout(columns, rows, 0, viewportHeight, dockTop, fullscreen);
         return new Composed(frame, dock, contentFrame);
@@ -660,7 +681,7 @@ public final class TuiApplication {
 
     private static StyledLine composeOverlay(StyledLine base, StyledLine panel, int x, int width, int columns) {
         var spans = new ArrayList<Span>();
-        spans.addAll(base.crop(x).spans());
+        spans.addAll(base.crop(x).padTo(x, Style.PLAIN).spans());
         spans.addAll(panel.padTo(width, Style.PLAIN).crop(width).spans());
         if (x + width < columns) spans.addAll(dropColumns(base, x + width).spans());
         return new StyledLine(spans, base.annotation());

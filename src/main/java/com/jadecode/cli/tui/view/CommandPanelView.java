@@ -24,6 +24,8 @@ public final class CommandPanelView implements Component {
     private int scroll;
     private int section;
     private int service;
+    /** 每个快捷键分类保留自己的阅读位置；其它三种信息页仍使用原多列布局。 */
+    private final java.util.Map<String, Integer> categoryScroll = new java.util.HashMap<>();
     /** 最近一次布局中每个分组的正文起始行（含滚动前坐标），Tab 用它定位。 */
     private List<Integer> sectionStarts = List.of();
 
@@ -55,6 +57,12 @@ public final class CommandPanelView implements Component {
     /** Tab/Shift+Tab 切换分组；不跳出弹窗。 */
     public void moveSection(int direction) {
         if (model.groups().isEmpty() && model.fields().isEmpty() && model.services().isEmpty()) return;
+        if (model.kind() == CommandPanelModel.Kind.HOTKEYS && !model.groups().isEmpty()) {
+            categoryScroll.put(model.groups().get(section).id(), scroll);
+            section = Math.floorMod(section + direction, model.groups().size());
+            scroll = categoryScroll.getOrDefault(model.groups().get(section).id(), 0);
+            return;
+        }
         int count = Math.max(1, sectionStarts.size());
         section = Math.floorMod(section + direction, count);
         if (section < sectionStarts.size()) scroll = sectionStarts.get(section);
@@ -73,6 +81,9 @@ public final class CommandPanelView implements Component {
     /** 当前可见行数；渲染时记录，供 PageUp/Down 使用。 */
     private int lastBodyRows = 1;
     private int lastBodySize;
+
+    /** 以实际面板正文高度翻页，regular 不再依赖为零的聊天视口高度。 */
+    public void page(int direction) { page(direction, lastBodyRows); }
 
     @Override public List<StyledLine> render(RenderContext context, int width) {
         return render(context, width, Math.max(1, context.height()));
@@ -97,10 +108,12 @@ public final class CommandPanelView implements Component {
         if (budget < 6 && padding == 2) padding = 1;
         int contentWidth = Math.max(1, columns - 2 - padding * 2);
         boolean footer = budget >= 5;
-        int bodyRows = Math.max(1, budget - 2 - (footer ? 1 : 0));
+        boolean categories = model.kind() == CommandPanelModel.Kind.HOTKEYS && !model.groups().isEmpty() && budget >= 5;
+        int bodyRows = Math.max(1, budget - 2 - (footer ? 1 : 0) - (categories ? 1 : 0));
 
         List<Section> sections = buildSections(contentWidth);
         int columnCount = Math.min(3, Math.max(1, (contentWidth + 2) / 32));
+        if (model.kind() == CommandPanelModel.Kind.HOTKEYS) columnCount = 1;
         if (model.kind() == CommandPanelModel.Kind.MCP) columnCount = contentWidth >= 60 ? 2 : 1;
         int columnWidth = Math.max(8, (contentWidth - (columnCount - 1) * 2) / columnCount);
         if (columnWidth * columnCount + (columnCount - 1) * 2 > contentWidth) columnCount = 1;
@@ -143,6 +156,11 @@ public final class CommandPanelView implements Component {
 
         var out = new ArrayList<StyledLine>();
         out.add(topBorder(title, columns, context, padding));
+        if (categories) {
+            String navigation = "‹ " + oneLine(model.groups().get(section).title()) + " ›  "
+                    + (section + 1) + "/" + model.groups().size();
+            out.add(framedText(navigation, context.theme().style("accent"), columns, padding, contentWidth, context));
+        }
         for (int row = scroll; row < Math.min(bodySize, scroll + bodyRows); row++) {
             var spans = new ArrayList<Span>();
             spans.add(new Span("│" + " ".repeat(padding), context.theme().style("border"), null));
@@ -211,7 +229,7 @@ public final class CommandPanelView implements Component {
     private String hint() {
         return switch (model.kind()) {
             case MCP -> "↑↓ Service · Tab Section · PgUp/PgDn Scroll · Esc Close";
-            case HOTKEYS -> "↑↓ Scroll · Tab Section · PgUp/PgDn Scroll · Esc Close";
+            case HOTKEYS -> "←/→ Tab Category · ↑/↓ Scroll · Esc Close";
             default -> "↑↓ Scroll · PgUp/PgDn Scroll · Esc Close";
         };
     }
@@ -221,6 +239,11 @@ public final class CommandPanelView implements Component {
 
     private List<Section> buildSections(int columns) {
         var sections = new ArrayList<Section>();
+        if (model.kind() == CommandPanelModel.Kind.HOTKEYS && !model.groups().isEmpty()) {
+            var group = model.groups().get(section);
+            // 只把当前分类交给布局；分类导航保持在正文滚动区外。
+            return List.of(new Section("", group.entries(), List.of(), true));
+        }
         if (model.kind() == CommandPanelModel.Kind.MCP) {
             var services = new ArrayList<CommandPanelModel.Entry>();
             for (int i = 0; i < model.services().size(); i++) {
@@ -260,6 +283,15 @@ public final class CommandPanelView implements Component {
         return sections;
     }
 
+    /** 固定导航行也经过同一外框/留白/底色路径，避免短正文时右侧边框断开。 */
+    private static StyledLine framedText(String text, Style style, int columns, int padding,
+            int contentWidth, RenderContext context) {
+        String shown = DisplayWidth.ellipsize(text, contentWidth);
+        return panelLine(List.of(new Span("│" + " ".repeat(padding), context.theme().style("border"), null),
+                new Span(shown + " ".repeat(Math.max(0, contentWidth - DisplayWidth.width(shown))), style, null),
+                new Span(" ".repeat(padding) + "│", context.theme().style("border"), null)), columns, context);
+    }
+
     private List<StyledLine> renderSection(Section section, RenderContext context, int width, boolean selected) {
         var out = new ArrayList<StyledLine>();
         if (!section.title().isBlank())
@@ -273,7 +305,9 @@ public final class CommandPanelView implements Component {
         for (var entry : section.entries()) {
             var spans = new ArrayList<Span>();
             if (!entry.key().isEmpty()) {
-                String key = DisplayWidth.ellipsize(oneLine(entry.key()), keyWidth);
+                // 快捷键正文必须完整可读：窄屏把组合键交给富文本换行，不先省略掉后半组绑定。
+                String key = model.kind() == CommandPanelModel.Kind.HOTKEYS
+                        ? oneLine(entry.key()) : DisplayWidth.ellipsize(oneLine(entry.key()), keyWidth);
                 spans.add(new Span(key + " ".repeat(Math.max(0, keyWidth - DisplayWidth.width(key))),
                         context.theme().style("accent"), null));
                 if (!entry.label().isEmpty()) spans.add(new Span("  ", Style.PLAIN, null));

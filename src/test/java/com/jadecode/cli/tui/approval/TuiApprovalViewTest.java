@@ -15,6 +15,31 @@ import com.jadecode.tui.theme.ThemePalette;
 
 /** 审批显示证据/水位/无默认/小窗不发布批准动作的测试。 */
 class TuiApprovalViewTest {
+    @Test void eachVerticalChoiceUsesItsOwnColorInDarkAndLightThemes() {
+        for (String name : List.of("dark", "light")) {
+            var palette = new com.jadecode.tui.theme.ThemeManager(name, null, true, "light", "dark").preview();
+            for (int choice = 0; choice < 3; choice++) {
+                var state = new ApprovalViewState(); state.show(request, 0, 1);
+                for (int i = 0; i <= choice; i++) state.move(1, true);
+                var rows = new ApprovalView().render(state, new RenderContext(80, 24, palette), 80, 20);
+                String label = List.of("Allow once", "Allow similar", "Deny").get(choice);
+                var selected = rows.lines().stream().flatMap(line -> line.spans().stream())
+                        .filter(span -> span.text().contains(label)).findFirst().orElseThrow();
+                String token = List.of("success", "warning", "error").get(choice);
+                assertEquals(palette.color(token), selected.style().bg());
+                assertNotEquals(selected.style().fg(), selected.style().bg());
+                assertEquals(3, rows.buttons().stream().map(ApprovalView.Button::row).distinct().count());
+            }
+        }
+        // 这类绿底用 RGB 简单加权容易误配白字；实际对比度应选择黑字。
+        var custom = new Theme("custom", "dark", java.util.Map.of("success",
+                com.jadecode.tui.text.Color.rgb(80, 170, 110)), true, 1);
+        var state = new ApprovalViewState(); state.show(request, 0, 1); state.move(1, true);
+        var selected = new ApprovalView().render(state, new RenderContext(80, 24, custom), 80, 20)
+                .lines().stream().flatMap(line -> line.spans().stream())
+                .filter(span -> span.text().contains("Allow once")).findFirst().orElseThrow();
+        assertEquals(com.jadecode.tui.text.Color.rgb(0, 0, 0), selected.style().fg());
+    }
     private final Theme theme = Theme.from(ThemePalette.builtin("dark"), true, 1);
     private final UiEvent.ApprovalRequested request = new UiEvent.ApprovalRequested("id-1", "leader",
             "bash", "printf 'x'\nrm -rf /tmp/demo", "Needs confirmation", "bash: rm", 7L);
@@ -62,7 +87,7 @@ class TuiApprovalViewTest {
         var view = new ApprovalView();
         var small = view.render(state, new RenderContext(12, 6, theme), 12, 4);
         assertTrue(small.buttons().isEmpty());
-        assertTrue(small.lines().stream().anyMatch(line -> line.text().contains("Window")));
+        assertTrue(small.lines().stream().anyMatch(line -> line.text().contains("Enlarge")));
     }
 
     @Test void reasonIsHiddenAndUnselectedDenyStaysNeutral() {
@@ -90,12 +115,13 @@ class TuiApprovalViewTest {
         state.show(request, 0, 1);
         for (int budget : List.of(1, 3, 5, 6)) {
             var rendered = new ApprovalView().render(state, new RenderContext(40, 12, theme), 40, budget);
-            assertTrue(rendered.buttons().isEmpty(), "budget " + budget + " must not expose approval tokens");
+            assertTrue(rendered.buttons().stream().allMatch(button -> button.kind() == ActionToken.Kind.DENY),
+                    "budget " + budget + " must expose only safe denial");
             assertTrue(rendered.lines().size() <= budget, "budget " + budget + " overflowed");
         }
     }
 
-    @Test void selectedButtonUsesInverseAndCoordinatesMatchPanelText() {
+    @Test void selectedButtonUsesSemanticBackgroundAndCoordinatesMatchPanelText() {
         var state = new ApprovalViewState();
         state.show(request, 0, 1);
         state.move(1, true); // Allow once
@@ -106,7 +132,8 @@ class TuiApprovalViewTest {
                 && rendered.lines().getFirst().text().endsWith("┐"), rendered.lines().getFirst().text());
         var selected = rendered.lines().stream().flatMap(line -> line.spans().stream())
                 .filter(span -> span.text().contains("Allow once")).findFirst().orElseThrow();
-        assertTrue(selected.style().inverse(), "selected full label must be inverse");
+        assertEquals(panelTheme.color("success"), selected.style().bg(), "selected full label must have green background");
+        assertFalse(selected.style().inverse(), "explicit colors must not be inverted again");
         var button = rendered.buttons().stream().filter(value -> value.kind() == ActionToken.Kind.APPROVE)
                 .findFirst().orElseThrow();
         String line = rendered.lines().get(button.row()).text();
@@ -116,15 +143,16 @@ class TuiApprovalViewTest {
         assertEquals(button.from(), rendered.choiceColumn());
     }
 
-    @Test void actualLabelsChooseHorizontalOrStackedBeforeBudgeting() {
+    @Test void optionsAlwaysUseSeparateRowsBeforeBudgeting() {
         var state = new ApprovalViewState();
         state.show(request, 0, 1);
         var panelTheme = new com.jadecode.tui.theme.ThemeManager("dark", null, true, "light", "dark").preview();
         var wide = new ApprovalView().render(state, new RenderContext(80, 24, panelTheme), 80, 20);
-        // 三个标签含 "(n/a)" 的实际宽度放得下时才横排：同一行里能看到多个按钮。
+        // 宽屏也必须一项一行，不能退回旧横排。
         long wideRows = wide.lines().stream().filter(line -> line.text().contains("Allow once")
                 && line.text().contains("Deny")).count();
-        assertTrue(wideRows >= 1, "wide panel should use one horizontal button row");
+        assertEquals(0, wideRows, "wide panel must keep vertical options");
+        assertEquals(3, wide.buttons().stream().map(ApprovalView.Button::row).distinct().count());
         var narrow = new ApprovalView().render(state, new RenderContext(34, 24, panelTheme), 34, 20);
         long stacked = narrow.lines().stream().filter(line -> line.text().contains("Allow once")).count()
                 + narrow.lines().stream().filter(line -> line.text().contains("Deny")).count();

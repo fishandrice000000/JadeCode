@@ -25,6 +25,32 @@ import com.jadecode.tui.theme.ThemePalette;
 
 /** R5-01：四类本地信息进入结构化弹窗，不写转录；modal 输入/滚动/关闭与草稿恢复。 */
 class TuiCommandPanelTest {
+    @Test void commonAndCategoriesUseEffectiveBindingsAndPreservePerCategoryScroll() {
+        var bindings = new KeyBindings(Map.of("tui.input.submit", List.of("ctrl+enter")));
+        var model = new com.jadecode.cli.tui.view.HotkeysView().panel(bindings, List.of(), 0, 1);
+        assertEquals("common", model.groups().getFirst().id());
+        assertEquals("ctrl+enter", model.groups().getFirst().entries().getFirst().key());
+        var panel = new com.jadecode.cli.tui.view.CommandPanelView(model);
+        var context = new RenderContext(80, 24, theme);
+        assertTrue(text(panel.render(context, 80, 12)).contains("Common"));
+        panel.moveSection(2); // Editor
+        var editor = text(panel.render(context, 80, 12));
+        assertTrue(editor.contains("Editor"));
+        assertFalse(editor.contains("Submit input"), "current category only");
+        panel.scrollBy(3); panel.render(context, 80, 12);
+        int saved = panel.scroll();
+        panel.moveSection(-1); panel.render(context, 80, 12);
+        panel.moveSection(1); panel.render(context, 40, 12);
+        assertEquals(saved, panel.scroll(), "resize/category round trip must preserve reading position");
+        var longKeys = new KeyBindings(Map.of("tui.input.submit",
+                List.of("ctrl+shift+enter", "ctrl+alt+enter", "super+enter")));
+        var narrow = new com.jadecode.cli.tui.view.CommandPanelView(
+                new com.jadecode.cli.tui.view.HotkeysView().panel(longKeys, List.of(), 0, 1));
+        String compact = text(narrow.render(context, 40, 12)).replaceAll("[\\s│]+", "");
+        String effective = longKeys.chords("tui.input.submit").stream().map(KeyChord::display)
+                .collect(java.util.stream.Collectors.joining(","));
+        assertTrue(compact.contains(effective), "narrow help must wrap all effective keys: " + compact);
+    }
     private final Theme theme = Theme.from(ThemePalette.builtin("dark"), true, 1);
 
     private TuiController controller(TuiState state, Path dir) {
@@ -97,12 +123,10 @@ class TuiCommandPanelTest {
         var panel = state.commandPanel;
         var wide = panel.render(new RenderContext(120, 30, theme), 120, 24);
         String wideText = text(wide);
-        assertTrue(wideText.contains("Global"), wideText);
-        assertTrue(wideText.contains("ctrl+x"), wideText);
-        assertTrue(wideText.contains("Commands"), wideText);
-        assertTrue(wideText.contains("/settings"), wideText);
-        assertTrue(wide.stream().anyMatch(line -> line.text().contains("Global") && line.text().contains("Editor")),
-                "wide panel should place multiple groups side by side: " + wideText);
+        assertTrue(wideText.contains("Common"), wideText);
+        assertTrue(wideText.contains("Submit input"), wideText);
+        assertFalse(wideText.contains("/settings"), "other categories must not be rendered together");
+        assertFalse(wideText.contains("Move word left"), "Editor category must stay hidden on Common");
         assertTrue(wide.stream().allMatch(line -> line.width() <= 120));
         assertTrue(wide.getFirst().text().startsWith("┌") && wide.getFirst().text().endsWith("┐"), wide.getFirst().text());
         assertTrue(wide.getLast().text().startsWith("└") && wide.getLast().text().endsWith("┘"), wide.getLast().text());
@@ -151,7 +175,7 @@ class TuiCommandPanelTest {
         var background = panelTheme.color("panelBg");
         assertTrue(lines.stream().flatMap(line -> line.spans().stream())
                 .allMatch(span -> span.style().bg().equals(background)), "all spans, padding and blank rows share panelBg");
-        var title = lines.getFirst().spans().stream().filter(span -> span.text().contains("Keys and commands"))
+        var title = lines.getFirst().spans().stream().filter(span -> span.text().contains("Hotkeys"))
                 .findFirst().orElseThrow();
         assertTrue(title.style().bold(), "embedded title must be bold");
         assertTrue(title.style().fg().equals(panelTheme.style("accent").fg()), "embedded title must use accent");

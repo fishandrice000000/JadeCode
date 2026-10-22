@@ -15,6 +15,29 @@ import com.jadecode.tui.theme.ThemePalette;
 
 /** regular/fullscreen renderer 的写屏/证据/失效/首帧行为测试（内存 writer）。 */
 class TuiRendererTest {
+    @Test void regularLayerUsesBlankWorkingAreaAndRestoresWithoutGrowingDocument() throws Exception {
+        for (int count : List.of(0, 2)) {
+            output.getBuffer().setLength(0);
+            var renderer = new RegularRenderer(port, true, true, true);
+            var context = new RenderContext(40, 10, theme);
+            var document = java.util.stream.IntStream.range(0, count)
+                    .mapToObj(i -> StyledLine.of("short-" + i, Style.PLAIN)).toList();
+            var layer = new Frame.ScreenLayer(new com.jadecode.tui.geometry.Rect(4, 5, 20, 2),
+                    List.of(StyledLine.of("PANEL", Style.PLAIN), StyledLine.of("BOTTOM", Style.PLAIN)),
+                    Frame.NO_CURSOR, List.of(), 1);
+            var frame = new Frame(1, 1, 1, document, Frame.NO_CURSOR, List.of(), null, layer);
+            renderer.present(frame, context);
+            assertTrue(output.toString().contains("    PANEL"), output.toString());
+            assertTrue(output.toString().contains("BOTTOM"));
+            assertEquals(count, frame.lines().size(), "temporary blanks must not extend the document");
+            output.getBuffer().setLength(0);
+            renderer.present(new Frame(2, 1, 2, document, Frame.NO_CURSOR, List.of()), context);
+            assertFalse(output.toString().contains("PANEL"));
+            assertTrue(output.toString().contains("\u001b[J"), "closing must clear the temporary working area");
+            assertFalse(output.toString().contains("\u001b[3J"), "opening/closing must not clear native history");
+            renderer.close();
+        }
+    }
     private final Theme theme = Theme.from(ThemePalette.builtin("dark"), true, 1);
     private final StringWriter output = new StringWriter();
     private final ScreenRenderer.Port port = new ScreenRenderer.Port() {

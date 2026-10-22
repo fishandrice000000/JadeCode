@@ -63,7 +63,7 @@ public final class RegularRenderer implements ScreenRenderer {
 
     @Override public PresentedFrame present(Frame frame, RenderContext context) throws IOException {
         if (!started) start();
-        if (frame.lines().isEmpty()) return presented;
+        if (frame.lines().isEmpty() && frame.layer() == null && lastLayer == null) return presented;
         var writer = port.writer();
         boolean layoutChanged = previous.isEmpty() || width != context.width() || height != context.height();
         boolean existed = !previous.isEmpty();
@@ -72,6 +72,14 @@ public final class RegularRenderer implements ScreenRenderer {
         List<StyledLine> painted = frame.lines();
         // 首帧的 height 字段尚未由上一帧赋值；布局/滚动边界必须使用本帧实际高度。
         int frameHeight = Math.max(1, context.height());
+        if (frame.layer() != null && painted.size() < frameHeight) {
+            // 主屏初始光标可能贴近底部，单纯向下移动会被终端夹住。
+            // 临时工作副本先用换行取得一屏可寻址区域；关闭后恢复真实文档，
+            // previous/Frame.lines 始终不保存这些浮层空白，也不清旧 scrollback。
+            var working = new java.util.ArrayList<>(painted);
+            while (working.size() < frameHeight) working.add(StyledLine.empty());
+            painted = working;
+        }
         writer.print(AnsiEncoder.syncStart() + AnsiEncoder.hideCursor());
         if (reset) {
             if (existed) {
@@ -86,7 +94,7 @@ public final class RegularRenderer implements ScreenRenderer {
             if (lastLayer != null) restoreLayer(painted, context.width());
             if (lastFlash != null) paintDocumentLine(lastFlashLine, painted, context.width());
         }
-        int start = Math.min(firstChanged, painted.size() - 1);
+        int start = Math.min(firstChanged, Math.max(0, painted.size() - 1));
         if (start <= 0) hardwareRow = 0;
         moveTo(start);
         for (int row = start; row < painted.size(); row++) {
@@ -127,9 +135,9 @@ public final class RegularRenderer implements ScreenRenderer {
             actionsValid = false; previous = List.of(); presented = null;
             throw new IOException("终端写入失败，停止交互会话");
         }
-        previous = painted; width = context.width(); height = context.height(); actionsValid = true;
+        previous = frame.lines(); width = context.width(); height = context.height(); actionsValid = true;
         presented = new PresentedFrame(++frameId, frame.terminalEpoch(), context.width(),
-                Math.min(context.height(), painted.size()), frame.revision(),
+                frame.layer() != null ? context.height() : Math.min(context.height(), painted.size()), frame.revision(),
                 frame.hits().stream().map(Frame.Hit::action).toList());
         return presented;
     }
@@ -139,10 +147,13 @@ public final class RegularRenderer implements ScreenRenderer {
      * 由本帧的 clearBelow/diff 负责清理。
      */
     private void paintDocumentLine(int row, List<StyledLine> painted, int width) {
-        if (row < viewportTop || row >= viewportTop + Math.max(1, height) || row >= painted.size()) return;
+        if (row < viewportTop || row >= viewportTop + Math.max(1, port.rows())) return;
         moveTo(row);
         port.writer().print(AnsiEncoder.clearLine());
-        port.writer().print(AnsiEncoder.encode(painted.get(row).crop(Math.max(0, width)),
+        // 浮层可以覆盖逻辑文档末行之后的屏幕空白；关闭时也必须清掉这些行。
+        // 空白只存在于呈现工作区，不写入 previous 或历史。
+        StyledLine base = row < painted.size() ? painted.get(row) : StyledLine.empty();
+        port.writer().print(AnsiEncoder.encode(base.crop(Math.max(0, width)),
                 trueColor, port.colorsEnabled(), hyperlinks));
     }
 
@@ -163,7 +174,7 @@ public final class RegularRenderer implements ScreenRenderer {
         for (int row = 0; row < layer.rect().height(); row++) {
             int screenRow = layer.rect().y() + row;
             int documentRow = viewportTop + screenRow;
-            if (documentRow < 0 || documentRow >= painted.size()) continue;
+            if (documentRow < 0) continue;
             if (screenRow < 0 || screenRow >= Math.max(1, frameHeight)) continue;
             StyledLine line = row < layer.lines().size() ? layer.lines().get(row) : StyledLine.empty();
             StyledLine base = documentRow < painted.size() ? painted.get(documentRow) : StyledLine.empty();
@@ -178,7 +189,7 @@ public final class RegularRenderer implements ScreenRenderer {
     /** 把屏幕层行覆盖到文档行矩形内，保留矩形外底层内容。 */
     private static StyledLine overlayRow(StyledLine base, StyledLine overlay, int x, int width, int columns) {
         var spans = new java.util.ArrayList<Span>();
-        spans.addAll(base.crop(x).spans());
+        spans.addAll(base.crop(x).padTo(x, Style.PLAIN).spans());
         spans.addAll(overlay.padTo(width, Style.PLAIN).crop(width).spans());
         if (x + width < columns) spans.addAll(dropColumns(base, x + width).spans());
         return new StyledLine(spans, base.annotation());
