@@ -72,6 +72,17 @@ class TuiThemeTest {
         assertFalse(system.colors().get("brandFrame").equals(system.colors().get("text")));
     }
 
+    @Test void explicitCustomBrandTokensWinOverFallbacks() {
+        var custom = ThemePalette.parse("{\"name\":\"branded\",\"colors\":{"
+                + "\"text\":\"#ffffff\",\"accent\":\"#ff00ff\","
+                + "\"brandPrimary\":\"#112233\",\"brandAccent\":\"#445566\",\"brandFrame\":\"#778899\"}}");
+        assertEquals(Color.rgb(0x11, 0x22, 0x33), custom.colors().get("brandPrimary"));
+        assertEquals(Color.rgb(0x44, 0x55, 0x66), custom.colors().get("brandAccent"));
+        assertEquals(Color.rgb(0x77, 0x88, 0x99), custom.colors().get("brandFrame"));
+        assertEquals(Color.rgb(0xff, 0x00, 0xff), custom.colors().get("accent"),
+                "explicit custom accent must keep its own priority");
+    }
+
     @Test void minimalCustomThemeFallsBackBrandTokensWithoutNulls() {
         var custom = ThemePalette.parse("{\"name\":\"old\",\"colors\":{\"text\":\"#ffffff\",\"accent\":\"#336699\"}}");
         assertNotNull(custom.colors().get("brandPrimary"));

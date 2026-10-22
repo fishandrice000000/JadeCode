@@ -89,6 +89,13 @@ class TuiInputCardTest {
             controller.accept(new UiEvent.Input(InputEvent.key(KeyChord.of("escape"), 1, 1)));
             assertNull(state.commandPanel, command);
         }
+        // 20x8 只要求安全降级：不越界、保留可关闭提示，不输出半张卡。
+        assertTrue(controller.submit("/hotkeys"));
+        var tiny = new DockView().render(state, new RenderContext(20, 8, theme), 20, 7, null);
+        assertTrue(tiny.lines().size() <= 7, tiny.lines().size() + " rows");
+        assertTrue(tiny.lines().stream().allMatch(line -> line.width() <= 20));
+        String tinyText = text(tiny.lines());
+        assertTrue(tinyText.contains("┌") || tinyText.contains("Esc"), tinyText);
     }
 
     @Test void searchUsesInputCardAndKeepsDraftCursor(@TempDir Path dir) {
