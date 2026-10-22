@@ -54,7 +54,10 @@ public final class ThemePalette {
             // Jade 批准扩展：卡片标题使用主题已有颜色，不改变 Pi 基础 token 值。
             Map.entry("requestTitle", "customMessageLabel"), Map.entry("replyTitle", "accent"),
             Map.entry("thinkingTitle", "thinkingText"), Map.entry("approval", "borderAccent"),
-            Map.entry("approvalDeny", "error"), Map.entry("permission", "warning"));
+            Map.entry("approvalDeny", "error"), Map.entry("permission", "warning"),
+            // S85 品牌扩展：旧自定义主题未提供新 token 时依次退回已有语义色，不新增必填项。
+            Map.entry("brandPrimary", "accent"), Map.entry("brandAccent", "warning"),
+            Map.entry("brandFrame", "border"));
 
     private ThemePalette() { }
 
@@ -62,13 +65,13 @@ public final class ThemePalette {
     public static Definition builtin(String name) {
         String normalized = name == null || name.isBlank() ? "dark" : name;
         if (!normalized.equals("dark") && !normalized.equals("light"))
-            throw new IllegalArgumentException("未知内置主题: " + name);
+            throw new IllegalArgumentException("Unknown builtin theme: " + name);
         String resource = "/com/jadecode/tui/themes/" + normalized + ".json";
         try (InputStream input = ThemePalette.class.getResourceAsStream(resource)) {
-            if (input == null) throw new IllegalStateException("缺少内置主题资源: " + resource);
+            if (input == null) throw new IllegalStateException("Missing builtin theme resource: " + resource);
             return parse(new String(input.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8));
         } catch (IOException failure) {
-            throw new IllegalStateException("读取内置主题失败: " + resource, failure);
+            throw new IllegalStateException("Failed to read builtin theme: " + resource, failure);
         }
     }
 
@@ -83,7 +86,7 @@ public final class ThemePalette {
             String appearance = root.path("appearance").asText("");
             JsonNode varsNode = root.path("vars");
             JsonNode colorsNode = root.path("colors");
-            if (!colorsNode.isObject()) throw new IllegalArgumentException("主题缺少 colors 对象");
+            if (!colorsNode.isObject()) throw new IllegalArgumentException("Theme is missing a colors object");
             Map<String, JsonNode> vars = new LinkedHashMap<>();
             varsNode.fields().forEachRemaining(entry -> vars.put(entry.getKey(), entry.getValue()));
             Map<String, Color> colors = new LinkedHashMap<>();
@@ -91,18 +94,18 @@ public final class ThemePalette {
                     resolveColor(entry.getValue(), vars, new java.util.HashSet<>())));
             fillFallbacks(colors);
             if (!colors.containsKey("text") || !colors.containsKey("accent"))
-                throw new IllegalArgumentException("主题至少需要 text 和 accent 颜色");
+                throw new IllegalArgumentException("Theme requires at least text and accent colors");
             return new Definition(name, appearance, colors, colors.containsKey("panelBg"));
         } catch (IOException failure) {
-            throw new IllegalArgumentException("主题 JSON 无法解析: " + failure.getMessage(), failure);
+            throw new IllegalArgumentException("Cannot parse theme JSON: " + failure.getMessage(), failure);
         }
     }
 
     private static Color resolveColor(JsonNode value, Map<String, JsonNode> vars, java.util.Set<String> visited) {
-        if (value == null || value.isNull()) throw new IllegalArgumentException("颜色值不能为空");
+        if (value == null || value.isNull()) throw new IllegalArgumentException("Color value cannot be empty");
         if (value.isInt()) {
             int index = value.asInt();
-            if (index < 0 || index > 255) throw new IllegalArgumentException("索引色越界: " + index);
+            if (index < 0 || index > 255) throw new IllegalArgumentException("Indexed color out of range: " + index);
             return Color.indexed(index);
         }
         String text = value.asText("").trim();
@@ -110,9 +113,9 @@ public final class ThemePalette {
         if (text.startsWith("#") || text.regionMatches(true, 0, "rgb(", 0, 4)
                 || text.regionMatches(true, 0, "okhsl(", 0, 6) || text.regionMatches(true, 0, "oklch(", 0, 6)
                 || text.regionMatches(true, 0, "oklab(", 0, 6)) return parseColor(text);
-        if (!visited.add(text)) throw new IllegalArgumentException("主题变量循环引用: " + text);
+        if (!visited.add(text)) throw new IllegalArgumentException("Cycle in theme variable references: " + text);
         JsonNode target = vars.get(text);
-        if (target == null) throw new IllegalArgumentException("主题变量不存在: " + text);
+        if (target == null) throw new IllegalArgumentException("Theme variable does not exist: " + text);
         return resolveColor(target, vars, visited);
     }
 
@@ -157,6 +160,10 @@ public final class ThemePalette {
         colors.putIfAbsent("approval", colors.get("borderAccent"));
         colors.putIfAbsent("approvalDeny", colors.get("error"));
         colors.putIfAbsent("permission", colors.get("warning"));
+        // 品牌 token 必须在这张不可变表构造前完成兜底；缺失时不能留下 null。
+        colors.putIfAbsent("brandPrimary", colors.get("accent"));
+        colors.putIfAbsent("brandAccent", colors.get("warning"));
+        colors.putIfAbsent("brandFrame", colors.get("border"));
     }
 
     /** 解析单个颜色字面量；非法值抛出带原文字的异常，由配置读取层显示给用户。 */
@@ -166,37 +173,37 @@ public final class ThemePalette {
             String hex = text.substring(1);
             if (hex.length() == 3) hex = "" + hex.charAt(0) + hex.charAt(0) + hex.charAt(1) + hex.charAt(1)
                     + hex.charAt(2) + hex.charAt(2);
-            if (hex.length() != 6) throw new IllegalArgumentException("不支持的颜色: " + value);
+            if (hex.length() != 6) throw new IllegalArgumentException("Unsupported color: " + value);
             try {
                 return Color.rgb(Integer.parseInt(hex.substring(0, 2), 16),
                         Integer.parseInt(hex.substring(2, 4), 16), Integer.parseInt(hex.substring(4, 6), 16));
-            } catch (NumberFormatException invalid) { throw new IllegalArgumentException("不支持的颜色: " + value); }
+            } catch (NumberFormatException invalid) { throw new IllegalArgumentException("Unsupported color: " + value); }
         }
         if (text.regionMatches(true, 0, "rgb(", 0, 4) && text.endsWith(")")) {
             String[] parts = text.substring(4, text.length() - 1).split("[,/ ]+");
-            if (parts.length < 3) throw new IllegalArgumentException("不支持的 rgb 颜色: " + value);
+            if (parts.length < 3) throw new IllegalArgumentException("Unsupported rgb color: " + value);
             try {
                 int[] rgb = new int[3];
                 for (int i = 0; i < 3; i++) rgb[i] = Integer.parseInt(parts[i].trim());
                 return Color.rgb(rgb[0], rgb[1], rgb[2]);
-            } catch (NumberFormatException invalid) { throw new IllegalArgumentException("不支持的 rgb 颜色: " + value); }
+            } catch (NumberFormatException invalid) { throw new IllegalArgumentException("Unsupported rgb color: " + value); }
         }
         if (text.regionMatches(true, 0, "okhsl(", 0, 6) && text.endsWith(")")) {
             double[] channels = channels(text.substring(6, text.length() - 1));
-            if (channels.length < 3) throw new IllegalArgumentException("不支持的 okhsl 颜色: " + value);
+            if (channels.length < 3) throw new IllegalArgumentException("Unsupported okhsl color: " + value);
             return okhsl(channels[0], channels[1], channels[2]);
         }
         if (text.regionMatches(true, 0, "oklch(", 0, 6) && text.endsWith(")")) {
             double[] channels = channels(text.substring(6, text.length() - 1));
-            if (channels.length < 3) throw new IllegalArgumentException("不支持的 oklch 颜色: " + value);
+            if (channels.length < 3) throw new IllegalArgumentException("Unsupported oklch color: " + value);
             return oklch(channels[0], channels[1], channels[2]);
         }
         if (text.regionMatches(true, 0, "oklab(", 0, 6) && text.endsWith(")")) {
             double[] channels = channels(text.substring(6, text.length() - 1));
-            if (channels.length < 3) throw new IllegalArgumentException("不支持的 oklab 颜色: " + value);
+            if (channels.length < 3) throw new IllegalArgumentException("Unsupported oklab color: " + value);
             return linearSrgbToRgb(oklabToLinearSrgb(channels[0], channels[1], channels[2]));
         }
-        throw new IllegalArgumentException("不支持的颜色: " + value);
+        throw new IllegalArgumentException("Unsupported color: " + value);
     }
 
     /**
@@ -215,7 +222,7 @@ public final class ThemePalette {
                 if (percent && values.size() > 0) parsed /= 100.0;
                 values.add(parsed);
             } catch (NumberFormatException invalid) {
-                throw new IllegalArgumentException("颜色分量不是数字: " + body);
+                throw new IllegalArgumentException("Color component is not a number: " + body);
             }
         }
         double[] result = new double[values.size()];
@@ -249,9 +256,16 @@ public final class ThemePalette {
         colors.put("muted", familyColor(ansi, 8, 231.49, 0.05, mutedTarget, dark));
         colors.put("dim", familyColor(ansi, 8, 229, 0.05, dimTarget, dark));
         colors.put("thinkingText", familyColor(ansi, 4, 226, 0.12, mutedTarget, dark));
-        colors.put("accent", familyColor(ansi, 5, 295, 0.5, target, dark));
+        // system 保留真实终端背景/前景与明暗，但焦点/标题/品牌采用统一蓝橙语义；
+        // 品牌色用固定色相的 OKHSL 生成，再随当前背景选择安全明度，不覆盖终端 text。
+        Color brandPrimary = okhsl(213, 0.55, actuallyDark ? 0.72 : 0.36);
+        Color brandAccent = okhsl(35, 0.78, actuallyDark ? 0.72 : 0.42);
+        colors.put("brandPrimary", brandPrimary);
+        colors.put("brandAccent", brandAccent);
+        colors.put("brandFrame", mix(bg, brandPrimary, 0.45));
+        colors.put("accent", brandPrimary);
         colors.put("border", familyColor(ansi, 4, 231.49, 0.45, target, dark));
-        colors.put("borderAccent", familyColor(ansi, 5, 295, 0.5, target, dark));
+        colors.put("borderAccent", brandPrimary);
         colors.put("borderMuted", familyColor(ansi, 8, 229, 0.08, dimTarget, dark));
         colors.put("success", familyColor(ansi, 2, 158.68, 0.62, target, dark));
         colors.put("error", familyColor(ansi, 1, 20, 0.72, target, dark));
@@ -263,14 +277,16 @@ public final class ThemePalette {
         colors.put("userMessageText", fg);
         colors.put("customMessageBg", mix(bg, familyColor(ansi, 5, 295, 0.42, actuallyDark ? 0.24 : 0.91, dark), 0.75));
         colors.put("customMessageText", mutedTarget > 0 ? colors.get("muted") : fg);
-        colors.put("customMessageLabel", colors.get("accent"));
+        colors.put("customMessageLabel", brandAccent);
         colors.put("toolPendingBg", mix(bg, colors.get("borderMuted"), 0.18));
         colors.put("toolSuccessBg", mix(bg, colors.get("success"), 0.20));
         colors.put("toolErrorBg", mix(bg, colors.get("error"), 0.20));
         colors.put("toolTitle", fg);
         colors.put("toolOutput", colors.get("muted"));
-        colors.put("mdHeading", colors.get("warning"));
-        colors.put("mdLink", colors.get("border"));
+        colors.put("mdHeading", brandAccent);
+        colors.put("mdLink", brandPrimary);
+        colors.put("requestTitle", brandAccent);
+        colors.put("replyTitle", brandPrimary);
         colors.put("mdLinkUrl", colors.get("muted"));
         colors.put("mdCode", colors.get("accent"));
         colors.put("mdCodeBlock", colors.get("success"));

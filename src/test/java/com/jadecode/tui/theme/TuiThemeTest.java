@@ -41,6 +41,47 @@ class TuiThemeTest {
         assertEquals("light", fallback.appearance());
     }
 
+
+    @Test void builtinThemesCarryJadeBrandTokensAndSemanticMappings() {
+        var dark = ThemePalette.builtin("dark");
+        assertEquals(Color.rgb(0x6C, 0xB6, 0xD4), dark.colors().get("brandPrimary"));
+        assertEquals(Color.rgb(0xF0, 0xA3, 0x4A), dark.colors().get("brandAccent"));
+        assertEquals(Color.rgb(0x91, 0xA9, 0xB5), dark.colors().get("brandFrame"));
+        assertEquals(dark.colors().get("brandPrimary"), dark.colors().get("accent"));
+        assertEquals(dark.colors().get("brandPrimary"), dark.colors().get("borderAccent"));
+        assertEquals(dark.colors().get("brandPrimary"), dark.colors().get("mdLink"));
+        assertEquals(dark.colors().get("brandAccent"), dark.colors().get("mdHeading"));
+        assertEquals(dark.colors().get("brandAccent"), dark.colors().get("customMessageLabel"));
+        assertEquals(Color.rgb(0x24, 0x3B, 0x47), dark.colors().get("selectedBg"));
+
+        var light = ThemePalette.builtin("light");
+        assertEquals(Color.rgb(0x0B, 0x6F, 0x91), light.colors().get("brandPrimary"));
+        assertEquals(Color.rgb(0xA4, 0x5A, 0x0A), light.colors().get("brandAccent"));
+        assertEquals(Color.rgb(0x64, 0x7F, 0x8A), light.colors().get("brandFrame"));
+        assertEquals(Color.rgb(0xDD, 0xEE, 0xF5), light.colors().get("selectedBg"));
+    }
+
+    @Test void systemThemeUsesBrandSemanticsButKeepsTerminalTextAndBackground() {
+        var ansi = new java.util.ArrayList<Color>();
+        for (int i = 0; i < 16; i++) ansi.add(ThemePalette.indexedApprox(i));
+        var system = ThemePalette.system(true, Color.rgb(210, 220, 230), Color.rgb(12, 16, 20), ansi);
+        assertEquals(Color.rgb(210, 220, 230), system.colors().get("text"), "system keeps the real terminal foreground");
+        assertNotNull(system.colors().get("brandPrimary"));
+        assertEquals(system.colors().get("brandPrimary"), system.colors().get("accent"));
+        assertEquals(system.colors().get("brandAccent"), system.colors().get("mdHeading"));
+        assertFalse(system.colors().get("brandFrame").equals(system.colors().get("text")));
+    }
+
+    @Test void minimalCustomThemeFallsBackBrandTokensWithoutNulls() {
+        var custom = ThemePalette.parse("{\"name\":\"old\",\"colors\":{\"text\":\"#ffffff\",\"accent\":\"#336699\"}}");
+        assertNotNull(custom.colors().get("brandPrimary"));
+        assertEquals(custom.colors().get("accent"), custom.colors().get("brandPrimary"));
+        assertNotNull(custom.colors().get("brandAccent"));
+        assertNotNull(custom.colors().get("brandFrame"));
+        assertEquals(custom.colors().get("border"), custom.colors().get("brandFrame"));
+        assertNotNull(Theme.from(custom, true, 1).style("brandPrimary").fg());
+    }
+
     @Test void noColorThemeReturnsPlainStylesButKeepsStructure() {
         var definition = ThemePalette.builtin("dark");
         Theme theme = Theme.from(definition, false, 1);

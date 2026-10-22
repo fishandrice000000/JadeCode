@@ -42,7 +42,10 @@ class TuiWelcomeTest {
 
     @Test void quietStartupHidesOnlyTheResourceHintAndExpandedResourcesRemainExplicit() {
         var quiet = new WelcomeView().render("1.2.3", "model-x", "/work", List.of("skill"), true, context, 80);
-        assertEquals(2, quiet.size());
+        // 80x24 是紧凑品牌档位：六行 mascot + 版本 + 必要说明；quiet 只隐藏资源提示。
+        assertEquals(8, quiet.size());
+        assertTrue(quiet.stream().anyMatch(line -> line.text().contains("JADE CODE")));
+        assertTrue(quiet.stream().anyMatch(line -> line.text().contains("JadeCode v1.2.3")));
         assertTrue(quiet.stream().noneMatch(line -> line.text().contains("Press Ctrl+O")));
         var expanded = new WelcomeView().expanded("model-x", "/work", List.of("skill"), context, 80);
         assertTrue(expanded.stream().anyMatch(line -> line.text().contains("Model · model-x")));
