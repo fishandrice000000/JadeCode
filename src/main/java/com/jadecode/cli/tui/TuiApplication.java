@@ -304,7 +304,9 @@ public final class TuiApplication {
 
             handoff = new TerminalHandoff(term, new PosixJobControl());
             handoffRef.set(handoff);
-            clipboard = new ClipboardService(text -> term.write(text), caps.hyperlinks());
+            // OSC52 与 OSC8 是不同能力：tmux/VSCode 可能不支持超链接但仍可转发剪贴板请求。
+            // 只有 dumb/无色且无链接能力时才禁用远端复制回退。
+            clipboard = new ClipboardService(text -> term.write(text), caps.colorCount() > 0 || caps.hyperlinks());
             clipboardRef.set(clipboard);
             imageClipboard = new ImageClipboard(prefs.toAbsolutePath().getParent().resolve("images"));
             imageClipboardRef.set(imageClipboard);
