@@ -65,8 +65,8 @@ class TuiConversationCacheTest {
         view.render(state, context, 10, List.of(), false, true);
         List<StyledLine> after = view.render(state, context, 10, List.of(), false, true);
         assertFalse(after.isEmpty());
-        assertTrue(after.getFirst().text().contains("reply") || after.getFirst().text().contains("paragraph"),
-                after.getFirst().text());
+        assertTrue(after.stream().limit(3).anyMatch(line -> line.text().contains("Reply")),
+                "viewport must stay near the anchored history entry: " + topBefore + " / " + texts(after));
     }
 
     @Test void returningToBottomResumesFollow() {

@@ -47,13 +47,33 @@ public final class MarkdownLayout {
     /** 渲染已解析 token；thinking 时跳过 Mermaid 图形但仍按 Markdown 排版。 */
     public List<StyledLine> layout(TextRenderResult result, int width, Style baseStyle, boolean thinking) {
         var out = new ArrayList<StyledLine>();
-        List<TextRenderResult.Token> blocks = result.tokens();
-        for (int i = 0; i < blocks.size(); i++) {
-            renderBlock(blocks.get(i), width, baseStyle, out, 0, thinking);
-            if (i + 1 < blocks.size()) out.add(StyledLine.empty());
-        }
+        // Java 回退把块包在 Document 里，固定 JS 适配器返回平铺顶层块。两者必须先展开成
+        // 同一块序列，再统一插入块间距；否则同源 alpha\n\nbeta 会出现 2 行/3 行跳变。
+        renderBlocks(result.tokens(), width, baseStyle, out, 0, thinking);
         while (!out.isEmpty() && out.getLast().isBlank()) out.removeLast();
         return out;
+    }
+
+    /**
+     * 按顺序排版一组块，并在相邻块之间插入一个空行。Document 只作包装，不参与间距；
+     * 顶层和引用内部使用同一规则，保证回退与固定引擎的等价结构一致。
+     */
+    private void renderBlocks(List<TextRenderResult.Token> tokens, int width, Style style,
+            List<StyledLine> out, int indent, boolean thinking) {
+        var blocks = new ArrayList<TextRenderResult.Token>();
+        flatten(tokens, blocks);
+        for (int i = 0; i < blocks.size(); i++) {
+            renderBlock(blocks.get(i), width, style, out, indent, thinking);
+            if (i + 1 < blocks.size()) out.add(StyledLine.empty());
+        }
+    }
+
+    /** 递归去掉 Document 包装；其它 token 保持原顺序。 */
+    private static void flatten(List<TextRenderResult.Token> tokens, List<TextRenderResult.Token> out) {
+        for (TextRenderResult.Token token : tokens) {
+            if (token instanceof TextRenderResult.Document document) flatten(document.items(), out);
+            else out.add(token);
+        }
     }
 
     private void renderBlock(TextRenderResult.Token token, int width, Style style, List<StyledLine> out, int indent) {
@@ -109,8 +129,9 @@ public final class MarkdownLayout {
             case TextRenderResult.Blockquote quote -> {
                 Style quoteStyle = style.merge(theme.style("mdQuote"));
                 var inner = new ArrayList<StyledLine>();
-                for (TextRenderResult.Token child : quote.items())
-                    renderBlock(child, Math.max(1, width - 2), quoteStyle, inner, 0, thinking);
+                // 引用内同样展开 Document 并保留块间空行，避免 Java/JS 的包装差异。
+                renderBlocks(quote.items(), Math.max(1, width - 2), quoteStyle, inner, 0, thinking);
+                while (!inner.isEmpty() && inner.getLast().isBlank()) inner.removeLast();
                 for (StyledLine line : inner) {
                     var spans = new ArrayList<Span>();
                     spans.add(new Span("│ ", style.merge(theme.style("mdQuoteBorder")), null));
