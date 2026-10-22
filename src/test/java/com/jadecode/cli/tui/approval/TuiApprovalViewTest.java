@@ -65,6 +65,57 @@ class TuiApprovalViewTest {
         assertTrue(small.lines().stream().anyMatch(line -> line.text().contains("Window")));
     }
 
+    @Test void reasonIsHiddenAndUnselectedDenyStaysNeutral() {
+        var state = new ApprovalViewState();
+        state.show(request, 0, 1);
+        var rendered = new ApprovalView().render(state, new RenderContext(80, 24, theme), 80, 20);
+        String all = rendered.lines().stream().map(StyledLine::text).reduce("", (a, b) -> a + "\n" + b);
+        assertFalse(all.contains("Needs confirmation"), "TUI must not draw the reason segment");
+        assertTrue(all.strip().startsWith("┌"), all);
+        assertTrue(all.strip().endsWith("┘"), all);
+        var denySpan = rendered.lines().stream().flatMap(line -> line.spans().stream())
+                .filter(span -> span.text().contains("Deny")).findFirst().orElseThrow();
+        assertFalse(denySpan.style().bold(), "unselected Deny must not be bold");
+        assertFalse(denySpan.style().fg().equals(theme.style("error").fg()), "unselected Deny must be neutral");
+        state.move(-1, true); // 从 -1 向上到 Deny（index 2）
+        assertEquals(2, state.choice());
+        var selectedDeny = new ApprovalView().render(state, new RenderContext(80, 24, theme), 80, 20)
+                .lines().stream().flatMap(line -> line.spans().stream())
+                .filter(span -> span.text().contains("Deny")).findFirst().orElseThrow();
+        assertTrue(selectedDeny.style().bold(), "selected Deny may be emphasized");
+    }
+
+    @Test void smallBudgetNeverPublishesApprovalTokens() {
+        var state = new ApprovalViewState();
+        state.show(request, 0, 1);
+        for (int budget : List.of(1, 3, 5, 6)) {
+            var rendered = new ApprovalView().render(state, new RenderContext(40, 12, theme), 40, budget);
+            assertTrue(rendered.buttons().isEmpty(), "budget " + budget + " must not expose approval tokens");
+            assertTrue(rendered.lines().size() <= budget, "budget " + budget + " overflowed");
+        }
+    }
+
+    @Test void dockReplacesEditorWithBoundedPanelAndRespectsBudget() {
+        var state = new com.jadecode.cli.tui.TuiState();
+        state.installGeneration(0);
+        state.approvals.addLast(request);
+        state.approval.show(request, 0, 1);
+        var editor = new com.jadecode.tui.components.Editor(
+                new com.jadecode.tui.input.KeyBindings(java.util.Map.of()), null);
+        editor.insert("KEEP_DRAFT", false);
+        state.editor = editor;
+        var dock = new com.jadecode.cli.tui.view.DockView().render(state,
+                new RenderContext(80, 24, theme), 80, 12);
+        String all = dock.lines().stream().map(StyledLine::text).reduce("", (a, b) -> a + "\n" + b);
+        assertFalse(all.contains("KEEP_DRAFT"), "approval must replace, not draw, the editor");
+        assertTrue(all.contains("Parameters:"));
+        assertTrue(all.contains("Allow once"));
+        assertTrue(all.contains("Needs confirmation") == false, "reason stays out of the TUI");
+        assertTrue(dock.lines().size() <= 12);
+        assertTrue(dock.lines().stream().anyMatch(line -> line.text().startsWith("┌")));
+        assertTrue(dock.lines().stream().anyMatch(line -> line.text().startsWith("└")));
+    }
+
     @Test void fullParametersAreVisibleAndScrollable() {
         var state = new ApprovalViewState();
         state.show(request, 0, 1);

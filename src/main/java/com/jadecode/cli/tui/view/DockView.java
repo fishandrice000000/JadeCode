@@ -81,8 +81,7 @@ public final class DockView {
         int cursorRow = 0, cursorColumn = 0;
         boolean cursorVisible = false;
         if (!state.approvals.isEmpty() && state.approval.active()) {
-            var rendered = approvalView.render(state.approval, context, width,
-                    Math.max(6, Math.min(inputBudget, context.height() - 5)));
+            var rendered = approvalView.render(state.approval, context, width, Math.max(1, inputBudget));
             int start = upper.size();
             lines.addAll(upper); lines.addAll(rendered.lines());
             var request = state.approval.request();
