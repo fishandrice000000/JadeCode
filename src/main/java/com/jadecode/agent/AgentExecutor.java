@@ -214,9 +214,10 @@ public class AgentExecutor implements AutoCloseable {
                 List<ToolUseBlock> calls = response.message().blocksOfType(ToolUseBlock.class);
                 ToolExchangeProtocol.requireDistinctCallIds(calls);
                 display.complete(response.stopReason());
+                long displayCompletedNanos = System.nanoTime();
                 // 用量已由客户端包装统一保存；这里仅带回本次报告，供 Session 更新自己的占用快照。
                 return new ModelReply(response.message(), calls, textDisplayed[0], response.usage(), snapshot,
-                        observationRequestId);
+                        observationRequestId, displayCompletedNanos);
             } catch (LlmException failure) {
                 display.failed();
                 // 配置关闭就直接暴露本次错误，不额外重试同一历史。开启时也只补救真正的上下文超限。
@@ -397,9 +398,15 @@ public class AgentExecutor implements AutoCloseable {
      * @param textDisplayed 正文已经通过流式回调展示；Session 仍采用完整消息，但不能重复打印正文
      * @param usage 本次后端报告，供会话估算当前占用；累计用量已由客户端保存，可为 null
      * @param tools 本次请求使用的执行目录；只在内存传递，不随 message 持久化
+     * @param displayCompletedNanos 显示 complete 返回的单调时间；旧构造可为 null，非流式回退另取真正输出时刻
      */
     public record ModelReply(Message message, List<ToolUseBlock> calls, boolean textDisplayed, ModelResponse.Usage usage,
-            com.jadecode.tools.ToolCatalog.Snapshot tools, String observationRequestId) {
+            com.jadecode.tools.ToolCatalog.Snapshot tools, String observationRequestId, Long displayCompletedNanos) {
+        /** 兼容旧六参数调用；没有时间来源时不伪造时间戳。 */
+        public ModelReply(Message message, List<ToolUseBlock> calls, boolean textDisplayed, ModelResponse.Usage usage,
+                com.jadecode.tools.ToolCatalog.Snapshot tools, String observationRequestId) {
+            this(message, calls, textDisplayed, usage, tools, observationRequestId, null);
+        }
         /** 兼容旧调用；正式请求始终提供本次工具快照，不把它写进模型消息或历史。 */
         public ModelReply(Message message, List<ToolUseBlock> calls, boolean textDisplayed, ModelResponse.Usage usage) {
             this(message, calls, textDisplayed, usage, null, "");

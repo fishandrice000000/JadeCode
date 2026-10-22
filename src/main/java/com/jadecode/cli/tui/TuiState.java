@@ -19,7 +19,8 @@ import com.jadecode.tui.components.SelectList;
  *
  * <p>不是模型 history、不是任务调度器、不是用量账本。异步事件只有在 UI 线程采用后才修改
  * 这里；旧 generation 的迟到事件由控制器丢弃。计时来自执行线程的真实 TURN_START/PAUSE/
- * RESUME/TURN_END 通知，不从卡片建立时刻或工具耗时反推；历史 unknown 不补 0.0s。</p>
+ * RESUME/DISPLAY_STOP/DISPLAY_RESUME/TURN_END 通知，不从卡片建立时刻或工具耗时反推；
+ * 回答显示停止与业务仍忙碌分开表示，历史 unknown 不补 0.0s。</p>
  */
 public final class TuiState {
     /** 有界 widget slot 上限（F090）；超过时由 DockView 裁剪并报告。 */
@@ -80,6 +81,7 @@ public final class TuiState {
         long sampledAt;
         long sampledElapsed;
         boolean paused;
+        boolean displayStopped;
         TranscriptEntry lastReply;
         TurnView(String id, long startedNanos) {
             this.id = id; this.startedNanos = startedNanos; sampledAt = startedNanos;
@@ -155,7 +157,7 @@ public final class TuiState {
     public Long turnElapsed(String actor, long nowNanos) {
         TurnView active = turns.get(actor);
         if (active != null) return active.startedNanos == 0 ? null : active.sampledElapsed
-                + (active.paused ? 0 : Math.max(0, nowNanos - active.sampledAt));
+                + (active.paused || active.displayStopped ? 0 : Math.max(0, nowNanos - active.sampledAt));
         return completedTurnTimes.get(actor);
     }
 
@@ -184,6 +186,15 @@ public final class TuiState {
                 if (turn != null && turn.id.equals(notice.id())) {
                     turn.sampledElapsed = notice.elapsedNanos(); turn.sampledAt = notice.startedNanos();
                     turn.paused = notice.kind() == ExecutionNotice.Kind.TURN_PAUSE;
+                }
+            }
+            case TURN_DISPLAY_STOP, TURN_DISPLAY_RESUME -> {
+                TurnView turn = turns.get(actor);
+                if (turn != null && turn.id.equals(notice.id())) {
+                    turn.sampledElapsed = notice.elapsedNanos(); turn.sampledAt = notice.startedNanos();
+                    turn.displayStopped = notice.kind() == ExecutionNotice.Kind.TURN_DISPLAY_STOP;
+                    // 这里只冻结状态计时；最终 Reply 仍在真实 TURN_END 且确有正文时落耗时，
+                    // 避免空回答候选把前一张中间回复错误标为最终回答。
                 }
             }
             case SESSION -> {

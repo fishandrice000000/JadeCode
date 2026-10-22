@@ -13,6 +13,23 @@ import com.jadecode.tui.theme.ThemePalette;
 
 /** C13 卡片/28.0s?/思考折叠/状态/页脚的显示测试。 */
 class TuiMessageStatusFrameTest {
+    @Test void displayStopFreezesTimerButKeepsBusyAndApprovalResumeCannotUndoIt() {
+        var state = new TuiState();
+        state.execution(ExecutionNotice.event(ExecutionNotice.Kind.TURN_START, "r", "", "", "RUNNING")
+                .actor("leader").started(1));
+        state.execution(ExecutionNotice.event(ExecutionNotice.Kind.TURN_DISPLAY_STOP, "r", "", "", "ANSWER")
+                .actor("leader").timed(5_000_000_000L).started(5_000_000_001L));
+        state.execution(ExecutionNotice.event(ExecutionNotice.Kind.TURN_RESUME, "r", "", "", "RUNNING")
+                .actor("leader").timed(5_000_000_000L).started(7_000_000_001L));
+        assertTrue(state.hasActiveTurn(), "Memory still owns the active task");
+        assertEquals(5_000_000_000L, state.turnElapsed("leader", 9_000_000_001L));
+        state.execution(ExecutionNotice.event(ExecutionNotice.Kind.TURN_DISPLAY_RESUME, "old", "", "", "RUNNING")
+                .actor("leader").timed(0).started(9_000_000_001L));
+        assertEquals(5_000_000_000L, state.turnElapsed("leader", 9_000_000_001L));
+        state.execution(ExecutionNotice.event(ExecutionNotice.Kind.TURN_DISPLAY_RESUME, "r", "", "", "RUNNING")
+                .actor("leader").timed(5_000_000_000L).started(9_000_000_001L));
+        assertEquals(6_000_000_000L, state.turnElapsed("leader", 10_000_000_001L));
+    }
     private final Theme theme = Theme.from(ThemePalette.builtin("dark"), true, 1);
     private final RenderContext context = new RenderContext(72, 24, theme);
 

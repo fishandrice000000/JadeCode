@@ -614,6 +614,13 @@ public final class SessionRuntime implements AutoCloseable {
             deliverIncoming(task, true);
             flushNotices(task);
             ModelReply reply = engine.request(history, task.goal, task.system, this::adoptHistory);
+            if (reply.calls().isEmpty()) {
+                // 回答先展示一次，再记录显示截止；Memory 还会照常收尾，不能提前宣布业务完成。
+                // 流式时间来自生产端 complete，旧客户端在这里回退输出，不再在多个结束分支重放。
+                if (!reply.textDisplayed() && !reply.message().extractText().isBlank())
+                    output.accept("[Reply] " + reply.message().extractText());
+                task.timer.answerCompleted(reply.textDisplayed() ? reply.displayCompletedNanos() : null);
+            }
             apply(reply);
             // 模型已正常回答，定时任务就算送到了，不用等工具成功；查记忆或生成摘要不算此次回答。
             if (!task.received) {
@@ -640,12 +647,12 @@ public final class SessionRuntime implements AutoCloseable {
             boolean incoming = deliverIncoming(task, true, true);
             if (incoming) {
                 // 模型刚才的回答仍在 history 中，也先显示，不用下一条回答覆盖它。
-                if (!reply.textDisplayed() && !reply.message().extractText().isBlank()) output.accept("[Reply] " + reply.message().extractText());
+                task.timer.resumeDisplay();
                 flushNotices(task);
                 continue;
             }
             if (background != null && background.hasRequired(task.context().id())) {
-                if (!reply.textDisplayed() && !reply.message().extractText().isBlank()) output.accept("[Reply] " + reply.message().extractText());
+                task.timer.resumeDisplay();
                 changeState(State.WAITING_BACKGROUND);
                 awaitResults(task);
                 changeState(State.RUNNING);
@@ -653,10 +660,12 @@ public final class SessionRuntime implements AutoCloseable {
             }
             Continue continuation = engine.stop(history);
             if (continuation != null) {
+                task.timer.resumeDisplay();
                 apply(continuation);
                 continue;
             }
-            // 4. 该等的结果都已处理，Stop 也没要求继续，才保存长期记忆并给出最终回答。
+            // 4. 最后回答已输出；计时停在回答边界，Memory/日志及真实结束判定继续执行。
+            task.timer.beginMaintenance();
             finish(history);
             ensureOpen();
             boolean pending;
@@ -667,15 +676,14 @@ public final class SessionRuntime implements AutoCloseable {
                 if (!pending) { active = null; if (!closed) changeState(State.IDLE); }
             }
             if (pending) {
-                if (!reply.textDisplayed() && !reply.message().extractText().isBlank()) output.accept("[Reply] " + reply.message().extractText());
+                task.timer.resumeDisplay();
                 deliverIncoming(task, true, true);
                 flushNotices(task);
                 continue;
             }
             ensureOpen();
             String answer = reply.message().extractText();
-            // 已流式显示的正文不再重放；未接收过正文片段的旧客户端仍按原方式显示。
-            if (!reply.textDisplayed()) output.accept("[Reply] " + answer);
+            // 本次回答已在候选边界显示；这里只收口业务，不重复输出。
             engine.hooks().trigger(Hooks.TURN_END, Map.of(Hooks.PARAM_TOOL_COUNT, task.toolCalls));
             record(JournalEntry.Kind.TURN_FINISHED, List.of(), "turn");
             turnEnded(task, "DONE", !answer.isBlank());
@@ -937,7 +945,7 @@ public final class SessionRuntime implements AutoCloseable {
 
     /**
      * 最后一次回答与该轮日志已经处理完后，才报告整轮耗时；这不是“模型流结束”的同义词。
-     * 大轮次中的工具、思考、后台等待和记忆维护共用计时器，人工审批等待已扣除。
+     * 工具、思考、必等后台计入工作量；人工审批及最后回答后的记忆维护不计入。
      * 只有最终确实有回复文字时才指向 Reply 卡，不把先前阶段回答冒充最终回答。
      */
     private void turnEnded(Active task, String outcome, boolean hasReply) {
