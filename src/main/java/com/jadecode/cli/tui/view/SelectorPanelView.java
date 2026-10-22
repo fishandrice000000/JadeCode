@@ -88,7 +88,7 @@ public final class SelectorPanelView {
         int headRows, tailRows;
         while (true) {
             headRows = 1 + (gap ? 1 : 0);
-            tailRows = (gap ? 1 : 0)
+            tailRows = (gap && (describe || status || hint || footer) ? 1 : 0)
                     + (describe ? wrappedRows(state.selectorDescription, contentWidth, 3) : 0)
                     + (status ? wrappedRows(state.selectorStatus, contentWidth, 2) : 0)
                     + (hint ? wrappedRows(state.hint, contentWidth, 2) : 0)
@@ -125,8 +125,8 @@ public final class SelectorPanelView {
                 SelectList.Item item = items.get(i);
                 boolean selected = i == list.selectedIndex();
                 body.add(row(item, selected, settings, labelWidth, contentWidth, context));
-                // 命中行是卡片内坐标：+1 为嵌入标题的上边框。
-                hits.add(new ItemHit(1 + body.size() - 1, item.id()));
+                // 命中行是卡片内坐标：正文索引 + 1（嵌入标题的上边框）。
+                hits.add(new ItemHit(body.size(), item.id()));
             }
             if (count) {
                 String counter = "  (" + (list.selectedIndex() + 1) + "/" + filtered + ")";
