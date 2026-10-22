@@ -78,9 +78,11 @@ class JsTextEngineParityTest {
         String wide = text(new MarkdownLayout(theme).layout(result, 80, Style.PLAIN));
         assertTrue(wide.contains("Name") && wide.contains("Value") && wide.contains("alpha") && wide.contains("2"), wide);
         assertTrue(wide.contains("│") || wide.contains("|"), wide);
-        String narrow = text(new MarkdownLayout(theme).layout(result, 14, Style.PLAIN));
+        String narrow = text(new MarkdownLayout(theme).layout(result, 8, Style.PLAIN));
+        // 8 列不足以容纳 2 个单元格列（3n+1 开销后），退回原始源码；每个 token 必须完整可见。
+        String narrowJoined = narrow.replaceAll("[\\s│┌┐└┘├┤┬┴┼─]+", "");
         for (String token : List.of("Name", "Value", "alpha", "beta", "1", "2"))
-            assertTrue(narrow.contains(token), "narrow fallback dropped " + token + ": " + narrow);
+            assertTrue(narrowJoined.contains(token), "narrow table dropped " + token + ": " + narrow);
     }
 
     @Test void codeFenceKeepsRawSourceAndFence() throws Exception {

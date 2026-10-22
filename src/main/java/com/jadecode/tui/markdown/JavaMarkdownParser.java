@@ -165,6 +165,7 @@ public final class JavaMarkdownParser {
 
     private int parseTable(List<String> lines, int start, List<TextRenderResult.Token> result) {
         List<String> headerCells = cells(lines.get(start));
+        var raw = new StringBuilder(lines.get(start));
         int columns = headerCells.size();
         var header = new ArrayList<List<TextRenderResult.Token>>();
         for (String cell : headerCells) header.add(inline(cell));
@@ -175,9 +176,11 @@ public final class JavaMarkdownParser {
             var row = new ArrayList<List<TextRenderResult.Token>>();
             for (int c = 0; c < columns; c++) row.add(inline(c < cells.size() ? cells.get(c) : ""));
             rows.add(row);
+            raw.append('\n').append(lines.get(i));
             i++;
         }
-        result.add(new TextRenderResult.Table(header, rows, List.of()));
+        // 保存真实输入片段，供极窄回退；不能用重建的近似表格冒充原始源码。
+        result.add(new TextRenderResult.Table(header, rows, List.of(), raw.toString()));
         return i;
     }
 

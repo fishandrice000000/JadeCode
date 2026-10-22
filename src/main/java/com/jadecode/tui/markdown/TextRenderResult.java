@@ -113,10 +113,16 @@ public record TextRenderResult(List<Token> tokens, long sourceVersion, List<Stri
     /** 分隔线。 */
     public record Rule() implements Token { }
 
-    /** 表格；单元格为行内 token。 */
-    public record Table(List<List<Token>> header, List<List<List<Token>>> rows, List<String> align) implements Token {
+    /** 表格；单元格为行内 token；raw 为解析器保留的原始 Markdown 片段（可为空）。 */
+    public record Table(List<List<Token>> header, List<List<List<Token>>> rows, List<String> align, String raw)
+            implements Token {
         public Table {
             header = List.copyOf(header); rows = List.copyOf(rows); align = List.copyOf(align);
+            raw = raw == null ? "" : raw;
+        }
+        /** 兼容旧构造：没有原始片段时极窄回退使用重建行，不能声称等同原始源码。 */
+        public Table(List<List<Token>> header, List<List<List<Token>>> rows, List<String> align) {
+            this(header, rows, align, "");
         }
         @Override public List<Token> children() { return List.of(); }
     }

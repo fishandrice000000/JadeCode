@@ -151,7 +151,7 @@ public final class MarkedTokenAdapter {
         }
         var align = new ArrayList<String>();
         for (JsonNode value : token.path("align")) align.add(value.asText(""));
-        return new TextRenderResult.Table(header, rows, align);
+        return new TextRenderResult.Table(header, rows, align, token.path("raw").asText(""));
     }
 
     /** 行内 token 递归映射；有子 tokens 的优先递归，保持嵌套样式。 */

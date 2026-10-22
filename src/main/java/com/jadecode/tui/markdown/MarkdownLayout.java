@@ -161,52 +161,252 @@ public final class MarkdownLayout {
         }
     }
 
-    /** 表格：3*n+1 开销、每列最小宽度取最长词（上限 30），余量均分；过窄退回源码。 */
+    /**
+     * 表格布局：固定 Pi 的 3*n+1 开销、自然宽/最长词（上限 30）收缩与逐格富样式换行。
+     * 表头与数据行按各自列宽换行，一条逻辑行取最大格高；只有数据行之间画中分隔，
+     * 末尾画闭合底边。极窄且可用单元格列数不足列数时退回保留的原始源码，不整体裁剪。
+     */
     private void renderTable(TextRenderResult.Table table, int width, Style style, List<StyledLine> out, String prefix) {
         int columns = table.header().size();
         if (columns == 0) return;
-        int[] widths = new int[columns];
-        for (int i = 0; i < columns; i++) widths[i] = 1;
-        for (int i = 0; i < columns; i++) widths[i] = Math.max(widths[i], longestWord(table.header().get(i)));
-        for (var row : table.rows()) for (int i = 0; i < Math.min(columns, row.size()); i++)
-            widths[i] = Math.max(widths[i], longestWord(row.get(i)));
-        for (int i = 0; i < columns; i++) widths[i] = Math.min(30, widths[i]);
+        int prefixWidth = DisplayWidth.width(prefix);
         int overhead = 3 * columns + 1;
-        int content = Math.max(0, width - DisplayWidth.width(prefix) - overhead);
-        int required = java.util.Arrays.stream(widths).sum();
-        if (content < required) {
-            // 极窄：退回带竖线的源码行，保留表头和全部单元格内容而不是裁掉数据。
-            for (var cell : table.header())
-                out.addAll(wrapWithPrefix(inline(cell, style), width, "| " + prefix, "| " + prefix));
-            for (var row : table.rows()) {
-                for (var cell : row) out.addAll(wrapWithPrefix(inline(cell, style), width, "| " + prefix, "| " + prefix));
-            }
+        int innerWidth = Math.max(0, width - prefixWidth);
+        int availableForCells = innerWidth - overhead;
+        if (availableForCells < columns) {
+            renderTableFallback(table, width, style, out, prefix);
             return;
         }
-        int extra = content - required;
-        for (int i = 0; i < columns; i++) widths[i] += extra / columns + (i < extra % columns ? 1 : 0);
-        String border = border('┌', '┬', '┐', widths);
-        out.add(StyledLine.of(DisplayWidth.take(prefix + border, width), theme.style("mdHr")));
-        out.add(tableRow(table.header(), widths, style, prefix, true));
-        out.add(StyledLine.of(DisplayWidth.take(prefix + border('├', '┼', '┤', widths), width), theme.style("mdHr")));
+        int[] natural = new int[columns];
+        int[] minWord = new int[columns];
+        for (int i = 0; i < columns; i++) {
+            String text = plain(inline(table.header().get(i), style));
+            natural[i] = DisplayWidth.width(text);
+            minWord[i] = Math.max(1, longestWordWidth(text, 30));
+        }
         for (var row : table.rows()) {
-            out.add(tableRow(row, widths, style, prefix, false));
-            out.add(StyledLine.of(DisplayWidth.take(prefix + border('├', '┼', '┤', widths), width), theme.style("mdHr")));
+            for (int i = 0; i < Math.min(columns, row.size()); i++) {
+                String text = plain(inline(row.get(i), style));
+                natural[i] = Math.max(natural[i], DisplayWidth.width(text));
+                minWord[i] = Math.max(minWord[i], longestWordWidth(text, 30));
+            }
+        }
+        int[] min = minWord.clone();
+        int minCells = sum(min);
+        if (minCells > availableForCells) {
+            java.util.Arrays.fill(min, 1);
+            int remaining = availableForCells - columns;
+            if (remaining > 0) {
+                int totalWeight = 0;
+                for (int value : minWord) totalWeight += Math.max(0, value - 1);
+                int[] growth = new int[columns];
+                for (int i = 0; i < columns; i++) {
+                    int weight = Math.max(0, minWord[i] - 1);
+                    growth[i] = totalWeight > 0 ? (int) Math.floor(weight * (double) remaining / totalWeight) : 0;
+                }
+                int allocated = sum(growth);
+                for (int i = 0; i < columns; i++) min[i] += growth[i];
+                int leftover = remaining - allocated;
+                for (int i = 0; leftover > 0 && i < columns; i++, leftover--) min[i]++;
+            }
+            minCells = sum(min);
+        }
+        int[] widths = new int[columns];
+        if (sum(natural) + overhead <= innerWidth) {
+            for (int i = 0; i < columns; i++) widths[i] = Math.max(natural[i], min[i]);
+        } else {
+            int totalGrowPotential = 0;
+            for (int i = 0; i < columns; i++) totalGrowPotential += Math.max(0, natural[i] - min[i]);
+            int extraWidth = Math.max(0, availableForCells - minCells);
+            for (int i = 0; i < columns; i++) {
+                int delta = Math.max(0, natural[i] - min[i]);
+                int grow = totalGrowPotential > 0
+                        ? (int) Math.floor(delta * (double) extraWidth / totalGrowPotential) : 0;
+                widths[i] = min[i] + grow;
+            }
+            int remaining = availableForCells - sum(widths);
+            while (remaining > 0) {
+                boolean grew = false;
+                for (int i = 0; i < columns && remaining > 0; i++) {
+                    if (widths[i] < natural[i]) { widths[i]++; remaining--; grew = true; }
+                }
+                if (!grew) break;
+            }
+        }
+
+        Style headerStyle = style.merge(theme.style("mdHeading"));
+        out.add(StyledLine.of(DisplayWidth.take(prefix + border('┌', '┬', '┐', widths), width),
+                theme.style("mdHr")));
+        List<List<StyledLine>> headerCells = new ArrayList<>();
+        for (int i = 0; i < columns; i++) headerCells.add(wrapCell(inline(table.header().get(i), headerStyle), widths[i]));
+        int headerHeight = maxLines(headerCells);
+        for (int line = 0; line < headerHeight; line++)
+            out.add(tableLine(headerCells, widths, prefix, headerStyle, line));
+        out.add(StyledLine.of(DisplayWidth.take(prefix + border('├', '┼', '┤', widths), width),
+                theme.style("mdHr")));
+        for (int rowIndex = 0; rowIndex < table.rows().size(); rowIndex++) {
+            var row = table.rows().get(rowIndex);
+            List<List<StyledLine>> cells = new ArrayList<>();
+            for (int i = 0; i < columns; i++)
+                cells.add(wrapCell(inline(i < row.size() ? row.get(i) : List.of(), style), widths[i]));
+            int height = maxLines(cells);
+            for (int line = 0; line < height; line++)
+                out.add(tableLine(cells, widths, prefix, style, line));
+            if (rowIndex + 1 < table.rows().size())
+                out.add(StyledLine.of(DisplayWidth.take(prefix + border('├', '┼', '┤', widths), width),
+                        theme.style("mdHr")));
+        }
+        out.add(StyledLine.of(DisplayWidth.take(prefix + border('└', '┴', '┘', widths), width),
+                theme.style("mdHr")));
+    }
+
+    /** 极窄：优先用解析器保留的原始源码；没有 raw 的旧构造才重建近似源码行。 */
+    private void renderTableFallback(TextRenderResult.Table table, int width, Style style,
+            List<StyledLine> out, String prefix) {
+        String raw = table.raw();
+        if (raw == null || raw.isBlank()) {
+            var builder = new StringBuilder();
+            for (var cell : table.header()) builder.append("| ").append(plain(inline(cell, style))).append(' ');
+            builder.append('|');
+            for (var row : table.rows()) {
+                builder.append('\n');
+                for (var cell : row) builder.append("| ").append(plain(inline(cell, style))).append(' ');
+                builder.append('|');
+            }
+            raw = builder.toString();
+        }
+        List<StyledLine> wrapped = wrapCell(List.of(new Span(raw, style, null)),
+                Math.max(1, width - DisplayWidth.width(prefix)));
+        for (StyledLine line : wrapped) {
+            var spans = new ArrayList<Span>();
+            spans.add(new Span(prefix, style, null));
+            spans.addAll(line.spans());
+            out.add(new StyledLine(spans));
         }
     }
 
-    private StyledLine tableRow(List<List<TextRenderResult.Token>> cells, int[] widths, Style style,
-            String prefix, boolean header) {
+    private StyledLine tableLine(List<List<StyledLine>> cells, int[] widths, String prefix,
+            Style paddingStyle, int lineIndex) {
         var spans = new ArrayList<Span>();
         spans.add(new Span(prefix + "│ ", theme.style("mdHr"), null));
         for (int i = 0; i < widths.length; i++) {
-            Style cellStyle = header ? style.merge(theme.style("mdHeading")) : style;
-            String text = i < cells.size() ? plain(inline(cells.get(i), cellStyle)) : "";
-            String cropped = DisplayWidth.ellipsize(text, widths[i]);
-            spans.add(new Span(cropped + " ".repeat(Math.max(0, widths[i] - DisplayWidth.width(cropped))), cellStyle, null));
-            spans.add(new Span(" │ ", theme.style("mdHr"), null));
+            List<Span> cell = i < cells.size() && lineIndex < cells.get(i).size()
+                    ? cells.get(i).get(lineIndex).spans() : List.of();
+            spans.addAll(cell);
+            int used = widthOf(cell);
+            if (used < widths[i]) spans.add(new Span(" ".repeat(widths[i] - used), paddingStyle, null));
+            spans.add(new Span(i + 1 < widths.length ? " │ " : " │", theme.style("mdHr"), null));
         }
         return new StyledLine(spans);
+    }
+
+    /** 单元格按词/CJK 断点折行；保留 Span 样式与链接，长词按字素拆行。 */
+    private List<StyledLine> wrapCell(List<Span> spans, int width) {
+        int limit = Math.max(1, width);
+        var tokens = new ArrayList<WordToken>();
+        for (Span span : spans) {
+            for (String cluster : DisplayWidth.clusters(span.text())) {
+                if (cluster.equals("\n")) { tokens.add(new WordToken(cluster, span.style(), span.link(), TokenKind.NEWLINE)); continue; }
+                if (cluster.equals(" ")) { tokens.add(new WordToken(cluster, span.style(), span.link(), TokenKind.SPACE)); continue; }
+                TokenKind kind = cjkBreak(cluster) ? TokenKind.CJK : TokenKind.WORD;
+                if (kind == TokenKind.WORD && !tokens.isEmpty()) {
+                    WordToken last = tokens.getLast();
+                    if (last.kind() == TokenKind.WORD && last.style().equals(span.style())
+                            && java.util.Objects.equals(last.link(), span.link())) {
+                        tokens.set(tokens.size() - 1, new WordToken(last.text() + cluster, last.style(), last.link(), TokenKind.WORD));
+                        continue;
+                    }
+                }
+                tokens.add(new WordToken(cluster, span.style(), span.link(), kind));
+            }
+        }
+        var lines = new ArrayList<StyledLine>();
+        var current = new ArrayList<Span>();
+        int used = 0;
+        for (WordToken token : tokens) {
+            if (token.kind() == TokenKind.NEWLINE) {
+                lines.add(trimTrailing(current)); current = new ArrayList<>(); used = 0; continue;
+            }
+            int cells = DisplayWidth.width(token.text());
+            if (token.kind() == TokenKind.SPACE) {
+                if (used == 0) continue;
+                if (used + cells > limit) { lines.add(trimTrailing(current)); current = new ArrayList<>(); used = 0; continue; }
+                append(current, token.text(), token.style(), token.link()); used += cells; continue;
+            }
+            if (used + cells > limit && used > 0) { lines.add(trimTrailing(current)); current = new ArrayList<>(); used = 0; }
+            if (cells > limit) {
+                for (String cluster : DisplayWidth.clusters(token.text())) {
+                    int clusterWidth = DisplayWidth.clusterWidth(cluster);
+                    if (used + clusterWidth > limit) { lines.add(trimTrailing(current)); current = new ArrayList<>(); used = 0; }
+                    append(current, cluster, token.style(), token.link()); used += clusterWidth;
+                }
+            } else {
+                append(current, token.text(), token.style(), token.link()); used += cells;
+            }
+        }
+        lines.add(trimTrailing(current));
+        if (lines.isEmpty()) lines.add(new StyledLine(List.of()));
+        return lines;
+    }
+
+    private enum TokenKind { WORD, SPACE, CJK, NEWLINE }
+
+    private record WordToken(String text, Style style, com.jadecode.tui.text.LinkTarget link, TokenKind kind) { }
+
+    private static void append(List<Span> line, String text, Style style, com.jadecode.tui.text.LinkTarget link) {
+        if (!line.isEmpty()) {
+            Span last = line.getLast();
+            if (last.style().equals(style) && java.util.Objects.equals(last.link(), link)) {
+                line.removeLast(); line.add(last.withText(last.text() + text)); return;
+            }
+        }
+        line.add(new Span(text, style, link));
+    }
+
+    private static StyledLine trimTrailing(List<Span> spans) {
+        var result = new ArrayList<>(spans);
+        while (!result.isEmpty()) {
+            Span last = result.getLast();
+            String trimmed = last.text().replaceAll(" +$", "");
+            if (trimmed.isEmpty()) { result.removeLast(); continue; }
+            result.set(result.size() - 1, last.withText(trimmed));
+            break;
+        }
+        return new StyledLine(result);
+    }
+
+    private static int widthOf(List<Span> spans) {
+        int total = 0;
+        for (Span span : spans) total += DisplayWidth.width(span.text());
+        return total;
+    }
+
+    private static int maxLines(List<List<StyledLine>> cells) {
+        int max = 1;
+        for (List<StyledLine> cell : cells) max = Math.max(max, cell.size());
+        return max;
+    }
+
+    private static int sum(int[] values) {
+        int total = 0;
+        for (int value : values) total += value;
+        return total;
+    }
+
+    private static int longestWordWidth(String text, int cap) {
+        int max = 0;
+        for (String word : text.split("\\s+")) max = Math.max(max, DisplayWidth.width(word));
+        return Math.min(max, cap);
+    }
+
+    /** CJK/全角字符允许逐字断行；西文按词处理。 */
+    private static boolean cjkBreak(String cluster) {
+        int codePoint = cluster.codePointAt(0);
+        return switch (Character.UnicodeScript.of(codePoint)) {
+            case HAN, HIRAGANA, KATAKANA, HANGUL -> true;
+            default -> (codePoint >= 0x3000 && codePoint <= 0x303F)
+                    || (codePoint >= 0xFF00 && codePoint <= 0xFFEF);
+        };
     }
 
     /** 按语义作用域构建一行；cls 映射主题 token，未知类回退代码块样式。 */
@@ -251,25 +451,6 @@ public final class MarkdownLayout {
             builder.append(i + 1 < widths.length ? middle : right);
         }
         return builder.toString();
-    }
-
-    private static int longestWord(List<TextRenderResult.Token> tokens) {
-        String text = plain(inlineTokens(tokens));
-        int max = 0;
-        for (String word : text.split("\\s+")) max = Math.max(max, DisplayWidth.width(word));
-        return max;
-    }
-
-    /** 仅用于统计列宽的行内 token 转 Span；不依赖实例主题。 */
-    private static List<Span> inlineTokens(List<TextRenderResult.Token> tokens) {
-        var result = new ArrayList<Span>();
-        for (TextRenderResult.Token token : tokens) {
-            if (token instanceof TextRenderResult.Text text) result.add(new Span(text.value(), Style.PLAIN, null));
-            else if (token instanceof TextRenderResult.Space) result.add(new Span(" ", Style.PLAIN, null));
-            else if (token instanceof TextRenderResult.Code code) result.add(new Span(code.text(), Style.PLAIN, null));
-            else for (TextRenderResult.Token child : token.children()) result.addAll(inlineTokens(List.of(child)));
-        }
-        return result;
     }
 
     private static String plain(List<Span> spans) {
