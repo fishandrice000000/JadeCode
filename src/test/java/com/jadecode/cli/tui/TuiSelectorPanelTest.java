@@ -33,6 +33,11 @@ class TuiSelectorPanelTest {
     private TuiPreferences preferences;
 
     @AfterEach void cleanup() {
+        // 等待 Controller 排队的临时配置写入结束，避免 JUnit 删除 @TempDir 时与写线程竞态。
+        if (preferences != null) {
+            try { preferences.awaitWrites(); } catch (Exception ignored) { }
+        }
+        if (themes != null) themes.close();
         if (broker != null) broker.close();
         if (catalog != null) catalog.close();
     }
