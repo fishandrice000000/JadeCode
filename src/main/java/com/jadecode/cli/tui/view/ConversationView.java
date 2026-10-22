@@ -55,7 +55,7 @@ public final class ConversationView {
         int width = context.width();
         var out = new ArrayList<StyledLine>();
         out.addAll(welcome.render(applicationVersion(), state.model, state.directory, List.of(),
-                false, context, width));
+                state.quietStartup, context, width));
         if (welcomeExpanded) {
             out.add(StyledLine.empty());
             out.addAll(welcome.expanded(state.model, state.directory, resources, context, width));

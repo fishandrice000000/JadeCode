@@ -11,8 +11,10 @@ import com.jadecode.tui.text.StyledLine;
 /**
  * JadeCode 欢迎区：Pi 式紧凑帮助 + 真实资源展开，身份/版本/模型均为真实值。
  *
- * <p>只展示当前实际存在的命令/资源；不复制 Pi 更新公告、彩蛋或不存在扩展。`quietStartup`
- * 时只保留一行品牌与提示。Ctrl+O 展开真实资源（技能/工作区/模型/权限），不会伪造加载项。</p>
+ * <p>只展示当前实际存在的品牌/版本/资源；不复制 Pi 更新公告、彩蛋或不存在扩展。
+ * 默认也不再铺四行固定快捷帮助（S43 批准显示差异）；帮助仍由 /hotkeys 与 / 提供。
+ * `quietStartup` 进一步隐藏资源提示，只保留品牌与 coding agent。Ctrl+O 展开真实资源
+ * （技能/工作区/模型/权限），不会伪造加载项。</p>
  */
 public final class WelcomeView {
     /**
@@ -31,8 +33,7 @@ public final class WelcomeView {
         out.add(StyledLine.of(DisplayWidth.ellipsize("█ █  " + UiMessages.TAGLINE, width),
                 context.theme().style("muted")));
         if (quiet) return out;
-        for (String line : UiMessages.quickHelp())
-            out.addAll(StyledLine.wrap(List.of(new Span(line, context.theme().style("muted"), null)), width));
+        // S43：默认标题不再输出 fixed quickHelp 四行；帮助保留在 /hotkeys 和 / 命令候选。
         out.add(StyledLine.empty());
         boolean hasResources = model != null && !model.isBlank() || directory != null && !directory.isBlank()
                 || resources != null && !resources.isEmpty();

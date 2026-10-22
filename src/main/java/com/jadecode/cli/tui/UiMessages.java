@@ -110,7 +110,7 @@ public final class UiMessages {
     public static List<String> quickHelp() {
         var lines = new ArrayList<String>();
         lines.add("Enter submit · Shift+Enter/Ctrl+J newline · Tab complete");
-        lines.add("Esc closes local UI (no agent cancel) · Ctrl+C clear, twice to exit");
+        lines.add("Esc closes local UI (no agent cancel) · Ctrl+C copies selection or clears draft; twice to exit");
         lines.add("Ctrl+T thinking · Ctrl+O tools · Ctrl+G editor · Ctrl+V clipboard");
         lines.add("/settings · /session · /hotkeys · /copy · /new · /resume · /quit");
         return List.copyOf(lines);
