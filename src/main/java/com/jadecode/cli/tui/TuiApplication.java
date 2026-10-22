@@ -360,6 +360,8 @@ public final class TuiApplication {
                         renderer.invalidate();
                         if (handoff.suspended() && handoff.resumeAfterContinue()) {
                             controller.invalidateActions();
+                            controller.invalidateSelection();
+                            chat.resetWheelGesture();
                             queries.newEpoch(term.epoch());
                             queries.restart();
                             decoder.setKittyActive(false);
