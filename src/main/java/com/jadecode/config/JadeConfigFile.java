@@ -366,9 +366,13 @@ public final class JadeConfigFile implements com.jadecode.safety.rules.Permissio
     }
     /** 主题名只采用程序提供的两项，不将配置文字拼成 ANSI 指令或任意文件路径。 */
     private static String theme(JsonNode value, String field) throws IOException {
-        if (value == null || !value.isTextual() || !java.util.Set.of("dark", "light").contains(value.textValue()))
-            throw new IOException("config." + field + " 必须是 dark 或 light");
-        return value.textValue();
+        // C24 允许 system/auto/dark/light 以及用户 themes 目录中的自定义标识（也可是路径）；
+        // 旧实现只允许 dark/light，导致默认 system 配置的任何 saveTui 都在校验阶段失败。
+        // 这里只拒绝空值和控制字符；主题是否存在/可读由 ThemeManager 在加载时明确报错。
+        if (value == null || !value.isTextual() || value.textValue().isBlank()
+                || value.textValue().chars().anyMatch(Character::isISOControl))
+            throw new IOException("config." + field + " 必须是 system/auto/dark/light 或自定义主题标识");
+        return value.textValue().strip();
     }
     /** 文件不存在视为缺省，已存在但空白／损坏则失败；异常不附带 JSON 正文。 */
     private static ObjectNode read(Path source) throws IOException {

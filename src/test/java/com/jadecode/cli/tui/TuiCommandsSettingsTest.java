@@ -37,6 +37,27 @@ class TuiCommandsSettingsTest {
         assertTrue(menu.themeChoices().contains("auto"));
     }
 
+    @Test void wheelSettingCyclesThroughPiCandidatesAndPersistsAutoSentinel(@TempDir Path dir) throws Exception {
+        var menu = new SettingsMenu(JadeSettings.defaults().tui(), dir.resolve("themes"));
+        var seen = new java.util.ArrayList<Integer>();
+        for (int i = 0; i < 6; i++) seen.add((Integer) menu.cycle("fullscreenWheelScrollLines")
+                .get("fullscreenWheelScrollLines"));
+        assertEquals(List.of(1, 2, 3, 5, 10, 0), seen);
+        assertEquals("auto", menu.items().stream().filter(item -> item.id().equals("fullscreenWheelScrollLines"))
+                .findFirst().orElseThrow().value());
+
+        Path file = dir.resolve("config.json");
+        var config = new JadeConfigFile(file);
+        config.saveTui(Map.of("fullscreenWheelScrollLines", 0));
+        assertEquals(0, config.load().tui().fullscreenWheelScrollLines());
+        config.saveTui(Map.of("fullscreenWheelScrollLines", 7));
+        assertEquals(7, config.load().tui().fullscreenWheelScrollLines());
+        var custom = new SettingsMenu(config.load().tui(), dir.resolve("themes"));
+        assertEquals(10, custom.cycle("fullscreenWheelScrollLines").get("fullscreenWheelScrollLines"));
+        assertEquals(0, custom.cycle("fullscreenWheelScrollLines").get("fullscreenWheelScrollLines"),
+                "custom candidate list must wrap back to auto");
+    }
+
     @Test void configDefaultsToSystemThemeButKeepsExplicitDarkAndUnknownFields(@TempDir Path dir) throws Exception {
         Path file = dir.resolve("config.json");
         Files.writeString(file, "{\"version\":1,\"tui\":{\"theme\":\"dark\",\"futureField\":true},\"custom\":{\"x\":1}}");
@@ -50,6 +71,13 @@ class TuiCommandsSettingsTest {
         assertTrue(raw.contains("futureField"));
         assertTrue(raw.contains("\"custom\""));
         assertEquals("system", JadeSettings.defaults().tui().theme());
+        // C24：默认 system/auto 与自定义主题标识也必须能保存；旧校验只允许 dark/light。
+        config.saveTui(Map.of("theme", "system"));
+        assertEquals("system", config.load().tui().theme());
+        config.saveTui(Map.of("theme", "auto"));
+        assertEquals("auto", config.load().tui().theme());
+        config.saveTui(Map.of("theme", "solarized"));
+        assertEquals("solarized", config.load().tui().theme());
     }
 
     @Test void configRejectsInvalidValuesWithoutRewriting(@TempDir Path dir) throws Exception {

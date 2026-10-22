@@ -116,7 +116,8 @@ public final class SettingsMenu {
             case "outputPad" -> Map.of(id, current.outputPad() == 0 ? 1 : 0);
             case "autocompleteMaxVisible" -> Map.of(id, current.autocompleteMaxVisible() >= 20 ? 3 : current.autocompleteMaxVisible() + 1);
             case "imageWidthCells" -> Map.of(id, current.imageWidthCells() >= 120 ? 20 : current.imageWidthCells() + 20);
-            case "fullscreenWheelScrollLines" -> Map.of(id, current.fullscreenWheelScrollLines() >= 10 ? 1 : current.fullscreenWheelScrollLines() + 1);
+            // Pi 候选为 auto + 有序去重的 1/2/3/5/10 + 当前自定义值；末项之后回到 auto。
+            case "fullscreenWheelScrollLines" -> Map.of(id, WheelScrollPolicy.next(current.fullscreenWheelScrollLines()));
             case "lightTheme" -> Map.of(id, next(current.lightTheme(), pairedThemeChoices()));
             case "darkTheme" -> Map.of(id, next(current.darkTheme(), pairedThemeChoices()));
             default -> Map.of();
