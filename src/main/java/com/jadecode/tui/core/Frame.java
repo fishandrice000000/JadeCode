@@ -2,6 +2,7 @@ package com.jadecode.tui.core;
 
 import java.util.List;
 import com.jadecode.tui.geometry.Rect;
+import com.jadecode.tui.text.Style;
 import com.jadecode.tui.text.StyledLine;
 
 /**
@@ -19,12 +20,28 @@ import com.jadecode.tui.text.StyledLine;
  * @param lines 完整行；宽度不得超过 RenderContext.width
  * @param cursor 硬件光标（IME 锚点）；不可见时 visible=false
  * @param hits 可点击区域；坐标与 lines 同一布局
+ * @param flash 仅 regular 使用的屏幕层短暂提示；null 表示无。它不属于文档/历史，
+ *        renderer 负责画在可见区右上角并在到期后恢复该行，不能写入转录或旧 scrollback。
  */
 public record Frame(long frameId, long terminalEpoch, long revision, List<StyledLine> lines,
-        Cursor cursor, List<Hit> hits) {
+        Cursor cursor, List<Hit> hits, Flash flash) {
     public Frame {
         lines = List.copyOf(lines);
         hits = List.copyOf(hits);
+    }
+
+    /** 兼容无 flash 的调用方；fullscreen 的 flash 直接合成在整屏行中。 */
+    public Frame(long frameId, long terminalEpoch, long revision, List<StyledLine> lines,
+            Cursor cursor, List<Hit> hits) {
+        this(frameId, terminalEpoch, revision, lines, cursor, hits, null);
+    }
+
+    /** 屏幕层短提示；text 不进入 Frame.lines，也不进入模型/转录。 */
+    public record Flash(String text, Style style) {
+        public Flash {
+            text = text == null ? "" : text;
+            style = style == null ? Style.PLAIN : style;
+        }
     }
 
     /** 光标不可见时的占位。 */

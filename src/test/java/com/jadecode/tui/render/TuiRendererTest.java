@@ -55,6 +55,35 @@ class TuiRendererTest {
         renderer.close();
     }
 
+    @Test void regularWritesCompleteDocumentBeyondScreenHeight() throws Exception {
+        var renderer = new RegularRenderer(port, true, true, true);
+        var lines = new java.util.ArrayList<StyledLine>();
+        for (int i = 0; i < 100; i++) lines.add(StyledLine.of("row-" + i, Style.PLAIN));
+        var document = new Frame(1, 1, 1, lines, Frame.NO_CURSOR, List.of());
+        renderer.present(document, new RenderContext(40, 10, theme));
+        assertTrue(output.toString().contains("row-99"), "regular must hand the full document to the renderer");
+        assertTrue(output.toString().contains("row-10"));
+        renderer.close();
+    }
+
+    @Test void regularFlashIsScreenLayerAndExpiryRestoresDocumentLine() throws Exception {
+        var renderer = new RegularRenderer(port, true, true, true);
+        var lines = new java.util.ArrayList<StyledLine>();
+        for (int i = 0; i < 12; i++) lines.add(StyledLine.of("row-" + i, Style.PLAIN));
+        var flash = new Frame.Flash("Copied!", theme.style("success"));
+        var withFlash = new Frame(1, 1, 1, lines, Frame.NO_CURSOR, List.of(), flash);
+        renderer.present(withFlash, new RenderContext(40, 10, theme));
+        assertTrue(output.toString().contains("Copied!"), output.toString());
+        assertEquals("row-0", withFlash.lines().getFirst().text(), "flash must not mutate document lines");
+        output.getBuffer().setLength(0);
+        var withoutFlash = new Frame(2, 1, 2, lines, Frame.NO_CURSOR, List.of());
+        renderer.present(withoutFlash, new RenderContext(40, 10, theme));
+        assertFalse(output.toString().contains("Copied!"), "expiry must clear the overlay");
+        assertTrue(output.toString().contains("row-2"), output.toString());
+        assertFalse(output.toString().contains("\u001b[3J"));
+        renderer.close();
+    }
+
     @Test void regularAppendsWithoutFullClearWhenTailChanges() throws Exception {
         var renderer = new RegularRenderer(port, true, true, true);
         renderer.present(frame(1, "one"), new RenderContext(40, 10, theme));
