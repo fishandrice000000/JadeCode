@@ -95,6 +95,59 @@ class TuiApprovalViewTest {
         }
     }
 
+    @Test void selectedButtonUsesInverseAndCoordinatesMatchPanelText() {
+        var state = new ApprovalViewState();
+        state.show(request, 0, 1);
+        state.move(1, true); // Allow once
+        var panelTheme = new com.jadecode.tui.theme.ThemeManager("dark", null, true, "light", "dark").preview();
+        var rendered = new ApprovalView().render(state, new RenderContext(80, 24, panelTheme), 80, 20);
+        assertTrue(rendered.lines().stream().allMatch(line -> line.width() == 80));
+        assertTrue(rendered.lines().getFirst().text().startsWith("┌")
+                && rendered.lines().getFirst().text().endsWith("┐"), rendered.lines().getFirst().text());
+        var selected = rendered.lines().stream().flatMap(line -> line.spans().stream())
+                .filter(span -> span.text().contains("Allow once")).findFirst().orElseThrow();
+        assertTrue(selected.style().inverse(), "selected full label must be inverse");
+        var button = rendered.buttons().stream().filter(value -> value.kind() == ActionToken.Kind.APPROVE)
+                .findFirst().orElseThrow();
+        String line = rendered.lines().get(button.row()).text();
+        assertEquals(button.from(), line.indexOf("["), "hit/from must be post-border panel coordinates");
+        assertTrue(button.to() > button.from());
+        assertTrue(rendered.choiceRow() == button.row());
+        assertEquals(button.from(), rendered.choiceColumn());
+    }
+
+    @Test void actualLabelsChooseHorizontalOrStackedBeforeBudgeting() {
+        var state = new ApprovalViewState();
+        state.show(request, 0, 1);
+        var panelTheme = new com.jadecode.tui.theme.ThemeManager("dark", null, true, "light", "dark").preview();
+        var wide = new ApprovalView().render(state, new RenderContext(80, 24, panelTheme), 80, 20);
+        // 三个标签含 "(n/a)" 的实际宽度放得下时才横排：同一行里能看到多个按钮。
+        long wideRows = wide.lines().stream().filter(line -> line.text().contains("Allow once")
+                && line.text().contains("Deny")).count();
+        assertTrue(wideRows >= 1, "wide panel should use one horizontal button row");
+        var narrow = new ApprovalView().render(state, new RenderContext(34, 24, panelTheme), 34, 20);
+        long stacked = narrow.lines().stream().filter(line -> line.text().contains("Allow once")).count()
+                + narrow.lines().stream().filter(line -> line.text().contains("Deny")).count();
+        assertTrue(stacked >= 2, "narrow panel must stack buttons and still show each label");
+        assertTrue(narrow.buttons().stream().map(ApprovalView.Button::row).distinct().count() >= 2);
+        assertTrue(narrow.lines().getFirst().text().startsWith("┌")
+                && narrow.lines().getFirst().text().endsWith("┐"), narrow.lines().getFirst().text());
+        assertTrue(narrow.lines().getLast().text().startsWith("└")
+                && narrow.lines().getLast().text().endsWith("┘"), narrow.lines().getLast().text());
+    }
+
+    @Test void noColorUsesSelectionMarkerInsteadOfInverse() {
+        var state = new ApprovalViewState();
+        state.show(request, 0, 1);
+        state.move(1, true);
+        var plain = new Theme(theme.name(), theme.appearance(), theme.colors(), false, 1);
+        var rendered = new ApprovalView().render(state, new RenderContext(80, 24, plain), 80, 20);
+        var selected = rendered.lines().stream().flatMap(line -> line.spans().stream())
+                .filter(span -> span.text().contains("Allow once")).findFirst().orElseThrow();
+        assertTrue(selected.text().contains("›"), "NO_COLOR keeps an explicit selection marker");
+        assertFalse(selected.style().inverse(), "NO_COLOR must not emit inverse attributes");
+    }
+
     @Test void dockReplacesEditorWithBoundedPanelAndRespectsBudget() {
         var state = new com.jadecode.cli.tui.TuiState();
         state.installGeneration(0);
@@ -114,6 +167,13 @@ class TuiApprovalViewTest {
         assertTrue(dock.lines().size() <= 12);
         assertTrue(dock.lines().stream().anyMatch(line -> line.text().startsWith("┌")));
         assertTrue(dock.lines().stream().anyMatch(line -> line.text().startsWith("└")));
+        // Dock 只做父区域平移：hit 的列必须已经是完成边框/留白后的面板坐标。
+        var approve = dock.hits().stream().filter(hit -> hit.action().kind() == ActionToken.Kind.APPROVE)
+                .findFirst().orElseThrow();
+        String hitLine = dock.lines().get(approve.rect().y()).text();
+        assertTrue(hitLine.substring(approve.rect().x(), approve.rect().x() + approve.rect().width()).contains("Allow once"),
+                hitLine);
+        assertEquals(hitLine.indexOf("["), approve.rect().x(), "hit x must match post-border label start");
     }
 
     @Test void fullParametersAreVisibleAndScrollable() {
