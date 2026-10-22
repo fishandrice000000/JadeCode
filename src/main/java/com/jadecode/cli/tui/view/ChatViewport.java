@@ -33,6 +33,10 @@ public final class ChatViewport {
     private boolean copyOnSelect;
     private long scrollbarVisibleUntil;
     private int wheelLines = 3;
+    /** 历史阅读锚点：顶部所属条目与条目内偏移；重排/异步结果到达时保持阅读位置。 */
+    private String anchorEntry = "";
+    private int anchorDelta;
+    private boolean lastShowBar;
     private int lastHeight = 1;
     private int lastViewportStart;
     private List<StyledLine> lastDocument = List.of();
@@ -88,26 +92,32 @@ public final class ChatViewport {
             List<String> resources, boolean welcomeExpanded, boolean fullscreen) {
         lastHeight = Math.max(1, height);
         List<StyledLine> document = conversation.render(state, context, resources, welcomeExpanded);
-        lastDocument = document;
         boolean showBar = fullscreen && shouldShowScrollbar(document.size());
-        int contentWidth = Math.max(1, context.width() - (showBar ? 1 : 0));
-        // 文档已按完整宽度排版；滚动条出现时逐行裁一列，不重新排版正文（列选择/命中沿用同一映射）。
-        List<StyledLine> source = showBar ? document.stream().map(line -> line.crop(contentWidth)).toList() : document;
-        List<StyledLine> visible = scroll.view(source, lastHeight);
+        int contentWidth = showBar ? Math.max(0, context.width() - 1) : Math.max(0, context.width());
+        if (showBar && contentWidth > 0) {
+            // 滚动条占用最后一列时，正文必须在 contentWidth 下重新排版，不能先按全宽
+            // 排版再裁一列；否则满行内容会静默丢失。
+            document = conversation.render(state, context.withWidth(contentWidth), resources, welcomeExpanded);
+        }
+        if (!scroll.following()) restoreAnchor(document);
+        lastDocument = document;
+        lastShowBar = showBar;
+        List<StyledLine> visible = scroll.view(document, lastHeight);
         int start = scroll.offset();
         lastViewportStart = start;
+        // 滚动条 thumb 与轨道比例只计算一次，所有行复用同一几何。
+        int track = Math.max(1, visible.size());
+        int thumbHeight = Math.max(1, (int) Math.round(track * (double) track / Math.max(track, document.size())));
+        int maxStart = Math.max(1, document.size() - track);
+        int maxThumbStart = Math.max(0, track - thumbHeight);
+        int thumbStart = Math.round(maxThumbStart * (start / (float) maxStart));
         var result = new ArrayList<StyledLine>(visible.size());
         for (int row = 0; row < visible.size(); row++) {
             int documentRow = start + row;
             StyledLine line = highlight(visible.get(row), documentRow, context);
-            if (showBar) {
-                var spans = new ArrayList<Span>(line.spans());
-                spans.add(new Span(" ", context.theme().style("dim"), null));
-                line = new StyledLine(spans, line.annotation());
-            }
-            result.add(line);
+            boolean thumb = row >= thumbStart && row < thumbStart + thumbHeight;
+            result.add(composeRow(line, contentWidth, showBar, thumb, context));
         }
-        if (showBar) addScrollbar(result, document.size(), start, fullscreen);
         return result;
     }
 
@@ -124,7 +134,6 @@ public final class ChatViewport {
         int column = 0;
         for (Span span : line.spans()) {
             String text = span.text();
-            int offset = 0;
             for (String cluster : DisplayWidth.clusters(text)) {
                 int cells = DisplayWidth.clusterWidth(cluster);
                 Style style = span.style();
@@ -137,7 +146,7 @@ public final class ChatViewport {
                 if (selected) style = style.withBg(context.theme().color("selectedBg"));
                 else if (matched) style = style.withBg(context.theme().color("searchMatchBg"));
                 append(spans, cluster, style, span.link());
-                column += cells; offset += cluster.length();
+                column += cells;
             }
         }
         return new StyledLine(spans, line.annotation());
@@ -159,38 +168,75 @@ public final class ChatViewport {
         return documentLines > lastHeight && System.nanoTime() < scrollbarVisibleUntil;
     }
 
-    private void addScrollbar(List<StyledLine> lines, int documentLines, int start, boolean fullscreen) {
-        if (lines.isEmpty()) return;
-        int track = lines.size();
-        int thumbHeight = Math.max(1, (int) Math.round(track * (double) track / Math.max(track, documentLines)));
-        int maxStart = Math.max(1, documentLines - track);
-        int maxThumbStart = Math.max(0, track - thumbHeight);
-        int thumbStart = Math.round(maxThumbStart * (start / (float) maxStart));
-        for (int row = 0; row < track; row++) {
-            boolean thumb = row >= thumbStart && row < thumbStart + thumbHeight;
-            var spans = new ArrayList<Span>(lines.get(row).spans());
-            spans.add(new Span(thumb ? "█" : "│", Style.PLAIN.fg(
-                    com.jadecode.tui.text.Color.DEFAULT), null));
-            lines.set(row, new StyledLine(spans, lines.get(row).annotation()));
-        }
+    /** @return auto 滚动条到期时刻（纳秒）；无期限返回 Long.MAX_VALUE。 */
+    public long scrollbarDeadline() {
+        return scrollbar == Scrollbar.AUTO && lastShowBar ? scrollbarVisibleUntil : Long.MAX_VALUE;
     }
 
-    /** 滚动行数；手动滚动暂停跟随并显示滚动条。 */
+    /** @return auto 滚动条当前是否可见；宿主据此安排 1 秒后的清除重绘。 */
+    public boolean scrollbarVisible() {
+        if (scrollbar == Scrollbar.HIDDEN) return false;
+        if (scrollbar == Scrollbar.ALWAYS) return lastShowBar;
+        return lastShowBar && System.nanoTime() < scrollbarVisibleUntil;
+    }
+
+    /**
+     * 把一行合成为固定总宽：正文裁/补到 contentWidth，滚动条只画在最后一列。
+     * 旧实现把 `█/│` 直接追加到文字末尾，短行落在参差列、满行溢出后被 Frame 裁掉，
+     * 表现为正文行尾白块/竖线。
+     */
+    private StyledLine composeRow(StyledLine line, int contentWidth, boolean showBar, boolean thumb,
+            RenderContext context) {
+        StyledLine body = line.crop(Math.max(0, contentWidth));
+        if (contentWidth > body.width()) {
+            var spans = new ArrayList<>(body.spans());
+            spans.add(new Span(" ".repeat(contentWidth - body.width()), Style.PLAIN, null));
+            body = new StyledLine(spans, body.annotation());
+        }
+        if (!showBar) return body;
+        var spans = new ArrayList<>(body.spans());
+        spans.add(new Span(thumb ? "█" : "│",
+                context.theme().style(thumb ? "scrollbarThumb" : "scrollbarTrack"), null));
+        return new StyledLine(spans, body.annotation());
+    }
+
+    /** 记录当前顶部所属条目与条目内偏移，供异步重排时恢复阅读位置。 */
+    private void captureAnchor() {
+        anchorEntry = conversation.entryIdAtRow(scroll.offset());
+        Integer startRow = conversation.entryStartRows().get(anchorEntry);
+        anchorDelta = startRow == null ? 0 : scroll.offset() - startRow;
+    }
+
+    /**
+     * 重排后把顶部恢复到同一条目的同一偏移；只有阅读历史（未跟随）时使用。
+     * 末尾追加内容不会改变旧条目的起始行，因此历史位置保持稳定。
+     */
+    private void restoreAnchor(List<StyledLine> document) {
+        if (anchorEntry == null || anchorEntry.isEmpty()) return;
+        Integer newStart = conversation.entryStartRows().get(anchorEntry);
+        if (newStart == null) return;
+        int target = newStart + anchorDelta;
+        scroll.adjust(target - scroll.offset(), document.size(), lastHeight);
+    }
+
+    /** 滚动行数；手动滚动暂停跟随并显示滚动条，同时记录阅读锚点。 */
     public void scrollLines(int delta) {
         scroll.scroll(delta, lastDocument.size(), lastHeight);
+        captureAnchor();
         scrollbarVisibleUntil = System.nanoTime() + 1_000_000_000L;
     }
 
     /** 翻页。 */
     public void page(int direction) {
         scroll.page(direction, lastDocument.size(), lastHeight);
+        captureAnchor();
         scrollbarVisibleUntil = System.nanoTime() + 1_000_000_000L;
     }
 
     /** 滚到顶部/底部；底部恢复跟随。 */
-    public void top() { scroll.top(); scrollbarVisibleUntil = System.nanoTime() + 1_000_000_000L; }
-    public void bottom() { scroll.bottom(lastDocument.size(), lastHeight); }
-    public void follow() { scroll.follow(true); }
+    public void top() { scroll.top(); captureAnchor(); scrollbarVisibleUntil = System.nanoTime() + 1_000_000_000L; }
+    public void bottom() { scroll.bottom(lastDocument.size(), lastHeight); anchorEntry = ""; }
+    public void follow() { scroll.follow(true); anchorEntry = ""; }
 
     /** 鼠标滚轮；Alt 倍速由 controller 把倍率传给 delta。 */
     public void wheel(int direction, int multiplier) { scrollLines(direction * wheelLines * Math.max(1, multiplier)); }
@@ -218,6 +264,7 @@ public final class ChatViewport {
     /** 清空选区/搜索；resize/模式切换使用。 */
     public void invalidate() {
         selection.clear(); search.clear(); scroll.reset(); lastDocument = List.of();
+        anchorEntry = ""; anchorDelta = 0; lastShowBar = false;
     }
 
     /** 搜索全文并定位到首个匹配。 */

@@ -57,6 +57,15 @@ public final class ScrollView {
         followEnd = next >= max;
     }
 
+    /**
+     * 按行数调整 offset；锚点恢复/几何重排使用。到达末端时同样恢复 follow-end。
+     * 与 {@link #scroll(int, int, int)} 语义一致，单独命名便于区分“用户滚动”与“自动校正”。
+     */
+    public void adjust(int delta, int documentHeight, int height) {
+        if (delta == 0) return;
+        scroll(delta, documentHeight, height);
+    }
+
     /** 翻页；正数向下。 */
     public void page(int direction, int documentHeight, int height) {
         int visible = Math.max(1, height);
