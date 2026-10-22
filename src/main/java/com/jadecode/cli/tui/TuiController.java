@@ -438,10 +438,14 @@ public final class TuiController {
         return null;
     }
 
-    /** 单击编辑器可见文本时把光标放到对应字素；边框/候选区不处理。 */
+    /** 单击编辑器：候选区选中对应项，内容区把光标放到对应字素；边框不处理。 */
     private boolean editorClick(int row, int column) {
         if (state.selector != null || state.editor == null) return false;
-        int contentRow = row - dockTop - 1;
+        int editorRow = row - dockTop;
+        int candidateRow = editorRow - state.editor.completionStartRow();
+        if (candidateRow >= 0 && candidateRow < state.editor.completionRows())
+            return state.editor.clickCompletion(candidateRow);
+        int contentRow = editorRow - 1;
         if (contentRow < 0 || contentRow >= state.editor.visibleRows()) return false;
         state.editor.caretForClick(contentRow, column, columns);
         return true;

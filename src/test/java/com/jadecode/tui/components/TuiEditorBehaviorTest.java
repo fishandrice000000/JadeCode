@@ -149,6 +149,21 @@ class TuiEditorBehaviorTest {
         assertEquals("", editor.text());
     }
 
+    @Test void clickingCandidateRowSelectsItForTabApplication() {
+        var editor = editor(true);
+        editor.setCompletionProvider(request -> java.util.concurrent.CompletableFuture.completedFuture(
+                CompletionRequest.Result.of(request, List.of(
+                        new CompletionRequest.Candidate("/alpha", "/alpha ", "first", 0, request.text().length(), true),
+                        new CompletionRequest.Candidate("/beta", "/beta ", "second", 0, request.text().length(), true)))));
+        editor.handle(text("/a"));
+        editor.requestCompletions();
+        var context = new RenderContext(40, 20, theme);
+        editor.render(context, 40);
+        assertTrue(editor.clickCompletion(1));
+        editor.handle(key("tab"));
+        assertEquals("/beta ", editor.text());
+    }
+
     @Test void renderingShowsBordersHiddenCountsAndCursor() {
         var editor = editor(true);
         for (int i = 0; i < 40; i++) editor.handle(text("line" + i + "\n"));

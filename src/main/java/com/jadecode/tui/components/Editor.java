@@ -409,6 +409,25 @@ public final class Editor implements Component {
     /** @return 当前可见内容行数，供宿主滚动/翻页。 */
     public int visibleRows() { return lastVisibleRows; }
 
+    /** @return 候选区在 Editor 返回行中的起始行（上边框 1 + 内容 + 下边框 1）。 */
+    public int completionStartRow() { return 2 + lastVisibleRows; }
+
+    /** @return 候选区当前行数；未显示为 0。 */
+    public int completionRows() {
+        return completionVisible ? Math.max(1, Math.min(completionMaxVisible, candidates.size() + (completionError.isEmpty() ? 1 : 0))) : 0;
+    }
+
+    /**
+     * 单击候选行：选中对应项；不执行命令（Enter/Tab 才应用）。
+     * @return 是否消费了该行
+     */
+    public boolean clickCompletion(int rowWithinCandidates) {
+        if (!completionVisible || candidates.isEmpty()) return false;
+        if (rowWithinCandidates < 0 || rowWithinCandidates >= candidates.size()) return false;
+        candidateIndex = rowWithinCandidates;
+        return true;
+    }
+
     /**
      * 把全屏单击坐标（编辑器内容第 contentRow 行、终端列 column）映射为光标。
      * 使用与绘制相同的 EditorLayout 和 scrollTop；越界/边框行不修改光标。

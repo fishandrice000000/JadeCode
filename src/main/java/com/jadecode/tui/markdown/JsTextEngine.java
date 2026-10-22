@@ -154,8 +154,10 @@ public final class JsTextEngine implements AutoCloseable {
         // 看门狗：到期取消执行并关闭 Context，避免 UI 永久等待或坏状态复用。
         return future.orTimeout(WATCHDOG_SECONDS, TimeUnit.SECONDS).whenComplete((value, failure) -> {
             if (failure instanceof TimeoutException) {
+                // 超时必须取消正在执行的 guest 代码；Graal 允许从看门狗线程 close(true)
+                // 中断执行，排队到 worker 会等坏任务自己结束，起不到看门狗作用。
                 broken = true;
-                worker.execute(this::closeContext);
+                synchronized (this) { closeContext(); }
             }
         });
     }
@@ -205,7 +207,7 @@ public final class JsTextEngine implements AutoCloseable {
         }
     }
 
-    private void closeContext() {
+    private synchronized void closeContext() {
         if (context != null) {
             try { context.close(true); } catch (RuntimeException ignored) { }
             context = null; engine = null;
