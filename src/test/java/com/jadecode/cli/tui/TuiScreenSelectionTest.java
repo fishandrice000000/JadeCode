@@ -69,6 +69,32 @@ class TuiScreenSelectionTest {
         assertEquals(3, editor.caret());
     }
 
+    @Test void approvalDragAndReleaseDoNotAnswerOnlyExplicitPressDoes() {
+        var state = new TuiState();
+        state.installGeneration(0);
+        var editor = new Editor(new KeyBindings(java.util.Map.of()), null);
+        var themes = new ThemeManager("dark", null, true, "light", "dark");
+        var events = new java.util.concurrent.LinkedBlockingQueue<UiEvent>();
+        var broker = new com.jadecode.cli.tui.bridge.ApprovalBroker(events::offer);
+        var controller = new TuiController(state, null, broker, null, editor, null,
+                new KeyBindings(java.util.Map.of()), null, null, themes, event -> { }, () -> { }, null);
+        var request = new UiEvent.ApprovalRequested("id-1", "leader", "bash", "{}", "reason", "", 7L);
+        state.terminalEpoch = 1;
+        state.approvals.addLast(request);
+        state.approval.show(request, 0, 1);
+        var token = new com.jadecode.tui.core.ActionToken(com.jadecode.tui.core.ActionToken.Kind.APPROVE, "id-1", 7L);
+        var raw = new Frame(1, 1, 1, List.of(StyledLine.of("approval", Style.PLAIN)), Frame.NO_CURSOR,
+                List.of(new Frame.Hit(new com.jadecode.tui.geometry.Rect(0, 0, 8, 1), token)));
+        controller.presented(new PresentedFrame(1, 1, 80, 24, 1, List.of(token)), raw);
+        controller.layout(80, 24, 0, 10, 0, true);
+        controller.accept(new UiEvent.Input(mouse(InputEvent.Mouse.Action.DRAG, 2, 0)));
+        controller.accept(new UiEvent.Input(mouse(InputEvent.Mouse.Action.RELEASE, 2, 0)));
+        assertTrue(state.approval.active(), "drag/release must not answer an approval");
+        controller.accept(new UiEvent.Input(mouse(InputEvent.Mouse.Action.PRESS, 2, 0)));
+        assertFalse(state.approval.active(), "explicit press on the presented button may answer");
+        broker.close();
+    }
+
     @Test void approvalClickRequiresExplicitPresentedButton() {
         var state = new TuiState();
         state.installGeneration(0);
