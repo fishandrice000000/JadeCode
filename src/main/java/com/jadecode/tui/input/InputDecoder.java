@@ -20,12 +20,24 @@ import java.util.Locale;
 public final class InputDecoder {
     private static final int SHIFT = 1, ALT = 2, CTRL = 4, SUPER = 8, META = 32;
     private long epoch;
+    /**
+     * 当前键盘协议是否为 Kitty flags。只影响兼容映射：Kitty active 时 `ESC CR`/`ESC LF`
+     * 是终端为 Shift+Enter 配置的 legacy 映射，而真实 Alt+Enter 会带 Alt 修饰的 CSI-u。
+     * 语义 Alt+Enter 仍按 C08 不绑定；本状态由 TerminalQueries 协商结果经 UI 线程设置。
+     */
+    private volatile boolean kittyActive;
 
     /** @param terminalEpoch 当前终端代次；暂停/resize 后由宿主更新。 */
     public InputDecoder(long terminalEpoch) { this.epoch = terminalEpoch; }
 
     /** 更新后续事件使用的终端代次。只能在输入线程/宿主串行点调用。 */
     public void setEpoch(long terminalEpoch) { this.epoch = terminalEpoch; }
+
+    /** 更新 Kitty 协商状态；只用于兼容序列语义，不改变真实修饰键。 */
+    public void setKittyActive(boolean active) { this.kittyActive = active; }
+
+    /** @return 当前是否按 Kitty active 解释兼容序列。 */
+    public boolean kittyActive() { return kittyActive; }
 
     /** 解码一个完整块；未知/畸形序列不会导致异常。 */
     public List<InputEvent> decode(StdinBuffer.Chunk chunk) {
@@ -96,9 +108,15 @@ public final class InputDecoder {
             if (!key.isEmpty()) events.add(InputEvent.key(KeyChord.of(key), sequence, epoch));
             return;
         }
-        // ESC + 单个字符：Alt/Meta 组合。legacy 终端无法提供 base-layout，保留该字符。
+        // ESC + 单个字符：默认按 Alt/Meta 组合。Kitty active 时终端常用 `ESC CR`/`ESC LF`
+        // 表示 Shift+Enter 的兼容映射（Pi keys.ts 同一规则），不能误当 Alt+Enter 被 C08 忽略。
         if (data.length() == 2) {
             char c = data.charAt(1);
+            if (kittyActive && (c == '\r' || c == '\n')) {
+                events.add(InputEvent.key(new KeyChord("enter", EnumSet.of(KeyChord.Modifier.SHIFT),
+                        KeyChord.Phase.PRESS), sequence, epoch));
+                return;
+            }
             events.add(InputEvent.key(chordForCharacter(c, EnumSet.of(KeyChord.Modifier.ALT)), sequence, epoch));
             return;
         }
@@ -153,9 +171,12 @@ public final class InputDecoder {
             case 'Q' -> "f2"; case 'R' -> "f3"; case 'S' -> "f4"; default -> "";
         };
         if (key.isEmpty()) { events.add(InputEvent.key(KeyChord.of("unknown"), sequence, epoch)); return; }
+        String parameter = parameterRaw(body, 1);
         EnumSet<KeyChord.Modifier> modifiers = finalChar == 'Z'
-                ? EnumSet.of(KeyChord.Modifier.SHIFT) : modifiers(parameter(body, 1), false);
-        events.add(InputEvent.key(new KeyChord(key, modifiers, KeyChord.Phase.PRESS), sequence, epoch));
+                ? EnumSet.of(KeyChord.Modifier.SHIFT) : modifiers(parameter, false);
+        // 方向/Home/End/F1-F4 的 modifiers 字段可能带 `:event`（如 `1;1:3`）；释放阶段
+        // 必须保留，否则同一次按键的按下+释放会各导航一次。
+        events.add(InputEvent.key(new KeyChord(key, modifiers, phaseOf(parameter)), sequence, epoch));
     }
 
     private void decodeTilde(String body, long sequence, List<InputEvent> events) {
@@ -170,7 +191,8 @@ public final class InputDecoder {
         }
         int code;
         try { code = Integer.parseInt(parts[0]); } catch (NumberFormatException invalid) { code = -1; }
-        EnumSet<KeyChord.Modifier> modifiers = parts.length > 1 ? modifiers(parts[1], false) : EnumSet.noneOf(KeyChord.Modifier.class);
+        String parameter = parts.length > 1 ? parts[1] : "";
+        EnumSet<KeyChord.Modifier> modifiers = modifiers(parameter, false);
         String key = switch (code) {
             case 1, 7 -> "home"; case 2 -> "insert"; case 3 -> "delete"; case 4, 8 -> "end";
             case 5 -> "pageup"; case 6 -> "pagedown"; case 11, 12, 13, 14 -> "f" + (code - 10);
@@ -180,7 +202,7 @@ public final class InputDecoder {
             default -> "";
         };
         if (key.isEmpty()) { events.add(InputEvent.key(KeyChord.of("unknown"), sequence, epoch)); return; }
-        events.add(InputEvent.key(new KeyChord(key, modifiers, KeyChord.Phase.PRESS), sequence, epoch));
+        events.add(InputEvent.key(new KeyChord(key, modifiers, phaseOf(parameter)), sequence, epoch));
     }
 
     private void decodeCsiU(String body, long sequence, List<InputEvent> events) {
@@ -260,9 +282,25 @@ public final class InputDecoder {
         return value;
     }
 
-    private static String parameter(String body, int index) {
+    /** 取原始参数段，保留 `:event` 供阶段解析；修饰键解析自行去掉事件部分。 */
+    private static String parameterRaw(String body, int index) {
         String[] parts = body.split(";");
-        return index < parts.length ? parts[index].split(":")[0] : "";
+        return index < parts.length ? parts[index] : "";
+    }
+
+    /**
+     * 从带 `:event` 的参数解析按键阶段：1=按下、2=重复、3=释放；缺省按下。
+     * 统一用于方向/Home/End/功能键和 CSI-u，避免释放被当成第二次动作。
+     */
+    private static KeyChord.Phase phaseOf(String parameter) {
+        if (parameter == null) return KeyChord.Phase.PRESS;
+        int colon = parameter.indexOf(':');
+        if (colon < 0 || colon + 1 >= parameter.length()) return KeyChord.Phase.PRESS;
+        return switch (parameter.substring(colon + 1)) {
+            case "2" -> KeyChord.Phase.REPEAT;
+            case "3" -> KeyChord.Phase.RELEASE;
+            default -> KeyChord.Phase.PRESS;
+        };
     }
 
     /** xterm 参数 2-8 / Kitty 位掩码 1+N 转换为修饰集合。 */

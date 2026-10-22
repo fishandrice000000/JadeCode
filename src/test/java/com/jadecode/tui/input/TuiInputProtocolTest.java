@@ -178,6 +178,63 @@ class TuiInputProtocolTest {
         assertEquals(big, editor.submit());
     }
 
+    @Test void arrowReleaseKeepsPhaseAndIsNotActionable() {
+        var press = decode("\u001b[1;1:1B").getFirst();
+        assertEquals("down", press.key().key());
+        assertEquals(KeyChord.Phase.PRESS, press.key().phase());
+        assertTrue(press.actionableKey());
+        var release = decode("\u001b[1;1:3B").getFirst();
+        assertEquals("down", release.key().key());
+        assertEquals(KeyChord.Phase.RELEASE, release.key().phase());
+        assertFalse(release.actionableKey(), "release must not navigate");
+        var repeat = decode("\u001b[1;1:2B").getFirst();
+        assertEquals(KeyChord.Phase.REPEAT, repeat.key().phase());
+        assertTrue(repeat.actionableKey(), "repeat follows Pi navigation");
+        var homeRelease = decode("\u001b[1;1:3H").getFirst();
+        assertEquals("home", homeRelease.key().key());
+        assertEquals(KeyChord.Phase.RELEASE, homeRelease.key().phase());
+        var f1Release = decode("\u001b[1;1:3P").getFirst();
+        assertEquals("f1", f1Release.key().key());
+        assertEquals(KeyChord.Phase.RELEASE, f1Release.key().phase());
+    }
+
+    @Test void kittyActiveMapsLegacyEscapeEnterToShiftEnter() {
+        var decoder = new InputDecoder(1);
+        decoder.setKittyActive(true);
+        var chunks = new ArrayList<StdinBuffer.Chunk>();
+        var buffer = new StdinBuffer(10, chunks::add, System::nanoTime);
+        buffer.feed(new byte[]{27, '\r'});
+        var events = new ArrayList<InputEvent>();
+        for (var chunk : chunks) events.addAll(decoder.decode(chunk));
+        assertEquals(1, events.size());
+        assertEquals("enter", events.getFirst().key().key());
+        assertTrue(events.getFirst().key().has(KeyChord.Modifier.SHIFT));
+        assertFalse(events.getFirst().key().has(KeyChord.Modifier.ALT));
+    }
+
+    @Test void legacyModeKeepsEscapeEnterAsAltEnter() {
+        var decoder = new InputDecoder(1);
+        decoder.setKittyActive(false);
+        var chunks = new ArrayList<StdinBuffer.Chunk>();
+        var buffer = new StdinBuffer(10, chunks::add, System::nanoTime);
+        buffer.feed(new byte[]{27, '\r'});
+        var events = new ArrayList<InputEvent>();
+        for (var chunk : chunks) events.addAll(decoder.decode(chunk));
+        assertEquals(1, events.size());
+        assertEquals("enter", events.getFirst().key().key());
+        assertTrue(events.getFirst().key().has(KeyChord.Modifier.ALT));
+        assertFalse(events.getFirst().key().has(KeyChord.Modifier.SHIFT));
+    }
+
+    @Test void realAltEnterCsiUStaysAltAndEditorIgnoresIt() {
+        var altEnter = decode("\u001b[13;3u").getFirst();
+        assertTrue(altEnter.key().has(KeyChord.Modifier.ALT));
+        var editor = new com.jadecode.tui.components.Editor(new KeyBindings(java.util.Map.of()), null);
+        editor.handle(InputEvent.text("a", 1, 1));
+        editor.handle(altEnter);
+        assertEquals("a", editor.text());
+    }
+
     @Test void ctrlAndAltSequencesRemainDistinct() {
         var altB = decode("\u001bb").getFirst();
         assertEquals("b", altB.key().key());

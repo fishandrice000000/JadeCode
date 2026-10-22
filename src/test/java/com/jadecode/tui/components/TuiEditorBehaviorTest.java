@@ -164,6 +164,24 @@ class TuiEditorBehaviorTest {
         assertEquals("/beta ", editor.text());
     }
 
+    @Test void candidatePressPlusReleaseNavigatesOnlyOnce() {
+        var editor = editor(true);
+        editor.setCompletionProvider(request -> java.util.concurrent.CompletableFuture.completedFuture(
+                CompletionRequest.Result.of(request, List.of(
+                        new CompletionRequest.Candidate("/se0", "/se0 ", "a", 0, request.text().length(), true),
+                        new CompletionRequest.Candidate("/se1", "/se1 ", "b", 0, request.text().length(), true),
+                        new CompletionRequest.Candidate("/se2", "/se2 ", "c", 0, request.text().length(), true),
+                        new CompletionRequest.Candidate("/se3", "/se3 ", "d", 0, request.text().length(), true)))));
+        editor.handle(text("/se"));
+        editor.requestCompletions();
+        var press = InputEvent.key(KeyChord.of("down"), 1, 1);
+        var release = InputEvent.key(new KeyChord("down", java.util.Set.of(), KeyChord.Phase.RELEASE), 2, 1);
+        editor.handle(press);
+        editor.handle(release);
+        editor.handle(key("tab"));
+        assertEquals("/se1 ", editor.text(), "release must not navigate a second time");
+    }
+
     @Test void renderingShowsBordersHiddenCountsAndCursor() {
         var editor = editor(true);
         for (int i = 0; i < 40; i++) editor.handle(text("line" + i + "\n"));
