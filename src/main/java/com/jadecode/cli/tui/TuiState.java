@@ -10,6 +10,7 @@ import com.jadecode.cli.tui.model.TranscriptModel;
 import com.jadecode.cli.tui.model.ToolDisplayState;
 import com.jadecode.execution.ExecutionNotice;
 import com.jadecode.tui.components.Editor;
+import com.jadecode.tui.components.Input;
 import com.jadecode.tui.components.SelectList;
 
 /**
@@ -31,8 +32,12 @@ public final class TuiState {
     public final ApprovalViewState approval = new ApprovalViewState();
     /** 排队中的审批快照；只用于显示“还有 N 项”。 */
     public final ArrayDeque<UiEvent.ApprovalRequested> approvals = new ArrayDeque<>();
+    /** 当前选择器的候选/过滤真源；selectorInput 只保存实际搜索框文字与光标。 */
     public SelectList selector;
+    public Input selectorInput;
     public String selectorKind = "";
+    /** 选择器面板的专用排版元数据，由 Controller 维护；DockView 不访问 Host/配置。 */
+    public String selectorTitle = "", selectorDescription = "", selectorFooter = "", selectorStatus = "";
     public com.jadecode.cli.tui.SessionPicker sessionPicker;
     public SelectList commands;
     public boolean commandsDismissed = true;
@@ -44,7 +49,7 @@ public final class TuiState {
     public String pending = "", pendingKind = "";
     public String model = "", modelInfo = "", branch = "", directory = "";
     public String permissionProfile = "Workspace";
-    public boolean thinkingVisible = true, toolsExpanded;
+    public boolean thinkingVisible = true, toolsExpanded, quietStartup;
     public com.jadecode.session.SessionRuntime.Display session;
     /** 只读 MCP 服务快照；由 root 每次刷新时更新，不在这里连接。 */
     public List<com.jadecode.mcp.McpManager.ServerSnapshot> mcpServers = List.of();

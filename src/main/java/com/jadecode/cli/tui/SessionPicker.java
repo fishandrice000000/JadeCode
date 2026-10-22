@@ -57,6 +57,8 @@ public final class SessionPicker {
     public boolean namedOnly() { return namedOnly; }
     /** 切换是否显示工作区路径。 */
     public void togglePath() { showPath = !showPath; }
+    /** @return 会话行是否显示工作区路径。 */
+    public boolean pathsVisible() { return showPath; }
     /** 切换最近/名称排序。 */
     public void toggleSort() { recentFirst = !recentFirst; }
     public boolean recentFirst() { return recentFirst; }

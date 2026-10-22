@@ -104,8 +104,12 @@ public final class SelectList implements Component {
         return Math.max(0, Math.min(window - 1, selected - start));
     }
 
-    /** 计算居中窗口的起点：让选中尽量位于中间。 */
-    private int windowStart(int window) {
+    /**
+     * 计算居中窗口的起点：让选中尽量位于中间。
+     * @param window 可见行数
+     * @return 过滤后列表的起始下标
+     */
+    public int windowStart(int window) {
         if (filtered.size() <= window) return 0;
         return Math.max(0, Math.min(filtered.size() - window, selected - window / 2));
     }

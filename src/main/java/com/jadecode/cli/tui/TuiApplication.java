@@ -129,6 +129,7 @@ public final class TuiApplication {
             state.permissionProfile = permissions.snapshot().profile().value();
             state.thinkingVisible = settings.tui().thinkingVisible();
             state.toolsExpanded = settings.tui().toolsExpanded();
+            state.quietStartup = settings.tui().quietStartup();
             state.generation = 0;
             var keys = new KeyBindings(settings.tui().keybindings());
             catalog = new CommandCatalog(Path.of("").toAbsolutePath());
@@ -491,7 +492,9 @@ public final class TuiApplication {
     private Composed compose(TuiState state, RenderContext context, int columns, int rows,
             ChatViewport chat, ConversationView conversation, Editor editor, SettingsMenu settings,
             ThemeManager themes, TuiController controller, ScreenRenderer.Mode mode, TerminalSession terminal) {
-        var dock = new DockView().render(state, context, columns);
+        var dock = mode == ScreenRenderer.Mode.FULLSCREEN
+                ? new DockView().render(state, context, columns, Math.max(1, rows - 1))
+                : new DockView().render(state, context, columns);
         var lines = new ArrayList<StyledLine>();
         int cursorRow = 0, cursorColumn = 0;
         boolean cursorVisible = false;

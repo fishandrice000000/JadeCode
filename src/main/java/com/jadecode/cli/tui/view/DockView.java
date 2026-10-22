@@ -36,26 +36,55 @@ public final class DockView {
     }
 
     private final ApprovalView approvalView = new ApprovalView();
+    private final SelectorPanelView selectorPanel = new SelectorPanelView();
     private final StatusView statusView = new StatusView();
     private final FooterView footerView = new FooterView();
 
-    /** 组装 dock；调用方把返回行接到视口下方，并按 dockTop 平移 hits。 */
+    /** 组装 dock（无外部高度限制；regular/测试使用）。 */
     public Layout render(TuiState state, RenderContext context, int width) {
+        return render(state, context, width, Integer.MAX_VALUE);
+    }
+
+    /**
+     * 组装 dock；fullscreen 传 rows-1 作为上限，先扣除状态/footer/widget，再给选择器面板
+     * 分配剩余高度，避免 Application 最后截断底边、提示或 footer。
+     */
+    public Layout render(TuiState state, RenderContext context, int width, int maxTotalRows) {
+        int maxRows = Math.max(1, maxTotalRows);
         var lines = new ArrayList<StyledLine>();
         var hits = new ArrayList<Frame.Hit>();
         // 扩展 widget 上限 10 行；超出不显示，不静默塞进状态行。
+        var upper = new ArrayList<StyledLine>();
         if (state.upperWidgets.size() > TuiState.MAX_WIDGET_ROWS)
-            lines.add(StyledLine.of(DisplayWidth.ellipsize("Widget slot capped at 10 rows", width),
+            upper.add(StyledLine.of(DisplayWidth.ellipsize("Widget slot capped at 10 rows", width),
                     context.theme().style("warning")));
-        lines.addAll(state.upperWidgets.subList(0, Math.min(TuiState.MAX_WIDGET_ROWS, state.upperWidgets.size())));
+        upper.addAll(state.upperWidgets.subList(0, Math.min(TuiState.MAX_WIDGET_ROWS, state.upperWidgets.size())));
+
+        // 先构造底部固定区域，避免选择器把 footer/status 挤出屏幕。
+        var tail = new ArrayList<StyledLine>();
+        tail.addAll(statusView.render(state, context, width));
+        tail.addAll(footerView.render(state, context, width));
+        if (state.closing) tail.add(StyledLine.of(DisplayWidth.ellipsize(UiMessages.CLOSING, width),
+                context.theme().style("warning")));
+        if (!state.hint.isBlank() && state.selector == null && state.approvals.isEmpty())
+            tail.add(StyledLine.of(DisplayWidth.ellipsize(state.hint, width), context.theme().style("warning")));
+        if (state.lowerWidgets.size() > TuiState.MAX_WIDGET_ROWS)
+            tail.add(StyledLine.of(DisplayWidth.ellipsize("Widget slot capped at 10 rows", width),
+                    context.theme().style("warning")));
+        tail.addAll(state.lowerWidgets.subList(0, Math.min(TuiState.MAX_WIDGET_ROWS, state.lowerWidgets.size())));
+
+        // 极矮屏优先保护输入/footer：widget 超过剩余空间时只保留能放下的前缀。
+        int upperBudget = Math.max(0, maxRows - tail.size() - 3);
+        if (upper.size() > upperBudget) upper = new ArrayList<>(upper.subList(0, upperBudget));
+        int inputBudget = Math.max(1, maxRows - upper.size() - tail.size());
 
         int cursorRow = 0, cursorColumn = 0;
         boolean cursorVisible = false;
         if (!state.approvals.isEmpty() && state.approval.active()) {
-            int maxRows = Math.max(6, context.height() - 5);
-            var rendered = approvalView.render(state.approval, context, width, maxRows);
-            int start = lines.size();
-            lines.addAll(rendered.lines());
+            var rendered = approvalView.render(state.approval, context, width,
+                    Math.max(6, Math.min(inputBudget, context.height() - 5)));
+            int start = upper.size();
+            lines.addAll(upper); lines.addAll(rendered.lines());
             var request = state.approval.request();
             for (var button : rendered.buttons()) {
                 if (!button.enabled()) continue;
@@ -69,53 +98,28 @@ public final class DockView {
                 cursorColumn = rendered.choiceColumn();
             }
         } else if (state.selector != null) {
-            SelectList list = state.selector;
-            lines.add(StyledLine.of(DisplayWidth.ellipsize(selectorTitle(state), width),
-                    context.theme().style("accent")));
-            if (!state.approval.active() && state.selectorKind.equals("Permission"))
-                lines.addAll(StyledLine.wrap(List.of(new com.jadecode.tui.text.Span(
-                        PermissionDescription.of(list.selected()), context.theme().style("muted"), null)), width));
-            var rendered = list.render(width, Math.max(1, Math.min(8, context.height() / 3)), context);
-            lines.addAll(rendered);
-            if (!state.hint.isBlank())
-                lines.add(StyledLine.of(DisplayWidth.ellipsize(state.hint, width), context.theme().style("muted")));
+            var panel = selectorPanel.render(state, context, width, inputBudget);
+            int start = upper.size();
+            lines.addAll(upper); lines.addAll(panel.lines());
+            for (var item : panel.itemHits()) {
+                hits.add(new Frame.Hit(new Rect(0, start + item.row(), Math.max(1, width), 1),
+                        new ActionToken(ActionToken.Kind.SELECT_ITEM, item.id(), context.revision())));
+            }
+            cursorRow = start + panel.cursorRow();
+            cursorColumn = panel.cursorColumn();
+            cursorVisible = panel.cursorVisible();
         } else if (state.editor != null) {
+            lines.addAll(upper);
             var rendered = state.editor.render(context, width);
             lines.addAll(rendered);
             var cursor = state.editor.cursor(context);
-            cursorRow = cursor.row(); cursorColumn = cursor.column(); cursorVisible = cursor.visible();
+            cursorRow = upper.size() + cursor.row(); cursorColumn = cursor.column(); cursorVisible = cursor.visible();
+        } else {
+            lines.addAll(upper);
         }
 
-        lines.addAll(statusView.render(state, context, width));
-        lines.addAll(footerView.render(state, context, width));
-        // 状态/footer 不提供点击动作；光标仍属于输入区。
-        if (state.closing) lines.add(StyledLine.of(DisplayWidth.ellipsize(UiMessages.CLOSING, width),
-                context.theme().style("warning")));
-        if (!state.hint.isBlank() && state.selector == null && state.approvals.isEmpty())
-            lines.add(StyledLine.of(DisplayWidth.ellipsize(state.hint, width), context.theme().style("warning")));
-        if (state.lowerWidgets.size() > TuiState.MAX_WIDGET_ROWS)
-            lines.add(StyledLine.of(DisplayWidth.ellipsize("Widget slot capped at 10 rows", width),
-                    context.theme().style("warning")));
-        lines.addAll(state.lowerWidgets.subList(0, Math.min(TuiState.MAX_WIDGET_ROWS, state.lowerWidgets.size())));
+        lines.addAll(tail);
+        // 仅 selector/审批使用严格预算；普通编辑器沿用原布局，避免改变既有键盘行为。
         return new Layout(lines, cursorRow, cursorColumn, cursorVisible, hits);
-    }
-
-    private static String selectorTitle(TuiState state) {
-        if (!state.selectorKind.isBlank()) return state.selectorKind + " · filter: " + state.selector.filter();
-        return "Select";
-    }
-
-    /** 权限说明由 PermissionMenu 提供；这里只做安全回退，避免视图依赖具体菜单实现。 */
-    private static final class PermissionDescription {
-        static String of(String selected) {
-            if (selected == null) return "";
-            return switch (selected) {
-                case "read-only" -> "Reads only; writes and commands need confirmation.";
-                case "workspace" -> "Workspace reads/writes and builds run directly; deletes and outside paths ask.";
-                case "auto-review" -> "Routine prompts go to the review model; uncertain or sensitive actions still ask.";
-                case "full-access" -> "Routine actions skip prompts; explicit denies and hard protections remain.";
-                default -> "";
-            };
-        }
     }
 }
