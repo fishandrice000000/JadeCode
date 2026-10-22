@@ -56,6 +56,10 @@ public final class TuiState {
     public long terminalEpoch;
     /** 最近一次成功呈现的帧（由 root 在 renderer 返回后安装）。 */
     public com.jadecode.tui.core.PresentedFrame presented;
+    /** 右上角临时 flash：只属于 UI，不进转录/模型历史/用量。 */
+    private String flash = "";
+    private long flashDeadlineNanos;
+    private boolean flashError;
 
     public final Map<String, String> actors = new LinkedHashMap<>();
     public final Map<String, String> background = new LinkedHashMap<>();
@@ -74,10 +78,41 @@ public final class TuiState {
         }
     }
 
+    /** 设置一次临时提示；同一文本重复设置只刷新期限。 */
+    public void flash(String text, long durationMillis, boolean error) {
+        if (text == null || text.isBlank()) return;
+        flash = text;
+        flashError = error;
+        flashDeadlineNanos = System.nanoTime() + Math.max(100, durationMillis) * 1_000_000L;
+    }
+
+    /** @return 当前是否应显示 flash。 */
+    public boolean flashActive() { return !flash.isEmpty() && System.nanoTime() < flashDeadlineNanos; }
+
+    /** @return flash 文本；不显示时为空。 */
+    public String flashText() { return flashActive() ? flash : ""; }
+
+    /** @return flash 是否为错误样式。 */
+    public boolean flashError() { return flashError; }
+
+    /** @return 下一次 flash 到期时刻（纳秒）；无提示返回 Long.MAX_VALUE。 */
+    public long flashDeadline() { return flash.isEmpty() ? Long.MAX_VALUE : flashDeadlineNanos; }
+
+    /** 到期清除；返回是否发生了变化，供宿主请求一次重绘。 */
+    public boolean clearExpiredFlash() {
+        if (flash.isEmpty() || System.nanoTime() < flashDeadlineNanos) return false;
+        flash = ""; flashError = false; flashDeadlineNanos = 0;
+        return true;
+    }
+
+    /** 退出/resize/会话切换清理旧提示。 */
+    public void clearFlash() { flash = ""; flashError = false; flashDeadlineNanos = 0; }
+
     /** 新运行时代次：清空转录/计时/审批/菜单，保留草稿与主题等 UI 偏好。 */
     public void installGeneration(long value) {
         generation = value; transcript.reset(value); actors.clear(); background.clear();
         turns.clear(); completedTurnTimes.clear(); approvals.clear(); approval.clear();
+        clearFlash();
         pending = ""; pendingKind = ""; loadingResume = false;
     }
 

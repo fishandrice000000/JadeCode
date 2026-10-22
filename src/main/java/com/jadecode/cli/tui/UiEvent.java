@@ -75,6 +75,9 @@ public sealed interface UiEvent {
     /** 后台纯计算结果就绪，只请求一次重排；不携带 JS Value。 */
     record Repaint() implements UiEvent { }
 
+    /** 右上角临时提示；只影响 UI 显示，不进入转录/模型历史。 */
+    record Flash(String text, long durationMillis, boolean error) implements UiEvent { }
+
     /** 关闭清理完成，可以结束 UI 循环。 */
     record Stopped() implements UiEvent { }
 }

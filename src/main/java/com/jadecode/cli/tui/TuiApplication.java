@@ -50,6 +50,8 @@ import com.jadecode.tui.terminal.TerminalHandoff;
 import com.jadecode.tui.terminal.TerminalQueries;
 import com.jadecode.tui.terminal.TerminalSession;
 import com.jadecode.tui.text.DisplayWidth;
+import com.jadecode.tui.text.Span;
+import com.jadecode.tui.text.Style;
 import com.jadecode.tui.text.StyledLine;
 import com.jadecode.tui.theme.ThemeManager;
 
@@ -255,13 +257,13 @@ public final class TuiApplication {
                             if (service == null) return;
                             Thread.ofVirtual().name("jade-copy").start(() -> {
                                 var result = service.copy(text);
-                                String message = switch (result) {
-                                    case DESKTOP -> UiMessages.COPIED;
-                                    case OSC52_SENT -> UiMessages.COPY_SENT;
-                                    default -> UiMessages.COPY_FAILED + "no clipboard backend";
-                                };
-                                sink.accept(new UiEvent.Message("System", "Clipboard", message, result
-                                        == ClipboardService.CopyResult.FAILED));
+                                // 复制结果走右上角临时提示，不进转录；OSC52 只表示请求已发送。
+                                switch (result) {
+                                    case DESKTOP -> sink.accept(new UiEvent.Flash(UiMessages.COPIED, 1000, false));
+                                    case OSC52_SENT -> sink.accept(new UiEvent.Flash(UiMessages.COPY_SENT, 1000, false));
+                                    case FAILED -> sink.accept(new UiEvent.Flash(
+                                            UiMessages.COPY_FAILED + "no clipboard backend", 5000, true));
+                                }
                             });
                         }
                         @Override public void setMode(String value) { mode.set(value); }
@@ -283,6 +285,7 @@ public final class TuiApplication {
                     case TerminalEvent.InputChunk chunk -> { decoder.setEpoch(event.terminalEpoch()); buffer.feed(chunk.bytes()); }
                     case TerminalEvent.Resize resize -> {
                         long epoch = term.bumpEpoch();
+                        state.clearFlash();
                         events.offer(new UiEvent.Input(InputEvent.resize(event.sequence(), epoch)));
                     }
                     case TerminalEvent.Eof eof -> events.offer(new UiEvent.Input(InputEvent.eof(event.sequence(), event.terminalEpoch())));
@@ -346,7 +349,11 @@ public final class TuiApplication {
                     }
                     if (event instanceof UiEvent.Input input && input.input().kind() == InputEvent.Kind.REPLY) {
                         boolean changed = queries.accept(input.input().reply(), input.input().terminalEpoch());
-                        if (changed) applyQueries(queries, themes, capabilities, terminal);
+                        if (changed) {
+                            applyQueries(queries, themes, capabilities, terminal);
+                            // 协商状态只影响兼容序列语义；在同一 UI 线程传给 decoder，避免竞态。
+                            decoder.setKittyActive(queries.kittyActive());
+                        }
                         scheduler.request();
                     } else {
                         boolean accepted = controller.accept(event);
@@ -363,6 +370,7 @@ public final class TuiApplication {
                             controller.invalidateActions();
                             queries.newEpoch(term.epoch());
                             queries.restart();
+                            decoder.setKittyActive(false);
                             scheduler.request();
                         }
                     }
@@ -381,6 +389,11 @@ public final class TuiApplication {
                 controller.applyPendingExternalEditor();
                 if (controller.refreshSession()) scheduler.request();
                 if (state.hasActiveTurn()) scheduler.requestAnimation(System.nanoTime() + RenderScheduler.ANIMATION_INTERVAL_NANOS);
+                // flash 到期即使空闲也要清除并重绘一次；未到期则按期限安排刷新。
+                if (state.clearExpiredFlash()) scheduler.request();
+                if (state.flashActive()) scheduler.requestAnimation(state.flashDeadline());
+                // auto 滚动条 1 秒后隐藏也要有一次空闲重绘；不能依赖下一次按键。
+                if (chat.scrollbarVisible()) scheduler.requestAnimation(chat.scrollbarDeadline());
                 if (scheduler.ready(immediate || !running)) {
                     int columns = terminal.columns() > 0 ? terminal.columns() : 80;
                     int rows = terminal.rows() > 0 ? terminal.rows() : 24;
@@ -535,6 +548,7 @@ public final class TuiApplication {
         List<StyledLine> cropped = lines.stream().map(line -> line.crop(columns)).toList();
         boolean fullscreen = mode == ScreenRenderer.Mode.FULLSCREEN;
         if (fullscreen) cropped = controller.applySelection(cropped);
+        cropped = overlayFlash(cropped, state, context, columns);
         int safeRow = Math.max(0, Math.min(cursorRow, Math.max(0, cropped.size() - 1)));
         int safeColumn = Math.max(0, Math.min(cursorColumn, Math.max(0, columns - 1)));
         var cursor = cursorVisible ? new Frame.Cursor(safeRow, safeColumn, true) : Frame.NO_CURSOR;
@@ -544,6 +558,29 @@ public final class TuiApplication {
         int dockTop = fullscreen ? viewportHeight : Math.max(0, cropped.size() - dock.lines().size());
         controller.layout(columns, rows, 0, viewportHeight, dockTop, fullscreen);
         return new Composed(frame, dock);
+    }
+
+    /**
+     * 把临时复制提示合成到第一行右上角；不修改转录/历史。宽度不足时只保留能放下的
+     * 前缀，仍保证总列数不超过终端宽度。
+     */
+    private List<StyledLine> overlayFlash(List<StyledLine> lines, TuiState state, RenderContext context, int columns) {
+        if (!state.flashActive() || lines.isEmpty()) return lines;
+        String text = state.flashText();
+        var theme = context.theme();
+        Style style = state.flashError() ? theme.style("error") : theme.style("success");
+        int textWidth = com.jadecode.tui.text.DisplayWidth.width(text);
+        int keep = Math.max(0, columns - textWidth - 1);
+        var result = new ArrayList<>(lines);
+        StyledLine base = lines.getFirst();
+        var spans = new ArrayList<Span>(base.crop(keep).spans());
+        int used = 0;
+        for (Span span : spans) used += com.jadecode.tui.text.DisplayWidth.width(span.text());
+        if (used < keep) spans.add(new Span(" ".repeat(keep - used), Style.PLAIN, null));
+        spans.add(new Span(" ", Style.PLAIN, null));
+        spans.add(new Span(text, style, null));
+        result.set(0, new StyledLine(spans, base.annotation()));
+        return result;
     }
 
     private long frameCounter;

@@ -75,6 +75,7 @@ public final class TuiController {
     /** 全屏屏幕级选区：聊天和编辑器文本都能拖选/复制，与 Pi 一致。 */
     private final SelectionModel screenSelection = new SelectionModel();
     private boolean selectionDragged;
+    private boolean selectionPressActive;
     private long lastClickNanos;
     private int clickCount;
     private boolean searchOpen;
@@ -220,6 +221,7 @@ public final class TuiController {
             }
             case UiEvent.ExternalEditorResult text -> editor.replaceText(text.text());
             case UiEvent.Repaint ignored -> { /* Application 已消费并请求重绘。 */ }
+            case UiEvent.Flash flash -> state.flash(flash.text(), flash.durationMillis(), flash.error());
             case UiEvent.TerminalFailure failure -> { state.hint = failure.message(); close(); }
             case UiEvent.Stopped stopped -> { return false; }
         }
@@ -389,15 +391,22 @@ public final class TuiController {
                 clickCount = now - lastClickNanos < 400_000_000L ? Math.min(3, clickCount + 1) : 1;
                 lastClickNanos = now;
                 selectionDragged = false;
+                selectionPressActive = true;
                 screenSelection.start(new SelectionModel.Position(Math.max(0, row), Math.max(0, column)), clickCount);
             }
             case DRAG -> {
+                if (!selectionPressActive) return;
                 screenSelection.drag(new SelectionModel.Position(Math.max(0, row), Math.max(0, column)));
                 selectionDragged = true;
                 autoScrollSelection(row);
             }
             case RELEASE -> {
-                if (!selectionDragged) {
+                // 释放必须属于一次真实按下；重复释放或没有按下的释放不得复制/点击。
+                if (!selectionPressActive) return;
+                selectionPressActive = false;
+                boolean dragged = selectionDragged;
+                selectionDragged = false;
+                if (!dragged) {
                     LinkTarget link = linkAt(row, column);
                     if (link != null) { screenSelection.clear(); terminalsOpen(link); return; }
                     if (editorClick(row, column)) { screenSelection.clear(); return; }
@@ -405,6 +414,7 @@ public final class TuiController {
                     return;
                 }
                 screenSelection.finish();
+                // 一次拖选只复制一次；选区保留，重复释放不再触发。
                 String text = screenSelection.text(lastFrame.lines());
                 if (!text.isBlank() && chat.copyOnSelect()) terminal.copy(text, false);
             }
