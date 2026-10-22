@@ -17,6 +17,90 @@ import com.jadecode.tui.text.StyledLine;
  * 不做跨类累计。没有费用/订阅数据不画。</p>
  */
 public final class SessionInfoView {
+    /**
+     * /model 的语义 Markdown：只使用 Display.metadata/thinking 与真实 model 名，不反解析
+     * describe 字符串、不联网、不把未知限额补成 0。
+     */
+    public String modelMarkdown(TuiState state) {
+        var out = new StringBuilder();
+        out.append("## Model\n\n");
+        String model = state == null ? "" : state.model;
+        var metadata = state == null || state.session == null ? null : state.session.metadata();
+        String thinking = state == null || state.session == null || state.session.thinking() == null
+                ? "" : state.session.thinking().value();
+        out.append("- **Model:** ").append(model == null || model.isBlank() ? "unknown" : MarkdownSafe.code(model)).append('\n');
+        out.append("- **Thinking:** ").append(thinking == null || thinking.isBlank() ? "unknown" : thinking).append('\n');
+        var limits = metadata == null ? null : metadata.limits();
+        boolean known = limits != null && limits.known();
+        if (known) {
+            out.append("\n### Limits\n\n");
+            if (limits.contextWindowTokens() != null)
+                out.append("- **Context window:** ").append(limits.contextWindowTokens()).append(" tokens\n");
+            if (limits.maxInputTokens() != null)
+                out.append("- **Max input:** ").append(limits.maxInputTokens()).append(" tokens\n");
+            if (limits.maxOutputTokens() != null)
+                out.append("- **Max output:** ").append(limits.maxOutputTokens()).append(" tokens\n");
+        } else {
+            out.append("\n### Limits\n\n- No context/input/output limits reported.\n");
+        }
+        out.append("\n").append(UiMessages.NO_MODEL_SWITCH).append(".\n");
+        return out.toString();
+    }
+
+    /**
+     * /session 的语义 Markdown：保留身份、真实 usage 分组、cache/context 与缺报告语义；
+     * 字段缺失时省略或写 unknown，不补 0、不合并计数。
+     */
+    public String markdown(TuiState state) {
+        var out = new StringBuilder();
+        out.append("## Session\n\n");
+        String title = state.session == null || state.session.title() == null || state.session.title().isBlank()
+                ? "New session" : state.session.title();
+        out.append("- **Title:** ").append(MarkdownSafe.code(title)).append('\n');
+        if (state.sessionId != null && !state.sessionId.isBlank())
+            out.append("- **ID:** ").append(MarkdownSafe.code(state.sessionId)).append('\n');
+        if (state.model != null && !state.model.isBlank())
+            out.append("- **Model:** ").append(MarkdownSafe.code(state.model)).append('\n');
+        if (state.session == null) {
+            out.append("\nNo active session data reported.\n");
+            return out.toString();
+        }
+        out.append("- **Thinking:** ").append(state.session.thinking() == null ? "unknown"
+                : state.session.thinking().value()).append('\n');
+        out.append("- **Permission:** ").append(UiMessages.permission(state.permissionProfile)).append('\n');
+        var usage = state.session.usage();
+        var total = usage == null ? null : usage.total();
+        out.append("\n### Usage\n\n");
+        out.append("- **Tokens:** ").append(total == null ? "none reported" : notEmpty(
+                UsageFormatter.tokenCounts(total), "none reported")).append('\n');
+        String cache = total == null ? "" : UsageFormatter.cacheCounts(total);
+        String hit = total == null ? "" : UsageFormatter.cacheHit(total);
+        out.append("- **Cache:** ").append(cache.isBlank() && hit.isBlank() ? "none reported"
+                : (cache + (hit.isBlank() ? "" : " · " + hit)).strip()).append('\n');
+        if (total != null && total.missingRequests() > 0)
+            out.append("- **Missing usage reports:** ").append(total.missingRequests()).append('\n');
+        String context = state.session.context() == null ? "" : UsageFormatter.context(state.session.context());
+        out.append("- **Context:** ").append(context.isBlank() ? "unknown" : "estimated " + context).append('\n');
+        if (usage != null) {
+            usageGroup(out, "By actor", usage.byActor());
+            usageGroup(out, "By purpose", usage.byPurpose());
+            usageGroup(out, "By model", usage.byModel());
+        }
+        return out.toString();
+    }
+
+    private static void usageGroup(StringBuilder out, String label, java.util.Map<String, ?> values) {
+        if (values == null || values.isEmpty()) return;
+        out.append("\n### ").append(label).append("\n\n");
+        values.entrySet().stream().sorted(java.util.Map.Entry.comparingByKey()).forEach(entry -> {
+            String key = String.valueOf(entry.getKey());
+            String value = entry.getValue() instanceof com.jadecode.session.SessionUsage.Totals total
+                    ? notEmpty(UsageFormatter.tokenCounts(total), "none reported") : String.valueOf(entry.getValue());
+            out.append("- ").append(MarkdownSafe.code(key)).append(" — ").append(value).append('\n');
+        });
+    }
+
+    /** 旧 StyledLine 渲染保留给组件级调用；Controller 已使用语义 Markdown。 */
     public List<StyledLine> render(TuiState state, RenderContext context, int width) {
         var out = new ArrayList<StyledLine>();
         out.add(StyledLine.of(DisplayWidth.ellipsize(UiMessages.SESSION_LABEL + " · " + (state.session == null

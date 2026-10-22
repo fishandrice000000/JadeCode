@@ -16,7 +16,40 @@ import com.jadecode.tui.text.StyledLine;
  * connected 且 0 工具与服务未连接可区分。所有字段来自 McpManager.snapshot 的纯内存复制。</p>
  */
 public final class McpStatusView {
-    /** @return 只读状态行；无配置时显示明确英文提示。 */
+    /**
+     * 语义 Markdown 页面：按真实服务器/状态/工具分组；外部名称只进 inline code，
+     * 不触发连接、发现、OAuth 或秘密读取。resize/主题变化由 MessageCard 重排。
+     */
+    public String markdown(List<McpManager.ServerSnapshot> servers) {
+        var out = new StringBuilder();
+        out.append("## MCP servers\n\n");
+        out.append("Read-only view. No connection or tool discovery is triggered.\n\n");
+        if (servers == null || servers.isEmpty()) {
+            out.append(UiMessages.NO_MCP).append(".\n");
+            return out.toString();
+        }
+        for (McpManager.ServerSnapshot server : servers) {
+            String state = !server.enabled() ? "disabled" : server.connected() ? "connected" : "configured";
+            out.append("### ").append(MarkdownSafe.code(server.name())).append('\n');
+            out.append("- **Status:** ").append(state).append('\n');
+            if (server.connected()) {
+                if (server.tools().isEmpty()) out.append("- **Tools:** connected; no tools advertised\n");
+                else {
+                    out.append("- **Tools:**\n");
+                    for (String tool : server.tools())
+                        out.append("  - ").append(MarkdownSafe.code(tool)).append('\n');
+                }
+            } else if (!server.enabled()) {
+                out.append("- **Tools:** not loaded while disabled\n");
+            } else {
+                out.append("- **Tools:** not discovered\n");
+            }
+            out.append('\n');
+        }
+        return out.toString();
+    }
+
+    /** @return 只读状态行（旧调用）；Controller 已改用语义 Markdown。 */
     public List<StyledLine> render(List<McpManager.ServerSnapshot> servers, RenderContext context, int width) {
         var out = new ArrayList<StyledLine>();
         out.add(StyledLine.of(DisplayWidth.ellipsize(UiMessages.MCP_READ_ONLY, width),
