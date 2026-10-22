@@ -176,6 +176,36 @@ class TuiApprovalViewTest {
         assertFalse(selected.style().inverse(), "NO_COLOR must not emit inverse attributes");
     }
 
+
+    @Test void singlePersonApprovalHidesAllActorLabelsButTeamShowsSource() {
+        var state = new ApprovalViewState();
+        var solo = new UiEvent.ApprovalRequested("id-9", "leader/sub-3", "bash", "{}", "r", "", 3);
+        state.show(solo, 0, 1);
+        var soloLines = new ApprovalView().render(state, new RenderContext(80, 24, theme), 80, 20, false);
+        String soloTitle = soloLines.lines().getFirst().text();
+        assertTrue(soloTitle.startsWith("┌─ Approval required · bash"), soloTitle);
+        assertFalse(soloTitle.contains("Leader"), soloTitle);
+        assertFalse(soloTitle.contains("sub-3"), soloTitle);
+        assertEquals("leader/sub-3", state.request().actor(), "display rule must not change approval identity");
+        var teamLines = new ApprovalView().render(state, new RenderContext(80, 24, theme), 80, 20, true);
+        assertTrue(teamLines.lines().getFirst().text().contains("Leader / sub-3"),
+                teamLines.lines().getFirst().text());
+
+        var dockState = new com.jadecode.cli.tui.TuiState(); dockState.installGeneration(0);
+        dockState.approvals.addLast(solo); dockState.approval.show(solo, 0, 1);
+        String single = new com.jadecode.cli.tui.view.DockView().render(dockState,
+                new RenderContext(80, 24, theme), 80, 20).lines().stream()
+                .map(StyledLine::text).reduce("", (a, b) -> a + "\n" + b);
+        assertTrue(single.contains("Approval required · bash"));
+        assertFalse(single.contains("Leader"));
+        // 只有真实常驻 Team 成员才显示受信来源。
+        dockState.actors.put("agent_abc", "RUNNING");
+        String team = new com.jadecode.cli.tui.view.DockView().render(dockState,
+                new RenderContext(80, 24, theme), 80, 20).lines().stream()
+                .map(StyledLine::text).reduce("", (a, b) -> a + "\n" + b);
+        assertTrue(team.contains("Approval required · Leader / sub-3 · bash"), team);
+    }
+
     @Test void dockReplacesEditorWithBoundedPanelAndRespectsBudget() {
         var state = new com.jadecode.cli.tui.TuiState();
         state.installGeneration(0);

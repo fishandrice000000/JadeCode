@@ -70,7 +70,7 @@ class TuiSelectorPanelTest {
         assertTrue(all.contains("Theme") && all.contains("dark"), all);
         assertTrue(all.contains("Type to search · Enter/Space to change · Esc to cancel"), all);
         assertTrue(all.contains("(1/21)"), "window count missing: " + all);
-        assertTrue(all.lines().anyMatch(line -> line.startsWith("────")), "top border missing");
+        assertTrue(all.lines().anyMatch(line -> line.startsWith("┌─ Settings")), "embedded title top border missing");
         assertTrue(dock.cursorVisible());
         assertEquals(2 + "Search settings".length() == dock.cursorColumn() || dock.cursorColumn() >= 2, true);
         assertTrue(dock.lines().size() <= 23);

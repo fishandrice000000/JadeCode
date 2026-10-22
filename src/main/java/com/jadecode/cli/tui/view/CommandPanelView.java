@@ -5,6 +5,7 @@ import java.util.List;
 import com.jadecode.cli.tui.model.CommandPanelModel;
 import com.jadecode.tui.core.Component;
 import com.jadecode.tui.core.RenderContext;
+import com.jadecode.tui.layout.CardFrame;
 import com.jadecode.tui.text.DisplayWidth;
 import com.jadecode.tui.text.Span;
 import com.jadecode.tui.text.Style;
@@ -12,12 +13,13 @@ import com.jadecode.tui.text.StyledLine;
 import com.jadecode.tui.text.TextSanitizer;
 
 /**
- * 命令信息弹窗组件：真实分组/字段/服务列表、局部焦点和滚动，多列随宽度重排。
+ * 命令信息卡片：真实分组/字段/服务列表、局部焦点和滚动，多列随宽度重排。
  *
  * <p>只消费 {@link CommandPanelModel}，不读 Host、不写终端、不把 Markdown 当页面。所有外部
- * 名称/值先经 {@link TextSanitizer#display} 净化；行宽严格限制在给定宽度内。标题嵌入顶边并
- * 使用 accent+bold，正文每行有闭合侧边、左右各 2 列 padding，整块矩形（含空白与补齐）铺
- * {@code panelBg}；宽度/高度不足时先缩 padding，再滚动正文，四角和底边始终完整。</p>
+ * 名称/值先经 {@link TextSanitizer#display} 净化；行宽严格限制在给定宽度内。外框/留白/面板
+ * 底色统一由 {@link CardFrame} 生成，本类只负责正文内容和局部滚动，因此与审批/选择/搜索
+ * 使用同一套闭合几何。标题嵌入顶边并使用 accent+bold；宽度/高度不足时先缩 padding，再滚动
+ * 正文，四角和底边始终完整。</p>
  */
 public final class CommandPanelView implements Component {
     private final CommandPanelModel model;
@@ -99,17 +101,14 @@ public final class CommandPanelView implements Component {
         int columns = Math.max(1, width);
         int budget = Math.max(1, maxRows);
         String title = oneLine(model.title());
-        if (budget < 3 || columns < 10) {
-            return List.of(panelLine(List.of(new Span(DisplayWidth.ellipsize(title + " · Esc close", columns),
-                    context.theme().style("muted"), null)), columns, context));
-        }
-        Style panel = context.theme().background("panelBg");
-        int padding = columns >= 14 ? 2 : (columns >= 11 ? 1 : 0);
-        if (budget < 6 && padding == 2) padding = 1;
-        int contentWidth = Math.max(1, columns - 2 - padding * 2);
         boolean footer = budget >= 5;
-        boolean categories = model.kind() == CommandPanelModel.Kind.HOTKEYS && !model.groups().isEmpty() && budget >= 5;
-        int bodyRows = Math.max(1, budget - 2 - (footer ? 1 : 0) - (categories ? 1 : 0));
+        boolean categories = model.kind() == CommandPanelModel.Kind.HOTKEYS && !model.groups().isEmpty()
+                && budget >= 5;
+        // 固定头部只有分类导航；正文滚动不能把它带走。footer 单独占一行，避免长分组挤掉提示。
+        CardFrame.Metrics frame = CardFrame.measure(columns, budget, categories ? 1 : 0, footer);
+        if (frame.minimal()) return CardFrame.compose(title, "Esc close", List.of(), List.of(), null, frame, context);
+        int contentWidth = frame.contentWidth();
+        int bodyRows = frame.bodyRows();
 
         List<Section> sections = buildSections(contentWidth);
         int columnCount = Math.min(3, Math.max(1, (contentWidth + 2) / 32));
@@ -131,10 +130,6 @@ public final class CommandPanelView implements Component {
             columnLines.get(target).addAll(lines);
             heights[target] += lines.size();
         }
-        if (model.kind() == CommandPanelModel.Kind.MCP && model.services().isEmpty()) {
-            columnLines.get(0).add(StyledLine.of(DisplayWidth.ellipsize(model.emptyText(), columnWidth),
-                    context.theme().style("muted")));
-        }
         int bodySize = 0;
         for (var column : columnLines) bodySize = Math.max(bodySize, column.size());
         // 高度紧张时先去掉分组间的纯装饰空行，再滚动正文；标题/底边/侧边不截断。
@@ -151,40 +146,31 @@ public final class CommandPanelView implements Component {
         }
         sectionStarts = List.copyOf(starts);
         lastBodySize = bodySize;
-        lastBodyRows = bodyRows;
-        scroll = Math.min(scroll, Math.max(0, bodySize - bodyRows));
+        lastBodyRows = Math.max(1, bodyRows);
+        scroll = Math.min(scroll, Math.max(0, bodySize - lastBodyRows));
 
-        var out = new ArrayList<StyledLine>();
-        out.add(topBorder(title, columns, context, padding));
+        // 组装正文行：各列按列宽补齐后拼成一条内容行，外框和底色交给 CardFrame。
+        var body = new ArrayList<StyledLine>();
+        for (int row = scroll; row < Math.min(bodySize, scroll + lastBodyRows); row++) {
+            var spans = new ArrayList<Span>();
+            for (int i = 0; i < columnLines.size(); i++) {
+                if (i > 0) spans.add(new Span("  ", Style.PLAIN, null));
+                StyledLine line = row < columnLines.get(i).size() ? columnLines.get(i).get(row) : StyledLine.empty();
+                spans.addAll(line.padTo(columnWidth, Style.PLAIN).crop(columnWidth).spans());
+            }
+            body.add(new StyledLine(spans));
+        }
+        List<StyledLine> header = List.of();
         if (categories) {
             String navigation = "‹ " + oneLine(model.groups().get(section).title()) + " ›  "
                     + (section + 1) + "/" + model.groups().size();
-            out.add(framedText(navigation, context.theme().style("accent"), columns, padding, contentWidth, context));
+            header = List.of(StyledLine.of(DisplayWidth.ellipsize(navigation, contentWidth),
+                    context.theme().style("accent")));
         }
-        for (int row = scroll; row < Math.min(bodySize, scroll + bodyRows); row++) {
-            var spans = new ArrayList<Span>();
-            spans.add(new Span("│" + " ".repeat(padding), context.theme().style("border"), null));
-            for (int i = 0; i < columnLines.size(); i++) {
-                if (i > 0) spans.add(new Span("  ", panel.isPlain() ? Style.PLAIN : panel, null));
-                StyledLine line = row < columnLines.get(i).size() ? columnLines.get(i).get(row) : StyledLine.empty();
-                spans.addAll(line.padTo(columnWidth, panel.isPlain() ? Style.PLAIN : panel).crop(columnWidth).spans());
-            }
-            // contentWidth 已扣掉左右边框与 padding；这里只补右 padding 和右边界。
-            spans.add(new Span(" ".repeat(padding) + "│", context.theme().style("border"), null));
-            out.add(panelLine(spans, columns, context));
-        }
-        if (footer) {
-            var spans = new ArrayList<Span>();
-            spans.add(new Span("│" + " ".repeat(padding), context.theme().style("border"), null));
-            String hint = DisplayWidth.ellipsize(hint(), contentWidth);
-            spans.add(new Span(hint + " ".repeat(Math.max(0, contentWidth - DisplayWidth.width(hint))),
-                    context.theme().style("dim"), null));
-            spans.add(new Span(" ".repeat(padding) + "│", context.theme().style("border"), null));
-            out.add(panelLine(spans, columns, context));
-        }
-        out.add(bottomBorder(columns, context, padding));
-        if (out.size() > budget) out = new ArrayList<>(out.subList(0, budget));
-        return out;
+        StyledLine footerLine = footer
+                ? StyledLine.of(DisplayWidth.ellipsize(hint(), contentWidth), context.theme().style("dim"))
+                : null;
+        return CardFrame.compose(title, "Esc close", header, body, footerLine, frame, context);
     }
 
     /** 去掉一个装饰空行；返回是否发生变化。 */
@@ -195,35 +181,6 @@ public final class CommandPanelView implements Component {
             }
         }
         return false;
-    }
-
-    /** 给整行所有 Span 叠加面板背景，并补齐到恰好 width；保持前景/粗体/链接。 */
-    private static StyledLine panelLine(List<Span> spans, int width, RenderContext context) {
-        Style panel = context.theme().background("panelBg");
-        var result = new ArrayList<Span>();
-        for (Span span : spans)
-            result.add(new Span(span.text(), panel.isPlain() ? span.style() : span.style().withBg(panel.bg()), span.link()));
-        StyledLine line = new StyledLine(result);
-        return line.width() < width ? line.padTo(width, panel.isPlain() ? Style.PLAIN : panel) : line.crop(width);
-    }
-
-    /** 顶边：标题嵌入边框；边框普通字重，标题 accent+bold；总宽恰为 columns。 */
-    private static StyledLine topBorder(String title, int columns, RenderContext context, int padding) {
-        String shown = DisplayWidth.ellipsize(title, Math.max(1, columns - 5));
-        int fill = Math.max(0, columns - DisplayWidth.width(shown) - 5);
-        var spans = new ArrayList<Span>();
-        Style border = context.theme().style("border");
-        Style titleStyle = context.theme().style("accent");
-        if (context.theme().enabled()) titleStyle = titleStyle.withBold(true);
-        spans.add(new Span("┌─ ", border, null));
-        spans.add(new Span(shown, titleStyle, null));
-        spans.add(new Span(" " + "─".repeat(fill) + "┐", border, null));
-        return panelLine(spans, columns, context);
-    }
-
-    private static StyledLine bottomBorder(int columns, RenderContext context, int padding) {
-        return panelLine(List.of(new Span("└" + "─".repeat(Math.max(0, columns - 2)) + "┘",
-                context.theme().style("border"), null)), columns, context);
     }
 
     private String hint() {
@@ -281,15 +238,6 @@ public final class CommandPanelView implements Component {
                     List.of(new CommandPanelModel.Field("Status", model.emptyText())), true));
         }
         return sections;
-    }
-
-    /** 固定导航行也经过同一外框/留白/底色路径，避免短正文时右侧边框断开。 */
-    private static StyledLine framedText(String text, Style style, int columns, int padding,
-            int contentWidth, RenderContext context) {
-        String shown = DisplayWidth.ellipsize(text, contentWidth);
-        return panelLine(List.of(new Span("│" + " ".repeat(padding), context.theme().style("border"), null),
-                new Span(shown + " ".repeat(Math.max(0, contentWidth - DisplayWidth.width(shown))), style, null),
-                new Span(" ".repeat(padding) + "│", context.theme().style("border"), null)), columns, context);
     }
 
     private List<StyledLine> renderSection(Section section, RenderContext context, int width, boolean selected) {

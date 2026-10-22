@@ -11,15 +11,20 @@ import com.jadecode.tui.core.ActionToken;
 import com.jadecode.tui.core.Frame;
 import com.jadecode.tui.core.RenderContext;
 import com.jadecode.tui.geometry.Rect;
+import com.jadecode.tui.overlay.SearchOverlay;
 import com.jadecode.tui.text.DisplayWidth;
 import com.jadecode.tui.text.StyledLine;
 
 /**
- * 底部 dock 的优先组合：审批 > 菜单/选择器 > 编辑器；之后是状态、footer、widget 与提示。
+ * 底部 dock 的唯一输入区装配：审批 > 选择器 > 信息卡 > 搜索卡 > 编辑器；
+ * 之后是状态、footer、widget 与提示。
  *
- * <p>同一时间只显示一个输入对象；被盖住的编辑器草稿/光标完整保留。审批按钮的命中区域
+ * <p>同一时间只显示一个输入对象；被盖住的编辑器草稿/光标完整保留。信息卡、选择器、
+ * 搜索卡和审批都替换 Editor，不会写进转录或另叠一层居中浮层。卡片高度按“真实剩余预算”
+ * 与“终端行数 65%”夹取；审批继续使用完整安全预算，不套 65% 上限。审批按钮的命中区域
  * 与文本在同一次布局中生成，动作带当前 layout revision；窗口太小或审批无按钮时不会生成
- * 可批准 hit。所有自有提示英文；不在这里执行命令或修改业务状态。</p>
+ * 可批准 hit。选择器候选命中使用 CardFrame 完成外框后的真实列界限，不再按整行
+ * {@code x=0} 命中。所有自有提示英文；不在这里执行命令或修改业务状态。</p>
  */
 public final class DockView {
     /**
@@ -40,16 +45,25 @@ public final class DockView {
     private final StatusView statusView = new StatusView();
     private final FooterView footerView = new FooterView();
 
-    /** 组装 dock（无外部高度限制；regular/测试使用）。 */
+    /** 组装 dock（无外部高度限制；兼容测试与旧调用）。 */
     public Layout render(TuiState state, RenderContext context, int width) {
-        return render(state, context, width, Integer.MAX_VALUE);
+        return render(state, context, width, Integer.MAX_VALUE, null);
+    }
+
+    /** 兼容旧调用：不带搜索卡时按无搜索处理。 */
+    public Layout render(TuiState state, RenderContext context, int width, int maxTotalRows) {
+        return render(state, context, width, maxTotalRows, null);
     }
 
     /**
-     * 组装 dock；fullscreen 传 rows-1 作为上限，先扣除状态/footer/widget，再给选择器面板
-     * 分配剩余高度，避免 Application 最后截断底边、提示或 footer。
+     * 组装 dock；fullscreen 传 rows-1 作为上限，先扣除状态/footer/widget，再给输入区卡片
+     * 分配剩余高度，避免 Application 最后截断底边、提示或 footer。regular 传当前终端
+     * 行数，使卡片自身限高，但文档仍由 renderer 完整写出。
+     *
+     * @param search 当前搜索卡；未打开时可为 null
      */
-    public Layout render(TuiState state, RenderContext context, int width, int maxTotalRows) {
+    public Layout render(TuiState state, RenderContext context, int width, int maxTotalRows,
+            SearchOverlay search) {
         int maxRows = Math.max(1, maxTotalRows);
         var lines = new ArrayList<StyledLine>();
         var hits = new ArrayList<Frame.Hit>();
@@ -77,11 +91,15 @@ public final class DockView {
         int upperBudget = Math.max(0, maxRows - tail.size() - 3);
         if (upper.size() > upperBudget) upper = new ArrayList<>(upper.subList(0, upperBudget));
         int inputBudget = Math.max(1, maxRows - upper.size() - tail.size());
+        // 信息/选择/搜索卡的高度上限：终端行数 65%（向下取整），再夹到真实剩余预算。
+        // 审批不走这个上限，继续使用既有安全预算。
+        int cardBudget = Math.min(inputBudget, Math.max(3, context.height() * 65 / 100));
 
         int cursorRow = 0, cursorColumn = 0;
         boolean cursorVisible = false;
         if (!state.approvals.isEmpty() && state.approval.active()) {
-            var rendered = approvalView.render(state.approval, context, width, Math.max(1, inputBudget));
+            var rendered = approvalView.render(state.approval, context, width, Math.max(1, inputBudget),
+                    state.teamActive());
             int start = upper.size();
             lines.addAll(upper); lines.addAll(rendered.lines());
             var request = state.approval.request();
@@ -97,16 +115,31 @@ public final class DockView {
                 cursorColumn = rendered.choiceColumn();
             }
         } else if (state.selector != null) {
-            var panel = selectorPanel.render(state, context, width, inputBudget);
+            var panel = selectorPanel.render(state, context, width, cardBudget);
             int start = upper.size();
             lines.addAll(upper); lines.addAll(panel.lines());
             for (var item : panel.itemHits()) {
-                hits.add(new Frame.Hit(new Rect(0, start + item.row(), Math.max(1, width), 1),
+                // 候选行只命中真实正文列；边框/padding 不触发选择，也不能用整行 x=0 命中。
+                hits.add(new Frame.Hit(new Rect(panel.contentX(), start + item.row(),
+                        Math.max(1, panel.contentWidth()), 1),
                         new ActionToken(ActionToken.Kind.SELECT_ITEM, item.id(), context.revision())));
             }
             cursorRow = start + panel.cursorRow();
             cursorColumn = panel.cursorColumn();
             cursorVisible = panel.cursorVisible();
+        } else if (state.commandPanel != null) {
+            lines.addAll(upper);
+            var rendered = state.commandPanel.render(context, width, cardBudget);
+            lines.addAll(rendered);
+        } else if (search != null && search.visible()) {
+            lines.addAll(upper);
+            var rendered = search.render(context, width, cardBudget);
+            lines.addAll(rendered.lines());
+            if (rendered.cursorVisible()) {
+                cursorRow = upper.size() + rendered.cursorRow();
+                cursorColumn = rendered.cursorColumn();
+                cursorVisible = true;
+            }
         } else if (state.editor != null) {
             lines.addAll(upper);
             var rendered = state.editor.render(context, width);

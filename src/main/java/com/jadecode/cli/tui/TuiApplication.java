@@ -33,12 +33,9 @@ import com.jadecode.tui.core.Frame;
 import com.jadecode.tui.core.PresentedFrame;
 import com.jadecode.tui.core.RenderContext;
 import com.jadecode.tui.core.RenderScheduler;
-import com.jadecode.tui.geometry.Insets;
-import com.jadecode.tui.geometry.Rect;
 import com.jadecode.tui.input.InputDecoder;
 import com.jadecode.tui.input.InputEvent;
 import com.jadecode.tui.input.KeyBindings;
-import com.jadecode.tui.overlay.OverlayManager;
 import com.jadecode.tui.render.FullscreenRenderer;
 import com.jadecode.tui.render.RegularRenderer;
 import com.jadecode.tui.render.ScreenRenderer;
@@ -511,9 +508,11 @@ public final class TuiApplication {
     private Composed compose(TuiState state, RenderContext context, int columns, int rows,
             ChatViewport chat, ConversationView conversation, Editor editor, SettingsMenu settings,
             ThemeManager themes, TuiController controller, ScreenRenderer.Mode mode, TerminalSession terminal) {
+        // 搜索卡与信息卡都由 DockView 作为唯一输入区内容装配，不再叠居中浮层。
+        var search = controller.searchOpen() ? controller.searchOverlay() : null;
         var dock = mode == ScreenRenderer.Mode.FULLSCREEN
-                ? new DockView().render(state, context, columns, Math.max(1, rows - 1))
-                : new DockView().render(state, context, columns);
+                ? new DockView().render(state, context, columns, Math.max(1, rows - 1), search)
+                : new DockView().render(state, context, columns, Math.max(1, rows), search);
         var lines = new ArrayList<StyledLine>();
         int cursorRow = 0, cursorColumn = 0;
         boolean cursorVisible = false;
@@ -522,26 +521,13 @@ public final class TuiApplication {
             int dockRows = Math.min(dock.lines().size(), Math.max(1, rows - 1));
             int viewportHeight = Math.max(0, rows - dockRows);
             List<String> resources = List.of();
+            // 欢迎区按真实终端高度决定品牌档位；聊天仍只取视口高度切片。
             var viewport = viewportHeight == 0 ? new ArrayList<StyledLine>()
-                    : new ArrayList<>(chat.render(state, context.withHeight(viewportHeight), viewportHeight, resources,
+                    : new ArrayList<>(chat.render(state, context, viewportHeight, resources,
                             controller.welcomeExpanded(), true));
-            // 正文不足一屏时仍保留完整的可寻址区域；dock 固定在分配给它的位置，
-            // 居中弹窗也不再因正文行数太少而落到“列表之外”。这些空白不是转录内容。
+            // 正文不足一屏时仍保留完整的可寻址区域；dock 固定在分配给它的位置。
+            // 这些空白不是转录内容。
             while (viewport.size() < viewportHeight) viewport.add(StyledLine.empty());
-            // 搜索 Overlay 覆盖视口，点击不能穿透；关闭后回到原编辑器草稿。
-            if (controller.searchOpen()) {
-                var overlay = controller.searchOverlay();
-                Rect rect = overlay.rect(new Rect(0, 0, columns, viewport.size()));
-                var overlayLines = overlay.render(context, rect.width());
-                if (!overlayLines.isEmpty()) {
-                    int top = rect.y();
-                    for (int i = 0; i < overlayLines.size() && top + i < viewport.size(); i++)
-                        viewport.set(top + i, overlayLines.get(i).padTo(rect.width(), context.theme().style("text")));
-                    cursorRow = top + 1;
-                    cursorColumn = Math.min(rect.width() - 1, 2 + overlay.cursorColumn(Math.max(1, rect.width() - 4)));
-                    cursorVisible = true;
-                }
-            }
             lines.addAll(viewport);
             lines.addAll(dock.lines().subList(0, dockRows));
             if (!cursorVisible && dock.cursorVisible() && dock.cursorRow() < dockRows) {
@@ -583,31 +569,12 @@ public final class TuiApplication {
                         state.flashError() ? context.theme().style("error") : context.theme().style("success"))
                 : null;
         long frameId = ++frameCounter;
-        // 命令信息弹窗：fullscreen 合成到整屏画布；regular 通过 ScreenLayer 临时叠画，
-        // 不进入 Frame.lines 文档，也不写 Transcript/history。
-        Rect panelRect = null;
-        List<StyledLine> panelLines = List.of();
-        if (state.commandPanel != null) {
-            int maxWidth = Math.min(100, Math.max(20, columns - 2));
-            int maxHeight = Math.min(24, Math.max(6, rows * 3 / 4));
-            var overlay = new OverlayManager.Overlay("command-panel", state.commandPanel,
-                    OverlayManager.Anchor.CENTER, 50, 50, new Insets(1, 1, 1, 1),
-                    maxWidth, null, maxHeight, true);
-            var placed = OverlayManager.place(overlay, new Rect(0, 0, columns, rows), maxWidth, maxHeight);
-            var rendered = state.commandPanel.render(context, placed.width(), placed.height());
-            int height = Math.max(3, Math.min(placed.height(), rendered.size()));
-            panelRect = new Rect(placed.x(), placed.y(), placed.width(), height);
-            panelLines = rendered.size() > height ? new ArrayList<>(rendered.subList(0, height)) : rendered;
-        }
-        List<Frame.Hit> visibleHits = panelRect == null ? hits : hitsOutside(hits, panelRect);
-        contentFrame = new Frame(frameId, terminal.epoch(), context.revision(), cropped, cursor, visibleHits);
+        // 信息卡/选择卡/搜索卡已是 dock 的普通内容：命中与光标来自同一次 dock 布局，
+        // 不再过滤底层命中，也不再生成 ScreenLayer。
+        contentFrame = new Frame(frameId, terminal.epoch(), context.revision(), cropped, cursor, hits);
         var displayed = fullscreen ? overlayFlash(cropped, state, context, columns) : cropped;
-        if (fullscreen && panelRect != null) displayed = overlayPanel(displayed, panelLines, panelRect, columns);
-        Frame.ScreenLayer layer = !fullscreen && panelRect != null
-                ? new Frame.ScreenLayer(panelRect, panelLines, Frame.NO_CURSOR, List.of(), context.revision())
-                : null;
-        var frame = new Frame(frameId, terminal.epoch(), context.revision(), displayed, cursor, visibleHits,
-                screenFlash, layer);
+        var frame = new Frame(frameId, terminal.epoch(), context.revision(), displayed, cursor, hits,
+                screenFlash);
         int dockRows = Math.min(dock.lines().size(), Math.max(1, rows - 1));
         int viewportHeight = fullscreen ? Math.max(0, rows - dockRows) : 0;
         int dockTop = fullscreen ? viewportHeight : Math.max(0, cropped.size() - dock.lines().size());
@@ -653,57 +620,6 @@ public final class TuiApplication {
         spans.add(new Span(text, style, null));
         result.set(0, new StyledLine(spans, base.annotation()));
         return result;
-    }
-
-    /** 过滤被 modal 矩形完全/部分覆盖的底层命中，旧位置不发布。 */
-    private static List<Frame.Hit> hitsOutside(List<Frame.Hit> hits, Rect panel) {
-        var result = new ArrayList<Frame.Hit>();
-        for (Frame.Hit hit : hits) if (!overlaps(hit.rect(), panel)) result.add(hit);
-        return result;
-    }
-
-    private static boolean overlaps(Rect a, Rect b) {
-        return a.x() < b.right() && b.x() < a.right() && a.y() < b.bottom() && b.y() < a.bottom();
-    }
-
-    /** 把面板行覆盖到 fullscreen 整屏行的矩形区域，保留矩形外底层内容。 */
-    private static List<StyledLine> overlayPanel(List<StyledLine> base, List<StyledLine> panel,
-            Rect rect, int columns) {
-        var result = new ArrayList<>(base);
-        for (int row = 0; row < rect.height(); row++) {
-            int y = rect.y() + row;
-            if (y < 0 || y >= result.size()) break;
-            StyledLine overlay = row < panel.size() ? panel.get(row) : StyledLine.empty();
-            result.set(y, composeOverlay(result.get(y), overlay, rect.x(), rect.width(), columns));
-        }
-        return result;
-    }
-
-    private static StyledLine composeOverlay(StyledLine base, StyledLine panel, int x, int width, int columns) {
-        var spans = new ArrayList<Span>();
-        spans.addAll(base.crop(x).padTo(x, Style.PLAIN).spans());
-        spans.addAll(panel.padTo(width, Style.PLAIN).crop(width).spans());
-        if (x + width < columns) spans.addAll(dropColumns(base, x + width).spans());
-        return new StyledLine(spans, base.annotation());
-    }
-
-    /** 丢弃前 columns 列后的剩余内容，用于保留 overlay 右侧底层行。 */
-    private static StyledLine dropColumns(StyledLine line, int columns) {
-        if (columns <= 0) return line;
-        var spans = new ArrayList<Span>();
-        int skip = columns;
-        for (Span span : line.spans()) {
-            String text = span.text();
-            int width = DisplayWidth.width(text);
-            if (skip > 0) {
-                if (width <= skip) { skip -= width; continue; }
-                int offset = DisplayWidth.offsetAtColumn(text, skip);
-                text = text.substring(offset);
-                skip = 0;
-            }
-            spans.add(span.withText(text));
-        }
-        return new StyledLine(spans, line.annotation());
     }
 
     private long frameCounter;

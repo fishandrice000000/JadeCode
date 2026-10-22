@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 import com.jadecode.cli.tui.UiMessages;
 import com.jadecode.tui.core.RenderContext;
+import com.jadecode.tui.layout.CardFrame;
 import com.jadecode.tui.text.DisplayWidth;
 import com.jadecode.tui.text.Color;
 import com.jadecode.tui.text.Span;
@@ -35,26 +36,38 @@ public final class ApprovalView {
     private static final String[] LABELS = {"Allow once", "Allow similar", "Deny"};
 
     /**
+     * 兼容测试/旧调用的四参数入口：默认按 Team 模式显示 actor 名称。
+     * 生产路径由宿主传入真实 Team 快照，单人会话不显示任何身份。
+     */
+    public Rendered render(ApprovalViewState state, RenderContext context, int width, int maxRows) {
+        return render(state, context, width, maxRows, true);
+    }
+
+    /**
      * @param state 当前审批状态（只读；会更新页大小/偏移夹取）
      * @param context 同帧上下文
      * @param width 可用列
      * @param maxRows 审批区真实可用行数（Dock 已扣除 status/footer/widget）
+     * @param showActor 是否有真实常驻 Team 上下文；false 时标题不拼任何 actor
      */
-    public Rendered render(ApprovalViewState state, RenderContext context, int width, int maxRows) {
+    public Rendered render(ApprovalViewState state, RenderContext context, int width, int maxRows,
+            boolean showActor) {
         var out = new ArrayList<StyledLine>();
         if (!state.active()) return new Rendered(out, 0, 0, List.of());
         int columns = Math.max(1, width);
         int budget = Math.max(1, maxRows);
         ApprovalViewState.Request request = state.request();
-        String actor = request.actor() == null || request.actor().isBlank() ? ""
+        // S83：单人（包括 leader 派出的子代理）审批标题只有状态与工具名；
+        // 只有真实常驻 Team 才显示受信 actor。审批对象与权限身份保持原样。
+        String actor = !showActor || request.actor() == null || request.actor().isBlank() ? ""
                 : com.jadecode.cli.tui.TuiState.actorName(request.actor()) + " · ";
         String title = UiMessages.APPROVAL + " · " + actor + request.tool();
         if (budget < 3 || columns < 10) {
             return denyOnly(request, context, columns);
         }
-        int padding = columns >= 14 ? 2 : (columns >= 11 ? 1 : 0);
-        if (budget < 6 && padding == 2) padding = 1;
-        int contentWidth = Math.max(1, columns - 2 - padding * 2);
+        CardFrame.Metrics frame = CardFrame.measure(columns, budget, 0, true);
+        if (frame.minimal()) return denyOnly(request, context, columns);
+        int contentWidth = frame.contentWidth();
 
         // 详情：只显示完整参数和必要长期范围；reason 不进入 TUI 显示；每个续行同样缩进。
         var details = new ArrayList<StyledLine>();
@@ -69,32 +82,29 @@ public final class ApprovalView {
         boolean hasSuggestion = !request.suggestion().isBlank();
         String[] labels = new String[LABELS.length];
         for (int i = 0; i < LABELS.length; i++) labels[i] = buttonLabel(i, state.choice(), i != 1 || hasSuggestion);
-        int buttonRows = LABELS.length;
         int hintRows = 1;
-        // 上/下边框 + 按钮 + 提示；顶边已含标题，不额外算虚拟标题行。
-        int fixed = 2 + buttonRows + hintRows;
-        if (budget < fixed + 1 || DisplayWidth.width(labels[1]) > contentWidth) {
+        // 卡片正文 = 详情 + 三个固定按钮 + 提示；上下边框由 CardFrame 负责。
+        int detailRows = Math.max(0, frame.bodyRows() - LABELS.length - hintRows);
+        if (detailRows < 1 || DisplayWidth.width(labels[1]) > contentWidth) {
             return denyOnly(request, context, columns);
         }
-        int detailRows = Math.max(1, budget - fixed);
         state.page(detailRows, details.size());
         int from = Math.min(state.offset(), Math.max(0, details.size() - 1));
         int to = Math.min(details.size(), from + detailRows);
 
-        out.add(topBorder(title, columns, context));
-        for (int i = from; i < to; i++) out.add(bodyRow(details.get(i), columns, padding, contentWidth, context));
+        var body = new ArrayList<StyledLine>();
+        for (int i = from; i < to; i++) body.add(details.get(i));
 
         int choice = state.choice();
         var buttons = new ArrayList<Button>();
         int choiceRow = 0, choiceColumn = 0;
-        int startColumn = 1 + padding;
-        // 三行固定预算，命中列也取自完成边框和 padding 后的真实标签。
+        int startColumn = frame.contentX();
+        // 三行固定预算；命中列取自完成边框和 padding 后的真实标签起点。
         for (int i = 0; i < LABELS.length; i++) {
             boolean enabled = i != 1 || hasSuggestion;
-            int row = out.size();
+            int row = 1 + body.size();
             if (choice == i) { choiceRow = row; choiceColumn = startColumn; }
-            out.add(bodyRow(List.of(new Span(labels[i], buttonStyle(context, i, choice, enabled), null)),
-                    columns, padding, contentWidth, context));
+            body.add(StyledLine.of(labels[i], buttonStyle(context, i, choice, enabled)));
             if (enabled) buttons.add(new Button(row, startColumn,
                     startColumn + DisplayWidth.width(labels[i]), token(i), true));
         }
@@ -102,10 +112,8 @@ public final class ApprovalView {
                 + " · ↑↓/Tab select · Enter confirm · Esc deny · PgUp/PgDn read";
         // 窄屏优先交代确认和退出；不要让长详情计数把 Esc 拒绝提示裁掉。
         if (contentWidth < 65) status = "↑↓ Select · Enter OK · Esc Deny";
-        out.add(bodyRow(List.of(new Span(DisplayWidth.ellipsize(status, contentWidth),
-                context.theme().style("muted"), null)), columns, padding, contentWidth, context));
-        out.add(bottomBorder(columns, context));
-        if (out.size() > budget) out = new ArrayList<>(out.subList(0, budget));
+        body.add(StyledLine.of(DisplayWidth.ellipsize(status, contentWidth), context.theme().style("muted")));
+        out.addAll(CardFrame.compose(title, "Esc deny", List.of(), body, null, frame, context));
         return new Rendered(out, choiceRow, choiceColumn, buttons);
     }
 
@@ -120,54 +128,6 @@ public final class ApprovalView {
             result.add(new StyledLine(spans).crop(Math.max(1, width)));
         }
         return result;
-    }
-
-    /** StyledLine 版本：复用同一行合成，保留既有 Span。 */
-    private static StyledLine bodyRow(StyledLine content, int columns, int padding, int contentWidth,
-            RenderContext context) {
-        return bodyRow(content.spans(), columns, padding, contentWidth, context);
-    }
-
-    /** 面板正文行：左边界+padding+内容+补齐+padding+右边界；整行铺 panelBg。 */
-    private static StyledLine bodyRow(List<Span> content, int columns, int padding, int contentWidth,
-            RenderContext context) {
-        var spans = new ArrayList<Span>();
-        spans.add(new Span("│" + " ".repeat(padding), context.theme().style("border"), null));
-        int used = 0;
-        for (Span span : content) { spans.add(span); used += DisplayWidth.width(span.text()); }
-        if (used < contentWidth)
-            spans.add(new Span(" ".repeat(contentWidth - used), context.theme().background("panelBg"), null));
-        spans.add(new Span(" ".repeat(padding) + "│", context.theme().style("border"), null));
-        return panelLine(spans, columns, context);
-    }
-
-    /** 给整行叠加 panelBg 并补齐/裁到 columns，保留前景/链接/属性。 */
-    private static StyledLine panelLine(List<Span> spans, int columns, RenderContext context) {
-        Style panel = context.theme().background("panelBg");
-        var result = new ArrayList<Span>();
-        for (Span span : spans)
-            result.add(new Span(span.text(), panel.isPlain() || !span.style().bg().isDefault()
-                    ? span.style() : span.style().withBg(panel.bg()), span.link()));
-        StyledLine line = new StyledLine(result);
-        return line.width() < columns ? line.padTo(columns, panel.isPlain() ? Style.PLAIN : panel) : line.crop(columns);
-    }
-
-    /** 顶边：标题嵌入边框；边框普通字重，标题 accent+bold；总宽恰为 columns。 */
-    private static StyledLine topBorder(String title, int columns, RenderContext context) {
-        String shown = DisplayWidth.ellipsize(title, Math.max(1, columns - 5));
-        int fill = Math.max(0, columns - DisplayWidth.width(shown) - 5);
-        Style border = context.theme().style("border");
-        Style titleStyle = context.theme().style("accent");
-        if (context.theme().enabled()) titleStyle = titleStyle.withBold(true);
-        return panelLine(List.of(
-                new Span("┌─ ", border, null),
-                new Span(shown, titleStyle, null),
-                new Span(" " + "─".repeat(fill) + "┐", border, null)), columns, context);
-    }
-
-    private static StyledLine bottomBorder(int columns, RenderContext context) {
-        return panelLine(List.of(new Span("└" + "─".repeat(Math.max(0, columns - 2)) + "┘",
-                context.theme().style("border"), null)), columns, context);
     }
 
     private static String buttonLabel(int index, int choice, boolean enabled) {
@@ -230,8 +190,8 @@ public final class ApprovalView {
         String hint = tool + " · " + label + " · Esc deny";
         boolean visible = DisplayWidth.width(hint) <= columns;
         String text = visible ? hint : "Enlarge to review";
-        var line = panelLine(List.of(new Span(DisplayWidth.ellipsize(text, columns),
-                context.theme().style(visible ? "text" : "warning"), null)), columns, context);
+        var line = CardFrame.fill(new StyledLine(List.of(new Span(DisplayWidth.ellipsize(text, columns),
+                context.theme().style(visible ? "text" : "warning"), null))), columns, context);
         int from = DisplayWidth.width(tool + " · ");
         var buttons = visible ? List.of(new Button(0, from, from + label.length(), token(2), true)) : List.<Button>of();
         return new Rendered(List.of(line), 0, from, buttons);

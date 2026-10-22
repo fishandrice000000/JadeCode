@@ -241,6 +241,11 @@ public final class TuiController {
                     // 审批优先于信息弹窗/搜索/菜单：先撤下 modal，避免按键继续被它消费。
                     closeCommandPanel();
                     if (searchOpen) { search.close(); searchOpen = false; }
+                    // 选择页也必须撤下；未确认的 Theme 预览回退，不能把预览当作用户选择保存。
+                    if (state.selector != null) {
+                        if (state.selectorKind.equals("Theme") && themes != null) themes.cancelPreview();
+                        closeSelector();
+                    }
                     if (state.approvals.isEmpty()) {
                         var snapshot = new UiEvent.ApprovalRequested(request.id(), request.actor(), request.tool(),
                                 request.arguments(), request.reason(), request.suggestion(), request.revision());
@@ -740,7 +745,7 @@ public final class TuiController {
         selectorParents.clear();
         state.selectorKind = "Settings";
         state.selector = settings.list();
-        state.selectorTitle = "";
+        state.selectorTitle = "Settings";
         state.selectorFooter = "Type to search · Enter/Space to change · Esc to cancel";
         state.selectorStatus = "";
         state.hint = "";
