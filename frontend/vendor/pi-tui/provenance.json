@@ -1,0 +1,765 @@
+{
+  "source": {
+    "repository": "https://github.com/earendil-works/pi",
+    "commit": "4954d760504c11df9b2cbdc040346107b6a8153d",
+    "package": "packages/tui",
+    "version": "1.3.0",
+    "license": "MIT"
+  },
+  "vendoredAt": "2026-10-23",
+  "build": "frontend/vendor/pi-tui/tsconfig.build.json",
+  "patches": [
+    "P01",
+    "P02",
+    "P03",
+    "P04"
+  ],
+  "files": [
+    {
+      "path": "CHANGELOG.md",
+      "upstreamPath": "packages/tui/CHANGELOG.md",
+      "originalSha256": "a25a6ef4fd0f18f1eeb75a1566751c7909a474e04580f192eb9c7fad682346f3",
+      "currentSha256": "a25a6ef4fd0f18f1eeb75a1566751c7909a474e04580f192eb9c7fad682346f3"
+    },
+    {
+      "path": "LICENSE",
+      "upstreamPath": "packages/tui/LICENSE",
+      "originalSha256": "0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48",
+      "currentSha256": "0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48",
+      "note": "Pi monorepo root MIT license"
+    },
+    {
+      "path": "README.md",
+      "upstreamPath": "packages/tui/README.md",
+      "originalSha256": "13e8b964f1fd06010ec13b71fdfc3069f4fa36b42567262762ef68f76e56e4e0",
+      "currentSha256": "13e8b964f1fd06010ec13b71fdfc3069f4fa36b42567262762ef68f76e56e4e0"
+    },
+    {
+      "path": "native/clipboard.h",
+      "upstreamPath": "packages/tui/native/clipboard.h",
+      "originalSha256": "e9c420915ee63594eb42687364324b33d487e269a84aba58f7b1c1103dc9d2a2",
+      "currentSha256": "e9c420915ee63594eb42687364324b33d487e269a84aba58f7b1c1103dc9d2a2"
+    },
+    {
+      "path": "native/darwin/README.md",
+      "upstreamPath": "packages/tui/native/darwin/README.md",
+      "originalSha256": "de34e2dfb2b600fe67df5aae2fa58eef26ac84644a0f0d44cf0a09d46f3d2730",
+      "currentSha256": "de34e2dfb2b600fe67df5aae2fa58eef26ac84644a0f0d44cf0a09d46f3d2730"
+    },
+    {
+      "path": "native/darwin/build.sh",
+      "upstreamPath": "packages/tui/native/darwin/build.sh",
+      "originalSha256": "5eadcaf6f73a10ea107b21825c20d7c16bdb593c08a9f2ce794769223a6595b7",
+      "currentSha256": "5eadcaf6f73a10ea107b21825c20d7c16bdb593c08a9f2ce794769223a6595b7"
+    },
+    {
+      "path": "native/darwin/prebuilds/darwin-arm64/darwin-platform.node",
+      "upstreamPath": "packages/tui/native/darwin/prebuilds/darwin-arm64/darwin-platform.node",
+      "originalSha256": "36e909adf35c2734a2a52b3d65b7dbfb83f2278f306d51b7e32c5045516dfb7f",
+      "currentSha256": "36e909adf35c2734a2a52b3d65b7dbfb83f2278f306d51b7e32c5045516dfb7f"
+    },
+    {
+      "path": "native/darwin/prebuilds/darwin-x64/darwin-platform.node",
+      "upstreamPath": "packages/tui/native/darwin/prebuilds/darwin-x64/darwin-platform.node",
+      "originalSha256": "7ec59a02fff9562f6354274ad070ba35f8e0998b3b111eb27ad3de579ffb6c65",
+      "currentSha256": "7ec59a02fff9562f6354274ad070ba35f8e0998b3b111eb27ad3de579ffb6c65"
+    },
+    {
+      "path": "native/darwin/src/darwin-platform.m",
+      "upstreamPath": "packages/tui/native/darwin/src/darwin-platform.m",
+      "originalSha256": "485690f7ab57364b1a5e8a1fd82e227c16255ecd23f801d695f75ee2ec0692a1",
+      "currentSha256": "485690f7ab57364b1a5e8a1fd82e227c16255ecd23f801d695f75ee2ec0692a1"
+    },
+    {
+      "path": "native/linux/README.md",
+      "upstreamPath": "packages/tui/native/linux/README.md",
+      "originalSha256": "a06e3ff9ed53919f7d6147f2d016e837cbe780e01615053d01002754d83a522d",
+      "currentSha256": "a06e3ff9ed53919f7d6147f2d016e837cbe780e01615053d01002754d83a522d"
+    },
+    {
+      "path": "native/linux/build.sh",
+      "upstreamPath": "packages/tui/native/linux/build.sh",
+      "originalSha256": "9d09704c600594d1449222da731d8f0d89efafe27b1624a7098475142099b423",
+      "currentSha256": "9d09704c600594d1449222da731d8f0d89efafe27b1624a7098475142099b423"
+    },
+    {
+      "path": "native/linux/prebuilds/linux-arm64/linux-platform-x11.node",
+      "upstreamPath": "packages/tui/native/linux/prebuilds/linux-arm64/linux-platform-x11.node",
+      "originalSha256": "63d4545349a25b5c97e352ea6d254cea50ff3c14161212ad3ddb3fc28022ddb5",
+      "currentSha256": "63d4545349a25b5c97e352ea6d254cea50ff3c14161212ad3ddb3fc28022ddb5"
+    },
+    {
+      "path": "native/linux/prebuilds/linux-x64/linux-platform-x11.node",
+      "upstreamPath": "packages/tui/native/linux/prebuilds/linux-x64/linux-platform-x11.node",
+      "originalSha256": "522d2550f7fa5d0d5bd204f45983f786ce2be9cf80f27f00179640d31d0689d6",
+      "currentSha256": "522d2550f7fa5d0d5bd204f45983f786ce2be9cf80f27f00179640d31d0689d6"
+    },
+    {
+      "path": "native/linux/src/clipboard-worker.h",
+      "upstreamPath": "packages/tui/native/linux/src/clipboard-worker.h",
+      "originalSha256": "a4a670338d49e97002e4ffb9c0e22e28e9536938ec182d7beb7fa8f69856cd81",
+      "currentSha256": "a4a670338d49e97002e4ffb9c0e22e28e9536938ec182d7beb7fa8f69856cd81"
+    },
+    {
+      "path": "native/linux/src/linux-platform-x11.c",
+      "upstreamPath": "packages/tui/native/linux/src/linux-platform-x11.c",
+      "originalSha256": "4b355976f1e40c087a606689e218e9e2eb39b9caeb6c7318938ab1f9434759e7",
+      "currentSha256": "4b355976f1e40c087a606689e218e9e2eb39b9caeb6c7318938ab1f9434759e7"
+    },
+    {
+      "path": "native/napi.h",
+      "upstreamPath": "packages/tui/native/napi.h",
+      "originalSha256": "3ef7b32eb0b6f4227cea85a521a1dc4cb68f2db070c600bf845a3905bcfd8f13",
+      "currentSha256": "3ef7b32eb0b6f4227cea85a521a1dc4cb68f2db070c600bf845a3905bcfd8f13"
+    },
+    {
+      "path": "native/win32/README.md",
+      "upstreamPath": "packages/tui/native/win32/README.md",
+      "originalSha256": "5b00a5533ea3b8bea1667d0fe2f34345d97a7164bec3652bcbf03b4eee53d991",
+      "currentSha256": "5b00a5533ea3b8bea1667d0fe2f34345d97a7164bec3652bcbf03b4eee53d991"
+    },
+    {
+      "path": "native/win32/build.mjs",
+      "upstreamPath": "packages/tui/native/win32/build.mjs",
+      "originalSha256": "2e77f5ab24f95e1354398ef6503926f73925119e414f1e08baac36025d0a7c27",
+      "currentSha256": "2e77f5ab24f95e1354398ef6503926f73925119e414f1e08baac36025d0a7c27"
+    },
+    {
+      "path": "native/win32/prebuilds/win32-arm64/win32-platform.node",
+      "upstreamPath": "packages/tui/native/win32/prebuilds/win32-arm64/win32-platform.node",
+      "originalSha256": "0e5671ab39ef577940483ced58fdf29ecdf5f864f368d90a771eec4aeeae11b8",
+      "currentSha256": "0e5671ab39ef577940483ced58fdf29ecdf5f864f368d90a771eec4aeeae11b8"
+    },
+    {
+      "path": "native/win32/prebuilds/win32-x64/win32-platform.node",
+      "upstreamPath": "packages/tui/native/win32/prebuilds/win32-x64/win32-platform.node",
+      "originalSha256": "51bee02bcb73b165ab92af75ae15b88aba3f5d99f072e63ef60af92ffdc4d565",
+      "currentSha256": "51bee02bcb73b165ab92af75ae15b88aba3f5d99f072e63ef60af92ffdc4d565"
+    },
+    {
+      "path": "native/win32/src/win32-platform.c",
+      "upstreamPath": "packages/tui/native/win32/src/win32-platform.c",
+      "originalSha256": "5b0d373af1358ca9bf9257085a36ad8f74dadcfc1e9b7fd53320fc21833b8389",
+      "currentSha256": "5b0d373af1358ca9bf9257085a36ad8f74dadcfc1e9b7fd53320fc21833b8389"
+    },
+    {
+      "path": "package.json",
+      "upstreamPath": "packages/tui/package.json",
+      "originalSha256": "a6a82af81ed5b6069267eabfdcf047d0af8013695b0e64d72f3c9f44f8e8124e",
+      "currentSha256": "a6a82af81ed5b6069267eabfdcf047d0af8013695b0e64d72f3c9f44f8e8124e"
+    },
+    {
+      "path": "src/alt-screen-search.ts",
+      "upstreamPath": "packages/tui/src/alt-screen-search.ts",
+      "originalSha256": "7d339e83cf0f160847335dc9be0d1f1db2a0945c463c3d636c7b84ceb9665d40",
+      "currentSha256": "7d339e83cf0f160847335dc9be0d1f1db2a0945c463c3d636c7b84ceb9665d40"
+    },
+    {
+      "path": "src/autocomplete.ts",
+      "upstreamPath": "packages/tui/src/autocomplete.ts",
+      "originalSha256": "7391902f35b60c3467ceb5eccc86e0954a388ea1012455c1a7ea8f7325de773b",
+      "currentSha256": "7391902f35b60c3467ceb5eccc86e0954a388ea1012455c1a7ea8f7325de773b"
+    },
+    {
+      "path": "src/colors.ts",
+      "upstreamPath": "packages/tui/src/colors.ts",
+      "originalSha256": "d4fe729c424d2c07bc64cf0c3edfdbf5642865cba395dfb37234c6c88d65f468",
+      "currentSha256": "d4fe729c424d2c07bc64cf0c3edfdbf5642865cba395dfb37234c6c88d65f468"
+    },
+    {
+      "path": "src/components/alt-screen-flash.ts",
+      "upstreamPath": "packages/tui/src/components/alt-screen-flash.ts",
+      "originalSha256": "6d341546b59958e93e4d33fdc1766b10d13c98a779031e2c01b827f0a4c6e30c",
+      "currentSha256": "6d341546b59958e93e4d33fdc1766b10d13c98a779031e2c01b827f0a4c6e30c"
+    },
+    {
+      "path": "src/components/box.ts",
+      "upstreamPath": "packages/tui/src/components/box.ts",
+      "originalSha256": "f9dc623ba06ab407ac3edd71eb8ff32525609d3b2cf5013a599c9a1d10273f2d",
+      "currentSha256": "f9dc623ba06ab407ac3edd71eb8ff32525609d3b2cf5013a599c9a1d10273f2d"
+    },
+    {
+      "path": "src/components/cancellable-loader.ts",
+      "upstreamPath": "packages/tui/src/components/cancellable-loader.ts",
+      "originalSha256": "5f0ae0a56f299e5f6c9585c79bbe16c38a845f038a7254f8dffe7a44f6082e16",
+      "currentSha256": "5f0ae0a56f299e5f6c9585c79bbe16c38a845f038a7254f8dffe7a44f6082e16"
+    },
+    {
+      "path": "src/components/editor.ts",
+      "upstreamPath": "packages/tui/src/components/editor.ts",
+      "originalSha256": "48c6a498527df4f645f66574904bdc82c1a4021b29ff81674132219043d4d016",
+      "currentSha256": "48c6a498527df4f645f66574904bdc82c1a4021b29ff81674132219043d4d016"
+    },
+    {
+      "path": "src/components/h-stack.ts",
+      "upstreamPath": "packages/tui/src/components/h-stack.ts",
+      "originalSha256": "6622e1e2605e500a420c3cdf3ffcae0548b2d86ec496a0f6bf1dd5c95aeb0b6b",
+      "currentSha256": "6622e1e2605e500a420c3cdf3ffcae0548b2d86ec496a0f6bf1dd5c95aeb0b6b"
+    },
+    {
+      "path": "src/components/image.ts",
+      "upstreamPath": "packages/tui/src/components/image.ts",
+      "originalSha256": "e92c3f66f36eb579ff1eabd9dc3b9f34bd8a07997bd62ffe3fb63a21f97a7462",
+      "currentSha256": "e92c3f66f36eb579ff1eabd9dc3b9f34bd8a07997bd62ffe3fb63a21f97a7462"
+    },
+    {
+      "path": "src/components/input.ts",
+      "upstreamPath": "packages/tui/src/components/input.ts",
+      "originalSha256": "0ad90bf7464e4da90e75596007b365edc45fcb371c4dbee563d4122b13247a11",
+      "currentSha256": "0ad90bf7464e4da90e75596007b365edc45fcb371c4dbee563d4122b13247a11"
+    },
+    {
+      "path": "src/components/loader.ts",
+      "upstreamPath": "packages/tui/src/components/loader.ts",
+      "originalSha256": "614b39cd2f493e289a12ee4f42404f779cc3a5784735066760c1d9f13bf5d287",
+      "currentSha256": "614b39cd2f493e289a12ee4f42404f779cc3a5784735066760c1d9f13bf5d287"
+    },
+    {
+      "path": "src/components/markdown.ts",
+      "upstreamPath": "packages/tui/src/components/markdown.ts",
+      "originalSha256": "04ef2f5aad6b9706e9f02568814283021b6151a18ae2b08fcf145890aeac7dfa",
+      "currentSha256": "04ef2f5aad6b9706e9f02568814283021b6151a18ae2b08fcf145890aeac7dfa"
+    },
+    {
+      "path": "src/components/mouse-region.ts",
+      "upstreamPath": "packages/tui/src/components/mouse-region.ts",
+      "originalSha256": "9dbcac616e8f8271b522b374bae29ab0b829d3771ce0ed228d6ae3da1c2be759",
+      "currentSha256": "9dbcac616e8f8271b522b374bae29ab0b829d3771ce0ed228d6ae3da1c2be759"
+    },
+    {
+      "path": "src/components/scroll-view.ts",
+      "upstreamPath": "packages/tui/src/components/scroll-view.ts",
+      "originalSha256": "76dfd9f8a88cabc064f0652b83f16a945fbc988c9fe7c0423a4cd796907ef77d",
+      "currentSha256": "76dfd9f8a88cabc064f0652b83f16a945fbc988c9fe7c0423a4cd796907ef77d"
+    },
+    {
+      "path": "src/components/select-list.ts",
+      "upstreamPath": "packages/tui/src/components/select-list.ts",
+      "originalSha256": "0fc369801e745eff15567d72829bf67887f5efec8bc6816aaf1ee65338618373",
+      "currentSha256": "0fc369801e745eff15567d72829bf67887f5efec8bc6816aaf1ee65338618373"
+    },
+    {
+      "path": "src/components/settings-list.ts",
+      "upstreamPath": "packages/tui/src/components/settings-list.ts",
+      "originalSha256": "8d6b91d3c4aaaf11225854847d42ae6da852ef2646d54542c5b51a97dde15605",
+      "currentSha256": "8d6b91d3c4aaaf11225854847d42ae6da852ef2646d54542c5b51a97dde15605"
+    },
+    {
+      "path": "src/components/spacer.ts",
+      "upstreamPath": "packages/tui/src/components/spacer.ts",
+      "originalSha256": "b511acec1d33885dad23e7ab2108b2d04dff0589b3bfda53b1f7458be4381e66",
+      "currentSha256": "b511acec1d33885dad23e7ab2108b2d04dff0589b3bfda53b1f7458be4381e66"
+    },
+    {
+      "path": "src/components/stack.ts",
+      "upstreamPath": "packages/tui/src/components/stack.ts",
+      "originalSha256": "93208d326fa43431b930eaa3250a1e19747063d696e97ec2f002f5feaa54fc18",
+      "currentSha256": "93208d326fa43431b930eaa3250a1e19747063d696e97ec2f002f5feaa54fc18"
+    },
+    {
+      "path": "src/components/text.ts",
+      "upstreamPath": "packages/tui/src/components/text.ts",
+      "originalSha256": "e46790ea0b4a3db105306e057664b4246983c189218346dacd8ea6f0c9ee7152",
+      "currentSha256": "e46790ea0b4a3db105306e057664b4246983c189218346dacd8ea6f0c9ee7152"
+    },
+    {
+      "path": "src/components/truncated-text.ts",
+      "upstreamPath": "packages/tui/src/components/truncated-text.ts",
+      "originalSha256": "c383487099d1864b51493a5838dd28a1bd3e5e440a675ec1dbcaf0177534fad0",
+      "currentSha256": "c383487099d1864b51493a5838dd28a1bd3e5e440a675ec1dbcaf0177534fad0"
+    },
+    {
+      "path": "src/components/v-stack.ts",
+      "upstreamPath": "packages/tui/src/components/v-stack.ts",
+      "originalSha256": "0f36c9417bfffe5f6b9cc5fd40d420390cf9bebae70a073a409ac5f931f1f813",
+      "currentSha256": "0f36c9417bfffe5f6b9cc5fd40d420390cf9bebae70a073a409ac5f931f1f813"
+    },
+    {
+      "path": "src/editor-component.ts",
+      "upstreamPath": "packages/tui/src/editor-component.ts",
+      "originalSha256": "0e40ba454b74e2ce21dfc6d831c185e5fb5619b0987fa158be98ed98564e8716",
+      "currentSha256": "0e40ba454b74e2ce21dfc6d831c185e5fb5619b0987fa158be98ed98564e8716"
+    },
+    {
+      "path": "src/fuzzy.ts",
+      "upstreamPath": "packages/tui/src/fuzzy.ts",
+      "originalSha256": "0ae2bedc6a4f043d875ec415202a6e3d9e45405741359d7d2dc2855240dff633",
+      "currentSha256": "0ae2bedc6a4f043d875ec415202a6e3d9e45405741359d7d2dc2855240dff633"
+    },
+    {
+      "path": "src/index.ts",
+      "upstreamPath": "packages/tui/src/index.ts",
+      "originalSha256": "1a4ad10ce2da3e6664078771352dbd40b02920a9a07f7f6d25f699c72e22ff3e",
+      "currentSha256": "1a4ad10ce2da3e6664078771352dbd40b02920a9a07f7f6d25f699c72e22ff3e"
+    },
+    {
+      "path": "src/keybindings.ts",
+      "upstreamPath": "packages/tui/src/keybindings.ts",
+      "originalSha256": "475760dd4e3d02eca46bb5ee8704cd387c397b40d7a1f8967bdac3c481f5f702",
+      "currentSha256": "475760dd4e3d02eca46bb5ee8704cd387c397b40d7a1f8967bdac3c481f5f702"
+    },
+    {
+      "path": "src/keys.ts",
+      "upstreamPath": "packages/tui/src/keys.ts",
+      "originalSha256": "40cd0229bbc36cdcac24f3bdd2fce53f060ff4fe6f8522e239135212033d37f2",
+      "currentSha256": "40cd0229bbc36cdcac24f3bdd2fce53f060ff4fe6f8522e239135212033d37f2"
+    },
+    {
+      "path": "src/kill-ring.ts",
+      "upstreamPath": "packages/tui/src/kill-ring.ts",
+      "originalSha256": "d829ae816560b12d2800a38db9f7278f76d9ef43d0e53e004a86add9b56c559a",
+      "currentSha256": "d829ae816560b12d2800a38db9f7278f76d9ef43d0e53e004a86add9b56c559a"
+    },
+    {
+      "path": "src/latex.ts",
+      "upstreamPath": "packages/tui/src/latex.ts",
+      "originalSha256": "c4ef99bef1d3a54c73006912c9a7fa67ef99412b4f6cd28d608cf0e07b38cece",
+      "currentSha256": "c4ef99bef1d3a54c73006912c9a7fa67ef99412b4f6cd28d608cf0e07b38cece"
+    },
+    {
+      "path": "src/layout-node.ts",
+      "upstreamPath": "packages/tui/src/layout-node.ts",
+      "originalSha256": "31dd68c9edafdc4f882bbb6c16f8deb1c514111020b647f0037b34d6b8c70a85",
+      "currentSha256": "31dd68c9edafdc4f882bbb6c16f8deb1c514111020b647f0037b34d6b8c70a85"
+    },
+    {
+      "path": "src/layout.ts",
+      "upstreamPath": "packages/tui/src/layout.ts",
+      "originalSha256": "7530a8eaa30f44fef82e8b7020b5068ba89d34884463c6cb526073b20fcdeef0",
+      "currentSha256": "7530a8eaa30f44fef82e8b7020b5068ba89d34884463c6cb526073b20fcdeef0"
+    },
+    {
+      "path": "src/native-modifiers.ts",
+      "upstreamPath": "packages/tui/src/native-modifiers.ts",
+      "originalSha256": "8bfe66389dee2e6e962cb82f54050f8fe10df0d0b26d56186a581a00f70d6d8e",
+      "currentSha256": "8bfe66389dee2e6e962cb82f54050f8fe10df0d0b26d56186a581a00f70d6d8e"
+    },
+    {
+      "path": "src/native-module-path.ts",
+      "upstreamPath": "packages/tui/src/native-module-path.ts",
+      "originalSha256": "e0955c6d733085d89cc81ef4d991e2a04368a54b52007273c0a688b23abba28b",
+      "currentSha256": "e0955c6d733085d89cc81ef4d991e2a04368a54b52007273c0a688b23abba28b"
+    },
+    {
+      "path": "src/native-platform.ts",
+      "upstreamPath": "packages/tui/src/native-platform.ts",
+      "originalSha256": "693d33898358804541d36aff089db74e1eb3be8f1a1722ffe6d821036b925959",
+      "currentSha256": "693d33898358804541d36aff089db74e1eb3be8f1a1722ffe6d821036b925959"
+    },
+    {
+      "path": "src/oklab.ts",
+      "upstreamPath": "packages/tui/src/oklab.ts",
+      "originalSha256": "45b067e6e3605b385f595adecd7c0216f1c6b6686680d5c73f661286de736be6",
+      "currentSha256": "45b067e6e3605b385f595adecd7c0216f1c6b6686680d5c73f661286de736be6"
+    },
+    {
+      "path": "src/program-status.ts",
+      "upstreamPath": "packages/tui/src/program-status.ts",
+      "originalSha256": "4b05e7cc38b902559738b13b08ffb367fb188426823be90f341cc626d5d013f0",
+      "currentSha256": "4b05e7cc38b902559738b13b08ffb367fb188426823be90f341cc626d5d013f0"
+    },
+    {
+      "path": "src/stdin-buffer.ts",
+      "upstreamPath": "packages/tui/src/stdin-buffer.ts",
+      "originalSha256": "82da9ff728e77269bbfa24c28eda81f26f744efef9e05113c2401ed52c823054",
+      "currentSha256": "82da9ff728e77269bbfa24c28eda81f26f744efef9e05113c2401ed52c823054"
+    },
+    {
+      "path": "src/terminal-colors.ts",
+      "upstreamPath": "packages/tui/src/terminal-colors.ts",
+      "originalSha256": "72d1ef298837bfe520bd8a060cb93ea27547dcbff04a167ace0f55b5183e550d",
+      "currentSha256": "72d1ef298837bfe520bd8a060cb93ea27547dcbff04a167ace0f55b5183e550d"
+    },
+    {
+      "path": "src/terminal-image.ts",
+      "upstreamPath": "packages/tui/src/terminal-image.ts",
+      "originalSha256": "fa09e7725f1158e1bb3b53c3d0539cc6c066a7c058bee33142ad2f33e8ac5736",
+      "currentSha256": "fa09e7725f1158e1bb3b53c3d0539cc6c066a7c058bee33142ad2f33e8ac5736"
+    },
+    {
+      "path": "src/terminal.ts",
+      "upstreamPath": "packages/tui/src/terminal.ts",
+      "originalSha256": "7a75ac820dff409781f1ca59a0354d97282044f444a38322eb4e1886cb7fe247",
+      "currentSha256": "86b70506d2363876f8b3e8b217204df917385bb66a1606854e3c2be8593f68d4"
+    },
+    {
+      "path": "src/tui-alt-screen.ts",
+      "upstreamPath": "packages/tui/src/tui-alt-screen.ts",
+      "originalSha256": "dd978db4f24a07e58a6e63819388a07700cb6237bbc0c8e9994bfc5f5d656800",
+      "currentSha256": "176bcc3249b35d05c958bb1453ad819bc364bc337acc484ed0cb2ef38660bf07"
+    },
+    {
+      "path": "src/tui-main-screen.ts",
+      "upstreamPath": "packages/tui/src/tui-main-screen.ts",
+      "originalSha256": "643661182cbeb1d5c5fbee195e0ec03a4f1045f629c8666c4d175518ce5939e1",
+      "currentSha256": "643661182cbeb1d5c5fbee195e0ec03a4f1045f629c8666c4d175518ce5939e1"
+    },
+    {
+      "path": "src/tui.ts",
+      "upstreamPath": "packages/tui/src/tui.ts",
+      "originalSha256": "206519884c4cb27096d00048a2fc4e8a0c404714e548c8dd5b62c38060d3b240",
+      "currentSha256": "1c1031136a445b741a8763b0d38355b1c018e8d19643355d8c554aa30ee94aef"
+    },
+    {
+      "path": "src/undo-stack.ts",
+      "upstreamPath": "packages/tui/src/undo-stack.ts",
+      "originalSha256": "1373c1e0a1e2c58ac90c93d32a9e5c1226d7f53314c77dd3d0f8ec349d2b3627",
+      "currentSha256": "1373c1e0a1e2c58ac90c93d32a9e5c1226d7f53314c77dd3d0f8ec349d2b3627"
+    },
+    {
+      "path": "src/utils.ts",
+      "upstreamPath": "packages/tui/src/utils.ts",
+      "originalSha256": "6e22ed5385c08965a46f01d6ec9686cb0eada95e34b9dc0f9a5e85d28f8f512a",
+      "currentSha256": "6e22ed5385c08965a46f01d6ec9686cb0eada95e34b9dc0f9a5e85d28f8f512a"
+    },
+    {
+      "path": "src/wheel-scroll.ts",
+      "upstreamPath": "packages/tui/src/wheel-scroll.ts",
+      "originalSha256": "a969a50d0a3627fde0052f766443e3668a6355b3ecf312ea078025080d303f82",
+      "currentSha256": "a969a50d0a3627fde0052f766443e3668a6355b3ecf312ea078025080d303f82"
+    },
+    {
+      "path": "src/word-navigation.ts",
+      "upstreamPath": "packages/tui/src/word-navigation.ts",
+      "originalSha256": "b73e915a524926ac8881731e89026b0bc7b5b0bd465de67257af81a420465c7f",
+      "currentSha256": "b73e915a524926ac8881731e89026b0bc7b5b0bd465de67257af81a420465c7f"
+    },
+    {
+      "path": "test/alt-screen-large-transcript-bench.ts",
+      "upstreamPath": "packages/tui/test/alt-screen-large-transcript-bench.ts",
+      "originalSha256": "9d83d1544d067a3a92ae139b009d1544761b14e4225d4377fcd2e2e7758e738f",
+      "currentSha256": "9d83d1544d067a3a92ae139b009d1544761b14e4225d4377fcd2e2e7758e738f"
+    },
+    {
+      "path": "test/autocomplete-skill-slash.test.ts",
+      "upstreamPath": "packages/tui/test/autocomplete-skill-slash.test.ts",
+      "originalSha256": "7376c52105d472536cd1d9075a412e4f8cc4c4482d27ffe682c311528ece9a27",
+      "currentSha256": "7376c52105d472536cd1d9075a412e4f8cc4c4482d27ffe682c311528ece9a27"
+    },
+    {
+      "path": "test/autocomplete.test.ts",
+      "upstreamPath": "packages/tui/test/autocomplete.test.ts",
+      "originalSha256": "c02962e28c6a84378df21716d839c0bd9d8e3b5c154fd2ad251f703ab57930bd",
+      "currentSha256": "c02962e28c6a84378df21716d839c0bd9d8e3b5c154fd2ad251f703ab57930bd"
+    },
+    {
+      "path": "test/bug-regression-isimageline-startswith-bug.test.ts",
+      "upstreamPath": "packages/tui/test/bug-regression-isimageline-startswith-bug.test.ts",
+      "originalSha256": "89f2ce2cf538aedb404b872aba345309b92c6f44375ea1882e0540c4900dfb00",
+      "currentSha256": "89f2ce2cf538aedb404b872aba345309b92c6f44375ea1882e0540c4900dfb00"
+    },
+    {
+      "path": "test/chat-simple.ts",
+      "upstreamPath": "packages/tui/test/chat-simple.ts",
+      "originalSha256": "02933bdc7f18c246f0aed5a0d7c0ca216c04211b9c6fbb7a18f734efcb42b7a7",
+      "currentSha256": "02933bdc7f18c246f0aed5a0d7c0ca216c04211b9c6fbb7a18f734efcb42b7a7"
+    },
+    {
+      "path": "test/colors.test.ts",
+      "upstreamPath": "packages/tui/test/colors.test.ts",
+      "originalSha256": "41ab32661883007b5448d78baea009f8d56f626aa204b3b0514109d9ca34678f",
+      "currentSha256": "41ab32661883007b5448d78baea009f8d56f626aa204b3b0514109d9ca34678f"
+    },
+    {
+      "path": "test/editor-history-keybindings.test.ts",
+      "upstreamPath": "packages/tui/test/editor-history-keybindings.test.ts",
+      "originalSha256": "a055311e76a141062038a1a835fae1271108d29034fe0d0eec7521c6c79cb948",
+      "currentSha256": "a055311e76a141062038a1a835fae1271108d29034fe0d0eec7521c6c79cb948"
+    },
+    {
+      "path": "test/editor.test.ts",
+      "upstreamPath": "packages/tui/test/editor.test.ts",
+      "originalSha256": "5e56bef4b2ab9051492ceedec190a285c6b0267531f54ce3cdcc3d22e143fbc6",
+      "currentSha256": "5e56bef4b2ab9051492ceedec190a285c6b0267531f54ce3cdcc3d22e143fbc6"
+    },
+    {
+      "path": "test/fixtures/clipboard-reader.cjs",
+      "upstreamPath": "packages/tui/test/fixtures/clipboard-reader.cjs",
+      "originalSha256": "8f04b0e4e32a87e618b2024eb56468b27e6241ea0d851751d5b177a6e7f5e091",
+      "currentSha256": "8f04b0e4e32a87e618b2024eb56468b27e6241ea0d851751d5b177a6e7f5e091"
+    },
+    {
+      "path": "test/fixtures/clipboard-worker-test.c",
+      "upstreamPath": "packages/tui/test/fixtures/clipboard-worker-test.c",
+      "originalSha256": "f90894d31ac421455a97db3f294437f0187ab564fdcb30cfac8dd3981df24138",
+      "currentSha256": "f90894d31ac421455a97db3f294437f0187ab564fdcb30cfac8dd3981df24138"
+    },
+    {
+      "path": "test/fixtures/clipboard-worker-test.cjs",
+      "upstreamPath": "packages/tui/test/fixtures/clipboard-worker-test.cjs",
+      "originalSha256": "41a3cfd191e37bde92f7edd66640a5d6dd41769e6d955d338a38481fb43efc7b",
+      "currentSha256": "41a3cfd191e37bde92f7edd66640a5d6dd41769e6d955d338a38481fb43efc7b"
+    },
+    {
+      "path": "test/fixtures/clipboard-x11-test.c",
+      "upstreamPath": "packages/tui/test/fixtures/clipboard-x11-test.c",
+      "originalSha256": "31ec958a65ccbac9d80fb58e15d95402baf04880e718b505de8671c29ba2398e",
+      "currentSha256": "31ec958a65ccbac9d80fb58e15d95402baf04880e718b505de8671c29ba2398e"
+    },
+    {
+      "path": "test/fuzzy.test.ts",
+      "upstreamPath": "packages/tui/test/fuzzy.test.ts",
+      "originalSha256": "5945d422c5728860dff14331a69f56a30f781d0343c87ab18b4e1a2454766798",
+      "currentSha256": "5945d422c5728860dff14331a69f56a30f781d0343c87ab18b4e1a2454766798"
+    },
+    {
+      "path": "test/image-test.ts",
+      "upstreamPath": "packages/tui/test/image-test.ts",
+      "originalSha256": "720ccbf17d49247cf49aeddbac46dc0f7c79c7477cc63658ac7f305e45c17524",
+      "currentSha256": "720ccbf17d49247cf49aeddbac46dc0f7c79c7477cc63658ac7f305e45c17524"
+    },
+    {
+      "path": "test/input.test.ts",
+      "upstreamPath": "packages/tui/test/input.test.ts",
+      "originalSha256": "dcbed4da6d52e41dd52faaef9861ee4662806d5529e33b612f22e691e9a51386",
+      "currentSha256": "dcbed4da6d52e41dd52faaef9861ee4662806d5529e33b612f22e691e9a51386"
+    },
+    {
+      "path": "test/key-tester.ts",
+      "upstreamPath": "packages/tui/test/key-tester.ts",
+      "originalSha256": "a54171c55aa237a43f74d6d92993f8a216c4c755954e030776fff64f074042ff",
+      "currentSha256": "a54171c55aa237a43f74d6d92993f8a216c4c755954e030776fff64f074042ff"
+    },
+    {
+      "path": "test/keybindings.test.ts",
+      "upstreamPath": "packages/tui/test/keybindings.test.ts",
+      "originalSha256": "1438169fa0bd665ba121add027051d13b10044bffa5f4543e6132171d8bc1d4d",
+      "currentSha256": "1438169fa0bd665ba121add027051d13b10044bffa5f4543e6132171d8bc1d4d"
+    },
+    {
+      "path": "test/keys.test.ts",
+      "upstreamPath": "packages/tui/test/keys.test.ts",
+      "originalSha256": "dea3b9dcf8a22245399a036cc988c89f10d24310508c788f49e6afc5bf8f2817",
+      "currentSha256": "dea3b9dcf8a22245399a036cc988c89f10d24310508c788f49e6afc5bf8f2817"
+    },
+    {
+      "path": "test/latex.test.ts",
+      "upstreamPath": "packages/tui/test/latex.test.ts",
+      "originalSha256": "870a9507190a830e1aac7398d4b4f6c2b2cc6982b9fac288aa4b299956561ebf",
+      "currentSha256": "870a9507190a830e1aac7398d4b4f6c2b2cc6982b9fac288aa4b299956561ebf"
+    },
+    {
+      "path": "test/layout.test.ts",
+      "upstreamPath": "packages/tui/test/layout.test.ts",
+      "originalSha256": "7f2c34277e65a32b80a5bc559b1551ac9b1b5eb51afd9011a3cac01c920fd0fb",
+      "currentSha256": "7f2c34277e65a32b80a5bc559b1551ac9b1b5eb51afd9011a3cac01c920fd0fb"
+    },
+    {
+      "path": "test/markdown.test.ts",
+      "upstreamPath": "packages/tui/test/markdown.test.ts",
+      "originalSha256": "1060dbf84302c3984479b7a33ad4aaf21ae0616b8c02a45f066ba6e8f200f14d",
+      "currentSha256": "1060dbf84302c3984479b7a33ad4aaf21ae0616b8c02a45f066ba6e8f200f14d"
+    },
+    {
+      "path": "test/mouse-components.test.ts",
+      "upstreamPath": "packages/tui/test/mouse-components.test.ts",
+      "originalSha256": "2d5923ec2a8eeb1a90ce5945b8b0836c6f404252ee69e3b37d4ea94316fb088b",
+      "currentSha256": "2d5923ec2a8eeb1a90ce5945b8b0836c6f404252ee69e3b37d4ea94316fb088b"
+    },
+    {
+      "path": "test/native-clipboard-linux.test.ts",
+      "upstreamPath": "packages/tui/test/native-clipboard-linux.test.ts",
+      "originalSha256": "22b36f35cd4427ebeecaa5edebcfe920a9800ccb8b48a9c822db5f85c8f373f8",
+      "currentSha256": "22b36f35cd4427ebeecaa5edebcfe920a9800ccb8b48a9c822db5f85c8f373f8"
+    },
+    {
+      "path": "test/native-module-path.test.ts",
+      "upstreamPath": "packages/tui/test/native-module-path.test.ts",
+      "originalSha256": "8f5f0eb78e719c1818d7b109e6745b706b76d70add323dce84a3e83df7917f75",
+      "currentSha256": "8f5f0eb78e719c1818d7b109e6745b706b76d70add323dce84a3e83df7917f75"
+    },
+    {
+      "path": "test/native-platform.test.ts",
+      "upstreamPath": "packages/tui/test/native-platform.test.ts",
+      "originalSha256": "d6ba0d7bbb3a367a4dc677798772fa9e4c4e37570151f10133a0fdc0b9c26189",
+      "currentSha256": "d6ba0d7bbb3a367a4dc677798772fa9e4c4e37570151f10133a0fdc0b9c26189"
+    },
+    {
+      "path": "test/overlay-non-capturing.test.ts",
+      "upstreamPath": "packages/tui/test/overlay-non-capturing.test.ts",
+      "originalSha256": "353c51e18e087c648addf59316455e8fa923e8b0bcebab1be217ea3ed0ea1cef",
+      "currentSha256": "353c51e18e087c648addf59316455e8fa923e8b0bcebab1be217ea3ed0ea1cef"
+    },
+    {
+      "path": "test/overlay-options.test.ts",
+      "upstreamPath": "packages/tui/test/overlay-options.test.ts",
+      "originalSha256": "ecb6fb8beab36e4eab790ed9983aa0fce4eaa9344954467aad9ac16745a0a780",
+      "currentSha256": "ecb6fb8beab36e4eab790ed9983aa0fce4eaa9344954467aad9ac16745a0a780"
+    },
+    {
+      "path": "test/overlay-short-content.test.ts",
+      "upstreamPath": "packages/tui/test/overlay-short-content.test.ts",
+      "originalSha256": "f26889d16c098a5f389d7f0e03c8ff2a89e2db5e661072904fc862dfa124923b",
+      "currentSha256": "f26889d16c098a5f389d7f0e03c8ff2a89e2db5e661072904fc862dfa124923b"
+    },
+    {
+      "path": "test/program-status.test.ts",
+      "upstreamPath": "packages/tui/test/program-status.test.ts",
+      "originalSha256": "44fbc9ecf0942e5d7c17669f37c876c4b891ad324eb640ad2b5c002d6bfc5b71",
+      "currentSha256": "44fbc9ecf0942e5d7c17669f37c876c4b891ad324eb640ad2b5c002d6bfc5b71"
+    },
+    {
+      "path": "test/regression-overlay-cjk-boundary.test.ts",
+      "upstreamPath": "packages/tui/test/regression-overlay-cjk-boundary.test.ts",
+      "originalSha256": "51438c36784bb4ffb6304e1d179eb9daa046b8b93c80582c87c41f6415449b20",
+      "currentSha256": "51438c36784bb4ffb6304e1d179eb9daa046b8b93c80582c87c41f6415449b20"
+    },
+    {
+      "path": "test/regression-regional-indicator-width.test.ts",
+      "upstreamPath": "packages/tui/test/regression-regional-indicator-width.test.ts",
+      "originalSha256": "a057bc5b61cd287e2f2f554e878222ebace84a515e6cf67b87191eba5c91ae47",
+      "currentSha256": "a057bc5b61cd287e2f2f554e878222ebace84a515e6cf67b87191eba5c91ae47"
+    },
+    {
+      "path": "test/regression-sigwinch-kill-eacces.test.ts",
+      "upstreamPath": "packages/tui/test/regression-sigwinch-kill-eacces.test.ts",
+      "originalSha256": "3d0c18e07d973784433ba298fe8d228021b970fd0d772737c49a8be3040e7ce3",
+      "currentSha256": "3d0c18e07d973784433ba298fe8d228021b970fd0d772737c49a8be3040e7ce3"
+    },
+    {
+      "path": "test/regression-slice-by-column-ansi-order.test.ts",
+      "upstreamPath": "packages/tui/test/regression-slice-by-column-ansi-order.test.ts",
+      "originalSha256": "790b3835aed0a58f002224e1cf2231618964ded870ef3cac6596d662851b80bd",
+      "currentSha256": "790b3835aed0a58f002224e1cf2231618964ded870ef3cac6596d662851b80bd"
+    },
+    {
+      "path": "test/render-churn-bench.ts",
+      "upstreamPath": "packages/tui/test/render-churn-bench.ts",
+      "originalSha256": "09d0d2d2017f2c230b22c05ee7a8c928e62187860346d5b02db72c4b5fd38ab2",
+      "currentSha256": "09d0d2d2017f2c230b22c05ee7a8c928e62187860346d5b02db72c4b5fd38ab2"
+    },
+    {
+      "path": "test/select-list.test.ts",
+      "upstreamPath": "packages/tui/test/select-list.test.ts",
+      "originalSha256": "0135b531ef8dfe52de6625c2004a4ed95566214bc9860068106c862efcf22376",
+      "currentSha256": "0135b531ef8dfe52de6625c2004a4ed95566214bc9860068106c862efcf22376"
+    },
+    {
+      "path": "test/settings-list.test.ts",
+      "upstreamPath": "packages/tui/test/settings-list.test.ts",
+      "originalSha256": "36418fe2495b92835c24a15129c5371f2dcffdfb72d0ecce7208b1ab0056062d",
+      "currentSha256": "36418fe2495b92835c24a15129c5371f2dcffdfb72d0ecce7208b1ab0056062d"
+    },
+    {
+      "path": "test/stdin-buffer.test.ts",
+      "upstreamPath": "packages/tui/test/stdin-buffer.test.ts",
+      "originalSha256": "44a15f7c6713cbf57a8ab95930fa6788d6014b7f8e31007412786ce1a2718425",
+      "currentSha256": "44a15f7c6713cbf57a8ab95930fa6788d6014b7f8e31007412786ce1a2718425"
+    },
+    {
+      "path": "test/tab-width.test.ts",
+      "upstreamPath": "packages/tui/test/tab-width.test.ts",
+      "originalSha256": "59fff93aeecb3809f41f7bf68d88ef8ba9f0f38cd3a2db785a1f16a0ac114419",
+      "currentSha256": "59fff93aeecb3809f41f7bf68d88ef8ba9f0f38cd3a2db785a1f16a0ac114419"
+    },
+    {
+      "path": "test/terminal-colors.test.ts",
+      "upstreamPath": "packages/tui/test/terminal-colors.test.ts",
+      "originalSha256": "b882dc1bc6ae9c5c55b8f3e71d42cc1c0c2e22e06c6ffc38131caeca914bc246",
+      "currentSha256": "b882dc1bc6ae9c5c55b8f3e71d42cc1c0c2e22e06c6ffc38131caeca914bc246"
+    },
+    {
+      "path": "test/terminal-image.test.ts",
+      "upstreamPath": "packages/tui/test/terminal-image.test.ts",
+      "originalSha256": "0cfba61fd281f82dc6b8ac5997bfe655dd0a1f54b61ca5ce659d1f52cbc690dd",
+      "currentSha256": "0cfba61fd281f82dc6b8ac5997bfe655dd0a1f54b61ca5ce659d1f52cbc690dd"
+    },
+    {
+      "path": "test/terminal.test.ts",
+      "upstreamPath": "packages/tui/test/terminal.test.ts",
+      "originalSha256": "154507ed3af29847376d0bb264784a7393e53598fe414fa56297a8c20e019a68",
+      "currentSha256": "154507ed3af29847376d0bb264784a7393e53598fe414fa56297a8c20e019a68"
+    },
+    {
+      "path": "test/test-themes.ts",
+      "upstreamPath": "packages/tui/test/test-themes.ts",
+      "originalSha256": "06aee61407827856f09c7d7017dac4d79e17d617622cab603abde6f128753d00",
+      "currentSha256": "06aee61407827856f09c7d7017dac4d79e17d617622cab603abde6f128753d00"
+    },
+    {
+      "path": "test/truncate-to-width.test.ts",
+      "upstreamPath": "packages/tui/test/truncate-to-width.test.ts",
+      "originalSha256": "fd75a99d47ff465d56a1f3ede16e37ca7d29aa910e2322881e824e6c2937b7b8",
+      "currentSha256": "fd75a99d47ff465d56a1f3ede16e37ca7d29aa910e2322881e824e6c2937b7b8"
+    },
+    {
+      "path": "test/truncated-text.test.ts",
+      "upstreamPath": "packages/tui/test/truncated-text.test.ts",
+      "originalSha256": "ba67883169e19dcb2013498d4b6659daa82b63daf01399f8471dc2b88b598141",
+      "currentSha256": "ba67883169e19dcb2013498d4b6659daa82b63daf01399f8471dc2b88b598141"
+    },
+    {
+      "path": "test/tui-alt-screen.test.ts",
+      "upstreamPath": "packages/tui/test/tui-alt-screen.test.ts",
+      "originalSha256": "eca05b09df4845323ac6be54e55044c1e6452310022b05800806d26147ef322b",
+      "currentSha256": "eca05b09df4845323ac6be54e55044c1e6452310022b05800806d26147ef322b"
+    },
+    {
+      "path": "test/tui-cell-size-input.test.ts",
+      "upstreamPath": "packages/tui/test/tui-cell-size-input.test.ts",
+      "originalSha256": "156fc72cd71f7ad65a11b300baaf2a37a2e6bc2ec7498d66f52ac6a0e17ab2d8",
+      "currentSha256": "156fc72cd71f7ad65a11b300baaf2a37a2e6bc2ec7498d66f52ac6a0e17ab2d8"
+    },
+    {
+      "path": "test/tui-overlay-style-leak.test.ts",
+      "upstreamPath": "packages/tui/test/tui-overlay-style-leak.test.ts",
+      "originalSha256": "ef6da1f722856ab3a1d5543b7ed80a2be8bf3df70d9c17f910ad9289998c669e",
+      "currentSha256": "ef6da1f722856ab3a1d5543b7ed80a2be8bf3df70d9c17f910ad9289998c669e"
+    },
+    {
+      "path": "test/tui-render.test.ts",
+      "upstreamPath": "packages/tui/test/tui-render.test.ts",
+      "originalSha256": "03b03d1ac2932d6c803ba8dc1dadfdacdfcb3d62be5983a171e137ee88376bb1",
+      "currentSha256": "03b03d1ac2932d6c803ba8dc1dadfdacdfcb3d62be5983a171e137ee88376bb1"
+    },
+    {
+      "path": "test/tui-shrink.test.ts",
+      "upstreamPath": "packages/tui/test/tui-shrink.test.ts",
+      "originalSha256": "c136db2c4e886c43509f48e36a74bdf2c0897cd3c989b4cca1bd689697a3bf03",
+      "currentSha256": "c136db2c4e886c43509f48e36a74bdf2c0897cd3c989b4cca1bd689697a3bf03"
+    },
+    {
+      "path": "test/viewport-overwrite-repro.ts",
+      "upstreamPath": "packages/tui/test/viewport-overwrite-repro.ts",
+      "originalSha256": "ec40c0aa1ac1a16a5cb924e2dfedccfae9823c25771e6de043019483a68b98d0",
+      "currentSha256": "ec40c0aa1ac1a16a5cb924e2dfedccfae9823c25771e6de043019483a68b98d0"
+    },
+    {
+      "path": "test/virtual-terminal.ts",
+      "upstreamPath": "packages/tui/test/virtual-terminal.ts",
+      "originalSha256": "8ab8cf042a2157ac17717763bf7bf78a3147c8b14149a357a4b9081f322b8c31",
+      "currentSha256": "8ab8cf042a2157ac17717763bf7bf78a3147c8b14149a357a4b9081f322b8c31"
+    },
+    {
+      "path": "test/visible-width.test.ts",
+      "upstreamPath": "packages/tui/test/visible-width.test.ts",
+      "originalSha256": "612c7b835c2d17b6f482c137b59fcaf3592618c767bfea7af9f127163bedd0c5",
+      "currentSha256": "612c7b835c2d17b6f482c137b59fcaf3592618c767bfea7af9f127163bedd0c5"
+    },
+    {
+      "path": "test/wheel-scroll.test.ts",
+      "upstreamPath": "packages/tui/test/wheel-scroll.test.ts",
+      "originalSha256": "b641a10f1387b86648e658e5aeebbe528d32b6d77d81f869b95bb8847ed26838",
+      "currentSha256": "b641a10f1387b86648e658e5aeebbe528d32b6d77d81f869b95bb8847ed26838"
+    },
+    {
+      "path": "test/word-navigation.test.ts",
+      "upstreamPath": "packages/tui/test/word-navigation.test.ts",
+      "originalSha256": "63ad66c3b23643ef248292a8c72cbf38e8126bc43da3df69a83b71397bc635ac",
+      "currentSha256": "63ad66c3b23643ef248292a8c72cbf38e8126bc43da3df69a83b71397bc635ac"
+    },
+    {
+      "path": "test/wrap-ansi.test.ts",
+      "upstreamPath": "packages/tui/test/wrap-ansi.test.ts",
+      "originalSha256": "9c238d85ad676ca6d4e063caa8d44d493b0c220dd9aba9ea11a31d51c92d791d",
+      "currentSha256": "9c238d85ad676ca6d4e063caa8d44d493b0c220dd9aba9ea11a31d51c92d791d"
+    },
+    {
+      "path": "tsconfig.build.json",
+      "upstreamPath": "packages/tui/tsconfig.build.json",
+      "originalSha256": null,
+      "currentSha256": "6a03f2c7fe00f884f6cb8dc165ce5a4d84b74034661690140b9c343995d197be",
+      "note": "Jade standalone build config (upstream extends the monorepo base tsconfig)"
+    }
+  ]
+}

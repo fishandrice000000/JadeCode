@@ -33,3 +33,9 @@ tmp/
 .project
 .settings/
 tools/tui-text-engine/node_modules/
+
+# Node 前端构建产物与依赖（源码、vendor、锁文件入库）
+frontend/node_modules/
+frontend/dist/
+frontend/dist-test/
+frontend/vendor/pi-tui/dist/

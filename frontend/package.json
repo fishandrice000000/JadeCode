@@ -1,0 +1,29 @@
+{
+  "name": "jadecode-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "JadeCode Node terminal frontend built on the pinned local Pi TUI",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "build": "npm run build:vendor && tsc -p tsconfig.json",
+    "build:vendor": "tsc -p vendor/pi-tui/tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck:test": "tsc -p tsconfig.test.json --noEmit",
+    "pretest": "tsc -p tsconfig.test.json",
+    "test": "node --test dist-test/test/"
+  },
+  "dependencies": {
+    "@earendil-works/pi-tui": "file:vendor/pi-tui",
+    "get-east-asian-width": "1.6.0",
+    "grok-mermaid": "0.2.3",
+    "highlight.js": "10.7.3",
+    "marked": "18.0.11"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.19",
+    "typescript": "7.0.2"
+  }
+}
