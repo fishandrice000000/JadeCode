@@ -76,4 +76,29 @@ class TuiTextGeometryTest {
         assertEquals(2, TerminalWidthTable.eastAsianWidth('中'));
         assertEquals(1, TerminalWidthTable.eastAsianWidth('a'));
     }
+    @Test void reusedIteratorsAndWidthFastPathKeepIcuBoundariesAcrossThreads() {
+        var samples = List.of("ASCII\tline\r\nnext", "e\u0301中", "👩‍👩‍👧‍👦🇨🇳", "\u0001a\u007f", "क्‍ष", "");
+        java.util.stream.IntStream.range(0, 200).parallel().forEach(index -> {
+            String text = samples.get(index % samples.size());
+            var reference = com.ibm.icu.text.BreakIterator.getCharacterInstance(java.util.Locale.ROOT);
+            reference.setText(text);
+            var expected = new java.util.ArrayList<String>();
+            for (int start = reference.first(), end = reference.next(); end != com.ibm.icu.text.BreakIterator.DONE;
+                    start = end, end = reference.next()) expected.add(text.substring(start, end));
+            assertEquals(expected, DisplayWidth.clusters(text));
+            assertEquals(expected.stream().mapToInt(DisplayWidth::clusterWidth).sum(), DisplayWidth.width(text));
+            assertEquals(5, DisplayWidth.width("short"), "previous iterator input must not leak");
+        });
+    }
+
+    @Test void wrapMergesRunsWithoutLosingEmptyLinesOrSpanStyles() {
+        var red = Style.fg(Color.rgb(200, 10, 10));
+        var blue = Style.fg(Color.rgb(10, 10, 200));
+        var lines = StyledLine.wrap(List.of(new Span("ab", red, null), new Span("cd\n\nef", red, null),
+                new Span("中g", blue, null)), 4);
+        assertEquals(List.of("abcd", "", "ef中", "g"), lines.stream().map(StyledLine::text).toList());
+        assertEquals(1, lines.getFirst().spans().size());
+        assertEquals(blue, lines.get(2).spans().getLast().style());
+    }
+
 }

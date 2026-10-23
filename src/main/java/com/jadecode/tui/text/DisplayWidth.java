@@ -31,19 +31,30 @@ public final class DisplayWidth {
 
     private DisplayWidth() { }
 
+    /** ICU 迭代器按线程复用；每次结束清掉文本，避免工作线程长期引用整篇回复。 */
+    private static final ThreadLocal<BreakIterator> ITERATORS = ThreadLocal.withInitial(
+            () -> BreakIterator.getCharacterInstance(java.util.Locale.ROOT));
+    private static final String[] ASCII = new String[128];
+    static {
+        for (int i = 0; i < ASCII.length; i++) ASCII[i] = String.valueOf((char) i);
+    }
+
     /**
      * 按扩展字素簇分段。空串返回空列表；换行符是独立簇。
-     * ICU BreakIterator 不是线程安全的，因此每次调用创建实例；它不持有外部可变状态。
+     * ICU BreakIterator 不是线程安全的，因此每个线程独享实例，返回前释放输入引用。
      */
     public static List<String> clusters(String text) {
         if (text == null || text.isEmpty()) return List.of();
-        BreakIterator iterator = BreakIterator.getCharacterInstance(java.util.Locale.ROOT);
+        BreakIterator iterator = ITERATORS.get();
         iterator.setText(text);
-        var result = new ArrayList<String>();
-        int start = iterator.first();
-        for (int end = iterator.next(); end != BreakIterator.DONE; start = end, end = iterator.next())
-            result.add(text.substring(start, end));
-        return result;
+        try {
+            var result = new ArrayList<String>();
+            int start = iterator.first();
+            for (int end = iterator.next(); end != BreakIterator.DONE; start = end, end = iterator.next())
+                result.add(end == start + 1 && text.charAt(start) < 128
+                        ? ASCII[text.charAt(start)] : text.substring(start, end));
+            return result;
+        } finally { iterator.setText(""); }
     }
 
     /** @return 一个完整字素占用的终端列数；不能传入半个字素。 */
@@ -101,9 +112,26 @@ public final class DisplayWidth {
      */
     public static int width(String text) {
         if (text == null || text.isEmpty()) return 0;
-        int total = 0;
-        for (String cluster : clusters(text)) total += clusterWidth(cluster);
-        return total;
+        // 纯 ASCII 普通文字直接计列；一旦遇到非 ASCII/特殊控制字符，整段交回 ICU，
+        // 不在混合文本中错误拆开 e+组合音标、ZWJ 或 CRLF 字素。
+        int asciiWidth = 0;
+        boolean ascii = true;
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c >= 0x20 && c <= 0x7e) asciiWidth++;
+            else if (c == '\t') asciiWidth += 3;
+            else if (c != '\r' && c != '\n') { ascii = false; break; }
+        }
+        if (ascii) return asciiWidth;
+        BreakIterator iterator = ITERATORS.get();
+        iterator.setText(text);
+        try {
+            int total = 0, start = iterator.first();
+            for (int end = iterator.next(); end != BreakIterator.DONE; start = end, end = iterator.next())
+                total += clusterWidth(end == start + 1 && text.charAt(start) < 128
+                        ? ASCII[text.charAt(start)] : text.substring(start, end));
+            return total;
+        } finally { iterator.setText(""); }
     }
 
     /**

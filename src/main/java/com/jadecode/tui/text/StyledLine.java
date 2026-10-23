@@ -90,25 +90,38 @@ public record StyledLine(List<Span> spans, LineAnnotation annotation) {
         var line = new ArrayList<Span>();
         int used = 0;
         for (Span span : spans) {
+            // 同一行/样式先写入可变缓冲，换行或片段结束才创建 Span。
+            // 避免每个字素都复制已经积累的整段字符串。
+            var run = new StringBuilder();
             for (String cluster : DisplayWidth.clusters(span.text())) {
-                if (cluster.equals("\n")) { result.add(new StyledLine(line)); line = new ArrayList<>(); used = 0; continue; }
+                if (cluster.equals("\n")) {
+                    appendRun(line, span, run); result.add(new StyledLine(line));
+                    line = new ArrayList<>(); used = 0; continue;
+                }
                 int cells = DisplayWidth.clusterWidth(cluster);
                 if (cells > limit) {
                     // 一个宽字素比整行还宽：保留占位而不是输出终端会隐式折行的宽字符。
                     cluster = "?".repeat(Math.max(1, cells));
                     cells = Math.min(cells, limit);
                 }
-                if (used + cells > limit) { result.add(new StyledLine(line)); line = new ArrayList<>(); used = 0; }
-                appendCluster(line, span, cluster);
+                if (used + cells > limit) {
+                    appendRun(line, span, run); result.add(new StyledLine(line));
+                    line = new ArrayList<>(); used = 0;
+                }
+                run.append(cluster);
                 used += cells;
             }
+            appendRun(line, span, run);
         }
         result.add(new StyledLine(line));
         return result;
     }
 
     /** 把同一样式/链接的相邻字符合并，减少 ANSI 切换；不改变正文顺序。 */
-    private static void appendCluster(List<Span> line, Span source, String cluster) {
+    private static void appendRun(List<Span> line, Span source, StringBuilder run) {
+        if (run.isEmpty()) return;
+        String cluster = run.toString();
+        run.setLength(0);
         if (!line.isEmpty()) {
             Span last = line.getLast();
             if (last.style().equals(source.style()) && java.util.Objects.equals(last.link(), source.link())) {
