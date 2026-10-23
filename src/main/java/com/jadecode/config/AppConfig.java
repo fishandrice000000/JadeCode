@@ -5,23 +5,32 @@ package com.jadecode.config;
  *
  * <p>
  * 缺省值面向 DeepSeek:baseUrl 默认 {@code https://api.deepseek.com/anthropic},
- * model 默认 {@code deepseek-v4-flash},maxTokens 默认 8000。只有 API key 必填,
+ * model 默认 {@code deepseek-v4-flash},maxTokens 默认自动跟随已知模型输出上限。只有 API key 必填,
  * 缺失时打印指引并抛异常——fail-fast,不带着半套配置往下跑。
  * </p>
  *
  * @param apiKey    Anthropic 协议 API key(必填,来自 ANTHROPIC_API_KEY)
  * @param baseUrl   端点基址(来自 ANTHROPIC_BASE_URL;SDK 自动在其后拼 /v1/messages)
  * @param model     模型 id(来自 MODEL_ID)
- * @param maxTokens 单次请求输出上限(来自 MAX_TOKENS,须为数字)
+ * @param maxTokens 正式请求输出设置；0 是内部 auto 标记，正整数是用户显式额度。
+ *                  装配时必须先解析为真实正数，不能直接将 0 发送给模型
  */
 public record AppConfig(String apiKey, String baseUrl, String model, int maxTokens) {
+    /** 仅配置层使用的自动标记；模型未知时的回退值由 ModelMetadata 统一决定。 */
+    public static final int AUTO_MAX_TOKENS = 0;
+
+    /** 手工构造同样拒绝负数；0 保留给程序明确构造 auto 配置，不代表零 token 请求。 */
+    public AppConfig {
+        if (maxTokens < AUTO_MAX_TOKENS)
+            throw new IllegalArgumentException("Output budget must be automatic or a positive integer");
+    }
 
     /**
      * 从 Env 读出全部配置项,缺失项按各自缺省值补齐。
      *
      * @param env 已加载的环境(.env 解析结果 + 系统环境变量回退)
      * @return 完整配置
-     * @throws IllegalStateException ANTHROPIC_API_KEY 缺失,或 MAX_TOKENS 不是数字
+     * @throws IllegalStateException ANTHROPIC_API_KEY 缺失,或 MAX_TOKENS 既非 auto 也非正整数
      */
     public static AppConfig fromEnv(Env env) {
         return new AppConfig(getApiKeyFrom(env), getBaseUrlFrom(env), getModelFrom(env), getMaxTokensFrom(env));
@@ -49,16 +58,21 @@ public record AppConfig(String apiKey, String baseUrl, String model, int maxToke
         return s == null ? "deepseek-v4-flash" : s;
     }
 
-    /** 输出上限;缺省 8000,配了但非数字则报错(静默回退会掩盖拼写错误) */
+    /**
+     * 缺失、空白或 auto 选择自动额度；显式数字必须为正数。
+     * 不把旧配置 8000 猜成“没有设置”，避免抹掉用户主动选择的限制。
+     */
     private static int getMaxTokensFrom(Env env) {
         String s = env.get("MAX_TOKENS");
-        if (s == null || s.isBlank()) {
-            return 8000;
+        if (s == null || s.isBlank() || s.strip().equalsIgnoreCase("auto")) {
+            return AUTO_MAX_TOKENS;
         }
         try {
-            return Integer.parseInt(s);
+            int configured = Integer.parseInt(s.strip());
+            if (configured > 0) return configured;
         } catch (NumberFormatException e) {
-            throw new IllegalStateException("MAX_TOKENS must be a number; current value:" + s);
+            throw new IllegalStateException("MAX_TOKENS must be auto or a positive integer; current value:" + s, e);
         }
+        throw new IllegalStateException("MAX_TOKENS must be auto or a positive integer; current value:" + s);
     }
 }

@@ -23,6 +23,7 @@ import com.jadecode.llm.ToolDefinition;
 import com.jadecode.llm.LlmClient;
 import com.jadecode.llm.LlmException;
 import com.jadecode.llm.ModelResponse;
+import com.jadecode.llm.ModelMetadata;
 import com.jadecode.messages.ContentBlock;
 import com.jadecode.messages.Message;
 import com.jadecode.messages.TextBlock;
@@ -95,6 +96,9 @@ class MainCompactionAssemblyTest {
         private final List<String> events = new ArrayList<>();
         private final List<CompleteRequest> formal = new ArrayList<>();
         private final List<CompleteRequest> summaries = new ArrayList<>();
+        private ModelMetadata metadata = new ModelMetadata(ModelMetadata.Limits.unknown(), "test");
+
+        @Override public ModelMetadata metadata() { return metadata; }
 
         @Override
         public ModelResponse complete(CompleteRequest request) throws LlmException {
@@ -233,6 +237,28 @@ class MainCompactionAssemblyTest {
     }
 
     /* ---------------- 证据 2:父主动 compact ---------------- */
+
+    /** auto 必须沿真实装配传到正式父子请求；共享客户端不能把摘要额度一并放大。 */
+    @Test
+    void automaticOutputBudgetReachesParentAndChildWhileSummaryKeepsItsBudget() throws Exception {
+        ScriptedClient client = new ScriptedClient();
+        client.metadata = new ModelMetadata(new ModelMetadata.Limits(1048576, null, 65536), "test");
+        client.parentScript.add(toolReply("t-auto", "task", "prompt", "Inspect the module"));
+        client.parentScript.add(textReply("done"));
+        client.childScript.add(toolReply("c-auto", "compact"));
+        client.childScript.add(textReply("child done"));
+        AppConfig auto = new AppConfig("fake-key", "http://localhost:1", "fake-model", AppConfig.AUTO_MAX_TOKENS);
+
+        // 调真实工厂，但客户端和工作区都是离线注入；close 保证本用例不留下后台服务。
+        try (SessionRuntime loop = JadeCodeFactory.create(auto, ws, client)) {
+            loop.run(new ArrayList<>(List.of(Message.userText("Delegate the inspection"))));
+        }
+        assertEquals(List.of("parent", "child", "summary", "child", "parent"), client.events);
+        assertEquals(4, client.formal.size());
+        assertTrue(client.formal.stream().allMatch(request -> request.maxTokens() == 65536));
+        assertEquals(1, client.summaries.size());
+        assertEquals(CompactionLimits.defaults().summaryMaxOutputTokens(), client.summaries.getFirst().maxTokens());
+    }
 
     @Test
     void parentCompactRunsRealSummaryAndArchivesCompleteHistory() throws Exception {

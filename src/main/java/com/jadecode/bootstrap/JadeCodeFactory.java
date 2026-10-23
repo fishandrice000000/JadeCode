@@ -269,6 +269,9 @@ public final class JadeCodeFactory {
             JadeSettings settings, com.jadecode.session.SessionUsage usage,
             java.util.concurrent.atomic.AtomicReference<com.jadecode.llm.ThinkingSettings> thinking, PermissionState permissions) {
         boolean isLeader = actor.equals(TeamManager.LEADER);
+        // 配置里的 0 只代表 auto：先按已发现的模型能力解析，执行器与 wire 始终收到正数。
+        // 这份额度只交给正式父/子请求；下方摘要、Memory 和审批继续使用各自的独立预算。
+        int formalMaxTokens = client.metadata().formalOutputBudget(config.maxTokens());
         PathResolver resolver = new PathResolver(cwd);
         // 审批独立请求只读任务说明和待执行操作；不借用主循环，也不执行工具。
         PermissionGate gate = new PermissionGate(resolver, permissions,
@@ -323,7 +326,7 @@ public final class JadeCodeFactory {
         // 它能自己整理、自己响应超限，但使用的仍是子任务自己的历史。
         SubagentRuntime subagentRuntime = new SubagentRuntime(tracked(client, config.model(), actor + "/subagent",
                 com.jadecode.llm.UsageRecord.Purpose.SUBAGENT, usage, null), subTools, subSystemPrompt(cwd),
-                config.maxTokens(), hooks, compactor);
+                formalMaxTokens, hooks, compactor);
         subagentRuntime.observe(observer);
         subagentRuntime.thinking(thinking::get);
 
@@ -367,7 +370,7 @@ public final class JadeCodeFactory {
                 tools,
                 (isLeader ? systemPrompt(cwd, skillLoader.catalog()) : teammatePrompt(cwd, actor, role, skillLoader.catalog()))
                         + mcpPrompt(mcp.availableServers()) + projectInstructions(cwd),
-                config.maxTokens(),
+                formalMaxTokens,
                 hooks,
                 compactor, streams);
         engine.observe(observer);
