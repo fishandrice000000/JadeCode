@@ -25,6 +25,8 @@ public final class SessionHost implements AutoCloseable {
     private final AtomicBoolean closed = new AtomicBoolean();
     private volatile SessionRuntime current;
     private long generation;
+    /** 已经登记过初始任务的代次；-1 表示当前代次尚未登记。 */
+    private long initialPromptGeneration = -1;
     private boolean changing;
 
     public SessionHost(WorkspacePaths paths, Factory factory, Consumer<String> warnings) {
@@ -128,6 +130,41 @@ public final class SessionHost implements AutoCloseable {
     /** 在 UI 已采用相同代次的历史之后调用，避免新事件抢在历史清屏之前出现。 */
     public synchronized void start(long expectedGeneration) {
         if (!closed.get() && current != null && generation == expectedGeneration) current.start(true);
+    }
+
+    /**
+     * 新前端的最小启动契约：界面 ready 之后、消费者启动之前，先登记唯一的一次初始任务，
+     * 再按调用方选择启动消费者/cron。
+     *
+     * <p>为什么必须先入队再 start：{@code SessionRuntime.start(true)} 会立即启动 cron 轮询，
+     * 若先 start 再 submit，一个已经到期的定时任务可能抢在用户首轮 prompt 之前执行。这里
+     * 利用“已 restore 但尚未 start”的准备态允许 submit 入队（submit 本身只写 Inbox），然后
+     * 启动消费者。重复 ready、重绘、fg、外部编辑器返回都不得重放初始任务，因此每个代次
+     * 只允许登记一次。</p>
+     *
+     * @param expectedGeneration 调用方看到并已安装快照的代次
+     * @param prompt             初始任务原文；空白任务不启动模型
+     * @param approval           本次任务的审批通道（headless 传 null 表示无人工通道）
+     * @param enableCron         交互模式为 true；headless 为 false，不运行未来定时任务
+     * @return 该次初始任务的最终结果 Future；失败语义沿用 SessionRuntime.submit
+     * @throws IllegalStateException 代次不匹配、会话已退出或已登记过初始任务
+     */
+    public synchronized java.util.concurrent.CompletableFuture<String> startWithInitial(long expectedGeneration,
+            String prompt, com.jadecode.safety.approval.Approval approval, boolean enableCron) {
+        if (closed.get() || current == null || generation != expectedGeneration)
+            throw new IllegalStateException("The session generation changed before its initial prompt could start");
+        if (initialPromptGeneration == expectedGeneration)
+            throw new IllegalStateException("The initial prompt for this session was already registered");
+        initialPromptGeneration = expectedGeneration;
+        try {
+            var result = current.submit(prompt, approval);
+            current.start(enableCron);
+            return result;
+        } catch (RuntimeException failure) {
+            // 登记失败就不启动模型；允许调用方以同一代次重试一次，而不是留下半启动状态。
+            initialPromptGeneration = -1;
+            throw failure;
+        }
     }
 
     /** 退出可与后台加载并发：先置关闭标志，尚未提交的候选会话会在 open 中自行清理。 */

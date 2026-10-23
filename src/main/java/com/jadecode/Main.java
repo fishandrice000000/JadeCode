@@ -1,34 +1,52 @@
 package com.jadecode;
 
-import java.util.concurrent.Callable;
+import com.jadecode.cli.HeadlessRunner;
+import com.jadecode.cli.InteractiveLauncher;
+import com.jadecode.cli.LaunchOptions;
 
-import com.jadecode.cli.ReplCommand;
-import com.jadecode.cli.RunCommand;
+/**
+ * JadeCode 根入口：解析根语法并分派到交互界面或无界面任务。
+ *
+ * <p>没有 run/repl 子命令了：位置参数就是首轮任务。{@code --help}/{@code --version} 只打印
+ * 信息，不加载 Node、前端资产、配置或模型客户端；headless 也不碰前端。</p>
+ *
+ * <p>退出码：0 正常；2 参数错误/环境不支持/缺 Node 或成套前端；1 执行或清理失败。
+ * SIGINT/SIGTERM 由 JVM 默认处理（130/143），本类不吞信号。</p>
+ */
+public final class Main {
+    private Main() { }
 
-import picocli.CommandLine;
-import picocli.CommandLine.Command;
-
-/** JadeCode 的 picocli 顶层入口；run/repl 自行从 bootstrap 取得会话。 */
-@Command(name = "jadecode", version = "jadecode 0.1.0-SNAPSHOT", mixinStandardHelpOptions = true,
-        subcommands = { RunCommand.class, ReplCommand.class }, description = "JadeCode: a CLI coding agent for learning")
-public class Main implements Callable<Integer> {
-    /**
-     * 让 picocli 解析命令行并执行，最后把返回码交给操作系统。
-     * @param args 命令行参数，例如 repl 或 run 加任务文字
-     */
+    /** 进程入口。 */
     public static void main(String[] args) {
-        System.exit(new CommandLine(new Main()).execute(args));
+        System.exit(run(args));
     }
 
     /**
-     * 顶层命令(不带子命令)的默认行为:打印用法,提示用户用 run / repl。
+     * 可测试的分派入口。
      *
-     * @return 退出码 0
+     * @param args 原始命令行参数
+     * @return 进程退出码
      */
-    @Override
-    public Integer call() {
-        CommandLine.usage(new Main(), System.out);
-        return 0;
+    public static int run(String[] args) {
+        LaunchOptions options;
+        try {
+            options = LaunchOptions.parse(args);
+        } catch (LaunchOptions.UsageException invalid) {
+            System.err.println(invalid.getMessage());
+            System.err.println("Run `jade --help` for usage.");
+            return 2;
+        }
+        return switch (options.mode()) {
+            case HELP -> {
+                System.out.println(LaunchOptions.help());
+                yield 0;
+            }
+            case VERSION -> {
+                System.out.println(InteractiveLauncher.version());
+                yield 0;
+            }
+            case HEADLESS -> new HeadlessRunner().run(options);
+            case INTERACTIVE -> new InteractiveLauncher().run(options);
+        };
     }
-
 }

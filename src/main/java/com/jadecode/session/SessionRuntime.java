@@ -397,7 +397,9 @@ public final class SessionRuntime implements AutoCloseable {
      *
      * <p>比如 A 还在等构建结果，用户又输入 B，B 只会排队，不会打断 A。
      * 程序会记录任务来自用户，并保存询问用户是否允许某项操作的函数。
-     * 模型不能在 prompt 或工具参数里给自己增加这项权限。调用前应先 start。</p>
+     * 模型不能在 prompt 或工具参数里给自己增加这项权限。通常调用前应先 start；唯一例外是
+     * 已 restore 但尚未 start 的准备态：CLI 可以让 SessionHost 先把首轮请求入队、再启动消费者，
+     * 这样到期的 cron 任务不会抢在用户首轮之前。准备态 submit 只写 Inbox，不执行任何任务。</p>
      * @param prompt 用户要做的事，不得为 null 或全是空白
      * @param approval 询问用户是否允许操作的函数；null 表示不能询问，需询问的操作会被拒绝
      * @return 以后取得最终回答的 CompletableFuture。成功排队不代表做完：
