@@ -65,7 +65,8 @@ public final class ApprovalView {
         if (budget < 3 || columns < 10) {
             return denyOnly(request, context, columns);
         }
-        CardFrame.Metrics frame = CardFrame.measure(columns, budget, 0, true);
+        // 审批显式声明闭合卡片：Pi 上下横线只用于信息页/选择器/搜索，不改变安全布局。
+        CardFrame.Metrics frame = CardFrame.measure(columns, budget, 0, true, CardFrame.Surface.APPROVAL_BOX);
         if (frame.minimal()) return denyOnly(request, context, columns);
         int contentWidth = frame.contentWidth();
 

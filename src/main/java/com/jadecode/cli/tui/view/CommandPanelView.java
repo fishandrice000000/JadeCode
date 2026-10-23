@@ -16,10 +16,10 @@ import com.jadecode.tui.text.TextSanitizer;
  * 命令信息卡片：真实分组/字段/服务列表、局部焦点和滚动，多列随宽度重排。
  *
  * <p>只消费 {@link CommandPanelModel}，不读 Host、不写终端、不把 Markdown 当页面。所有外部
- * 名称/值先经 {@link TextSanitizer#display} 净化；行宽严格限制在给定宽度内。外框/留白/面板
- * 底色统一由 {@link CardFrame} 生成，本类只负责正文内容和局部滚动，因此与审批/选择/搜索
- * 使用同一套闭合几何。标题嵌入顶边并使用 accent+bold；宽度/高度不足时先缩 padding，再滚动
- * 正文，四角和底边始终完整。</p>
+ * 名称/值先经 {@link TextSanitizer#display} 净化；行宽严格限制在给定宽度内。外框由
+ * {@link CardFrame} 的 {@link CardFrame.Surface#PI_SECTION} 生成：上下横线、右上标题、无侧边、
+ * 不铺 panelBg；正文/分类导航/提示从 x=2 起、宽 W-4。本类只负责正文内容和局部滚动，审批仍
+ * 使用独立闭合卡片。宽度/高度不足时按优先级降级并保留可达提示。</p>
  */
 public final class CommandPanelView implements Component {
     private final CommandPanelModel model;
@@ -105,18 +105,24 @@ public final class CommandPanelView implements Component {
         boolean categories = model.kind() == CommandPanelModel.Kind.HOTKEYS && !model.groups().isEmpty()
                 && budget >= 5;
         // 固定头部只有分类导航；正文滚动不能把它带走。footer 单独占一行，避免长分组挤掉提示。
-        CardFrame.Metrics frame = CardFrame.measure(columns, budget, categories ? 1 : 0, footer);
+        CardFrame.Metrics frame = CardFrame.measure(columns, budget, categories ? 1 : 0, footer,
+                CardFrame.Surface.PI_SECTION);
         if (frame.minimal()) return CardFrame.compose(title, "Esc close", List.of(), List.of(), null, frame, context);
         int contentWidth = frame.contentWidth();
         int bodyRows = frame.bodyRows();
+        // 信息页正文/分类导航/提示统一从 x=2 起、宽 W-4；这里只缩一次，不再叠加第二层 padding。
+        int innerWidth = Math.max(1, contentWidth - 4);
 
-        List<Section> sections = buildSections(contentWidth);
-        int columnCount = Math.min(3, Math.max(1, (contentWidth + 2) / 32));
+        // 左侧两列缩进属于页面布局；列宽必须从扣除缩进后的可用宽计算，否则拼行后
+        // 再 crop 会把每行末尾字符裁掉（尤其窄屏的长快捷键组合）。
+        int columnArea = Math.max(1, innerWidth - 2);
+        List<Section> sections = buildSections(columnArea);
+        int columnCount = Math.min(3, Math.max(1, (columnArea + 2) / 32));
         if (model.kind() == CommandPanelModel.Kind.HOTKEYS) columnCount = 1;
-        if (model.kind() == CommandPanelModel.Kind.MCP) columnCount = contentWidth >= 60 ? 2 : 1;
-        int columnWidth = Math.max(8, (contentWidth - (columnCount - 1) * 2) / columnCount);
-        if (columnWidth * columnCount + (columnCount - 1) * 2 > contentWidth) columnCount = 1;
-        if (columnCount == 1) columnWidth = contentWidth;
+        if (model.kind() == CommandPanelModel.Kind.MCP) columnCount = columnArea >= 60 ? 2 : 1;
+        int columnWidth = Math.max(8, (columnArea - (columnCount - 1) * 2) / columnCount);
+        if (columnWidth * columnCount + (columnCount - 1) * 2 > columnArea) columnCount = 1;
+        if (columnCount == 1) columnWidth = columnArea;
         List<List<StyledLine>> columnLines = new ArrayList<>();
         for (int i = 0; i < columnCount; i++) columnLines.add(new ArrayList<>());
         int[] heights = new int[columnCount];
@@ -149,26 +155,31 @@ public final class CommandPanelView implements Component {
         lastBodyRows = Math.max(1, bodyRows);
         scroll = Math.min(scroll, Math.max(0, bodySize - lastBodyRows));
 
-        // 组装正文行：各列按列宽补齐后拼成一条内容行，外框和底色交给 CardFrame。
+        // 组装正文行：各列按列宽补齐后拼成一条内容行，左侧统一两列缩进；外框交给 CardFrame。
         var body = new ArrayList<StyledLine>();
         for (int row = scroll; row < Math.min(bodySize, scroll + lastBodyRows); row++) {
             var spans = new ArrayList<Span>();
+            spans.add(new Span("  ", Style.PLAIN, null));
             for (int i = 0; i < columnLines.size(); i++) {
                 if (i > 0) spans.add(new Span("  ", Style.PLAIN, null));
                 StyledLine line = row < columnLines.get(i).size() ? columnLines.get(i).get(row) : StyledLine.empty();
                 spans.addAll(line.padTo(columnWidth, Style.PLAIN).crop(columnWidth).spans());
             }
-            body.add(new StyledLine(spans));
+            body.add(new StyledLine(spans).crop(innerWidth));
         }
         List<StyledLine> header = List.of();
         if (categories) {
             String navigation = "‹ " + oneLine(model.groups().get(section).title()) + " ›  "
                     + (section + 1) + "/" + model.groups().size();
-            header = List.of(StyledLine.of(DisplayWidth.ellipsize(navigation, contentWidth),
-                    context.theme().style("accent")));
+            header = List.of(new StyledLine(List.of(
+                    new Span("  ", Style.PLAIN, null),
+                    new Span(DisplayWidth.ellipsize(navigation, innerWidth),
+                            context.theme().style("accent"), null))));
         }
         StyledLine footerLine = footer
-                ? StyledLine.of(DisplayWidth.ellipsize(hint(), contentWidth), context.theme().style("dim"))
+                ? new StyledLine(List.of(new Span("  ", Style.PLAIN, null),
+                        new Span(DisplayWidth.ellipsize(hint(), innerWidth),
+                                context.theme().style("dim"), null)))
                 : null;
         return CardFrame.compose(title, "Esc close", header, body, footerLine, frame, context);
     }

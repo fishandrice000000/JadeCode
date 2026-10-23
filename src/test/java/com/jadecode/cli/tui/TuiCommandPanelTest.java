@@ -128,8 +128,12 @@ class TuiCommandPanelTest {
         assertFalse(wideText.contains("/settings"), "other categories must not be rendered together");
         assertFalse(wideText.contains("Move word left"), "Editor category must stay hidden on Common");
         assertTrue(wide.stream().allMatch(line -> line.width() <= 120));
-        assertTrue(wide.getFirst().text().startsWith("┌") && wide.getFirst().text().endsWith("┐"), wide.getFirst().text());
-        assertTrue(wide.getLast().text().startsWith("└") && wide.getLast().text().endsWith("┘"), wide.getLast().text());
+        // S93 迁移：信息页改为 Pi 上下横线 + 右上标题，不再有闭合四角/侧边。
+        assertTrue(wide.getFirst().text().startsWith("─") && wide.getFirst().text().endsWith("─"),
+                wide.getFirst().text());
+        assertTrue(wide.getFirst().text().contains("Hotkeys"), wide.getFirst().text());
+        assertTrue(wide.getLast().text().matches("─+"), wide.getLast().text());
+        assertFalse(wide.stream().anyMatch(line -> line.text().startsWith("│")), "Pi section has no side borders");
         assertTrue(wide.size() <= 24);
         int before = panel.scroll();
         controller.accept(new UiEvent.Input(key("pagedown")));
@@ -161,44 +165,44 @@ class TuiCommandPanelTest {
         assertEquals("KEEP_DRAFT", editor.text());
     }
 
-    @Test void panelHasClosedBordersPaddingAndOpaqueBackground(@TempDir Path dir) {
+    @Test void panelUsesPiSectionWithoutSideBordersOrPanelBackground(@TempDir Path dir) {
         var state = stateWithSession();
         var controller = controller(state, dir);
         assertTrue(controller.submit("/hotkeys"));
         var panelTheme = new ThemeManager("dark", null, true, "light", "dark").preview();
         var lines = state.commandPanel.render(new RenderContext(80, 24, panelTheme), 80, 24);
         assertTrue(lines.stream().allMatch(line -> line.width() == 80), "every panel row must be exactly W columns");
-        assertTrue(lines.getFirst().text().startsWith("┌") && lines.getFirst().text().endsWith("┐"),
+        // 上下横线：标题嵌在上横线右端，底线全宽；没有左右竖边，也不铺 panelBg。
+        assertTrue(lines.getFirst().text().startsWith("─") && lines.getFirst().text().endsWith("─"),
                 lines.getFirst().text());
-        assertTrue(lines.getLast().text().startsWith("└") && lines.getLast().text().endsWith("┘"),
-                lines.getLast().text());
-        var background = panelTheme.color("panelBg");
+        assertTrue(lines.getFirst().text().indexOf("Hotkeys") > 40, "title sits at the right end: "
+                + lines.getFirst().text());
+        assertEquals("─".repeat(80), lines.getLast().text());
         assertTrue(lines.stream().flatMap(line -> line.spans().stream())
-                .allMatch(span -> span.style().bg().equals(background)), "all spans, padding and blank rows share panelBg");
+                .allMatch(span -> span.style().bg().isDefault()), "Pi section must inherit the surrounding background");
         var title = lines.getFirst().spans().stream().filter(span -> span.text().contains("Hotkeys"))
                 .findFirst().orElseThrow();
-        assertTrue(title.style().bold(), "embedded title must be bold");
-        assertTrue(title.style().fg().equals(panelTheme.style("accent").fg()), "embedded title must use accent");
+        assertTrue(title.style().bold(), "right-aligned title must be bold");
+        assertTrue(title.style().fg().equals(panelTheme.style("accent").fg()), "title must use accent");
         var border = lines.getFirst().spans().getFirst();
-        assertFalse(border.style().bold(), "border must stay normal weight");
-        assertTrue(lines.get(1).text().startsWith("│  ") && lines.get(1).text().endsWith("  │"),
-                "body rows need two-column padding on both sides: " + lines.get(1).text());
-        // 窄屏缩减 padding 但仍保留闭合边框与可达提示。
+        assertFalse(border.style().bold(), "rule must stay normal weight");
+        assertTrue(lines.get(1).text().startsWith("  "), "body content starts at x=2: " + lines.get(1).text());
+        // 窄屏同样保持横线与可达提示，不越界。
         var narrow = state.commandPanel.render(new RenderContext(40, 12, panelTheme), 40, 11);
         assertTrue(narrow.stream().allMatch(line -> line.width() == 40));
-        assertTrue(narrow.getFirst().text().startsWith("┌") && narrow.getFirst().text().endsWith("┐"));
-        assertTrue(narrow.getLast().text().startsWith("└") && narrow.getLast().text().endsWith("┘"));
+        assertTrue(narrow.getFirst().text().startsWith("─") && narrow.getFirst().text().contains("Hotkeys"));
+        assertEquals("─".repeat(40), narrow.getLast().text());
     }
 
-    @Test void noColorPanelKeepsBordersWithoutAttributes(@TempDir Path dir) {
+    @Test void noColorPanelKeepsRulesWithoutAttributes(@TempDir Path dir) {
         var state = stateWithSession();
         var controller = controller(state, dir);
         assertTrue(controller.submit("/hotkeys"));
         var base = new ThemeManager("dark", null, true, "light", "dark").preview();
         var plain = new Theme(base.name(), base.appearance(), base.colors(), false, base.revision());
         var lines = state.commandPanel.render(new RenderContext(80, 24, plain), 80, 20);
-        assertTrue(lines.getFirst().text().startsWith("┌") && lines.getFirst().text().endsWith("┐"));
-        assertTrue(lines.getLast().text().startsWith("└") && lines.getLast().text().endsWith("┘"));
+        assertTrue(lines.getFirst().text().startsWith("─") && lines.getFirst().text().contains("Hotkeys"));
+        assertTrue(lines.getLast().text().matches("─+"));
         assertTrue(lines.stream().flatMap(line -> line.spans().stream())
                 .allMatch(span -> span.style().isPlain()), "NO_COLOR must not emit font/color attributes");
     }

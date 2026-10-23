@@ -70,14 +70,52 @@ class TuiSelectorPanelTest {
         assertTrue(all.contains("Theme") && all.contains("dark"), all);
         assertTrue(all.contains("Type to search · Enter/Space to change · Esc to cancel"), all);
         assertTrue(all.contains("(1/21)"), "window count missing: " + all);
-        assertTrue(all.lines().anyMatch(line -> line.startsWith("┌─ Settings")), "embedded title top border missing");
+        // S93 迁移：Pi 上下横线 + 右上标题，没有闭合侧边。
+        assertTrue(all.lines().anyMatch(line -> line.startsWith("─") && line.contains(" Settings ")),
+                "right-aligned title rule missing");
+        assertFalse(all.contains("┌") && all.contains("│"), "selector must not use the approval box");
         assertTrue(dock.cursorVisible());
-        assertEquals(2 + "Search settings".length() == dock.cursorColumn() || dock.cursorColumn() >= 2, true);
+        assertTrue(dock.cursorColumn() >= 2, "query text starts at x=2");
         assertTrue(dock.lines().size() <= 23);
         // 选中项只使用 accent，不铺整行 selectedBg。
         var selected = dock.lines().stream().filter(line -> line.text().contains("→ Theme")).findFirst().orElseThrow();
         assertTrue(selected.spans().stream().noneMatch(span -> span.style().bg().equals(
                 context.theme().color("selectedBg"))), selected.toString());
+    }
+
+    @Test void piGeometryStartsQueryAndArrowAtColumnZeroAndAlignsValues(@TempDir Path dir) {
+        var state = new TuiState(); state.installGeneration(0);
+        var menu = new SettingsMenu(JadeSettings.defaults().tui(), dir.resolve("themes"));
+        var controller = controller(state, dir, menu);
+        controller.submit("/settings");
+        var context = new RenderContext(80, 24, Theme.from(ThemePalette.builtin("dark"), true, 1));
+        var dock = new DockView().render(state, context, 80, 23);
+        var lines = dock.lines();
+        // 上横线在 0 行，查询行在 1 行且从 0 列开始；光标列包含 `> `。
+        assertEquals(1, dock.cursorRow());
+        assertTrue(lines.get(1).text().startsWith("> "), lines.get(1).text());
+        assertEquals(2, dock.cursorColumn());
+        // 选中候选的箭头从 0 列开始，标签从 2 列开始。
+        int selectedRow = -1;
+        for (int i = 0; i < lines.size(); i++) if (lines.get(i).text().startsWith("→ ")) { selectedRow = i; break; }
+        assertTrue(selectedRow >= 0, "selected row missing");
+        String selected = lines.get(selectedRow).text();
+        assertTrue(selected.startsWith("→ Theme"), selected);
+        // 命中覆盖 0..W-2（79 列），不包含末尾留白。
+        var hit = dock.hits().stream()
+                .filter(value -> value.action().kind() == com.jadecode.tui.core.ActionToken.Kind.SELECT_ITEM)
+                .findFirst().orElseThrow();
+        assertEquals(0, hit.rect().x());
+        assertEquals(79, hit.rect().width());
+        // 信息/选择器不再有审批式底色或侧边。
+        assertTrue(lines.stream().flatMap(line -> line.spans().stream())
+                .allMatch(span -> span.style().bg().isDefault()));
+        assertTrue(lines.stream().noneMatch(line -> line.text().startsWith("│")));
+        // 过滤时右值列不抖动：标签列宽按完整候选计算，搜索后同一标签仍从 2 列开始。
+        controller.accept(new UiEvent.Input(text("theme")));
+        var filtered = new DockView().render(state, context, 80, 23).lines();
+        assertTrue(filtered.stream().anyMatch(line -> line.text().startsWith("→ ")),
+                filtered.stream().map(StyledLine::text).reduce("", (a, b) -> a + "\n" + b));
     }
 
     @Test void shortNarrowPanelKeepsSearchAndSelectedItemWithinDockBudget(@TempDir Path dir) {

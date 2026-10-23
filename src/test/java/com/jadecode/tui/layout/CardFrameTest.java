@@ -73,6 +73,57 @@ class CardFrameTest {
         assertTrue(lines.getFirst().text().contains("Model"));
     }
 
+    @Test void piSectionUsesTopRuleWithRightAlignedTitleAndNoSideBorders() {
+        var metrics = CardFrame.measure(80, 12, 1, true, CardFrame.Surface.PI_SECTION);
+        assertEquals(0, metrics.contentX());
+        assertEquals(80, metrics.contentWidth());
+        assertEquals(0, metrics.padding());
+        assertEquals(1, metrics.headerRows());
+        assertEquals(12 - 2 - 1 - 1, metrics.bodyRows());
+        assertEquals(CardFrame.Surface.PI_SECTION, metrics.surface());
+        var lines = CardFrame.compose("Settings", "Esc close",
+                List.of(StyledLine.of("nav", theme.style("accent"))),
+                List.of(StyledLine.of("row", theme.style("text"))),
+                StyledLine.of("hint", theme.style("dim")), metrics, context);
+        // 上横线：左横线 + 右上标题 + 末尾一列横线；总宽恰为 80。
+        String top = lines.getFirst().text();
+        assertEquals(80, lines.getFirst().width());
+        assertTrue(top.startsWith("──"), top);
+        assertTrue(top.endsWith("─"), top);
+        assertTrue(top.contains(" Settings "), top);
+        assertTrue(top.indexOf("Settings") > 40, "title is right-aligned: " + top);
+        assertEquals("─".repeat(80), lines.getLast().text());
+        assertTrue(lines.stream().noneMatch(line -> line.text().startsWith("│")), "no side borders");
+        assertTrue(lines.stream().flatMap(line -> line.spans().stream())
+                .allMatch(span -> span.style().bg().isDefault()), "no panel background fill");
+        var title = lines.getFirst().spans().stream().filter(span -> span.text().contains("Settings"))
+                .findFirst().orElseThrow();
+        assertTrue(title.style().bold());
+        assertEquals(theme.style("accent").fg(), title.style().fg());
+        assertFalse(lines.getFirst().spans().getFirst().style().bold(), "rule stays normal weight");
+    }
+
+    @Test void piSectionDegradesToASingleReadableLineOnTinyWidth() {
+        var metrics = CardFrame.measure(3, 8, 0, false, CardFrame.Surface.PI_SECTION);
+        assertTrue(metrics.minimal());
+        var lines = CardFrame.compose("Model", "Esc close", List.of(), List.of(), null, metrics, context);
+        assertEquals(1, lines.size());
+        assertTrue(lines.getFirst().width() <= 3);
+    }
+
+    @Test void approvalSurfaceStillPaintsClosedBoxWithExplicitButtonBackground() {
+        var metrics = CardFrame.measure(60, 10, 0, true, CardFrame.Surface.APPROVAL_BOX);
+        var green = new Span("Allow once", Style.PLAIN.withBg(theme.color("approvalOnceBg")), null);
+        var lines = CardFrame.compose("Approval", "Esc deny", List.of(),
+                List.of(new StyledLine(List.of(green))), null, metrics, context);
+        assertTrue(lines.getFirst().text().startsWith("┌─ Approval"), lines.getFirst().text());
+        assertTrue(lines.getLast().text().startsWith("└") && lines.getLast().text().endsWith("┘"));
+        var span = lines.stream().flatMap(line -> line.spans().stream())
+                .filter(value -> value.text().contains("Allow once")).findFirst().orElseThrow();
+        assertEquals(theme.color("approvalOnceBg"), span.style().bg(),
+                "explicit button background must survive the closed-box fill");
+    }
+
     @Test void noColorMakesPanelBackgroundPlain() {
         var plain = new Theme(theme.name(), theme.appearance(), theme.colors(), false, 1);
         var lines = CardFrame.compose("Title", "Esc close", List.of(), List.of(StyledLine.of("x", Style.PLAIN)),

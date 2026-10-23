@@ -109,30 +109,41 @@ public final class SearchOverlay implements Component {
     public Layout render(RenderContext context, int width, int maxRows) {
         if (!visible) return new Layout(List.of(), 0, 0, false);
         int columns = Math.max(1, width);
-        CardFrame.Metrics frame = CardFrame.measure(columns, Math.max(1, maxRows), 0, false);
+        CardFrame.Metrics frame = CardFrame.measure(columns, Math.max(1, maxRows), 0, false,
+                CardFrame.Surface.PI_SECTION);
         if (frame.minimal()) {
             return new Layout(CardFrame.compose("Search", "Esc close", List.of(), List.of(), null, frame, context),
                     0, 0, false);
         }
         int contentWidth = frame.contentWidth();
+        int innerWidth = Math.max(1, contentWidth - 4);
         var body = new ArrayList<StyledLine>();
-        // 状态行固定在查询上方：空查询时给提示，有匹配时显示当前位置；不静默隐藏失败。
-        body.add(StyledLine.of(DisplayWidth.ellipsize(
-                "Search · " + (status.isBlank() ? "type to search" : status), contentWidth),
-                context.theme().style("accent")));
+        // 查询行在上横线之后从 0 列开始：`> ` + Input，光标列与真实输入窗口一致。
         int content = Math.max(1, contentWidth - 2);
         var querySpans = new ArrayList<Span>();
         querySpans.add(new Span("> ", context.theme().style("accent"), null));
         querySpans.addAll(input.render(context, content).getFirst().spans());
         body.add(new StyledLine(querySpans).crop(contentWidth));
-        body.add(StyledLine.of(DisplayWidth.ellipsize(
-                "Enter next · Shift+Enter previous · Esc close", contentWidth),
-                context.theme().style("muted")));
-        int cursorColumn = frame.contentX() + 2 + input.cursorColumn(content);
+        // 状态/提示两列缩进：空查询给提示，有匹配显示当前位置；不静默隐藏失败。
+        body.add(indentLine(status.isBlank() ? "type to search" : status, context, contentWidth,
+                innerWidth, "accent"));
+        body.add(indentLine("Enter next · Shift+Enter previous · Esc close", context, contentWidth,
+                innerWidth, "muted"));
+        int cursorColumn = 2 + input.cursorColumn(content);
         return new Layout(
                 CardFrame.compose("Search", "Esc close", List.of(), body, null, frame, context),
-                2, // 上边框 + 状态行之后就是查询行
+                1, // 上横线之后就是查询行
                 Math.max(0, Math.min(columns - 1, cursorColumn)), true);
+    }
+
+    /** 两列缩进的单行提示；换行/裁切都不越界。 */
+    private static StyledLine indentLine(String text, RenderContext context, int width, int innerWidth,
+            String token) {
+        var spans = new ArrayList<Span>();
+        spans.add(new Span("  ", context.theme().style("dim"), null));
+        spans.add(new Span(DisplayWidth.ellipsize(text, Math.max(1, innerWidth)),
+                context.theme().style(token), null));
+        return new StyledLine(spans).crop(width);
     }
 
     @Override public List<StyledLine> render(RenderContext context, int width) {

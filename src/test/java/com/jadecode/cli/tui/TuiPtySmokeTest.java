@@ -47,8 +47,10 @@ class TuiPtySmokeTest {
                 process.getOutputStream().flush(); Thread.sleep(650);
                 String output = captured.toString(StandardCharsets.UTF_8)
                         .replaceAll("\u001b\\[[0-?]*[ -/]*[@-~]", "");
-                assertTrue(output.contains("┌─ " + titles[i]), commands[i] + " title missing: " + tail(output));
-                assertTrue(output.contains("┘"), commands[i] + " bottom corner missing: " + tail(output));
+                // S93：Pi 上下横线 + 右上标题；PTY 只验证真实终端里出现标题与横线，
+                // 不假设旧的闭合四角。
+                assertTrue(output.contains(" " + titles[i] + " "), commands[i] + " title missing: " + tail(output));
+                assertTrue(output.contains("─"), commands[i] + " section rule missing: " + tail(output));
                 // legacy SSH 的孤立 Esc 有 100ms 期限和 200ms 续尾宽限，下一命令不能在其中插入。
                 process.getOutputStream().write(27); process.getOutputStream().flush(); Thread.sleep(650);
             }

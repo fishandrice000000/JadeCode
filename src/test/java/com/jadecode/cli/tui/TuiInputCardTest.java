@@ -57,13 +57,15 @@ class TuiInputCardTest {
         assertEquals(0, state.transcript.entries().size(), "info page must not append history");
 
         var fullscreen = new DockView().render(state, new RenderContext(80, 24, theme), 80, 23, null);
-        assertTrue(text(fullscreen.lines()).contains("┌─ Hotkeys"), text(fullscreen.lines()));
+        // S93 迁移：信息页是 Pi 上下横线 + 右上标题，而不是闭合卡片。
+        assertTrue(text(fullscreen.lines()).contains(" Hotkeys "), text(fullscreen.lines()));
+        assertFalse(text(fullscreen.lines()).contains("┌"));
         assertFalse(text(fullscreen.lines()).contains("KEEP_DRAFT"));
         assertTrue(fullscreen.lines().size() <= 23);
         assertFalse(fullscreen.cursorVisible());
 
         var regular = new DockView().render(state, new RenderContext(80, 24, theme), 80, 24, null);
-        assertTrue(text(regular.lines()).contains("┌─ Hotkeys"));
+        assertTrue(text(regular.lines()).contains(" Hotkeys "));
         assertFalse(text(regular.lines()).contains("KEEP_DRAFT"));
         assertEquals("KEEP_DRAFT", state.editor.text(), "closing/opening a card must preserve the draft");
     }
@@ -75,14 +77,15 @@ class TuiInputCardTest {
             assertTrue(controller.submit(command), command);
             var dock = new DockView().render(state, new RenderContext(40, 12, theme), 40, 11, null);
             String all = text(dock.lines());
-            assertTrue(all.contains("┌─ "), command + " missing card: " + all);
-            assertTrue(all.contains("└") && dock.lines().stream().allMatch(line -> line.width() <= 40), all);
-            // 卡片（从┌到└）自身不超过终端 65% 预算，状态/footer 仍保留。
+            assertTrue(all.contains("─") && all.toLowerCase().contains(command.substring(1)),
+                    command + " missing panel: " + all);
+            assertTrue(dock.lines().stream().allMatch(line -> line.width() <= 40), all);
+            // 面板（从第一条上横线到全宽下横线）自身不超过终端 65% 预算，状态/footer 仍保留。
             int top = -1, bottom = -1;
             for (int i = 0; i < dock.lines().size(); i++) {
                 String line = dock.lines().get(i).text();
-                if (line.startsWith("┌")) top = i;
-                if (line.startsWith("└")) bottom = i;
+                if (line.startsWith("─") && line.contains(" ")) top = i;
+                if (top >= 0 && i > top && line.matches("─+")) bottom = i;
             }
             assertTrue(top >= 0 && bottom > top, command + " frame missing");
             assertTrue(bottom - top + 1 <= 7, command + " card exceeded 65% budget: " + (bottom - top + 1));
@@ -95,7 +98,7 @@ class TuiInputCardTest {
         assertTrue(tiny.lines().size() <= 7, tiny.lines().size() + " rows");
         assertTrue(tiny.lines().stream().allMatch(line -> line.width() <= 20));
         String tinyText = text(tiny.lines());
-        assertTrue(tinyText.contains("┌") || tinyText.contains("Esc"), tinyText);
+        assertTrue(tinyText.contains("─") || tinyText.contains("Esc"), tinyText);
     }
 
     @Test void searchUsesInputCardAndKeepsDraftCursor(@TempDir Path dir) {
@@ -107,11 +110,13 @@ class TuiInputCardTest {
         var dock = new DockView().render(state, new RenderContext(80, 24, theme), 80, 23,
                 controller.searchOverlay());
         String all = text(dock.lines());
-        assertTrue(all.contains("┌─ Search"), all);
+        assertTrue(all.contains(" Search "), all);
+        assertTrue(all.contains("Enter next · Shift+Enter previous · Esc close"), all);
         assertFalse(all.contains("KEEP_DRAFT"), "search replaces the editor instead of stacking an overlay");
         assertTrue(dock.cursorVisible());
-        assertEquals(2, dock.cursorRow(), "top border + status line, then query");
-        assertTrue(dock.cursorColumn() > 3);
+        // Pi 布局：上横线之后就是查询行（不再有额外的状态行）。
+        assertEquals(1, dock.cursorRow(), "top rule then query");
+        assertTrue(dock.cursorColumn() >= 2, "query text starts at x=2: " + dock.cursorColumn());
         assertEquals("KEEP_DRAFT", state.editor.text());
     }
 
@@ -127,17 +132,24 @@ class TuiInputCardTest {
         controller.layout(80, 24, 0, 10, 10, true);
         int row = -1;
         for (int i = 0; i < dock.lines().size(); i++)
-            if (dock.lines().get(i).text().contains("→ Theme")) { row = i; break; }
+            if (dock.lines().get(i).text().contains("Light theme")) { row = i; break; }
         assertTrue(row >= 0, text(dock.lines()));
         String before = state.selector.selected();
-        // x=0 是边框/空白，不应命中候选。
+        // S93 迁移：Pi 的箭头/候选从 0 列开始，x=0 现在是真实行命中；末尾留白与横线不命中。
+        int titleRow = -1;
+        for (int i = 0; i < dock.lines().size(); i++)
+            if (dock.lines().get(i).text().startsWith("─") && dock.lines().get(i).text().contains("Settings"))
+                titleRow = i;
+        assertTrue(titleRow >= 0, text(dock.lines()));
         controller.accept(new UiEvent.Input(InputEvent.mouse(new InputEvent.Mouse(0,
-                InputEvent.Mouse.Action.PRESS, 0, row, false, false, false), 30, 1)));
-        assertEquals(before, state.selector.selected(), "border column must not select");
-        // x=3 是嵌入标题卡片的正文起点。
+                InputEvent.Mouse.Action.PRESS, 0, titleRow, false, false, false), 30, 1)));
+        assertEquals(before, state.selector.selected(), "top rule must not be a candidate hit");
         controller.accept(new UiEvent.Input(InputEvent.mouse(new InputEvent.Mouse(0,
-                InputEvent.Mouse.Action.PRESS, 3, row, false, false, false), 31, 1)));
-        assertEquals("theme", state.selector.selected(), "content column selects the row");
+                InputEvent.Mouse.Action.PRESS, 79, row, false, false, false), 31, 1)));
+        assertEquals(before, state.selector.selected(), "last column is reserved whitespace");
+        controller.accept(new UiEvent.Input(InputEvent.mouse(new InputEvent.Mouse(0,
+                InputEvent.Mouse.Action.PRESS, 0, row, false, false, false), 32, 1)));
+        assertEquals("lightTheme", state.selector.selected(), "Pi arrow column selects the row");
     }
 
     @Test void approvalArrivalClosesInfoAndSelectorPages(@TempDir Path dir) {

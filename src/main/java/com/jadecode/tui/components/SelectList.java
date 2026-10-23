@@ -92,6 +92,9 @@ public final class SelectList implements Component {
     /** @return 过滤后候选快照。 */
     public List<Item> items() { return filtered; }
 
+    /** @return 构造时的完整候选（不受过滤影响），用于过滤时保持列宽稳定。 */
+    public List<Item> allItems() { return items; }
+
     /** @return 按 ID 查找当前过滤后的候选；不存在 null。 */
     public Item find(String id) {
         return filtered.stream().filter(item -> item.id().equals(id)).findFirst().orElse(null);

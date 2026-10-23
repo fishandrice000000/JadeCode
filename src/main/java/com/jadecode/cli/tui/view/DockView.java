@@ -23,8 +23,8 @@ import com.jadecode.tui.text.StyledLine;
  * 搜索卡和审批都替换 Editor，不会写进转录或另叠一层居中浮层。卡片高度按“真实剩余预算”
  * 与“终端行数 65%”夹取；审批继续使用完整安全预算，不套 65% 上限。审批按钮的命中区域
  * 与文本在同一次布局中生成，动作带当前 layout revision；窗口太小或审批无按钮时不会生成
- * 可批准 hit。选择器候选命中使用 CardFrame 完成外框后的真实列界限，不再按整行
- * {@code x=0} 命中。所有自有提示英文；不在这里执行命令或修改业务状态。</p>
+ * 可批准 hit。选择器候选命中使用当帧 Pi 几何：箭头从 0 列开始，命中覆盖 0..W-2，末尾一列
+ * 留白不触发选择。所有自有提示英文；不在这里执行命令或修改业务状态。</p>
  */
 public final class DockView {
     /**
@@ -119,9 +119,9 @@ public final class DockView {
             int start = upper.size();
             lines.addAll(upper); lines.addAll(panel.lines());
             for (var item : panel.itemHits()) {
-                // 候选行只命中真实正文列；边框/padding 不触发选择，也不能用整行 x=0 命中。
+                // Pi 几何：箭头本身在 0 列，所以候选命中从 x=0 开始；末尾一列留白不产生命中。
                 hits.add(new Frame.Hit(new Rect(panel.contentX(), start + item.row(),
-                        Math.max(1, panel.contentWidth()), 1),
+                        Math.max(1, panel.contentWidth() - 1), 1),
                         new ActionToken(ActionToken.Kind.SELECT_ITEM, item.id(), context.revision())));
             }
             cursorRow = start + panel.cursorRow();
