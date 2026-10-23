@@ -33,8 +33,7 @@ class TuiMarkdownProjectionTest {
         var context = new RenderContext(80, 24, theme);
         view.render(state, context, List.of(), false);
         assertTrue(repainted.await(30, TimeUnit.SECONDS), "engine result must trigger repaint");
-        // Application 在 Repaint 时只清排版缓存，保留 DTO；这里复现同一路径。
-        view.invalidateLayout();
+        // 普通 Repaint 不清会话缓存：消息自身 parsedRevision 必须使固定结果可见。
         List<StyledLine> lines = view.render(state, context, List.of(), false);
         var keywordFg = theme.style("syntaxKeyword").fg();
         assertTrue(lines.stream().flatMap(line -> line.spans().stream())

@@ -9,7 +9,6 @@ import com.jadecode.cli.tui.model.ToolDisplayState;
 import com.jadecode.cli.tui.model.TranscriptEntry;
 import com.jadecode.cli.tui.tools.ToolRendererRegistry;
 import com.jadecode.tui.core.RenderContext;
-import com.jadecode.tui.text.DisplayWidth;
 import com.jadecode.tui.text.StyledLine;
 
 /**
@@ -23,15 +22,25 @@ public final class ConversationView {
     private final MessageCard cards;
     private final ToolRendererRegistry tools = new ToolRendererRegistry();
     private final WelcomeView welcome = new WelcomeView();
-    private final Map<String, Cached> cache = new LinkedHashMap<>(64, 0.75f, true) {
-        @Override protected boolean removeEldestEntry(Map.Entry<String, Cached> eldest) { return size() > 512; }
+    /** 最多保留两种宽度（全宽/滚动条宽）；条目随转录回收，避免 512 条的循环淘汰。 */
+    private final Map<Integer, Layout> layouts = new LinkedHashMap<>(4, 0.75f, true) {
+        @Override protected boolean removeEldestEntry(Map.Entry<Integer, Layout> eldest) { return size() > 2; }
     };
     private long documentRevision;
     private List<StyledLine> lastDocument = List.of();
-    /** 每个条目在完整文档中的起始行；历史阅读锚点与缓存一致性使用。 */
-    private final Map<String, Integer> entryStartRows = new LinkedHashMap<>();
+    private Map<String, Integer> entryStartRows = Map.of();
 
-    private record Cached(long version, int width, long themeRevision, boolean thinkingVisible, List<StyledLine> lines) { }
+    /** 条目自身版本和解析版本独立：仅高亮结果到达时不改写业务消息版本。 */
+    private record Cached(long version, long parsedRevision, String actor, List<StyledLine> lines) { }
+    private record WelcomeKey(String model, String directory, boolean quiet, boolean expanded,
+            int height, List<String> resources, long themeRevision, boolean thinkingVisible) { }
+    /** 同一宽度下的条目行与整篇文档快照；纯滚动复用 document 的同一对象。 */
+    private static final class Layout {
+        final Map<String, Cached> entries = new LinkedHashMap<>();
+        WelcomeKey key;
+        List<StyledLine> document = List.of();
+        Map<String, Integer> starts = Map.of();
+    }
 
     /** 无固定引擎的组件（测试/离线）。 */
     public ConversationView() { this(() -> null, () -> { }); }
@@ -53,49 +62,85 @@ public final class ConversationView {
     public List<StyledLine> render(TuiState state, RenderContext context, List<String> resources,
             boolean welcomeExpanded) {
         int width = context.width();
-        var out = new ArrayList<StyledLine>();
-        out.addAll(welcome.render(applicationVersion(), state.model, state.directory, List.of(),
-                state.quietStartup, context, width));
-        if (welcomeExpanded) {
-            out.add(StyledLine.empty());
-            out.addAll(welcome.expanded(state.model, state.directory, resources, context, width));
-        }
-        out.add(StyledLine.empty());
-        for (TranscriptEntry entry : state.transcript.entries()) {
-            entryStartRows.put(entry.id(), out.size());
-            if (entry.kind() == TranscriptEntry.Kind.TOOL) {
-                ToolDisplayState tool = toolFor(state, entry);
-                if (tool == null) continue;
-                String key = entry.id();
-                Cached cached = cache.get(key);
-                if (cached != null && cached.version() == tool.version() && cached.width() == width
-                        && cached.themeRevision() == context.theme().revision()) {
-                    out.addAll(cached.lines()); continue;
-                }
-                List<StyledLine> lines = tools.render(tool, context, width);
-                cache.put(key, new Cached(tool.version(), width, context.theme().revision(), true, lines));
-                out.addAll(lines);
-                continue;
+        Layout layout = layouts.computeIfAbsent(width, ignored -> new Layout());
+        var entries = state.transcript.entries();
+        var toolStates = new java.util.HashMap<String, ToolDisplayState>();
+        for (ToolDisplayState tool : state.transcript.tools()) toolStates.put("tool:" + tool.key(), tool);
+        var key = new WelcomeKey(state.model, state.directory, state.quietStartup, welcomeExpanded,
+                context.height(), List.copyOf(resources), context.theme().revision(), state.thinkingVisible);
+        boolean same = key.equals(layout.key) && layout.entries.size() == entries.size();
+        if (same) {
+            for (TranscriptEntry entry : entries) {
+                if (!matches(layout.entries.get(entry.id()), entry, state, toolStates)) { same = false; break; }
             }
-            String key = entry.id();
-            Cached cached = cache.get(key);
-            if (cached != null && cached.version() == entry.version() && cached.width() == width
-                    && cached.themeRevision() == context.theme().revision()
-                    && cached.thinkingVisible() == state.thinkingVisible) {
-                out.addAll(cached.lines()); continue;
-            }
-            String actor = state.displayActor(entry.actor());
-            List<StyledLine> lines = new java.util.ArrayList<>(
-                    cards.render(entry, context, width, state.thinkingVisible, actor));
-            // 条目间空行必须和消息行一起缓存；旧实现只在首次渲染追加空行，缓存命中时
-            // 直接 continue，导致同一状态冷/热路径相差一行、历史阅读时上下跳变。
-            lines.add(StyledLine.empty());
-            cache.put(key, new Cached(entry.version(), width, context.theme().revision(), state.thinkingVisible, lines));
-            out.addAll(lines);
         }
-        lastDocument = List.copyOf(out);
+        if (!same) rebuild(layout, key, entries, toolStates, state, context, resources, welcomeExpanded);
+        // 纯滚动只换可见切片；完整文档与行位置复用，不为每个滚轮事件复制全部历史。
+        lastDocument = layout.document;
+        entryStartRows = layout.starts;
         documentRevision = state.transcript.revision();
         return lastDocument;
+    }
+
+    /** 比较轻量版本而非完整正文；JS 发布新 DTO 仅改变对应条目的 parsedRevision。 */
+    private boolean matches(Cached cached, TranscriptEntry entry, TuiState state,
+            Map<String, ToolDisplayState> tools) {
+        if (cached == null) return false;
+        if (entry.kind() == TranscriptEntry.Kind.TOOL) {
+            ToolDisplayState tool = tools.get(entry.id());
+            return tool != null && cached.version() == tool.version();
+        }
+        return cached.version() == entry.version() && cached.parsedRevision() == cards.contentRevision(entry.id())
+                && cached.actor().equals(state.displayActor(entry.actor()));
+    }
+
+    /**
+     * 仅在消息/主题/宽度等真正变化时重组文档；未变化的条目复用其行，保留间隔与历史锚点。
+     * 每种宽度各持一份快照，内存随显示历史增长；会话失效/删除条目时一并回收。
+     */
+    private void rebuild(Layout layout, WelcomeKey key, List<TranscriptEntry> entries,
+            Map<String, ToolDisplayState> toolStates, TuiState state, RenderContext context,
+            List<String> resources, boolean welcomeExpanded) {
+        boolean styleChanged = !key.equals(layout.key);
+        var out = new ArrayList<StyledLine>();
+        out.addAll(welcome.render(applicationVersion(), state.model, state.directory, List.of(),
+                state.quietStartup, context, context.width()));
+        if (welcomeExpanded) {
+            out.add(StyledLine.empty());
+            out.addAll(welcome.expanded(state.model, state.directory, resources, context, context.width()));
+        }
+        out.add(StyledLine.empty());
+        var starts = new LinkedHashMap<String, Integer>();
+        var retained = new java.util.HashSet<String>();
+        for (TranscriptEntry entry : entries) {
+            retained.add(entry.id()); starts.put(entry.id(), out.size());
+            Cached cached = layout.entries.get(entry.id());
+            if (!styleChanged && matches(cached, entry, state, toolStates)) {
+                out.addAll(cached.lines()); continue;
+            }
+            List<StyledLine> lines;
+            long version, parsedRevision = cards.contentRevision(entry.id());
+            String actor = state.displayActor(entry.actor());
+            if (entry.kind() == TranscriptEntry.Kind.TOOL) {
+                ToolDisplayState tool = toolStates.get(entry.id());
+                if (tool == null) continue;
+                version = tool.version(); lines = tools.render(tool, context, context.width());
+            } else {
+                version = entry.version();
+                // 在 render 前取解析 revision：worker 若此时完成，下一帧仍会发现需要更新。
+                lines = new ArrayList<>(cards.render(entry, context, context.width(), state.thinkingVisible, actor));
+                lines.add(StyledLine.empty());
+            }
+            lines = List.copyOf(lines);
+            layout.entries.put(entry.id(), new Cached(version, parsedRevision, actor, lines));
+            out.addAll(lines);
+        }
+        layout.entries.keySet().retainAll(retained);
+        cards.retain(retained);
+        layout.document = List.copyOf(out);
+        // LinkedHashMap 保持条目顺序，entryIdAtRow 可在越过目标行时立即结束。
+        layout.starts = java.util.Collections.unmodifiableMap(starts);
+        layout.key = key;
     }
 
     /** @return 最近一次完整文档；测试/搜索使用。 */
@@ -105,7 +150,7 @@ public final class ConversationView {
     public long documentRevision() { return documentRevision; }
 
     /** @return 条目 ID 到文档起始行的只读快照；异步重排时用于保持阅读锚点。 */
-    public Map<String, Integer> entryStartRows() { return Map.copyOf(entryStartRows); }
+    public Map<String, Integer> entryStartRows() { return entryStartRows; }
 
     /**
      * @return 覆盖指定文档行的最晚开始条目 ID；空文档/越界返回空串。
@@ -121,19 +166,13 @@ public final class ConversationView {
     }
 
     /** 主题/会话切换时丢弃排版缓存；不删除原文。 */
-    public void invalidate() { cache.clear(); entryStartRows.clear(); cards.invalidate(); lastDocument = List.of(); }
+    public void invalidate() { layouts.clear(); entryStartRows = Map.of(); cards.invalidate(); lastDocument = List.of(); }
 
     /**
      * 只丢弃组件级排版缓存，保留已解析的固定引擎 DTO。异步解析结果到达时使用，
      * 不能调用 {@link #invalidate()}，否则会清掉刚解析好的结果并造成重复解析循环。
      */
-    public void invalidateLayout() { cache.clear(); entryStartRows.clear(); lastDocument = List.of(); }
-
-    private static ToolDisplayState toolFor(TuiState state, TranscriptEntry entry) {
-        for (ToolDisplayState tool : state.transcript.tools())
-            if (("tool:" + tool.key()).equals(entry.id())) return tool;
-        return null;
-    }
+    public void invalidateLayout() { layouts.clear(); entryStartRows = Map.of(); lastDocument = List.of(); }
 
     /** JadeCode 版本来自实际包元数据；缺失时返回空，不伪造成 Pi 版本。 */
     public static String applicationVersion() {

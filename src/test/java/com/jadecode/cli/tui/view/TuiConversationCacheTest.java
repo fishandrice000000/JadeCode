@@ -81,4 +81,19 @@ class TuiConversationCacheTest {
         List<StyledLine> after = view.render(state, context, 10, List.of(), false, true);
         assertEquals(10, after.size());
     }
+    @Test void pureScrollingReusesBothWidthsEvenBeyondTheOldEntryLimit() {
+        var state = state(600);
+        var view = new ConversationView();
+        var full = view.render(state, context, List.of(), false);
+        var narrow = view.render(state, context.withWidth(79), List.of(), false);
+        assertSame(full, view.render(state, context, List.of(), false));
+        assertSame(narrow, view.render(state, context.withWidth(79), List.of(), false));
+        // 末尾变化只替换末尾块；第一条消息的样式/元数据仍是同一份不可变行。
+        state.transcript.entries().getLast().append(" appended");
+        var changed = view.render(state, context, List.of(), false);
+        int first = view.entryStartRows().get(state.transcript.entries().getFirst().id());
+        assertSame(full.get(first), changed.get(first));
+        assertNotEquals(texts(full), texts(changed));
+    }
+
 }

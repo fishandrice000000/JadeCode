@@ -71,7 +71,7 @@ public final class MessageCard {
             Style background = context.theme().style("userMessageText").withBg(context.theme().color("userMessageBg"));
             var body = new ArrayList<StyledLine>();
             body.add(StyledLine.of("", background).padTo(width, background));
-            for (StyledLine line : markdown.render(entry.body(), Math.max(1, width - 2), context.theme(), false)) {
+            for (StyledLine line : markdown.render(entry.id(), entry.body(), Math.max(1, width - 2), context.theme(), false)) {
                 var spans = new ArrayList<Span>();
                 spans.add(new Span(" ", background, null));
                 for (Span span : line.spans())
@@ -84,10 +84,10 @@ public final class MessageCard {
             return out;
         }
         if (thinking) {
-            out.addAll(markdown.render(entry.body(), width, context.theme(), true));
+            out.addAll(markdown.render(entry.id(), entry.body(), width, context.theme(), true));
             return out;
         }
-        out.addAll(markdown.render(entry.body(), width, context.theme(), false));
+        out.addAll(markdown.render(entry.id(), entry.body(), width, context.theme(), false));
         if (entry.status().equals("INCOMPLETE"))
             out.add(StyledLine.of(DisplayWidth.ellipsize("Output interrupted; this is not a complete reply", width),
                     context.theme().style("error")));
@@ -116,4 +116,10 @@ public final class MessageCard {
 
     /** 主题切换/会话切换时丢弃 Markdown 缓存。 */
     public void invalidate() { markdown.invalidate(); }
+
+    /** 固定结果的消息级修订号；未变化的其它条目继续使用自己的行。 */
+    public long contentRevision(String identity) { return markdown.contentRevision(identity); }
+
+    /** 转录删除消息后回收其解析状态；不影响仍显示的历史。 */
+    public void retain(java.util.Set<String> identities) { markdown.retain(identities); }
 }

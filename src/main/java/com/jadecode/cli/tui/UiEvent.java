@@ -73,7 +73,10 @@ public sealed interface UiEvent {
     record ExternalEditorResult(String text) implements UiEvent { }
 
     /** 后台纯计算结果就绪，只请求一次重排；不携带 JS Value。 */
-    record Repaint() implements UiEvent { }
+    record Repaint(boolean invalidateLayout) implements UiEvent {
+        /** 引擎初始化等结构变化仍需要重排；普通消息结果由自身修订号失效。 */
+        public Repaint() { this(true); }
+    }
 
     /** 主题预览的文件读取/解析完成；只在 UI 线程按 ticket 采纳，迟到结果自动丢弃。 */
     record ThemeLoaded(com.jadecode.tui.theme.ThemeManager.LoadResult result) implements UiEvent { }

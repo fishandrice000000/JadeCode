@@ -101,10 +101,13 @@ public final class ChatViewport {
     public List<StyledLine> render(com.jadecode.cli.tui.TuiState state, RenderContext context, int height,
             List<String> resources, boolean welcomeExpanded, boolean fullscreen) {
         lastHeight = Math.max(1, height);
-        List<StyledLine> document = conversation.render(state, context, resources, welcomeExpanded);
+        // always 无需先排全宽来判定滚动条；auto 仍按全宽行数判断，避免窄一列反过来
+        // 改变“是否需要滚动条”的语义。两种宽度的文档快照由 ConversationView 分别复用。
+        int firstWidth = fullscreen && scrollbar == Scrollbar.ALWAYS ? Math.max(1, context.width() - 1) : context.width();
+        List<StyledLine> document = conversation.render(state, context.withWidth(firstWidth), resources, welcomeExpanded);
         boolean showBar = fullscreen && shouldShowScrollbar(document.size());
         int contentWidth = showBar ? Math.max(0, context.width() - 1) : Math.max(0, context.width());
-        if (showBar && contentWidth > 0) {
+        if (showBar && contentWidth > 0 && firstWidth != contentWidth) {
             // 滚动条占用最后一列时，正文必须在 contentWidth 下重新排版，不能先按全宽
             // 排版再裁一列；否则满行内容会静默丢失。
             document = conversation.render(state, context.withWidth(contentWidth), resources, welcomeExpanded);

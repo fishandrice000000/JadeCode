@@ -151,7 +151,7 @@ public final class TuiApplication {
             var keys = new KeyBindings(settings.tui().keybindings());
             catalog = new CommandCatalog(Path.of("").toAbsolutePath());
             var settingsMenu = new SettingsMenu(settings.tui(), prefs.toAbsolutePath().getParent().resolve("themes"));
-            var conversation = new ConversationView(textEngineRef::get, () -> sink.accept(new UiEvent.Repaint()));
+            var conversation = new ConversationView(textEngineRef::get, () -> sink.accept(new UiEvent.Repaint(false)));
             var chat = new ChatViewport(conversation,
                     ChatViewport.Scrollbar.valueOf(settings.tui().fullscreenScrollbar().toUpperCase(java.util.Locale.ROOT)),
                     settings.tui().fullscreenCopyOnSelect());
@@ -350,9 +350,9 @@ public final class TuiApplication {
                     immediate |= event instanceof UiEvent.Input
                             || (event instanceof UiEvent.Scoped scoped && scoped.event() instanceof UiEvent.Input);
                     // 先让 TerminalQueries 消费回复；只有能力/色板变化才重绘。
-                    if (event instanceof UiEvent.Repaint) {
-                        // 固定引擎 DTO 已缓存；只丢弃组件排版缓存，保留解析结果并重排一次。
-                        conversation.invalidateLayout();
+                    if (event instanceof UiEvent.Repaint repaint) {
+                        // 普通结果仅按消息修订号更新；引擎首次就绪才清整个回退布局。
+                        if (repaint.invalidateLayout()) conversation.invalidateLayout();
                         scheduler.request();
                         event = events.poll();
                         continue;

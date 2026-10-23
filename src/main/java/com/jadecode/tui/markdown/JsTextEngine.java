@@ -12,6 +12,10 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.Set;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.HostAccess;
 import org.graalvm.polyglot.io.IOAccess;
@@ -37,9 +41,19 @@ public final class JsTextEngine implements AutoCloseable {
     private static final long WATCHDOG_SECONDS = 5;
 
     private final ExecutorService worker;
+    /** 看门狗独立于 JS worker；仅对当前实际执行的任务计时。 */
+    private final ScheduledExecutorService watchdog = Executors.newSingleThreadScheduledExecutor(task -> {
+        Thread thread = new Thread(task, "jade-text-watchdog");
+        thread.setDaemon(true);
+        return thread;
+    });
+    private final Set<CompletableFuture<?>> pending = ConcurrentHashMap.newKeySet();
     private Context context;
     private Value engine;
-    private boolean broken;
+    private volatile boolean broken;
+    private volatile boolean closed;
+    /** 受 this 锁保护，防止晚到的超时关闭下一个任务的 Context。 */
+    private CompletableFuture<?> executing;
     private final String bundleHash;
 
     private JsTextEngine(ExecutorService worker, String bundleHash) {
@@ -139,27 +153,61 @@ public final class JsTextEngine implements AutoCloseable {
                 .asString());
     }
 
+    /**
+     * 登记待完成 future 后入队；此处不启动计算期限。关闭/拒绝入队时完成失败或取消，
+     * 不让调用方永久等待；真正执行与看门狗由 execute 管理。
+     */
     private <T> CompletableFuture<T> submit(java.util.concurrent.Callable<T> task) {
         var future = new CompletableFuture<T>();
-        worker.execute(() -> {
-            try {
+        pending.add(future);
+        future.whenComplete((value, failure) -> pending.remove(future));
+        try {
+            if (closed) { future.cancel(false); return future; }
+            worker.execute(() -> execute(task, future));
+        } catch (java.util.concurrent.RejectedExecutionException stopped) {
+            future.completeExceptionally(stopped);
+        }
+        return future;
+    }
+
+    /**
+     * worker 串行执行：取消的排队任务直接跳过，排队时间不计入五秒计算上限。
+     * 定时器与收尾在同一锁下核对 executing；无论谁先结束，都不能误关下一份 Context。
+     * future 回调在锁外发布，允许组件安全提交自己的最新正文。
+     */
+    private <T> void execute(java.util.concurrent.Callable<T> task, CompletableFuture<T> future) {
+        if (closed || future.isDone()) return;
+        ScheduledFuture<?> timeout = null;
+        try {
+            synchronized (this) {
+                if (closed || future.isDone()) return;
                 if (broken) ensureContext();
-                future.complete(task.call());
-            } catch (Exception failure) {
-                // 计算失败/超时后 Context 可能已污染；下次调用重建，不把失败当成功。
-                broken = true;
-                future.completeExceptionally(failure);
+                executing = future;
+                timeout = watchdog.schedule(() -> {
+                    synchronized (JsTextEngine.this) {
+                        if (executing != future) return;
+                        // 只有真正超时的当前任务能关闭引擎；取消不等于超时。
+                        broken = true;
+                        closeContext();
+                        executing = null;
+                    }
+                    future.completeExceptionally(new TimeoutException("Text engine execution timed out"));
+                }, WATCHDOG_SECONDS, TimeUnit.SECONDS);
             }
-        });
-        // 看门狗：到期取消执行并关闭 Context，避免 UI 永久等待或坏状态复用。
-        return future.orTimeout(WATCHDOG_SECONDS, TimeUnit.SECONDS).whenComplete((value, failure) -> {
-            if (failure instanceof TimeoutException) {
-                // 超时必须取消正在执行的 guest 代码；Graal 允许从看门狗线程 close(true)
-                // 中断执行，排队到 worker 会等坏任务自己结束，起不到看门狗作用。
-                broken = true;
-                synchronized (this) { closeContext(); }
+            T value = task.call();
+            synchronized (this) {
+                if (executing != future) return;
+                executing = null;
             }
-        });
+            future.complete(value);
+        } catch (Exception failure) {
+            synchronized (this) {
+                if (executing == future) { broken = true; executing = null; }
+            }
+            future.completeExceptionally(failure);
+        } finally {
+            if (timeout != null) timeout.cancel(false);
+        }
     }
 
     private String call(String member, String argument) {
@@ -216,8 +264,15 @@ public final class JsTextEngine implements AutoCloseable {
 
     /** 关闭工作线程与 Context；幂等。 */
     @Override public void close() {
-        worker.execute(this::closeContext);
-        worker.shutdown();
+        synchronized (this) {
+            if (closed) return;
+            closed = true; executing = null;
+            closeContext();
+        }
+        // 关闭时不等待整个旧队列逐项计算；取消回调仍会按组件代次检查。
+        for (CompletableFuture<?> future : pending) future.cancel(false);
+        worker.shutdownNow();
+        watchdog.shutdownNow();
         try {
             if (!worker.awaitTermination(2, TimeUnit.SECONDS)) worker.shutdownNow();
         } catch (InterruptedException interrupted) {
