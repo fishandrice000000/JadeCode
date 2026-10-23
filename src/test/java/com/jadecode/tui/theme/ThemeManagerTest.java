@@ -145,6 +145,37 @@ class ThemeManagerTest {
         }
     }
 
+    @Test void committedFileStaysWatchedWhilePreviewingABuiltin(@TempDir Path dir) throws Exception {
+        Path themes = dir.resolve("themes");
+        Path file = themes.resolve("probe.json");
+        write(file, PROBE_V2);
+        var manager = new ThemeManager("probe", themes, true, "probe", "probe");
+        var results = new LinkedBlockingQueue<ThemeManager.WatchResult>();
+        manager.watch(results::add);
+        try {
+            Thread.sleep(300);
+            manager.beginPreview();
+            assertEquals("", manager.preview("light"), "builtin preview loads without the custom file");
+            // 预览内置候选时没有可监听文件；应继续监听已确认的自定义文件，而不是完全停止。
+            Thread.sleep(200);
+            write(file, PROBE_V2.replace("#112233", "#CCBBAA"));
+            // 收结果并采纳；committed 按文件更新，preview 仍是内置候选。
+            long end = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+            while (System.nanoTime() < end) {
+                var result = results.poll(200, TimeUnit.MILLISECONDS);
+                if (result == null) continue;
+                assertEquals("", manager.acceptWatch(result));
+                if (Color.rgb(0xCC, 0xBB, 0xAA).equals(manager.committed().color("accent"))) break;
+            }
+            manager.cancelPreview();
+            assertEquals("probe", manager.logicalName());
+            assertEquals(Color.rgb(0xCC, 0xBB, 0xAA), manager.preview().color("accent"),
+                    "cancel must reveal the refreshed committed custom theme, not the stale file");
+        } finally {
+            manager.close();
+        }
+    }
+
     /** 等 watch 报告目标文件的新内容；中途可能收到旧的中间态事件，按颜色轮询。 */
     private static ThemeManager.WatchResult awaitAccent(LinkedBlockingQueue<ThemeManager.WatchResult> results,
             ThemeManager manager, Color expected) throws InterruptedException {

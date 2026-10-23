@@ -176,6 +176,20 @@ class ThemeDocumentResolverTest {
         assertEquals(ThemePalette.builtin("light").colors().get("text"), unreported.colors().get("text"));
     }
 
+    @Test void changingOnlyTheAnsiPaletteKeepsEveryNonEnvironmentRoleFixed() {
+        Color fg = Color.rgb(210, 220, 230);
+        Color bg = Color.rgb(12, 16, 20);
+        var cold = ThemePalette.system(true, fg, bg, List.of(
+                Color.rgb(255, 0, 0), Color.rgb(0, 255, 0), Color.rgb(0, 0, 255)));
+        var warm = ThemePalette.system(true, fg, bg, List.of(
+                Color.rgb(1, 2, 3), Color.rgb(250, 240, 10), Color.rgb(10, 240, 250)));
+        // S92：换 ANSI 列表但前景/背景不变时，强调/品牌/语法等主题角色必须完全一致。
+        for (String role : cold.colors().keySet()) {
+            if (role.equals("text") || role.equals("surfaceBg")) continue;
+            assertEquals(cold.colors().get(role), warm.colors().get(role), role);
+        }
+    }
+
     @Test void systemUsesDarkOrLightVariantByTerminalAppearance() {
         var document = ThemePalette.builtinDocument();
         var dark = ThemeResolver.resolve(document, "dark", true,

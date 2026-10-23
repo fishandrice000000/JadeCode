@@ -473,10 +473,16 @@ public final class ThemeManager implements AutoCloseable {
         return candidate;
     }
 
-    /** 把监听目标指向当前（预览优先）来源文件，并使旧目标事件失效。 */
+    /**
+     * 把监听目标指向当前（预览优先）来源文件，并使旧目标事件失效。
+     *
+     * <p>预览内置候选时本身没有文件；此时继续监听已确认的自定义文件，避免用户预览完
+     * 内置主题再取消后看到过期内容。确认切到内置主题后 committed 没有文件，监听自然停止。</p>
+     */
     private void retarget() {
-        Selection active = previewSelection != null ? previewSelection : committedSelection;
-        watchTarget = active == null ? null : active.file();
+        Path previewFile = previewSelection == null ? null : previewSelection.file();
+        Path committedFile = committedSelection == null ? null : committedSelection.file();
+        watchTarget = previewFile != null ? previewFile : committedFile;
         watchGeneration++;
     }
 

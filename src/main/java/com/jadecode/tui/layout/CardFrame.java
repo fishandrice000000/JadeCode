@@ -167,7 +167,8 @@ public final class CardFrame {
     private static List<StyledLine> composeSection(String title, List<StyledLine> header, List<StyledLine> body,
             StyledLine footer, Metrics metrics, RenderContext context) {
         var out = new ArrayList<StyledLine>();
-        out.add(sectionTop(title, metrics, context));
+        // 极窄宽度下标题段可能比 W 宽；用同一条正文行规则裁切，保证每行不超过卡片宽。
+        out.add(sectionRow(sectionTop(title, metrics, context), metrics));
         List<StyledLine> head = header == null ? List.of() : header;
         for (int i = 0; i < Math.min(metrics.headerRows(), head.size()); i++)
             out.add(sectionRow(head.get(i), metrics));

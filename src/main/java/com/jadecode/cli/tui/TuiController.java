@@ -68,6 +68,10 @@ public final class TuiController {
 
     private long ctrlC;
     private JadeSettings.Tui themeSnapshot;
+    /** 最近一次主题文件监听错误；恢复有效文件后只清除这条真实提示。 */
+    private String themeWatchError = "";
+    /** 最近一次主题预览读取错误；只清除由它写入的提示。 */
+    private String themePreviewError = "";
     private final java.util.ArrayDeque<SelectorParent> selectorParents = new java.util.ArrayDeque<>();
     private record SelectorParent(String kind, SelectList list, String filter, String selectedId, String hint,
             String title, String description, String footer, String status) { }
@@ -941,15 +945,31 @@ public final class TuiController {
         if (themes == null) return;
         String error = themes.acceptPreview(result);
         if (!state.selectorKind.equals("Theme")) return;
-        state.hint = error;
-        if (error.isEmpty()) refreshSelectorMeta();
+        if (!error.isEmpty()) {
+            themePreviewError = error;
+            state.hint = error;
+            return;
+        }
+        // 成功预览只清除自己写过的错误，不覆盖其它来源的提示。
+        if (!themePreviewError.isEmpty() && themePreviewError.equals(state.hint)) {
+            themePreviewError = "";
+            state.hint = "";
+        }
+        refreshSelectorMeta();
     }
 
     /** 采纳当前主题文件的修改；坏文件保留最后有效快照并显示真实错误。 */
     private void adoptThemeWatch(ThemeManager.WatchResult result) {
         if (themes == null) return;
         String error = themes.acceptWatch(result);
-        if (!error.isEmpty()) state.hint = error;
+        if (!error.isEmpty()) {
+            themeWatchError = error;
+            state.hint = error;
+        } else if (!themeWatchError.isEmpty() && themeWatchError.equals(state.hint)) {
+            // 文件恢复有效后清掉这条已经失效的错误，不覆盖其它来源的提示。
+            themeWatchError = "";
+            state.hint = "";
+        }
     }
 
     private void rebuildSessionSelector() {
