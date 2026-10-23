@@ -75,6 +75,12 @@ public sealed interface UiEvent {
     /** 后台纯计算结果就绪，只请求一次重排；不携带 JS Value。 */
     record Repaint() implements UiEvent { }
 
+    /** 主题预览的文件读取/解析完成；只在 UI 线程按 ticket 采纳，迟到结果自动丢弃。 */
+    record ThemeLoaded(com.jadecode.tui.theme.ThemeManager.LoadResult result) implements UiEvent { }
+
+    /** 当前自定义主题文件被修改；坏文件保留最后有效快照并报告真实错误。 */
+    record ThemeWatched(com.jadecode.tui.theme.ThemeManager.WatchResult result) implements UiEvent { }
+
     /** 右上角临时提示；只影响 UI 显示，不进入转录/模型历史。 */
     record Flash(String text, long durationMillis, boolean error) implements UiEvent { }
 

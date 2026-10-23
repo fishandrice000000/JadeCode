@@ -13,7 +13,9 @@ class PanelBackgroundTest {
     @Test void builtinAndSystemThemesDerivePanelBgFromAssumedOrActualBackground() {
         var dark = new ThemeManager("dark", null, true, "light", "dark");
         assertTrue(dark.preview().colors().containsKey("panelBg"));
-        Color assumed = ThemePalette.derivePanelBg(Color.rgb(0, 0, 0), true);
+        // S91 迁移：未上报终端背景时按统一主题声明的深色背景 #1F2428 假定派生，
+        // 不再固定用纯黑；上报真实背景后仍按真实值重算。
+        Color assumed = ThemePalette.derivePanelBg(Color.rgb(0x1F, 0x24, 0x28), true);
         assertEquals(assumed, dark.preview().color("panelBg"));
         // 终端晚回复真实背景后，派生的 panelBg 按新背景重算。
         dark.updateTerminalColors(true, Color.rgb(200, 200, 200), Color.rgb(10, 20, 30), List.of());
@@ -21,7 +23,7 @@ class PanelBackgroundTest {
         dark.close();
 
         var light = new ThemeManager("light", null, true, "light", "dark");
-        Color lightAssumed = ThemePalette.derivePanelBg(Color.rgb(255, 255, 255), false);
+        Color lightAssumed = ThemePalette.derivePanelBg(Color.rgb(0xF8, 0xFA, 0xFB), false);
         assertEquals(lightAssumed, light.preview().color("panelBg"));
         light.close();
     }

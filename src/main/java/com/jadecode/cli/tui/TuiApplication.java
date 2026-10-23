@@ -138,6 +138,8 @@ public final class TuiApplication {
             boolean colors = caps.colorsEnabled() && terminal.colors();
             themes = new ThemeManager(settings.tui().theme(), prefs.toAbsolutePath().getParent().resolve("themes"),
                     colors, settings.tui().lightTheme(), settings.tui().darkTheme());
+            // 监听当前自定义主题文件（v2 深浅共用同一文件）；worker 只读文件，结果回 UI 线程采纳。
+            themes.watch(result -> sink.accept(new UiEvent.ThemeWatched(result)));
             var capabilities = new AtomicReference<>(caps);
             var state = new TuiState();
             state.directory = Path.of("").toAbsolutePath().normalize().toString();

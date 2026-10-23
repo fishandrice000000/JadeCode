@@ -2,25 +2,24 @@ package com.jadecode.tui.theme;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jadecode.tui.text.Color;
 
 /**
- * 一套主题的语义颜色表，以及 system 主题的 OKLCH/OKHSL 派生算法。
+ * 主题兼容门面与颜色数学：内置资源定位、旧版解析入口，以及 OKHSL/256 色/对比度工具。
  *
- * <p>内置 dark/light 直接读取 Pi 固定主题 JSON 的 vars/colors；system 根据终端上报的
- * 前景/背景/16 色生成，不能拿一组近似色冒充。颜色解析支持 hex、`rgb()`、`okhsl()`、
- * `oklch()`、变量引用和 256 色索引。渲染层只接收 {@link Color}，不接触 JSON 或终端回复。</p>
+ * <p>第九轮起产品色值的唯一来源是 {@code themes/jadecode.json}（v2，深/浅两个变体），
+ * 结构校验在 {@link ThemeDocument}，展开与派生在 {@link ThemeResolver}。本类不再持有
+ * 另一套手写色板，也不再生成本地化的 system 强调色：{@link #builtin(String)} 与
+ * {@link #system} 都委托同一解析链，只是选择不同变体与终端绑定策略。</p>
  *
- * <p>这里的 OKHSL 转换移植自 Björn Ottosson 的参考实现（MIT），使 system 主题在相同输入
- * 色板下与 Pi 使用同一色彩空间。终端没有上报颜色时使用 Pi 的假定值；晚到的上报由
- * {@link ThemeManager} 用同一 epoch 替换，不阻塞输入。</p>
+ * <p>颜色字面量解析（hex/rgb/okhsl/oklch/oklab）、OKHSL 转换与 256 色近似是协议/数学
+ * 工具，不是产品配色；终端查询和编码器继续使用它们。渲染层只接收 {@link Color}，不接触
+ * JSON、文件或终端回复。</p>
+ *
+ * <p>OKHSL 转换移植自 Björn Ottosson 的参考实现（MIT），保证派生与 Pi 使用同一色彩空间。</p>
  */
 public final class ThemePalette {
     /** 解析后的主题定义；颜色表不可变；panelBgExplicit 区分用户显式值与派生值。 */
@@ -34,136 +33,81 @@ public final class ThemePalette {
         }
     }
 
-    /** 主题 token 的兜底关系：缺失时使用另一个已存在 token。 */
-    private static final Map<String, String> FALLBACKS = Map.ofEntries(
-            Map.entry("borderAccent", "border"), Map.entry("borderMuted", "border"),
-            Map.entry("customMessageLabel", "accent"), Map.entry("mdLinkUrl", "muted"),
-            Map.entry("mdQuoteBorder", "mdQuote"), Map.entry("mdHr", "borderMuted"),
-            Map.entry("mdCodeBlockBorder", "borderMuted"), Map.entry("mdListBullet", "accent"),
-            Map.entry("toolTitle", "text"), Map.entry("toolOutput", "muted"),
-            Map.entry("toolDiffContext", "muted"), Map.entry("scrollbarTrack", "borderMuted"),
-            Map.entry("scrollbarThumb", "border"), Map.entry("searchMatchText", "text"),
-            Map.entry("syntaxComment", "muted"), Map.entry("syntaxKeyword", "accent"),
-            Map.entry("syntaxFunction", "mdHeading"), Map.entry("syntaxVariable", "text"),
-            Map.entry("syntaxString", "mdCodeBlock"), Map.entry("syntaxNumber", "success"),
-            Map.entry("syntaxType", "accent"), Map.entry("syntaxOperator", "text"),
-            Map.entry("syntaxPunctuation", "muted"), Map.entry("thinkingOff", "thinkingText"),
-            Map.entry("thinkingMinimal", "thinkingText"), Map.entry("thinkingLow", "thinkingText"),
-            Map.entry("thinkingMedium", "thinkingText"), Map.entry("thinkingHigh", "thinkingText"),
-            Map.entry("thinkingXhigh", "thinkingText"), Map.entry("bashMode", "success"),
-            // Jade 批准扩展：卡片标题使用主题已有颜色，不改变 Pi 基础 token 值。
-            Map.entry("requestTitle", "customMessageLabel"), Map.entry("replyTitle", "accent"),
-            Map.entry("thinkingTitle", "thinkingText"), Map.entry("approval", "borderAccent"),
-            Map.entry("approvalDeny", "error"), Map.entry("permission", "warning"),
-            // S85 品牌扩展：旧自定义主题未提供新 token 时依次退回已有语义色，不新增必填项。
-            Map.entry("brandPrimary", "accent"), Map.entry("brandAccent", "warning"),
-            Map.entry("brandFrame", "border"));
+    /** 唯一内置主题资源；迁移后不再有生产 dark/light 两份色表。 */
+    private static final String BUILTIN_RESOURCE = "/com/jadecode/tui/themes/jadecode.json";
+    /** 内置文档缓存：资源随 JAR 固定，解析一次足够；不会缓存到 View。 */
+    private static volatile ThemeDocument builtinDocument;
 
     private ThemePalette() { }
 
-    /** 读取内置主题；找不到资源时明确失败，不静默退回任意配色。 */
-    public static Definition builtin(String name) {
-        String normalized = name == null || name.isBlank() ? "dark" : name;
-        if (!normalized.equals("dark") && !normalized.equals("light"))
-            throw new IllegalArgumentException("Unknown builtin theme: " + name);
-        String resource = "/com/jadecode/tui/themes/" + normalized + ".json";
-        try (InputStream input = ThemePalette.class.getResourceAsStream(resource)) {
-            if (input == null) throw new IllegalStateException("Missing builtin theme resource: " + resource);
-            return parse(new String(input.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8));
+    /**
+     * 读取并缓存唯一内置主题文档（v2，含 dark/light 变体）。
+     *
+     * @return 不可变文档
+     * @throws IllegalStateException 资源缺失/不可读时明确失败，不静默退回任意配色
+     */
+    public static ThemeDocument builtinDocument() {
+        ThemeDocument cached = builtinDocument;
+        if (cached != null) return cached;
+        try (InputStream input = ThemePalette.class.getResourceAsStream(BUILTIN_RESOURCE)) {
+            if (input == null) throw new IllegalStateException("Missing builtin theme resource: " + BUILTIN_RESOURCE);
+            ThemeDocument parsed = ThemeDocument.parse(
+                    new String(input.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8));
+            builtinDocument = parsed;
+            return parsed;
         } catch (IOException failure) {
-            throw new IllegalStateException("Failed to read builtin theme: " + resource, failure);
+            throw new IllegalStateException("Failed to read builtin theme: " + BUILTIN_RESOURCE, failure);
         }
     }
 
     /**
-     * 解析自定义/内置主题 JSON。所有变量引用递归解析并检测环；缺失必需色时明确失败。
-     * 未知 token 保留在颜色表中，供前向兼容的自定义主题使用；未知引用仍然报错。
+     * 兼容入口：内置 dark/light 现在来自同一个双变体文件。
+     *
+     * @param name dark 或 light
+     * @return 对应变体的完整定义，展示名为 dark/light
+     */
+    public static Definition builtin(String name) {
+        String normalized = name == null || name.isBlank() ? ThemeDocument.DARK : name;
+        if (!normalized.equals(ThemeDocument.DARK) && !normalized.equals(ThemeDocument.LIGHT))
+            throw new IllegalArgumentException("Unknown builtin theme: " + name);
+        boolean light = normalized.equals(ThemeDocument.LIGHT);
+        return ThemeResolver.resolve(builtinDocument(), normalized, false,
+                new ThemeResolver.TerminalFacts(!light, null, null), normalized);
+    }
+
+    /**
+     * 兼容入口：解析主题 JSON。
+     *
+     * <p>生产路径（{@link ThemeManager}）按用户选择和终端事实显式选变体；这里只服务旧测试
+     * 与诊断调用：v1 单外观直接解析，v2 取 dark 变体当作完整定义。v2 不会被当成 v1 后
+     * 静默丢掉 variants。</p>
+     *
+     * @param json 主题文件内容
+     * @return 完整定义
      */
     public static Definition parse(String json) {
-        try {
-            JsonNode root = new ObjectMapper().readTree(json);
-            String name = root.path("name").asText("custom");
-            String appearance = root.path("appearance").asText("");
-            JsonNode varsNode = root.path("vars");
-            JsonNode colorsNode = root.path("colors");
-            if (!colorsNode.isObject()) throw new IllegalArgumentException("Theme is missing a colors object");
-            Map<String, JsonNode> vars = new LinkedHashMap<>();
-            varsNode.fields().forEachRemaining(entry -> vars.put(entry.getKey(), entry.getValue()));
-            Map<String, Color> colors = new LinkedHashMap<>();
-            colorsNode.fields().forEachRemaining(entry -> colors.put(entry.getKey(),
-                    resolveColor(entry.getValue(), vars, new java.util.HashSet<>())));
-            fillFallbacks(colors);
-            if (!colors.containsKey("text") || !colors.containsKey("accent"))
-                throw new IllegalArgumentException("Theme requires at least text and accent colors");
-            return new Definition(name, appearance, colors, colors.containsKey("panelBg"));
-        } catch (IOException failure) {
-            throw new IllegalArgumentException("Cannot parse theme JSON: " + failure.getMessage(), failure);
-        }
+        ThemeDocument document = ThemeDocument.parse(json);
+        String variant = document.isVersion2() ? ThemeDocument.DARK : ThemeDocument.SINGLE;
+        return ThemeResolver.resolve(document, variant, false,
+                new ThemeResolver.TerminalFacts(true, null, null), document.name());
     }
 
-    private static Color resolveColor(JsonNode value, Map<String, JsonNode> vars, java.util.Set<String> visited) {
-        if (value == null || value.isNull()) throw new IllegalArgumentException("Color value cannot be empty");
-        if (value.isInt()) {
-            int index = value.asInt();
-            if (index < 0 || index > 255) throw new IllegalArgumentException("Indexed color out of range: " + index);
-            return Color.indexed(index);
-        }
-        String text = value.asText("").trim();
-        if (text.isEmpty()) return Color.DEFAULT;
-        if (text.startsWith("#") || text.regionMatches(true, 0, "rgb(", 0, 4)
-                || text.regionMatches(true, 0, "okhsl(", 0, 6) || text.regionMatches(true, 0, "oklch(", 0, 6)
-                || text.regionMatches(true, 0, "oklab(", 0, 6)) return parseColor(text);
-        if (!visited.add(text)) throw new IllegalArgumentException("Cycle in theme variable references: " + text);
-        JsonNode target = vars.get(text);
-        if (target == null) throw new IllegalArgumentException("Theme variable does not exist: " + text);
-        return resolveColor(target, vars, visited);
-    }
-
-    /** 填充已批准语义 token 的兜底；不覆盖主题明确给出的值。 */
-    static void fillFallbacks(Map<String, Color> colors) {
-        if (!colors.containsKey("muted")) colors.put("muted", colors.getOrDefault("text", Color.DEFAULT));
-        if (!colors.containsKey("dim")) colors.put("dim", colors.get("muted"));
-        if (!colors.containsKey("border")) colors.put("border", colors.getOrDefault("muted", Color.DEFAULT));
-        if (!colors.containsKey("borderAccent")) colors.put("borderAccent", colors.get("border"));
-        if (!colors.containsKey("accent")) colors.put("accent", colors.getOrDefault("text", Color.DEFAULT));
-        // 依赖链的中间 token 必须先有安全值，避免后续 putIfAbsent 把 null 写进不可变表。
-        colors.putIfAbsent("thinkingText", colors.getOrDefault("muted", colors.get("text")));
-        colors.putIfAbsent("mdCodeBlock", colors.getOrDefault("text", Color.DEFAULT));
-        // 兜底关系可能链式引用，反复直到没有新增；数量很小，不需要复杂图算法。
-        for (int pass = 0; pass < 3; pass++) {
-            for (var entry : FALLBACKS.entrySet()) {
-                if (!colors.containsKey(entry.getKey()) && colors.containsKey(entry.getValue()))
-                    colors.put(entry.getKey(), colors.get(entry.getValue()));
-            }
-        }
-        colors.putIfAbsent("text", Color.DEFAULT);
-        colors.putIfAbsent("muted", colors.get("text"));
-        colors.putIfAbsent("dim", colors.get("muted"));
-        colors.putIfAbsent("accent", colors.get("text"));
-        colors.putIfAbsent("border", colors.get("muted"));
-        colors.putIfAbsent("borderAccent", colors.get("border"));
-        colors.putIfAbsent("borderMuted", colors.get("border"));
-        colors.putIfAbsent("success", colors.get("text"));
-        colors.putIfAbsent("error", colors.get("text"));
-        colors.putIfAbsent("warning", colors.get("text"));
-        colors.putIfAbsent("selectedBg", Color.DEFAULT);
-        colors.putIfAbsent("userMessageBg", Color.DEFAULT);
-        colors.putIfAbsent("userMessageText", colors.get("text"));
-        colors.putIfAbsent("customMessageBg", Color.DEFAULT);
-        colors.putIfAbsent("customMessageText", colors.get("text"));
-        colors.putIfAbsent("toolPendingBg", Color.DEFAULT);
-        colors.putIfAbsent("toolSuccessBg", Color.DEFAULT);
-        colors.putIfAbsent("toolErrorBg", Color.DEFAULT);
-        colors.putIfAbsent("requestTitle", colors.get("customMessageLabel"));
-        colors.putIfAbsent("replyTitle", colors.get("accent"));
-        colors.putIfAbsent("thinkingTitle", colors.get("thinkingText"));
-        colors.putIfAbsent("approval", colors.get("borderAccent"));
-        colors.putIfAbsent("approvalDeny", colors.get("error"));
-        colors.putIfAbsent("permission", colors.get("warning"));
-        // 品牌 token 必须在这张不可变表构造前完成兜底；缺失时不能留下 null。
-        colors.putIfAbsent("brandPrimary", colors.get("accent"));
-        colors.putIfAbsent("brandAccent", colors.get("warning"));
-        colors.putIfAbsent("brandFrame", colors.get("border"));
+    /**
+     * 兼容入口：system 主题。
+     *
+     * <p>S92 裁决后 system 只保留终端背景与普通文字，其余颜色来自统一内置主题；
+     * {@code ansi} 参数保留是为了终端查询调用方兼容，产品强调色不再读取它。</p>
+     *
+     * @param dark 终端背景是否为深色
+     * @param foreground 终端默认前景；null 表示未报告
+     * @param background 终端默认背景；null 表示未报告
+     * @param ansi 0–15 ANSI 色；仅为兼容保留，不参与取色
+     * @return 名称为 system 的完整定义
+     */
+    public static Definition system(boolean dark, Color foreground, Color background, List<Color> ansi) {
+        ThemeResolver.TerminalFacts facts = new ThemeResolver.TerminalFacts(dark, foreground, background);
+        return ThemeResolver.resolve(builtinDocument(), dark ? ThemeDocument.DARK : ThemeDocument.LIGHT,
+                true, facts, "system");
     }
 
     /** 解析单个颜色字面量；非法值抛出带原文字的异常，由配置读取层显示给用户。 */
@@ -230,106 +174,7 @@ public final class ThemePalette {
         return result;
     }
 
-    /**
-     * 由终端色板生成 system 主题。终端上报前景/背景/16 色时按 Pi 的 family 色相取色：
-     * 中性色使用前景/背景的明度关系，accent/border 等从对应 ANSI 槽取色相和饱和度，
-     * 再按背景明度计算安全的前景明度。没有上报时使用 Pi 的假定暗/亮默认色。
-     *
-     * @param dark 终端背景是否为深色
-     * @param foreground 终端默认前景；null 使用假定值
-     * @param background 终端默认背景；null 使用假定值
-     * @param ansi 0-15 ANSI 色；为空时使用固定 family 色相
-     */
-    public static Definition system(boolean dark, Color foreground, Color background, List<Color> ansi) {
-        Color fg = foreground != null && foreground.kind() == Color.Kind.RGB ? foreground
-                : Color.rgb(dark ? 0xe5 : 0x00, dark ? 0xe5 : 0x00, dark ? 0xe7 : 0x00);
-        Color bg = background != null && background.kind() == Color.Kind.RGB ? background
-                : (dark ? Color.rgb(0, 0, 0) : Color.rgb(255, 255, 255));
-        double bgL = rgbToOkhsl(bg.red(), bg.green(), bg.blue())[2];
-        boolean actuallyDark = bgL < 0.5;
-        double target = actuallyDark ? 0.82 : 0.28;
-        double mutedTarget = actuallyDark ? 0.62 : 0.44;
-        double dimTarget = actuallyDark ? 0.52 : 0.55;
 
-        Map<String, Color> colors = new LinkedHashMap<>();
-        colors.put("text", fg);
-        colors.put("muted", familyColor(ansi, 8, 231.49, 0.05, mutedTarget, dark));
-        colors.put("dim", familyColor(ansi, 8, 229, 0.05, dimTarget, dark));
-        colors.put("thinkingText", familyColor(ansi, 4, 226, 0.12, mutedTarget, dark));
-        // system 保留真实终端背景/前景与明暗，但焦点/标题/品牌采用统一蓝橙语义；
-        // 品牌色用固定色相的 OKHSL 生成，再随当前背景选择安全明度，不覆盖终端 text。
-        Color brandPrimary = okhsl(213, 0.55, actuallyDark ? 0.72 : 0.36);
-        Color brandAccent = okhsl(35, 0.78, actuallyDark ? 0.72 : 0.42);
-        colors.put("brandPrimary", brandPrimary);
-        colors.put("brandAccent", brandAccent);
-        colors.put("brandFrame", mix(bg, brandPrimary, 0.45));
-        colors.put("accent", brandPrimary);
-        colors.put("border", familyColor(ansi, 4, 231.49, 0.45, target, dark));
-        colors.put("borderAccent", brandPrimary);
-        colors.put("borderMuted", familyColor(ansi, 8, 229, 0.08, dimTarget, dark));
-        colors.put("success", familyColor(ansi, 2, 158.68, 0.62, target, dark));
-        colors.put("error", familyColor(ansi, 1, 20, 0.72, target, dark));
-        colors.put("warning", familyColor(ansi, 3, 82.36, 0.85, actuallyDark ? 0.78 : 0.45, dark));
-        colors.put("selectedBg", mix(bg, familyColor(ansi, 4, 231.49, 0.4, actuallyDark ? 0.24 : 0.88, dark), 0.65));
-        colors.put("searchMatchBg", mix(bg, familyColor(ansi, 3, 52, 0.6, actuallyDark ? 0.24 : 0.86, dark), 0.55));
-        colors.put("searchMatchText", fg);
-        colors.put("userMessageBg", mix(bg, familyColor(ansi, 4, 233, 0.41, actuallyDark ? 0.24 : 0.91, dark), 0.8));
-        colors.put("userMessageText", fg);
-        colors.put("customMessageBg", mix(bg, familyColor(ansi, 5, 295, 0.42, actuallyDark ? 0.24 : 0.91, dark), 0.75));
-        colors.put("customMessageText", mutedTarget > 0 ? colors.get("muted") : fg);
-        colors.put("customMessageLabel", brandAccent);
-        colors.put("toolPendingBg", mix(bg, colors.get("borderMuted"), 0.18));
-        colors.put("toolSuccessBg", mix(bg, colors.get("success"), 0.20));
-        colors.put("toolErrorBg", mix(bg, colors.get("error"), 0.20));
-        colors.put("toolTitle", fg);
-        colors.put("toolOutput", colors.get("muted"));
-        colors.put("mdHeading", brandAccent);
-        colors.put("mdLink", brandPrimary);
-        colors.put("requestTitle", brandAccent);
-        colors.put("replyTitle", brandPrimary);
-        colors.put("mdLinkUrl", colors.get("muted"));
-        colors.put("mdCode", colors.get("accent"));
-        colors.put("mdCodeBlock", colors.get("success"));
-        colors.put("mdCodeBlockBorder", colors.get("borderMuted"));
-        colors.put("mdQuote", colors.get("muted"));
-        colors.put("mdQuoteBorder", colors.get("borderMuted"));
-        colors.put("mdHr", colors.get("borderMuted"));
-        colors.put("mdListBullet", colors.get("accent"));
-        colors.put("toolDiffAdded", colors.get("success"));
-        colors.put("toolDiffRemoved", colors.get("error"));
-        colors.put("toolDiffContext", colors.get("muted"));
-        colors.put("syntaxComment", colors.get("muted"));
-        colors.put("syntaxKeyword", colors.get("border"));
-        colors.put("syntaxFunction", colors.get("warning"));
-        colors.put("syntaxVariable", colors.get("mdLink"));
-        colors.put("syntaxString", colors.get("warning"));
-        colors.put("syntaxNumber", colors.get("success"));
-        colors.put("syntaxType", colors.get("accent"));
-        colors.put("syntaxOperator", fg);
-        colors.put("syntaxPunctuation", colors.get("muted"));
-        for (String level : List.of("thinkingOff", "thinkingMinimal", "thinkingLow", "thinkingMedium",
-                "thinkingHigh", "thinkingXhigh")) colors.put(level, colors.get("thinkingText"));
-        colors.put("bashMode", colors.get("success"));
-        colors.put("scrollbarTrack", mix(bg, colors.get("borderMuted"), 0.4));
-        colors.put("scrollbarThumb", colors.get("borderMuted"));
-        fillFallbacks(colors);
-        return new Definition("system", actuallyDark ? "dark" : "light", colors, false);
-    }
-
-    /**
-     * 从 ANSI 槽取色相/饱和度，按目标明度生成颜色。槽不可用或不是 RGB 时使用 family 的固定值。
-     * 生成结果保持原色相的饱和度上限，避免把柔和终端色板变成刺眼荧光色。
-     */
-    private static Color familyColor(List<Color> ansi, int slot, double hue, double saturation,
-            double lightness, boolean dark) {
-        Color source = ansi != null && ansi.size() > slot ? ansi.get(slot) : null;
-        if (source != null && source.kind() == Color.Kind.RGB) {
-            double[] okhsl = rgbToOkhsl(source.red(), source.green(), source.blue());
-            if (okhsl[1] > 0.02) return okhsl(okhsl[0], Math.min(saturation, okhsl[1]), lightness);
-            return okhsl(okhsl[0], saturation, lightness);
-        }
-        return okhsl(hue, saturation, lightness);
-    }
 
     /**
      * 面板底色（R6-03）：以已知/假定终端背景为基准，向对比方向中性色混合约 10%。
@@ -339,9 +184,59 @@ public final class ThemePalette {
      * @return 不透明的面板背景色
      */
     public static Color derivePanelBg(Color background, boolean dark) {
+        return derivePanelBg(background, dark, ThemeDocument.DEFAULT_PANEL_BG_MIX);
+    }
+
+    /**
+     * 按主题文件声明的混合比例派生面板底色。
+     *
+     * <p>比例来自 {@code derivations.panelBgMix}（资产为 0.10）；解析器已校验为 0–1，
+     * 这里再夹一次，避免非有限值让颜色计算产生 NaN。</p>
+     *
+     * @param background 实际或假定的终端背景
+     * @param dark 该背景是否属于深色外观
+     * @param mixRatio 向对比方向中性色混合的比例（0–1）
+     * @return 不透明的面板背景色
+     */
+    public static Color derivePanelBg(Color background, boolean dark, double mixRatio) {
         Color base = background != null && background.kind() == Color.Kind.RGB
                 ? background : (dark ? Color.rgb(0, 0, 0) : Color.rgb(255, 255, 255));
-        return mix(base, dark ? Color.rgb(255, 255, 255) : Color.rgb(0, 0, 0), 0.10);
+        double weight = Double.isFinite(mixRatio) ? Math.max(0, Math.min(1, mixRatio))
+                : ThemeDocument.DEFAULT_PANEL_BG_MIX;
+        return mix(base, dark ? Color.rgb(255, 255, 255) : Color.rgb(0, 0, 0), weight);
+    }
+
+    /**
+     * 按底色亮度选择黑/白前景，供审批按钮与派生角色共用。
+     *
+     * <p>输入可能是 RGB 或 0–255 索引色；索引色先按终端近似值展开。sRGB 必须先转线性
+     * 亮度再加权，否则黄底会被误判为深色而配白字。没有可计算颜色时不强造 RGB，返回
+     * NULL_COLOR 由调用方决定兜底方式。</p>
+     *
+     * @param color 按钮/选区底色
+     * @return 对比度更高的黑或白；不可计算时返回 {@link Color#DEFAULT}
+     */
+    public static Color contrastForeground(Color color) {
+        if (color == null || color.isDefault()) return Color.DEFAULT;
+        int red, green, blue;
+        if (color.kind() == Color.Kind.INDEXED) {
+            Color approx = indexedApprox(color.index());
+            if (approx.isDefault()) return Color.DEFAULT;
+            red = approx.red(); green = approx.green(); blue = approx.blue();
+        } else if (color.kind() == Color.Kind.RGB) {
+            red = color.red(); green = color.green(); blue = color.blue();
+        } else {
+            return Color.DEFAULT;
+        }
+        double luminance = 0.2126 * linearChannel(red) + 0.7152 * linearChannel(green)
+                + 0.0722 * linearChannel(blue);
+        return luminance >= 0.179 ? Color.rgb(0, 0, 0) : Color.rgb(255, 255, 255);
+    }
+
+    /** @return sRGB 0–255 分量转线性亮度。 */
+    private static double linearChannel(int value) {
+        double channel = value / 255.0;
+        return channel <= 0.04045 ? channel / 12.92 : Math.pow((channel + 0.055) / 1.055, 2.4);
     }
 
     /** 在 sRGB 空间线性混合两个颜色，权重 weight 表示第二个颜色的比例。 */

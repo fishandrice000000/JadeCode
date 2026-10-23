@@ -263,6 +263,8 @@ public final class TuiController {
             }
             case UiEvent.ExternalEditorResult text -> editor.replaceText(text.text());
             case UiEvent.Repaint ignored -> { /* Application 已消费并请求重绘。 */ }
+            case UiEvent.ThemeLoaded loaded -> adoptThemePreview(loaded.result());
+            case UiEvent.ThemeWatched watched -> adoptThemeWatch(watched.result());
             case UiEvent.Flash flash -> state.flash(flash.text(), flash.durationMillis(), flash.error());
             case UiEvent.TerminalFailure failure -> { state.hint = failure.message(); close(); }
             case UiEvent.Stopped stopped -> { return false; }
@@ -909,12 +911,45 @@ public final class TuiController {
 
     /** 主题子页只预览；Esc 会恢复原逻辑 theme+配对快照。 */
     private void previewSelector() {
-        if (!state.selectorKind.equals("Theme")) return;
+        if (!state.selectorKind.equals("Theme") || themes == null) return;
         String selected = state.selector.selected();
         if (selected == null) return;
-        String error = themes.preview(selected);
+        ThemeManager.LoadRequest request;
+        try {
+            request = themes.requestPreview(selected);
+        } catch (RuntimeException failure) {
+            state.hint = failure.getMessage();
+            return;
+        }
+        // 文件读取/解析放 worker；结果只能经 UiEvent 回到 UI 线程，不在 worker 写主题状态。
+        Thread.ofVirtual().name("jade-theme-preview").start(() -> {
+            ThemeManager.LoadResult result;
+            try {
+                var document = request.builtin()
+                        ? com.jadecode.tui.theme.ThemePalette.builtinDocument()
+                        : com.jadecode.tui.theme.ThemeDocument.read(request.file());
+                result = new ThemeManager.LoadResult(request, document, null);
+            } catch (RuntimeException failure) {
+                result = new ThemeManager.LoadResult(request, null, failure.getMessage());
+            }
+            events.accept(new UiEvent.ThemeLoaded(result));
+        });
+    }
+
+    /** 采纳预览读取结果；迟到 ticket 由 Manager 丢弃，失败只作为真实英文提示显示。 */
+    private void adoptThemePreview(ThemeManager.LoadResult result) {
+        if (themes == null) return;
+        String error = themes.acceptPreview(result);
+        if (!state.selectorKind.equals("Theme")) return;
+        state.hint = error;
+        if (error.isEmpty()) refreshSelectorMeta();
+    }
+
+    /** 采纳当前主题文件的修改；坏文件保留最后有效快照并显示真实错误。 */
+    private void adoptThemeWatch(ThemeManager.WatchResult result) {
+        if (themes == null) return;
+        String error = themes.acceptWatch(result);
         if (!error.isEmpty()) state.hint = error;
-        else state.hint = "";
     }
 
     private void rebuildSessionSelector() {
@@ -954,10 +989,12 @@ public final class TuiController {
                 if (id != null) resume(id);
             }
             case "Theme" -> {
+                // Enter 必须是“提交当前选中项”：若异步预览还没到/属于别的候选，就在此同步读一次
+                // 小主题文件，保证确认色板与逻辑标识一致；在途旧 ticket 随后被丢弃。
                 String error = themes.preview(selectedId);
                 if (!error.isEmpty()) { state.hint = error; refreshSelectorMeta(); return; }
                 themes.applyPreview();
-                // 逻辑值来自用户选择，不从未解析调色板 name 反推；配对字段保留在当前快照。
+                // 逻辑值来自用户选择，不从未解析调色板 name 反推；applyPreview 已同步内存标识。
                 settings.reload(SettingsMenu.apply(settings.current(), Map.of("theme", selectedId)));
                 preferences.saveLater(Map.of("theme", selectedId), failed -> {
                     if (failed != null) events.accept(new UiEvent.Message("System", "Warning",

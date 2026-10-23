@@ -50,7 +50,10 @@ class TuiThemeTest {
         assertEquals(dark.colors().get("brandPrimary"), dark.colors().get("accent"));
         assertEquals(dark.colors().get("brandPrimary"), dark.colors().get("borderAccent"));
         assertEquals(dark.colors().get("brandPrimary"), dark.colors().get("mdLink"));
-        assertEquals(dark.colors().get("brandAccent"), dark.colors().get("mdHeading"));
+        // S91/S92 迁移：统一主题资产把 Markdown 标题/列表符号映射到 primary 蓝色层次，
+        // 不再沿用第八轮“标题等于 brandAccent 橙色”的旧外观断言。
+        assertEquals(dark.colors().get("brandPrimary"), dark.colors().get("mdHeading"));
+        assertEquals(dark.colors().get("brandPrimary"), dark.colors().get("mdListBullet"));
         assertEquals(dark.colors().get("brandAccent"), dark.colors().get("customMessageLabel"));
         assertEquals(Color.rgb(0x24, 0x3B, 0x47), dark.colors().get("selectedBg"));
 
@@ -68,7 +71,8 @@ class TuiThemeTest {
         assertEquals(Color.rgb(210, 220, 230), system.colors().get("text"), "system keeps the real terminal foreground");
         assertNotNull(system.colors().get("brandPrimary"));
         assertEquals(system.colors().get("brandPrimary"), system.colors().get("accent"));
-        assertEquals(system.colors().get("brandAccent"), system.colors().get("mdHeading"));
+        // S92：system 只绑定终端前景/背景，标题等强调色来自统一内置主题的 primary。
+        assertEquals(system.colors().get("brandPrimary"), system.colors().get("mdHeading"));
         assertFalse(system.colors().get("brandFrame").equals(system.colors().get("text")));
     }
 
