@@ -9,7 +9,7 @@ import java.util.concurrent.CompletionException;
 import java.util.function.Supplier;
 import com.jadecode.tui.core.Component;
 import com.jadecode.tui.core.RenderContext;
-import com.jadecode.tui.markdown.JavaMarkdownParser;
+import com.jadecode.tui.markdown.MarkdownFragments;
 import com.jadecode.tui.markdown.JsTextEngine;
 import com.jadecode.tui.markdown.MarkdownLayout;
 import com.jadecode.tui.markdown.TextRenderCache;
@@ -50,7 +50,17 @@ public final class Markdown implements Component {
         long revision;
         TextRenderResult fallback;
         CompletableFuture<TextRenderResult> future;
+        final MarkdownFragments fragments = new MarkdownFragments();
+        /** 每消息最多四组布局参数；主题变化立即丢弃旧色行。仅 UI 线程读写。 */
+        long layoutTheme = Long.MIN_VALUE;
+        final Map<LayoutKey, MarkdownLayout> layouts = new LinkedHashMap<>(8, 0.75f, true) {
+            @Override protected boolean removeEldestEntry(Map.Entry<LayoutKey, MarkdownLayout> eldest) {
+                return size() > 4;
+            }
+        };
     }
+
+    private record LayoutKey(int width, boolean thinking, boolean fixed) { }
 
     /** 无引擎时使用 Java 回退，不把它当成固定引擎通过证据。 */
     public Markdown() { this(() -> null, () -> { }); }
@@ -117,11 +127,16 @@ public final class Markdown implements Component {
         if (parsed == null) {
             // 回退 DTO 只在 UI 线程建立，同一源文跨宽度/主题复用；不重复执行整篇 Java 解析。
             if (state.fallback == null)
-                state.fallback = new JavaMarkdownParser(TextSanitizer.display(source)).parse();
+                state.fallback = state.fragments.parseJava(TextSanitizer.display(source));
             parsed = state.fallback;
         }
+        if (state.layoutTheme != theme.revision()) {
+            state.layouts.clear(); state.layoutTheme = theme.revision();
+        }
+        var layoutKey = new LayoutKey(Math.max(1, width), isThinking, fixed != null);
+        MarkdownLayout layout = state.layouts.computeIfAbsent(layoutKey, ignored -> new MarkdownLayout(theme));
         // 首次返回与缓存命中返回同一不可变列表，避免调用者持有可变布局工作副本。
-        rendered = List.copyOf(new MarkdownLayout(theme).layout(parsed, Math.max(1, width), base, isThinking));
+        rendered = layout.layoutCached(parsed, Math.max(1, width), base, isThinking);
         // 两类键分开：缓存回退不会遮住后来到达的固定结果。
         cache.put(key, rendered);
         return rendered;

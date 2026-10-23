@@ -41,6 +41,8 @@ public final class JsTextEngine implements AutoCloseable {
     private static final long WATCHDOG_SECONDS = 5;
 
     private final ExecutorService worker;
+    /** 仅由 JS worker 使用；保留当前文档已独立完成的块，固定库及原始 lexJson 不变。 */
+    private final MarkdownFragments fragments = new MarkdownFragments();
     /** 看门狗独立于 JS worker；仅对当前实际执行的任务计时。 */
     private final ScheduledExecutorService watchdog = Executors.newSingleThreadScheduledExecutor(task -> {
         Thread thread = new Thread(task, "jade-text-watchdog");
@@ -105,11 +107,12 @@ public final class JsTextEngine implements AutoCloseable {
 
     /** 解析 Markdown 为 DTO；调用方在 UI 线程先显示回退，完成后重排。 */
     public CompletableFuture<TextRenderResult> lex(String text, long version) {
-        return submit(() -> {
-            String json = call("lex", text);
-            return MarkedTokenAdapter.adapt(json, version);
-        });
+        return submit(() -> fragments.parse(text, version,
+                part -> MarkedTokenAdapter.adapt(call("lex", part), version)));
     }
+
+    /** @return 固定解析器实际处理的累计字符数；通过 worker barrier 后可用于性能诊断。 */
+    public long lexedCharacters() { return fragments.parsedCharacters(); }
 
     /** @return 原始 lex JSON；差分测试/诊断使用，不进入产品布局。 */
     public CompletableFuture<String> lexJson(String text) {

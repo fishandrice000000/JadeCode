@@ -23,6 +23,11 @@ import com.jadecode.tui.theme.Theme;
  */
 public final class MarkdownLayout {
     private final Theme theme;
+    /** 以 DTO 身份缓存顶层块，避免对完整 token 树做昂贵结构 hash；只在 layoutCached 使用。 */
+    private java.util.IdentityHashMap<TextRenderResult.Token, List<StyledLine>> cachedBlocks;
+    private int cachedWidth;
+    private Style cachedBase;
+    private boolean cachedThinking;
 
     /** @param theme 当前主题快照；布局结果可直接缓存到下一帧。 */
     public MarkdownLayout(Theme theme) { this.theme = theme; }
@@ -52,6 +57,36 @@ public final class MarkdownLayout {
         renderBlocks(result.tokens(), width, baseStyle, out, 0, thinking);
         while (!out.isEmpty() && out.getLast().isBlank()) out.removeLast();
         return out;
+    }
+
+    /**
+     * 同一消息的增量布局：复用稳定块的行，只重新绘制改变的尾块。
+     * 宽度/基础样式/思考模式变化时清行缓存；主题由实例固定，调用方换主题需新实例。
+     * 块间空行仍由本次装配插入，不冻结尾部间距或源文；旧尾块当帧回收，避免保留每个前缀。
+     */
+    public List<StyledLine> layoutCached(TextRenderResult result, int width, Style baseStyle, boolean thinking) {
+        if (cachedBlocks == null) cachedBlocks = new java.util.IdentityHashMap<>();
+        if (cachedWidth != width || !java.util.Objects.equals(cachedBase, baseStyle) || cachedThinking != thinking) {
+            cachedBlocks.clear(); cachedWidth = width; cachedBase = baseStyle; cachedThinking = thinking;
+        }
+        var blocks = new ArrayList<TextRenderResult.Token>();
+        flatten(result.tokens(), blocks);
+        var live = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<TextRenderResult.Token, Boolean>());
+        var out = new ArrayList<StyledLine>();
+        for (int i = 0; i < blocks.size(); i++) {
+            var block = blocks.get(i); live.add(block);
+            List<StyledLine> lines = cachedBlocks.get(block);
+            if (lines == null) {
+                var built = new ArrayList<StyledLine>();
+                renderBlock(block, width, baseStyle, built, 0, thinking);
+                lines = List.copyOf(built); cachedBlocks.put(block, lines);
+            }
+            out.addAll(lines);
+            if (i + 1 < blocks.size()) out.add(StyledLine.empty());
+        }
+        cachedBlocks.keySet().retainAll(live);
+        while (!out.isEmpty() && out.getLast().isBlank()) out.removeLast();
+        return List.copyOf(out);
     }
 
     /**
