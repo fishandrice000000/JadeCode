@@ -118,12 +118,16 @@ public final class MarkdownLayout {
             case TextRenderResult.ListBlock list -> {
                 int index = list.start();
                 for (TextRenderResult.ListItem item : list.items()) {
-                    String itemPrefix = prefix + " ".repeat(Math.max(0, item.depth()) * 4)
-                            + (item.task() ? (item.checked() ? "[x] " : "[ ] ") : list.ordered() ? (index++) + ". " : "- ");
+                    // 缩进属于布局，列表符号属于主题：把 marker 单独着色为 mdListBullet，
+                    // 续行缩进与 marker 等宽，避免长短编号（9. → 10.）错位。
+                    String itemIndent = prefix + " ".repeat(Math.max(0, item.depth()) * 4);
+                    String marker = item.task() ? (item.checked() ? "[x] " : "[ ] ")
+                            : list.ordered() ? (index++) + ". " : "- ";
                     List<Span> spans = inline(item.items(), style);
                     // 列表项内容中的嵌套块（少见）递归排在后面。
-                    out.addAll(wrapWithPrefix(spans, width, itemPrefix,
-                            prefix + " ".repeat(Math.max(0, item.depth()) * 4 + 2)));
+                    out.addAll(wrapWithPrefix(spans, width,
+                            new Span(itemIndent + marker, theme.style("mdListBullet"), null),
+                            new Span(itemIndent + " ".repeat(DisplayWidth.width(marker)), Style.PLAIN, null)));
                 }
             }
             case TextRenderResult.Blockquote quote -> {
@@ -490,9 +494,18 @@ public final class MarkdownLayout {
         return result;
     }
 
-    /** 按列换行并给每行加前缀/续行前缀；保留链接和样式。 */
+    /** 按列换行并给每行加纯布局前缀/续行前缀；保留链接和样式。 */
     private static List<StyledLine> wrapWithPrefix(List<Span> spans, int width, String firstPrefix,
             String continuationPrefix) {
+        return wrapWithPrefix(spans, width, new Span(firstPrefix, Style.PLAIN, null),
+                new Span(continuationPrefix, Style.PLAIN, null));
+    }
+
+    /**
+     * 带样式的首行/续行前缀版本：列表符号使用主题角色，缩进与空白保持纯布局样式。
+     */
+    private static List<StyledLine> wrapWithPrefix(List<Span> spans, int width, Span firstPrefix,
+            Span continuationPrefix) {
         var result = new ArrayList<StyledLine>();
         // 先展开显式换行，再对每段按宽度折行；前缀计入宽度。
         var current = new ArrayList<Span>();
@@ -504,20 +517,20 @@ public final class MarkdownLayout {
             }
         }
         result.addAll(wrapSingle(current, width, firstPrefix, continuationPrefix, result.isEmpty()));
-        if (result.isEmpty()) result.add(StyledLine.of(firstPrefix, Style.PLAIN));
+        if (result.isEmpty()) result.add(new StyledLine(List.of(firstPrefix)));
         return result;
     }
 
-    private static List<StyledLine> wrapSingle(List<Span> spans, int width, String firstPrefix,
-            String continuationPrefix, boolean first) {
-        if (spans.isEmpty()) return List.of(StyledLine.of(firstPrefix, Style.PLAIN));
-        String prefix = first ? firstPrefix : continuationPrefix;
-        int available = Math.max(1, width - DisplayWidth.width(prefix));
+    private static List<StyledLine> wrapSingle(List<Span> spans, int width, Span firstPrefix,
+            Span continuationPrefix, boolean first) {
+        if (spans.isEmpty()) return List.of(new StyledLine(List.of(firstPrefix)));
+        Span prefix = first ? firstPrefix : continuationPrefix;
+        int available = Math.max(1, width - DisplayWidth.width(prefix.text()));
         var lines = new ArrayList<StyledLine>();
         List<StyledLine> wrapped = StyledLine.wrap(spans, available);
         for (int i = 0; i < wrapped.size(); i++) {
             var lineSpans = new ArrayList<Span>();
-            lineSpans.add(new Span(i == 0 ? firstPrefix : continuationPrefix, Style.PLAIN, null));
+            lineSpans.add(i == 0 ? firstPrefix : continuationPrefix);
             lineSpans.addAll(wrapped.get(i).spans());
             lines.add(new StyledLine(lineSpans));
         }

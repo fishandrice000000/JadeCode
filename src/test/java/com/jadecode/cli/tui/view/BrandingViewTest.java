@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import com.jadecode.tui.core.RenderContext;
+import com.jadecode.tui.text.Color;
 import com.jadecode.tui.text.Style;
 import com.jadecode.tui.text.StyledLine;
 import com.jadecode.tui.theme.Theme;
@@ -44,8 +45,32 @@ class BrandingViewTest {
         assertTrue(lines.get(7).text().startsWith("coding agent · Java "));
         assertTrue(lines.get(0).spans().stream().anyMatch(span -> span.text().contains("┏")
                 && span.style().fg().equals(theme.color("brandFrame"))), "mascot frame uses brandFrame");
+        // S94：字身角色是 brandBannerBody（内置主题与 brandPrimary 同值，但语义独立）。
         assertTrue(lines.get(0).spans().stream().anyMatch(span -> span.text().contains("█")
-                && span.style().fg().equals(theme.color("brandPrimary"))), "wordmark uses brandPrimary");
+                && span.style().fg().equals(theme.color("brandBannerBody"))), "wordmark body uses brandBannerBody");
+    }
+
+    @Test void bannerSplitsBlueBodyAndShadowWithoutChangingCharacters() {
+        var lines = view.render("1.0.0", new RenderContext(120, 40, theme), 120, 40);
+        var first = lines.getFirst();
+        // 字符与位置保持原资产：mascot(17) + 3 列间隔 + 补齐后的 69 列字标。
+        assertEquals(BrandingView.fullWidth(), first.width());
+        var body = first.spans().stream().filter(span -> span.text().contains("█")).findFirst().orElseThrow();
+        assertEquals(theme.color("brandBannerBody"), body.style().fg());
+        var shadow = first.spans().stream().filter(span -> span.text().contains("╗")).findFirst().orElseThrow();
+        assertEquals(theme.color("brandBannerShadow"), shadow.style().fg());
+        assertEquals(Color.rgb(0x47, 0x7E, 0x99), shadow.style().fg(), "dark outline uses the S94 shadow value");
+        // 连续同角色字符合并成组，而不是每字符一段 SGR（69 列字标远多于 Span 数）。
+        long bannerSpans = first.spans().stream().skip(1).count();
+        assertTrue(bannerSpans < 40, "banner spans should be merged, got " + bannerSpans);
+        // 旧自定义主题没有新角色时轮廓退回字身，保持原单色。
+        var custom = Theme.from(ThemePalette.parse("{\"name\":\"old\",\"appearance\":\"dark\","
+                + "\"colors\":{\"text\":\"#ffffff\",\"accent\":\"#336699\"}}"), true, 1);
+        var customLines = view.render("1.0.0", new RenderContext(120, 40, custom), 120, 40);
+        var customShadow = customLines.getFirst().spans().stream()
+                .filter(span -> span.text().contains("╗")).findFirst().orElseThrow();
+        assertEquals(customShadow.style().fg(), custom.color("brandBannerBody"),
+                "old custom themes keep a single-colour wordmark");
     }
 
     @Test void mascotUsesOrangeOnlyForDotsPromptAndCursor() {

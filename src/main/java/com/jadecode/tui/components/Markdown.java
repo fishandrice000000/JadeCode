@@ -86,7 +86,9 @@ public final class Markdown implements Component {
         var key = new TextRenderCache.Key(source, columns, theme.revision(), isThinking ? "thinking" : "normal");
         var cached = cache.get(key);
         if (cached != null) { rendered = cached; return cached; }
-        Style base = isThinking ? theme.style("thinkingText") : Style.PLAIN;
+        // 普通正文必须由当前主题 text 产生：Style.PLAIN 会让主要消息绕过 text 角色，
+        // 在 system/自定义主题下继续显示终端默认色而不是主题正文色。
+        Style base = isThinking ? theme.style("thinkingText") : theme.style("text");
         TextRenderResult result = resultFor(source, isThinking);
         List<StyledLine> lines;
         if (result != null) {

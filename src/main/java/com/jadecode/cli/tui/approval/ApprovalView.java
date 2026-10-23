@@ -135,6 +135,13 @@ public final class ApprovalView {
         return "[" + marker + " " + LABELS[index] + (enabled ? "" : " (n/a)") + " ]";
     }
 
+    /**
+     * 选中项底色/前景来自主题层的审批角色：显式值优先，否则由解析器按该主题自己的
+     * 成功/警告/失败语义派生对比前景。本类不再持有 RGB 回退表，也不用 inverse 冒充配色；
+     * 底色确实无法解析时保留 {@code ›} 选择标记，不伪造颜色。
+     *
+     * <p>未选中/禁用项保持中性，避免整页变成交通灯；布局与命中坐标不受颜色来源影响。</p>
+     */
     private static Style buttonStyle(RenderContext context, int index, int choice, boolean enabled) {
         Style panel = context.theme().background("panelBg");
         Style base = context.theme().style("text");
@@ -145,39 +152,17 @@ public final class ApprovalView {
         }
         if (choice != index) return base;
         if (!context.theme().enabled()) return base;
-        Color background = context.theme().color(switch (index) { case 0 -> "success"; case 1 -> "warning"; default -> "error"; });
-        // 语义主题可能只提供默认色；此处的局部回退不改写整套主题或未选中 Deny。
-        if (background.isDefault()) background = switch (index) {
-            case 0 -> Color.rgb(80, 170, 110); case 1 -> Color.rgb(220, 180, 65); default -> Color.rgb(200, 70, 70);
+        String backgroundToken = switch (index) {
+            case 0 -> "approvalOnceBg"; case 1 -> "approvalSimilarBg"; default -> "approvalDenyBg";
         };
-        return base.withBg(background).withFg(contrastForeground(background)).withBold(true);
-    }
-
-    /** 按真实 RGB/索引色亮度选择黑白前景；黄色等浅底不再配白字。无 IO/主题副作用。 */
-    private static Color contrastForeground(Color color) {
-        int red = color.red(), green = color.green(), blue = color.blue();
-        if (color.kind() == Color.Kind.INDEXED) {
-            int index = color.index();
-            if (index < 16) {
-                int[] ansi = {0x000000, 0x800000, 0x008000, 0x808000, 0x000080, 0x800080, 0x008080, 0xc0c0c0,
-                        0x808080, 0xff0000, 0x00ff00, 0xffff00, 0x0000ff, 0xff00ff, 0x00ffff, 0xffffff};
-                red = (ansi[index] >> 16) & 255; green = (ansi[index] >> 8) & 255; blue = ansi[index] & 255;
-            } else if (index < 232) {
-                int value = index - 16;
-                int[] cube = {0, 95, 135, 175, 215, 255};
-                red = cube[value / 36]; green = cube[value / 6 % 6]; blue = cube[value % 6];
-            } else red = green = blue = 8 + (index - 232) * 10;
-        }
-        // 将 sRGB 转为线性亮度，选择与底色对比更大的黑/白；直接平均 RGB 会误把绿底配白字。
-        double luminance = 0.2126 * linear(red) + 0.7152 * linear(green) + 0.0722 * linear(blue);
-        return luminance >= 0.179
-                ? Color.rgb(0, 0, 0) : Color.rgb(255, 255, 255);
-    }
-
-    /** sRGB 分量的线性亮度，用于背景对比；输入来自已校验的 0..255 颜色值。 */
-    private static double linear(int value) {
-        double channel = value / 255.0;
-        return channel <= 0.04045 ? channel / 12.92 : Math.pow((channel + 0.055) / 1.055, 2.4);
+        String foregroundToken = switch (index) {
+            case 0 -> "approvalOnceFg"; case 1 -> "approvalSimilarFg"; default -> "approvalDenyFg";
+        };
+        Color background = context.theme().color(backgroundToken);
+        if (background.isDefault()) return base.withBold(true);
+        Style selected = base.withBg(background).withBold(true);
+        Color foreground = context.theme().color(foregroundToken);
+        return foreground.isDefault() ? selected : selected.withFg(foreground);
     }
 
     /**

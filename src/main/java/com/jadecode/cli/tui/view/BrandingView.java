@@ -19,10 +19,14 @@ import com.jadecode.tui.text.StyledLine;
  * 一行名字加必要说明，绝不输出半张字符画。档位只由 {@link DisplayWidth} 的终端列和真实
  * 可用行预算决定，不使用浏览器像素、CSS breakpoint 或 Java 字符长度。</p>
  *
- * <p>颜色按字符区域表达：字标全部 {@code brandPrimary}；mascot 边框 {@code brandFrame}，
- * 三个圆点/{@code $}/{@code ▸}/末尾 {@code _} 为 {@code brandAccent}，mascot 内
- * {@code JADE} 用品牌蓝，{@code jade}/{@code ready} 用正文色。这里只生成 Span/Style，
- * 不把 ANSI 塞进资源文本；NO_COLOR 时主题返回 PLAIN，字符、边框、版本和布局仍然保留。</p>
+ * <p>颜色按字符区域表达：六行字标采用 S94 蓝色层次——每个 {@code █} 取
+ * {@code brandBannerBody}，非空白的 {@code ╗║╔═╝╚} 轮廓取 {@code brandBannerShadow}，
+ * 空格/换行只保留原几何；紧凑 {@code JADE CODE} 没有轮廓，使用 body。旧自定义主题未提供
+ * 这两个角色时由主题层分别退回 {@code brandPrimary}/body，保持原单色意图。mascot 边框用
+ * {@code brandFrame}，三个圆点/{@code $}/{@code ▸}/末尾 {@code _} 为 {@code brandAccent}，
+ * mascot 内 {@code JADE} 用品牌蓝，{@code jade}/{@code ready} 用正文色。这里只生成
+ * Span/Style，不把 ANSI 塞进资源文本；NO_COLOR 时主题返回 PLAIN，字符、边框、版本和布局
+ * 仍然保留。</p>
  *
  * <p>资源只读缓存一次，缺失时抛出明确错误（英文）而不是悄悄画空白。本类不读 Host、
  * 配置或网络，也不写终端；真实版本由调用方传入，避免写死版本号。</p>
@@ -34,6 +38,9 @@ public final class BrandingView {
     private static final int MIN_ART_ROWS = 22;
     /** 单行普通字标文本。 */
     private static final String WORDMARK = "JADE CODE";
+    /** 六行字标中的轮廓字素；其余非空白（█）属于字身。 */
+    private static final java.util.Set<String> BANNER_OUTLINE =
+            java.util.Set.of("╗", "║", "╔", "═", "╝", "╚");
 
     /** 档位只用于测试/诊断；真实选择在 {@link #render} 内按宽高计算。 */
     public enum Mode { FULL, COMPACT, LINE }
@@ -130,10 +137,12 @@ public final class BrandingView {
             spans.addAll(mascotLine(Assets.MASCOT.get(i), context));
             spans.add(new Span(" ".repeat(GAP), Style.PLAIN, null));
             if (selected == Mode.FULL) {
-                // 原字标短行在布局时右补齐到实测最大宽，保持右边界整齐；不改变字形本身。
+                // 原字标短行在布局时右补齐到实测最大宽，保持右边界整齐；字形本身不变。
+                // 补齐空白不参与染色，避免整行背景/属性泄漏到右侧空白。
                 String banner = Assets.BANNER.get(i);
+                spans.addAll(bannerLine(banner, context));
                 int padding = Math.max(0, Assets.BANNER_WIDTH - DisplayWidth.width(banner));
-                spans.add(new Span(banner + " ".repeat(padding), context.theme().style("brandPrimary"), null));
+                if (padding > 0) spans.add(new Span(" ".repeat(padding), Style.PLAIN, null));
             } else if (i == 0) {
                 // 紧凑档位只把普通字标放在第一行，与 mascot 顶对齐，不纵向拉伸。
                 spans.add(new Span(WORDMARK, context.theme().style("brandPrimary"), null));
@@ -146,6 +155,27 @@ public final class BrandingView {
         out.add(new StyledLine(title));
         out.add(StyledLine.of(DisplayWidth.ellipsize(info, columns), context.theme().style("muted")));
         return out;
+    }
+
+    /**
+     * 把六行字标的一行拆成字身/轮廓 Span：{@code █} 为 body，{@code ╗║╔═╝╚} 为 shadow，
+     * 空白保持纯几何。连续同角色字符合并，避免每个字符单独生成一段 SGR。
+     */
+    private static List<Span> bannerLine(String line, RenderContext context) {
+        Style body = context.theme().style("brandBannerBody");
+        Style shadow = context.theme().style("brandBannerShadow");
+        var spans = new ArrayList<Span>();
+        var buffer = new StringBuilder();
+        Style current = null;
+        for (String cluster : DisplayWidth.clusters(line)) {
+            Style style = cluster.isBlank() ? Style.PLAIN
+                    : BANNER_OUTLINE.contains(cluster) ? shadow : body;
+            if (current != null && current.equals(style)) { buffer.append(cluster); continue; }
+            if (!buffer.isEmpty()) spans.add(new Span(buffer.toString(), current, null));
+            buffer.setLength(0); buffer.append(cluster); current = style;
+        }
+        if (!buffer.isEmpty()) spans.add(new Span(buffer.toString(), current, null));
+        return spans;
     }
 
     /**

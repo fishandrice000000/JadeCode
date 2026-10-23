@@ -25,19 +25,25 @@ class TuiApprovalViewTest {
                 String label = List.of("Allow once", "Allow similar", "Deny").get(choice);
                 var selected = rows.lines().stream().flatMap(line -> line.spans().stream())
                         .filter(span -> span.text().contains(label)).findFirst().orElseThrow();
-                String token = List.of("success", "warning", "error").get(choice);
+                // R9 迁移：审批按钮改为消费统一主题的审批角色（不再是 View 内部 success/error 回退）。
+                String token = List.of("approvalOnceBg", "approvalSimilarBg", "approvalDenyBg").get(choice);
                 assertEquals(palette.color(token), selected.style().bg());
+                assertEquals(palette.color(List.of("approvalOnceFg", "approvalSimilarFg",
+                        "approvalDenyFg").get(choice)), selected.style().fg());
                 assertNotEquals(selected.style().fg(), selected.style().bg());
                 assertEquals(3, rows.buttons().stream().map(ApprovalView.Button::row).distinct().count());
             }
         }
-        // 这类绿底用 RGB 简单加权容易误配白字；实际对比度应选择黑字。
-        var custom = new Theme("custom", "dark", java.util.Map.of("success",
-                com.jadecode.tui.text.Color.rgb(80, 170, 110)), true, 1);
+        // 这类绿底用 RGB 简单加权容易误配白字；对比算法移到主题层后仍应选择黑字。
+        // 这里用最小 v1 主题走同一解析链，验证旧自定义主题的审批语义兜底，而不是手搓 Map。
+        var customDefinition = ThemePalette.parse("{\"name\":\"custom\",\"appearance\":\"dark\",\"colors\":{"
+                + "\"text\":\"#ffffff\",\"accent\":\"#ffffff\",\"success\":\"rgb(80 170 110)\"}}");
+        var custom = Theme.from(customDefinition, true, 1);
         var state = new ApprovalViewState(); state.show(request, 0, 1); state.move(1, true);
         var selected = new ApprovalView().render(state, new RenderContext(80, 24, custom), 80, 20)
                 .lines().stream().flatMap(line -> line.spans().stream())
                 .filter(span -> span.text().contains("Allow once")).findFirst().orElseThrow();
+        assertEquals(ThemePalette.contrastForeground(custom.color("approvalOnceBg")), selected.style().fg());
         assertEquals(com.jadecode.tui.text.Color.rgb(0, 0, 0), selected.style().fg());
     }
     private final Theme theme = Theme.from(ThemePalette.builtin("dark"), true, 1);
