@@ -12,13 +12,25 @@ export interface JobControlHandoff {
 export function suspendToShell(handoff: JobControlHandoff): void {
 	void (async () => {
 		await handoff.beforeSuspend();
+		let resumed = false;
+		let timer: NodeJS.Timeout | undefined;
+		const resume = (): void => {
+			if (resumed) return;
+			resumed = true;
+			if (timer) clearTimeout(timer);
+			process.removeListener("SIGCONT", resume);
+			handoff.afterResume();
+		};
+		process.once("SIGCONT", resume);
+		// 某些无作业控制的环境里 kill(2) 成功返回但进程并不会真正停止；保留安全回退，
+		// 不能让界面永久停在已暂停状态。真正停止时该定时器随之冻结，SIGCONT 会先清除它。
+		timer = setTimeout(resume, 500);
+		timer.unref?.();
 		try {
 			process.kill(0, "SIGTSTP");
 		} catch {
-			// 不可挂起的环境（无作业控制）恢复界面并继续，不伪造成功。
-			handoff.afterResume();
-			return;
+			// 明确的不可挂起环境：立即恢复，不伪造成功。
+			resume();
 		}
-		process.once("SIGCONT", () => handoff.afterResume());
 	})();
 }
