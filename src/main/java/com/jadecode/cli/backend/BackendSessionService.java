@@ -48,7 +48,8 @@ import com.jadecode.util.Json;
 public final class BackendSessionService implements AutoCloseable {
     /** 快照出口：完整快照（含历史）与只读状态刷新分开，避免每帧重发历史。 */
     public interface SnapshotSink {
-        void full(String snapshotId, long generation, List<BackendHistoryProjector.Entry> entries, BackendSnapshot snapshot);
+        void full(String snapshotId, long generation, long sourceSeq,
+                List<BackendHistoryProjector.Entry> entries, BackendSnapshot snapshot);
         void state(BackendSnapshot snapshot);
     }
 
@@ -602,8 +603,9 @@ public final class BackendSessionService implements AutoCloseable {
         if (generation == null || restored == null) return;
         List<BackendHistoryProjector.Entry> entries = BackendHistoryProjector.project(restored);
         String snapshotId = "snap-" + generation.generation + "-" + (++snapshotCounter);
-        wire.session().expectReady(snapshotId, generation.generation);
-        snapshots.full(snapshotId, generation.generation, entries, snapshot());
+        long sourceSeq = wire.session().sentSeq();
+        wire.session().expectReady(snapshotId, generation.generation, sourceSeq);
+        snapshots.full(snapshotId, generation.generation, sourceSeq, entries, snapshot());
     }
 
     /** 组装当前只读资料；历史条目不在其中，避免每帧重发。 */

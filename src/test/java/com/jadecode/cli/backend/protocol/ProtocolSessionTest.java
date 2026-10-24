@@ -169,6 +169,19 @@ class ProtocolSessionTest {
     }
 
     @Test
+    void readyMustEchoTheSnapshotSourceSequence() throws Exception {
+        ProtocolSession session = session();
+        session.receive(hello(1, BUILD, CREDENTIAL));
+        session.expectReady("snap-1", 1L, 7L);
+        ProtocolException mismatch = assertThrows(ProtocolException.class,
+                () -> session.receive(ready(2, "snap-1", 1L, 6L)));
+        assertEquals(ProtocolError.INVALID_MESSAGE, mismatch.error());
+        session.receive(ready(3, "snap-1", 1L, 7L));
+        assertEquals(ProtocolSession.State.READY, session.state());
+        session.close();
+    }
+
+    @Test
     void repeatedCommandIdIsNotExecutedTwice() throws Exception {
         ProtocolSession session = session();
         session.receive(hello(1, BUILD, CREDENTIAL));

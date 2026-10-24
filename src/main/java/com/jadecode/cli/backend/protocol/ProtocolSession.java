@@ -69,6 +69,8 @@ public final class ProtocolSession implements AutoCloseable {
     private long lastClientSeq;
     private String snapshotId;
     private Long snapshotGeneration;
+    /** 快照 begin 的来源 seq；ready 必须回传同一值（null 表示旧调用未提供）。 */
+    private Long snapshotSourceSeq;
     /** 是否在等待一次新的 ready；切换会话/新打开会话都会重新置位。 */
     private boolean awaitingReady;
     private final Map<String, CachedResult> cachedResults = new LinkedHashMap<>();
@@ -135,8 +137,14 @@ public final class ProtocolSession implements AutoCloseable {
 
     /** 登记最近一次快照；Node 的 {@code session.ready} 必须引用同一 snapshotId。 */
     public synchronized void expectReady(String id, Long generation) {
+        expectReady(id, generation, null);
+    }
+
+    /** @param sourceSeq 快照 begin 事件携带的来源序号；ready 必须原样回传 */
+    public synchronized void expectReady(String id, Long generation, Long sourceSeq) {
         snapshotId = id;
         snapshotGeneration = generation;
+        snapshotSourceSeq = sourceSeq;
         awaitingReady = true;
         if (state == State.HELLO || state == State.READY) state = State.SYNC;
     }
@@ -261,6 +269,9 @@ public final class ProtocolSession implements AutoCloseable {
         long lastSeq = Long.parseLong(seqNode.asText());
         if (lastSeq < 0)
             throw new ProtocolException(ProtocolError.INVALID_MESSAGE, "session.ready references an invalid snapshot sequence");
+        if (snapshotSourceSeq != null && lastSeq != snapshotSourceSeq)
+            throw new ProtocolException(ProtocolError.INVALID_MESSAGE,
+                    "session.ready must echo the snapshot begin sourceSeq");
         synchronized (this) { state = State.READY; awaitingReady = false; }
         handshakeTimer.shutdownNow();
         onReady.run();

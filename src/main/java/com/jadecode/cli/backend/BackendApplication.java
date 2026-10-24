@@ -305,15 +305,15 @@ public final class BackendApplication implements AutoCloseable {
     /** 完整快照：begin/chunk/end 三段，Node 校验 hash 后安装并发 ready。 */
     private BackendSessionService.SnapshotSink snapshotSink(WireContext wire) {
         return new BackendSessionService.SnapshotSink() {
-            @Override public void full(String snapshotId, long generation, List<BackendHistoryProjector.Entry> entries,
-                    BackendSnapshot snapshot) {
+            @Override public void full(String snapshotId, long generation, long sourceSeq,
+                    List<BackendHistoryProjector.Entry> entries, BackendSnapshot snapshot) {
                 ObjectNode begin = Json.mapper().createObjectNode();
                 begin.put("snapshotId", snapshotId);
                 begin.put("sessionId", wire.sessionId());
                 begin.put("generation", Long.toString(generation));
                 begin.put("entryCount", entries.size());
                 begin.put("configRevision", Long.toString(preLicense.preferences().state().revision()));
-                begin.put("sourceSeq", Long.toString(wire.session().sentSeq()));
+                begin.put("sourceSeq", Long.toString(sourceSeq));
                 wire.session().sendEvent("session.snapshot.begin", begin, wire.sessionId(), generation);
 
                 MessageDigest digest = sha256();
