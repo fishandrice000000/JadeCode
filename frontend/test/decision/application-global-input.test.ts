@@ -11,11 +11,11 @@ import { KeymapAdapter } from "../../src/editor/keymap-adapter.ts";
  */
 interface Harness {
 	app: Application;
-	state: { draft: string; renders: number; quits: number; focus: number };
+	state: { draft: string; renders: number; quits: number; focus: number; suspends: number; resumes: number };
 }
 
 function harness(): Harness {
-	const state = { draft: "draft", renders: 0, quits: 0, focus: 0 };
+	const state = { draft: "draft", renders: 0, quits: 0, focus: 0, suspends: 0, resumes: 0 };
 	const app = new Application();
 	const fields = app as unknown as { [key: string]: unknown };
 	fields["editor"] = {
@@ -28,7 +28,10 @@ function harness(): Harness {
 		requestRender: () => { state.renders += 1; },
 		tui: () => ({}),
 		mode: () => "fullscreen",
+		suspendTerminal: () => { state.suspends += 1; },
+		resumeTerminal: () => { state.resumes += 1; },
 	};
+	fields["theme"] = { reload: () => {} };
 	fields["keymap"] = new KeymapAdapter({});
 	fields["client"] = {
 		command: async (type: string) => {
@@ -71,4 +74,21 @@ test("a later fresh Ctrl+C PRESS still follows the normal clear-then-exit behavi
 	route(app, "\x1b[99;5u"); // 空草稿再次 PRESS：进入退出
 	await new Promise((resolve) => setTimeout(resolve, 0));
 	assert.equal(state.quits, 1);
+});
+
+
+test("Ctrl+Z routes through the suspend helper and resumes once on SIGCONT", async () => {
+	const { app, state } = harness();
+	const originalKill = process.kill;
+	(process as unknown as { kill: typeof process.kill }).kill = (() => true) as typeof process.kill;
+	try {
+		assert.deepEqual(route(app, "\x1a"), { consume: true });
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		assert.equal(state.suspends, 1, "the host must pause rendering before SIGTSTP");
+		process.emit("SIGCONT");
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		assert.equal(state.resumes, 1, "SIGCONT resumes the host exactly once");
+	} finally {
+		(process as unknown as { kill: typeof process.kill }).kill = originalKill;
+	}
 });
