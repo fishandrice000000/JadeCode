@@ -2,6 +2,10 @@ import { connect, type Socket } from "node:net";
 import { Buffer } from "node:buffer";
 import { MAX_FRAME_BYTES, parseFrame, ProtocolViolation, type Payload, type WireMessage } from "./wire.ts";
 
+/** 与后端相同的连接级预算；慢 peer 不能让 Node 的 writable buffer/待答命令无限增长。 */
+const MAX_OUTBOUND_BYTES = 8 * 1024 * 1024;
+const MAX_PENDING_COMMANDS = 4096;
+
 /**
  * 到 Java 后端的唯一控制连接。
  *
@@ -86,12 +90,24 @@ export class BackendClient {
 
 	/** 发送一条命令并等待 command.result/command.error。 */
 	command(type: string, payload: Payload, identity: { sessionId?: string | null; generation?: string | null } = {}, hooks?: { onCommandId?: (id: string) => void; onCommandError?: (message: string) => void }): Promise<CommandResult> {
+		if (this.pending.size >= MAX_PENDING_COMMANDS) {
+			const reason = "The backend is not consuming commands within the connection budget";
+			this.options.onFatal(reason);
+			this.fail(reason);
+			return Promise.reject(new Error(reason));
+		}
 		const commandId = `c-${++this.commandCounter}`;
 		hooks?.onCommandId?.(commandId);
 		const promise = new Promise<CommandResult>((resolve, reject) => {
 			this.pending.set(commandId, { resolve, reject, onCommandError: hooks?.onCommandError });
 		});
-		this.send(type, payload, { commandId, sessionId: identity.sessionId ?? null, generation: identity.generation ?? null });
+		try {
+			this.send(type, payload, { commandId, sessionId: identity.sessionId ?? null, generation: identity.generation ?? null });
+		} catch (failure) {
+			// send 失败也必须完成已经登记的同一 Promise，不能同步抛出并遗留永久待定命令。
+			this.pending.get(commandId)?.reject(failure instanceof Error ? failure : new Error(String(failure)));
+			this.pending.delete(commandId);
+		}
 		return promise;
 	}
 
@@ -110,6 +126,12 @@ export class BackendClient {
 		};
 		const bytes = Buffer.from(`${JSON.stringify(frame)}\n`, "utf8");
 		if (bytes.length > MAX_FRAME_BYTES) throw new Error("An outbound frame exceeds the protocol limit");
+		if ((this.socket.writableLength ?? 0) + bytes.length > MAX_OUTBOUND_BYTES) {
+			const reason = "The backend socket exceeded the outbound connection budget";
+			this.options.onFatal(reason);
+			this.fail(reason);
+			throw new Error(reason);
+		}
 		this.socket.write(bytes);
 	}
 
