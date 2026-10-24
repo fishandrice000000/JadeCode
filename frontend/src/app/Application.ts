@@ -1,8 +1,6 @@
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import {
-	isKeyRelease,
-	isKeyRepeat,
 	matchesKey,
 	type Component,
 	type TUI,
@@ -11,6 +9,7 @@ import {
 import { BackendClient } from "../bridge/client.ts";
 import { PayloadAssembler } from "../bridge/payload-assembler.ts";
 import { UiEventBarrier } from "./ui-barrier.ts";
+import { isGlobalActionPress } from "../terminal/global-keys.ts";
 import { arrayValue, numberValue, text, type Payload, type WireMessage } from "../bridge/wire.ts";
 import { SessionStore, type TuiSettings } from "../state/session-store.ts";
 import { TranscriptStore, type Entry, type ToolIdentity } from "../state/transcript-store.ts";
@@ -284,7 +283,8 @@ export class Application {
 			return { consume: true };
 		}
 		if (this.approval.hasPending()) return { consume: true };
-		if (isKeyRelease(data)) return undefined;
+		// repeat/release 交回编辑器（长按输入），但不得触发全局退出/复制等动作。
+		if (!isGlobalActionPress(data)) return undefined;
 		if (matchesKey(data, "escape")) {
 			this.editor.focus(this.host.tui()!);
 			return { consume: true };
