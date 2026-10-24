@@ -115,9 +115,13 @@ public final class ProtocolSession implements AutoCloseable {
         this.onClosed = onClosed;
         this.onReady = onReady;
         this.onHello = onHello;
-        this.outbox = new EventOutbox(this::writeFrame, failure -> closeQuietly());
-        // 手 shake 期限用“活跃 tick”累计：进程被 Ctrl+Z 暂停时 tick 也暂停，正常暂停不算失联。
-        handshakeTimer.scheduleAtFixedRate(this::handshakeTick, 1, 1, TimeUnit.SECONDS);
+        // 过载通知可能来自领域投递线程，也可能来自 outbox 写线程。关闭会等待写线程排空，
+        // 必须交给独立线程：否则领域线程会被慢 socket 拖住，写线程还会等待自己结束。
+        this.outbox = new EventOutbox(this::writeFrame, failure ->
+                Thread.ofVirtual().name("jade-wire-overload-close").start(this::closeQuietly));
+        // 握手期限按实际执行的 tick 累计。fixed-delay 不会在进程 fg 后补跑暂停期间
+        // 积压的 fixed-rate tick，避免一次正常作业暂停被误判为握手超时。
+        handshakeTimer.scheduleWithFixedDelay(this::handshakeTick, 1, 1, TimeUnit.SECONDS);
     }
 
     /** @return 传输层/outbox 的第一次致命失败；null 表示没有。 */
