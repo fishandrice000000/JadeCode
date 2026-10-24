@@ -43,11 +43,17 @@ export class JadeTerminal implements Terminal {
 	private progressActive = false;
 	private failureReported = false;
 	private failed = false;
+	/** Pi 每次 start 的块号从 1 重新计数，桥接水位在整个连接生命周期内必须单调。 */
+	private rawChunks = 0;
+	private chunkOffset = 0;
 
 	constructor(options: JadeTerminalOptions) {
 		this.options = options;
 		this.inner = new ProcessTerminal();
-		this.inner.setRawInputTap((data) => this.options.onRawInput(data));
+		this.inner.setRawInputTap((data) => {
+			this.rawChunks += 1;
+			this.options.onRawInput(data);
+		});
 		process.stdout.on("error", (error) => this.fail(`Terminal output failed: ${error.message}`));
 	}
 
@@ -67,9 +73,22 @@ export class JadeTerminal implements Terminal {
 		this.pump();
 	}
 
+	/** 终端交接/退出时有界等待已排队输出；写失败不发布成功围栏，也不能永久悬挂退出。 */
+	flushOutput(timeoutMs = 1000): Promise<void> {
+		if (this.failed) return Promise.reject(new Error("Terminal output has failed"));
+		return new Promise((resolve, reject) => {
+			// 保留 referenced timer：最后一个 socket 已关闭时也必须完成顶层 await。
+			const timer = setTimeout(() => reject(new Error("Timed out draining terminal output")), timeoutMs);
+			this.afterFrame(() => { clearTimeout(timer); resolve(); });
+		});
+	}
+
 	start(onInput: (data: string) => void, onResize: () => void): void {
+		// 暂停/模式切换重建 StdinBuffer 时记录偏移；保留跨分片的起点，不能把旧输入变新。
+		this.chunkOffset = this.rawChunks;
 		this.inner.start((data) => {
-			this.options.onInputStart?.(this.inner.currentInputChunk());
+			const chunk = this.inner.currentInputChunk();
+			this.options.onInputStart?.(chunk > 0 ? this.chunkOffset + chunk : 0);
 			try {
 				onInput(data);
 			} finally {
@@ -173,8 +192,12 @@ export class JadeTerminal implements Terminal {
 					this.fail(`Terminal output failed: ${error.message}`);
 					return;
 				}
+				const wasWritable = this.canRender();
 				this.pendingWrites -= 1;
 				if (!this.blocked) this.pump();
+				// 小写入全部返回 true 时不会有 drain，但在途回调数同样可能挡住 renderGate。
+				// 回调释放预算也必须唤醒最新帧，否则 fg/模式切换后会永久停在空白界面。
+				if (!wasWritable && this.canRender()) this.options.onWritable();
 			});
 			if (!accepted && !this.blocked) {
 				this.blocked = true;

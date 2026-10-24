@@ -59,3 +59,21 @@ test("slow stdout keeps state updates flowing while Pi coalesces blocked renders
 		tui.stop();
 	} finally { process.stdout.write = original; }
 });
+
+test("accepted stdout writes resume the render gate when callbacks release the in-flight budget", async () => {
+	const original = process.stdout.write;
+	const callbacks: Array<() => void> = [];
+	let resumed = 0;
+	const terminal = new JadeTerminal({ onWritable: () => { resumed++; }, onWriteFailure: assert.fail, onRawInput: () => {} });
+	try {
+		process.stdout.write = ((text: string, callback: () => void) => {
+			if (text !== "held-control") return Reflect.apply(original, process.stdout, [text, callback]);
+			callbacks.push(callback); return true;
+		}) as typeof process.stdout.write;
+		for (let index = 0; index < 8; index++) terminal.write("held-control");
+		assert.equal(terminal.canRender(), false);
+		for (const callback of callbacks) callback();
+		assert.equal(terminal.canRender(), true);
+		assert.equal(resumed, 1, "budget transition must wake the gate even without any drain event");
+	} finally { process.stdout.write = original; }
+});
