@@ -20,7 +20,8 @@ export class SearchPage implements Page {
 		this.context = context;
 		this.search = search;
 		this.input = new Input();
-		this.input.onSubmit = () => this.jump();
+		// 提交/跳转只由页面键表（tui.select.confirm）决定；Input 的默认 Enter/LF 回退不能
+		// 绕过覆盖去 jump 或关闭页面。Input 只负责查询文本编辑。
 	}
 
 	private readonly search: (query: string) => Array<{ id: string; offset: number; snippet: string }>;
@@ -69,6 +70,8 @@ export class SearchPage implements Page {
 			if (this.matches.length > 0) this.selected = (this.selected - 1 + this.matches.length) % this.matches.length;
 			return true;
 		}
+		// 未匹配当前页面确认动作的 Enter/LF 不得落入 Input 的 submit 回退。
+		if (data === "\r" || data === "\n") return true;
 		this.input.handleInput(data);
 		const value = this.input.getValue();
 		if (value !== this.query) {

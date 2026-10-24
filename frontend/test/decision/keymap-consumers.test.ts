@@ -255,3 +255,25 @@ test("SearchPage executes overridden searchNext/searchPrevious", () => {
 	search.handleInput("\x02"); // ctrl+b
 	assert.match(search.render(80).join("\n"), /▸ m0/);
 });
+
+
+test("SearchPage never lets the internal Input fallback jump/close on replaced Enter/LF", () => {
+	const keymap = new KeymapAdapter({
+		"tui.select.confirm": ["ctrl+y"],
+		"tui.altScreen.searchNext": ["ctrl+f"],
+		"tui.altScreen.searchPrevious": ["ctrl+b"],
+	});
+	let closed = 0;
+	let jumps = 0;
+	const base = pageContext(keymap);
+	const matches = ["m0", "m1", "m2"].map((snippet, index) => ({ id: `e${index}`, offset: index, snippet }));
+	const search = new SearchPage({ ...base, closePage: () => { closed += 1; }, jumpToMatch: () => { jumps += 1; } }, () => matches);
+	search.handleInput("q");
+	search.handleInput("\r"); // old Enter, replaced by ctrl+y
+	search.handleInput("\n"); // LF fallback
+	assert.equal(jumps, 0);
+	assert.equal(closed, 0);
+	search.handleInput("\x19"); // ctrl+y
+	assert.equal(jumps, 1);
+	assert.equal(closed, 1);
+});
