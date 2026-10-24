@@ -20,8 +20,9 @@ export class MarkdownFactory {
 	 * @param theme 当前主题快照（来自同一 ThemeController）
 	 * @param codeBlockIndent 配置的代码块缩进（原样保留，不另写排版器）
 	 * @param mermaidEnabled false 时 Mermaid 围栏保持为普通代码块
+	 * @param thinking 思考正文用同源主题色与斜体；NO_COLOR 时不添加属性
 	 */
-	create(theme: ResolvedTheme, codeBlockIndent: string, mermaidEnabled = true): {
+	create(theme: ResolvedTheme, codeBlockIndent: string, mermaidEnabled = true, thinking = false): {
 		markdown: Markdown;
 		setText: (text: string) => void;
 		invalidate: () => void;
@@ -44,7 +45,7 @@ export class MarkdownFactory {
 				return highlightCode(code, lang, theme);
 			},
 		};
-		const markdown = new Markdown("", 0, 0, themed, undefined, options);
+		const markdown = new Markdown("", 0, 0, themed, thinking ? { color: (text) => theme.style("thinkingText", text), italic: !theme.noColor } : undefined, options);
 		return {
 			markdown,
 			setText: (text: string) => markdown.setText(text),

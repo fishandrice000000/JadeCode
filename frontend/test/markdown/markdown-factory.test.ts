@@ -54,3 +54,9 @@ test("model/tool control sequences are stripped before Markdown rendering", () =
 	assert.equal(safe, "saferedlink");
 	assert.doesNotMatch(render(safe), /\x1b\[/);
 });
+
+test("NO_COLOR keeps Markdown emphasis text without emitting italic or strike attributes", () => {
+	const text = render("**bold** *italic* ~~strike~~");
+	assert.match(text, /bold/); assert.match(text, /italic/); assert.match(text, /strike/);
+	assert.doesNotMatch(text, /\x1b\[/);
+});

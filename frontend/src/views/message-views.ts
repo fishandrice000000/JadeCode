@@ -2,7 +2,7 @@ import { wrapTextWithAnsi, visibleWidth } from "@earendil-works/pi-tui";
 import type { Entry } from "../state/transcript-store.ts";
 import type { ResolvedTheme } from "../theme/theme-resolver.ts";
 import type { MarkdownFactory } from "../markdown/markdown-factory.ts";
-import { display, singleLine } from "../presentation/text-safety.ts";
+import { clipLine, display, singleLine } from "../presentation/text-safety.ts";
 import { formatDuration } from "../presentation/format.ts";
 
 /**
@@ -40,7 +40,7 @@ export class MessageCard {
 		lines.push(this.title(width));
 		const body = this.body(width);
 		for (const line of body) lines.push(line);
-		return lines;
+		return lines.map((line) => clipLine(line, width));
 	}
 
 	private title(width: number): string {
@@ -51,15 +51,16 @@ export class MessageCard {
 		const icon = this.entry.kind === "USER" ? "◆" : this.entry.kind === "THINKING" ? "◇" : this.entry.kind === "TOOL" ? "◍" : "◆";
 		const role = this.entry.kind === "USER" ? "requestTitle" : this.entry.kind === "THINKING" ? "thinkingTitle" : "replyTitle";
 		const text = `${icon} ${actor}${this.entry.title}${status}${elapsed}`;
-		return theme.style(role, singleLine(text).slice(0, Math.max(0, width)));
+		return theme.style(role, clipLine(singleLine(text), Math.max(0, width)));
 	}
 
 	private body(width: number): string[] {
 		const theme = this.theme;
-		if (this.entry.kind === "REPLY") {
+		if (this.entry.kind === "THINKING" && !this.entry.expanded) return [];
+		if (this.entry.kind === "REPLY" || this.entry.kind === "THINKING") {
 			const key = `${theme.name}:${theme.mode}:${theme.noColor}`;
 			if (!this.markdown || this.markdownRevision !== this.entry.revision || this.markdownWidth !== width || this.markdownTheme !== key) {
-				if (!this.markdown) this.markdown = this.factory.create(theme, this.codeBlockIndent);
+				if (!this.markdown) this.markdown = this.factory.create(theme, this.codeBlockIndent, this.entry.kind !== "THINKING", this.entry.kind === "THINKING");
 				this.markdown.setText(display(this.entry.body));
 				this.markdown.invalidate();
 				this.markdownRevision = this.entry.revision;
@@ -71,8 +72,8 @@ export class MessageCard {
 		if (this.entry.kind === "USER") {
 			return this.boxed(display(this.entry.body), width, "userMessageBg", "userMessageText");
 		}
-		const prefix = this.entry.kind === "THINKING" ? "  " : "  ";
-		const role = this.entry.kind === "THINKING" ? "thinkingText" : "muted";
+		const prefix = "  ";
+		const role = "muted";
 		return wrapTextWithAnsi(display(this.entry.body), Math.max(1, width - prefix.length))
 			.map((line) => prefix + theme.style(role, line));
 	}

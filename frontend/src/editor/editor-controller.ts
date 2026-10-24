@@ -38,7 +38,7 @@ export class EditorController {
 		this.settings = settings;
 		this.completion = completion;
 		this.callbacks = callbacks;
-		this.editor = new Editor(tui, editorTheme(theme), {
+		this.editor = new Editor(tui, editorTheme(() => this.theme), {
 			paddingX: settings?.editorPaddingX ?? 0,
 			autocompleteMaxVisible: settings?.autocompleteMaxVisible ?? 5,
 		});

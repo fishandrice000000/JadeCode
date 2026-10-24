@@ -39,6 +39,7 @@ export interface Entry {
 export type ChangeListener = () => void;
 
 export class TranscriptStore {
+	private toolsExpanded = false;
 	private readonly list: Entry[] = [];
 	private readonly byId = new Map<string, Entry>();
 	private readonly previews = new Map<string, string>();
@@ -67,7 +68,7 @@ export class TranscriptStore {
 		this.previews.clear();
 		this.lastReply = "";
 		for (const entry of entries) {
-			const copy: Entry = { ...entry, revision: entry.revision ?? 0, expanded: entry.expanded ?? false };
+			const copy: Entry = { ...entry, revision: entry.revision ?? 0, expanded: entry.kind === "TOOL" ? this.toolsExpanded : entry.expanded ?? false };
 			this.list.push(copy);
 			this.byId.set(copy.id, copy);
 			if (copy.kind === "REPLY" && copy.body) this.lastReply = copy.body;
@@ -80,6 +81,8 @@ export class TranscriptStore {
 	upsert(entry: Entry): Entry {
 		const existing = this.byId.get(entry.id);
 		if (existing) return this.update(entry.id, () => entry) ?? existing;
+		// 新工具继承当前全局展开策略；单卡的后续更新仍保留自己的选择。
+		if (entry.kind === "TOOL") entry = { ...entry, expanded: this.toolsExpanded };
 		this.list.push(entry);
 		this.byId.set(entry.id, entry);
 		this.touch(entry);
@@ -123,6 +126,14 @@ export class TranscriptStore {
 		const kind: EntryKind = label === "Reply" ? "REPLY" : "NOTICE";
 		if (kind === "REPLY") {
 			const last = this.lastReplyEntry(actor);
+			if (last?.requestId) {
+				const segments = this.list.filter((entry) => entry.kind === "REPLY" && entry.requestId === last.requestId && entry.actor === last.actor);
+				if ([segments.map((entry) => entry.body).join(""), segments.map((entry) => entry.body).join("\n")].some((value) => value.trim() === body.trim())) {
+					// 最终整条回复只确认已显示的有序分段，不把它重复塞回最后一段。
+					this.lastReply = body;
+					return last;
+				}
+			}
 			if (last && last.body.trim() === body.trim()) {
 				this.update(last.id, (entry) => ({ ...entry, status: "DONE" }));
 				return this.byId.get(last.id)!;
@@ -154,15 +165,15 @@ export class TranscriptStore {
 		});
 	}
 
-	/** 流式回复/思考卡：同请求同通道只有一个，直到结束。 */
-	streamEntry(requestId: string, actor: string, kind: "REPLY" | "THINKING"): Entry {
-		const id = `stream-${requestId}-${kind}`;
+	/** 流式回复/思考卡：每个连续通道段一张卡，保留 text/thinking 交替顺序。 */
+	streamEntry(requestId: string, actor: string, kind: "REPLY" | "THINKING", segment = 0): Entry {
+		const id = `stream-${requestId}-${kind}${segment ? `-${segment}` : ""}`;
 		const existing = this.byId.get(id);
 		if (existing) return existing;
 		return this.upsert({
 			id, kind, actor: actor || "leader", title: kind === "REPLY" ? "Reply" : "Thinking", body: "",
 			arguments: "", status: "STREAMING", requestId, callId: null, blockIndex: null, elapsedMs: null,
-			historical: false, tool: null, revision: 0, expanded: false,
+			historical: false, tool: null, revision: 0, expanded: kind === "THINKING",
 		});
 	}
 
@@ -211,7 +222,9 @@ export class TranscriptStore {
 		if (previewId) {
 			const next = this.update(previewId, (entry) => ({
 				...entry,
-				arguments: detail || entry.arguments,
+				// 开始通知携带参数，结束通知携带结果；不能把结果覆盖到参数栏。
+				arguments: isStart ? detail || entry.arguments : entry.arguments,
+				body: isStart ? entry.body : detail,
 				status: state,
 				title: name || entry.title,
 				elapsedMs: isStart ? entry.elapsedMs : elapsedMs,
@@ -263,10 +276,11 @@ export class TranscriptStore {
 		this.update(id, (entry) => ({ ...entry, expanded: !entry.expanded }));
 	}
 
-	/** 全局展开/折叠所有工具与思考卡。 */
+	/** 全局展开/折叠工具；Thinking 单块与全局显隐保持独立。 */
 	setToolsExpanded(value: boolean): void {
+		this.toolsExpanded = value;
 		for (const entry of [...this.list]) {
-			if (entry.kind === "TOOL" || entry.kind === "THINKING") {
+			if (entry.kind === "TOOL") {
 				if (entry.expanded !== value) this.update(entry.id, (current) => ({ ...current, expanded: value }));
 			}
 		}

@@ -1,3 +1,5 @@
+import { truncateToWidth } from "@earendil-works/pi-tui";
+
 /**
  * 外部内容 → 可安全显示的文本。
  *
@@ -120,4 +122,11 @@ function skipEscape(value: string, start: number): number {
 		return i;
 	}
 	return Math.min(value.length, i + 1);
+}
+
+
+/** 按终端列/完整字素裁剪；纯文本输入不能因 Pi 的补位 reset 而新增 SGR（NO_COLOR）。 */
+export function clipLine(value: string, width: number): string {
+	const clipped = truncateToWidth(value, Math.max(0, width), "");
+	return value.includes("\x1b") ? clipped : clipped.replace(/\x1b\[[0-9;]*m/g, "");
 }

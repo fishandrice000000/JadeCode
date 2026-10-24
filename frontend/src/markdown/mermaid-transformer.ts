@@ -20,6 +20,7 @@ const CLASS_ROLES: Record<Exclude<Cls, "none">, Role> = {
 };
 
 export class MermaidTransformer {
+	private lastTheme: ResolvedTheme | undefined;
 	private readonly cache = new Map<string, { width: number; lines: string[]; themeKey: string }>();
 
 	/**
@@ -28,6 +29,8 @@ export class MermaidTransformer {
 	 * @returns 已着色行；空源码返回空数组
 	 */
 	render(source: string, width: number, theme: ResolvedTheme): string[] {
+		// 同名文件 watch 后会生成新快照；旧缓存含颜色，必须一并作废。
+		if (this.lastTheme !== theme) { this.cache.clear(); this.lastTheme = theme; }
 		const trimmed = source.trim();
 		if (!trimmed) return [];
 		const themeKey = `${theme.name}:${theme.mode}:${theme.noColor ? "nocolor" : "color"}`;

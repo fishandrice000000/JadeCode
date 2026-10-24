@@ -10,19 +10,21 @@ import { highlightCode } from "../markdown/syntax-highlight.ts";
  * 一律覆盖为本项目角色。
  */
 
-export function selectListTheme(theme: ResolvedTheme): SelectListTheme {
+export function selectListTheme(theme: ResolvedTheme | (() => ResolvedTheme)): SelectListTheme {
+	const current = () => typeof theme === "function" ? theme() : theme;
 	return {
-		selectedPrefix: (text) => theme.style("accent", text),
-		selectedText: (text) => theme.bold(text),
-		description: (text) => theme.style("muted", text),
-		scrollInfo: (text) => theme.style("dim", text),
-		noMatch: (text) => theme.style("dim", text),
+		selectedPrefix: (text) => current().style("accent", text),
+		selectedText: (text) => current().bold(text),
+		description: (text) => current().style("muted", text),
+		scrollInfo: (text) => current().style("dim", text),
+		noMatch: (text) => current().style("dim", text),
 	};
 }
 
-export function editorTheme(theme: ResolvedTheme): EditorTheme {
+export function editorTheme(theme: ResolvedTheme | (() => ResolvedTheme)): EditorTheme {
+	const current = () => typeof theme === "function" ? theme() : theme;
 	return {
-		borderColor: (text) => theme.style("border", text),
+		borderColor: (text) => current().style("border", text),
 		selectList: selectListTheme(theme),
 	};
 }
@@ -45,8 +47,8 @@ export function markdownTheme(theme: ResolvedTheme, codeBlockIndent: string): Ma
 		hr: (text) => theme.style("mdHr", text),
 		listBullet: (text) => theme.style("mdListBullet", text),
 		bold: (text) => theme.bold(text),
-		italic: (text) => `\x1b[3m${text}\x1b[23m`,
-		strikethrough: (text) => `\x1b[9m${text}\x1b[29m`,
+		italic: (text) => theme.noColor ? text : `\x1b[3m${text}\x1b[23m`,
+		strikethrough: (text) => theme.noColor ? text : `\x1b[9m${text}\x1b[29m`,
 		underline: (text) => theme.underline(text),
 		codeBlockIndent,
 		highlightCode: (code, lang) => highlightCode(code, lang, theme),
