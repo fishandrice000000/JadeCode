@@ -75,16 +75,20 @@ export class ThemeRepository {
 		const entry = this.list().find((item) => item.name === name);
 		if (!entry || entry.builtin) return () => {};
 		try {
-			const watcher = fs.watch(entry.path, { persistent: false }, () => {
+			// 编辑器常用 rename 原子替换文件；监听目录而非旧 inode，连续保存才不会失联。
+			const watcher = fs.watch(path.dirname(entry.path), { persistent: false }, (_event, filename) => {
+				if (filename !== null && filename.toString() !== path.basename(entry.path)) return;
 				try {
 					onChange(this.load(name));
 				} catch (error) {
 					onChange(error as Error);
 				}
 			});
+			watcher.on("error", (error) => onChange(error));
 			return () => watcher.close();
-		} catch {
-			// 文件被删除/目录不可监听：保留最后有效快照，不阻塞界面。
+		} catch (error) {
+			// 订阅建立失败也要报告；延到下一微任务，让 Controller 先安装本次票据。
+			queueMicrotask(() => onChange(error as Error));
 			return () => {};
 		}
 	}
