@@ -160,7 +160,10 @@ export class ThemeController {
 	clearPreview(): void {
 		if (this.previewName === null) return;
 		this.previewName = null;
-		this.rebuild(this.options.settings().theme);
+		const saved = this.options.settings().theme;
+		// 逻辑选择、快照与订阅必须一起回到已保存主题；旧预览文件的迟到回调随之作废。
+		this.installWatch(saved);
+		this.rebuild(saved);
 	}
 
 	/** 由已保存设置变化（settings.saved）触发；预览中的选择不被覆盖。 */

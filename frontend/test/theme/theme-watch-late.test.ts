@@ -53,3 +53,33 @@ test("a late failure after cancel must not revive the abandoned preview", () => 
 	assert.equal(errors.at(-1), "old save failed");
 	value.close();
 });
+
+
+test("clearPreview restores the saved theme subscription and rejects the preview file", () => {
+	const callbacks = new Map<string, (result: unknown) => void>();
+	const watched: string[] = [];
+	const repository = {
+		list: () => Object.keys(docs).map((name) => ({ name, path: name, builtin: false })),
+		load: (name: string) => ({ name, document: docs[name as keyof typeof docs], source: "", digest: name }),
+		watch: (name: string, callback: (result: unknown) => void) => {
+			watched.push(name); callbacks.set(name, callback); return () => { callbacks.delete(name); };
+		},
+	};
+	const settings = { theme: "a", lightTheme: "a", darkTheme: "a" };
+	const value = new ThemeController({
+		repository: repository as never, settings: () => settings, save: () => {},
+		onError: () => {}, onChange: () => {},
+	});
+	value.preview("b");
+	const previewB = callbacks.get("b")!;
+	value.clearPreview();
+	assert.equal(value.selectedName(), "a");
+	assert.match(value.snapshot().name, /a/);
+	assert.equal(watched.at(-1), "a", "the saved theme must be watched again");
+	assert.equal(callbacks.has("b"), false, "the preview subscription must be cancelled");
+	previewB({ name: "b", document: docs.b, source: "", digest: "late" });
+	assert.match(value.snapshot().name, /a/, "a late preview update must not change the saved snapshot");
+	callbacks.get("a")!({ name: "a", document: docs.a, source: "", digest: "2" });
+	assert.match(value.snapshot().name, /a/);
+	value.close();
+});
