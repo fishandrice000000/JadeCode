@@ -10,42 +10,46 @@ const theme = resolveTheme(parseThemeDocument(readFileSync(new URL("../../../ass
 	mode: "256color", noColor: true,
 });
 
-function entry(revision: number, body: string): Entry {
+function entry(body: string): Entry {
 	return { id: "reply", kind: "REPLY", actor: "leader", title: "Reply", body, arguments: "", status: "STREAMING",
-		requestId: "r", callId: null, blockIndex: null, elapsedMs: null, historical: false, tool: null, revision, expanded: false };
+		requestId: "r", callId: null, blockIndex: null, elapsedMs: null, historical: false, tool: null, revision: 1, expanded: false };
 }
 
-function factory(): { value: { create: (theme: unknown, indent: string) => unknown }; creates: number; setTexts: number } {
-	const state = { creates: 0, setTexts: 0 };
+function factory(): { value: { create: () => unknown }; creates: number; setTexts: number; invalidates: number; widths: number[] } {
+	const state = { creates: 0, setTexts: 0, invalidates: 0, widths: [] as number[] };
 	return {
 		get creates() { return state.creates; },
 		get setTexts() { return state.setTexts; },
+		get invalidates() { return state.invalidates; },
+		get widths() { return state.widths; },
 		value: {
 			create: () => {
 				state.creates += 1;
 				let body = "";
 				const setText = (value: string): void => { body = value; state.setTexts += 1; };
 				return {
-					markdown: { render: () => [body], setText, invalidate: () => {} },
+					markdown: {
+						render: (width: number) => { state.widths.push(width); return [`${body}@${width}`]; },
+						setText,
+						invalidate: () => { state.invalidates += 1; },
+					},
 					setText,
-					invalidate: () => {},
+					invalidate: () => { state.invalidates += 1; },
 				};
 			},
 		},
 	};
 }
 
-test("a stable reply reuses its Markdown instance; body revision and width invalidate it", () => {
+test("one card reuses its Markdown instance and invalidates on width change", () => {
 	const fake = factory();
-	const card = new MessageCard(entry(1, "hello"), theme, fake.value as never, "  ", true, false, (actor) => actor);
-	assert.match(card.render(80).join("\n"), /hello/);
+	const card = new MessageCard(entry("hello"), theme, fake.value as never, "  ", true, false, (actor) => actor);
+	assert.match(card.render(80).join("\n"), /hello@80/);
 	card.render(80);
-	assert.equal(fake.creates, 1, "same entry/width must not recreate the Markdown instance");
+	assert.equal(fake.creates, 1, "same card/width must reuse the Markdown instance");
 	assert.equal(fake.setTexts, 1, "same body must not be re-set");
-	const changed = new MessageCard(entry(2, "hello world"), theme, fake.value as never, "  ", true, false, (actor) => actor);
-	assert.match(changed.render(80).join("\n"), /hello world/);
-	assert.equal(fake.creates, 2);
-	const wider = new MessageCard(entry(2, "hello world"), theme, fake.value as never, "  ", true, false, (actor) => actor);
-	wider.render(100);
-	assert.equal(fake.creates, 3, "width changes rebuild the Markdown instance");
+	card.render(100);
+	assert.equal(fake.creates, 1, "width change must reuse the instance");
+	assert.ok(fake.invalidates >= 1, "width change must invalidate layout");
+	assert.match(card.render(100).join("\n"), /hello@100/);
 });

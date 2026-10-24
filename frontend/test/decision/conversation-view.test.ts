@@ -19,10 +19,12 @@ function session(): SessionStore {
 	return store;
 }
 
-function view(): { transcript: TranscriptStore; conversation: ConversationView } {
+function view(): { transcript: TranscriptStore; conversation: ConversationView; creates: () => number } {
 	const transcript = new TranscriptStore();
+	let creates = 0;
 	const conversation = new ConversationView(transcript, session(), {
 		create: () => {
+			creates += 1;
 			let body = "";
 			const setText = (value: string): void => { body = value; };
 			return {
@@ -33,7 +35,7 @@ function view(): { transcript: TranscriptStore; conversation: ConversationView }
 		},
 	} as never);
 	conversation.setThemeAccessor(() => theme);
-	return { transcript, conversation };
+	return { transcript, conversation, creates: () => creates };
 }
 
 test("a reply updated after the first render becomes visible (revision-aware cache)", () => {
@@ -54,4 +56,17 @@ test("the empty welcome screen stays non-empty on repeated renders", () => {
 	assert.ok(first.length > 0);
 	assert.deepEqual(second, first);
 	assert.ok(second.some((line) => line.includes("JADE") || line.includes("JadeCode")), "branding must be present");
+});
+
+
+test("updating one entry rebuilds only that card; a stable neighbour is reused", () => {
+	const { transcript, conversation, creates } = view();
+	const first = transcript.streamEntry("r1", "leader", "REPLY");
+	transcript.streamEntry("r2", "leader", "REPLY");
+	conversation.render(80);
+	assert.equal(creates(), 2);
+	transcript.update(first.id, (current) => ({ ...current, body: "ONLY_R1_CHANGED", status: "DONE", revision: current.revision + 1 }));
+	const lines = conversation.render(80).join("\n");
+	assert.match(lines, /ONLY_R1_CHANGED/);
+	assert.equal(creates(), 3, "only the changed entry creates a new card");
 });
