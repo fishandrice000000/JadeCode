@@ -48,8 +48,10 @@ test("one card reuses its Markdown instance and invalidates on width change", ()
 	card.render(80);
 	assert.equal(fake.creates, 1, "same card/width must reuse the Markdown instance");
 	assert.equal(fake.setTexts, 1, "same body must not be re-set");
+	const before = fake.invalidates;
 	card.render(100);
 	assert.equal(fake.creates, 1, "width change must reuse the instance");
-	assert.ok(fake.invalidates >= 1, "width change must invalidate layout");
+	assert.equal(fake.invalidates, before + 1, "width change must add exactly one invalidation");
 	assert.match(card.render(100).join("\n"), /hello@100/);
+	assert.equal(fake.invalidates, before + 1, "same-width re-render must not invalidate again");
 });
