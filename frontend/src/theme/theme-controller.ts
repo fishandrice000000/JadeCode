@@ -37,6 +37,7 @@ export class ThemeController {
 	private watchTicket = 0;
 	/** 构建代次：丢弃迟到的解析结果，与订阅代次分开。 */
 	private buildTicket = 0;
+	private closed = false;
 	private lastError = "";
 
 	constructor(options: ThemeControllerOptions) {
@@ -71,6 +72,8 @@ export class ThemeController {
 		if (this.dark === dark) return;
 		this.dark = dark;
 		const name = this.effectiveName();
+		// auto 的明暗配对来自不同文件；切换后必须重订阅到新的实际来源。
+		if (name === "auto") this.installWatch(name);
 		if (name === "auto" || name === "system" || this.isBuiltinVariant(name) || this.isCustom(name)) {
 			this.rebuild(name);
 		}
@@ -119,6 +122,10 @@ export class ThemeController {
 	}
 
 	close(): void {
+		if (this.closed) return;
+		this.closed = true;
+		// 作废已排队回调：取消底层订阅与拒绝迟到通知是不同边界。
+		this.watchTicket += 1;
 		this.watchCancel();
 	}
 
@@ -131,23 +138,35 @@ export class ThemeController {
 		return this.previewName ?? this.options.settings().theme;
 	}
 
+	/** auto 监听当前明暗配对的实际文件，而不是不存在的逻辑名 auto。 */
+	private watchSourceName(): string {
+		const name = this.effectiveName();
+		if (name !== "auto") return name === "system" ? "jadecode" : name;
+		const pair = this.dark ? this.options.settings().darkTheme : this.options.settings().lightTheme;
+		if (!pair || pair === "auto" || pair === "system") return "jadecode";
+		return pair;
+	}
+
 	private installWatch(name: string): void {
+		if (this.closed) return;
 		this.watchCancel();
 		const ticket = ++this.watchTicket;
-		this.watchCancel = this.options.repository.watch(name, (result) => {
-			if (ticket !== this.watchTicket) return; // 迟到结果属于旧主题选择
+		const source = this.watchSourceName();
+		this.watchCancel = this.options.repository.watch(source, (result) => {
+			if (ticket !== this.watchTicket || this.closed) return; // 旧选择/关闭后的迟到结果
 			if (result instanceof Error) {
 				this.lastError = result.message;
 				this.options.onError(result.message);
 				return;
 			}
 			this.lastError = "";
-			// rebuild 只递增 buildTicket；当前订阅的后续更新仍然有效。
+			// 用逻辑名重建：auto 仍按当前明暗/配对解析；rebuild 只递增 buildTicket。
 			this.rebuild(name);
 		});
 	}
 
 	private rebuild(name: string): void {
+		if (this.closed) return;
 		const ticket = ++this.buildTicket;
 		try {
 			const next = this.build(name, ticket);

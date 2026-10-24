@@ -52,3 +52,51 @@ test("the current subscription survives repeated updates, and switching themes m
 	value.close();
 	assert.ok(cancels >= 2);
 });
+
+
+test("auto watches the resolved pair file, re-subscribes on scheme change, and close drops queued callbacks", () => {
+	const callbacks = new Map<string, (result: unknown) => void>();
+	const watched: string[] = [];
+	const docs = { a: document("a", "#ff0000"), b: document("b", "#0000ff") };
+	const settings = { theme: "auto", lightTheme: "b", darkTheme: "a" };
+	const repository = {
+		list: () => [{ name: "a", path: "a", builtin: false }, { name: "b", path: "b", builtin: false }],
+		load: (name: string) => ({ name, document: docs[name as keyof typeof docs], source: "", digest: name }),
+		watch: (name: string, callback: (result: unknown) => void) => {
+			watched.push(name);
+			callbacks.set(name, callback);
+			return () => { callbacks.delete(name); };
+		},
+	};
+	let changes = 0;
+	const errors: string[] = [];
+	const value = new ThemeController({
+		repository: repository as never,
+		settings: () => settings,
+		save: () => {}, onError: (message) => { errors.push(message); }, onChange: () => { changes += 1; },
+	});
+	assert.deepEqual(watched, ["a"], "auto must watch the dark pair file, not the logical name");
+	const darkA = callbacks.get("a")!;
+	darkA({ name: "a", document: docs.a, source: "", digest: "1" });
+	darkA({ name: "a", document: docs.a, source: "", digest: "2" });
+	assert.equal(changes, 2, "the auto subscription accepts repeated updates");
+	value.setScheme(false);
+	assert.equal(watched.includes("b"), true, "switching to light must subscribe to the light pair file");
+	const oldA = darkA;
+	const before = changes;
+	oldA(new Error("late a"));
+	oldA({ name: "a", document: docs.a, source: "", digest: "3" });
+	assert.equal(changes, before);
+	callbacks.get("b")!({ name: "b", document: docs.b, source: "", digest: "1" });
+	assert.equal(changes, before + 1);
+	assert.equal(value.selectedName(), "auto", "logical selection stays auto");
+	// L02: queued callback delivered after close must not change state or report errors.
+	const queued = callbacks.get("b")!;
+	value.close();
+	const afterClose = changes;
+	const errorsBefore = errors.length;
+	queued({ name: "b", document: docs.b, source: "", digest: "2" });
+	queued(new Error("closed"));
+	assert.equal(changes, afterClose);
+	assert.equal(errors.length, errorsBefore);
+});
