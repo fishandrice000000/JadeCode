@@ -558,13 +558,23 @@ export class Application {
 				this.approval.removed(message.payload);
 				return;
 			case "settings.saved":
+				if (this.pendingThemeSave) {
+					this.pendingThemeSave = false;
+					this.theme.commitSucceeded();
+				}
 				this.session.applySettingsSaved(message.payload);
 				this.theme.settingsChanged();
 				this.applyLiveSettings();
 				return;
-			case "settings.failed":
-				this.notify(text(message.payload, "message", "Settings were not saved"), true);
+			case "settings.failed": {
+				const failure = text(message.payload, "message", "Settings were not saved");
+				if (this.pendingThemeSave) {
+					this.pendingThemeSave = false;
+					this.theme.commitFailed(failure);
+				}
+				this.notify(failure, true);
 				return;
+			}
 			case "diagnostic":
 				this.notify(text(message.payload, "message"), true);
 				return;
@@ -880,14 +890,23 @@ export class Application {
 		};
 	}
 
+	private pendingThemeSave = false;
+
 	private saveSettings(patch: Record<string, unknown>): void {
 		const client = this.client;
 		if (!client) return;
+		if (typeof patch.theme === "string") this.pendingThemeSave = true;
 		void client.command("settings.patch", {
 			expectedConfigRevision: Number(this.session.configRevision()),
 			patch,
 		}, this.identity()).then((result) => {
-			if (!result.ok) this.notify(result.message ?? "The setting was not saved", true);
+			if (!result.ok) {
+				if (this.pendingThemeSave) {
+					this.pendingThemeSave = false;
+					this.theme.commitFailed(result.message ?? "The theme was not saved");
+				}
+				this.notify(result.message ?? "The setting was not saved", true);
+			}
 		});
 	}
 

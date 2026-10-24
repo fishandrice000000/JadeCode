@@ -142,3 +142,30 @@ test("commit watches the submitted theme while the async settings reply is still
 	callbacks.get("b")!({ name: "b", document: docs.b, source: "", digest: "2" });
 	assert.equal(changes, afterReply + 1);
 });
+
+
+test("a failed theme save restores the retryable preview and keeps the new file watched", () => {
+	const callbacks = new Map<string, (result: unknown) => void>();
+	const docs = { a: document("a", "#ff0000"), b: document("b", "#0000ff") };
+	const settings = { theme: "a", lightTheme: "light", darkTheme: "dark" };
+	const repository = {
+		list: () => [{ name: "a", path: "a", builtin: false }, { name: "b", path: "b", builtin: false }],
+		load: (name: string) => ({ name, document: docs[name as keyof typeof docs], source: "", digest: name }),
+		watch: (name: string, callback: (result: unknown) => void) => { callbacks.set(name, callback); return () => { callbacks.delete(name); }; },
+	};
+	const errors: string[] = [];
+	const value = new ThemeController({
+		repository: repository as never, settings: () => settings, save: () => {},
+		onError: (message) => { errors.push(message); }, onChange: () => {},
+	});
+	value.preview("b");
+	value.commit();
+	assert.match(value.snapshot().name, /b/);
+	value.commitFailed("write failed");
+	assert.equal(value.selectedName(), "b", "failed save keeps the retryable preview");
+	assert.equal(settings.theme, "a", "settings were not pretended saved");
+	assert.equal(errors.at(-1), "write failed");
+	assert.equal(callbacks.has("b"), true, "the previewed file stays watched for retry");
+	value.commitSucceeded();
+	value.close();
+});

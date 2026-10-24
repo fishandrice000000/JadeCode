@@ -38,6 +38,8 @@ export class ThemeController {
 	/** 构建代次：丢弃迟到的解析结果，与订阅代次分开。 */
 	private buildTicket = 0;
 	private closed = false;
+	/** 已发出保存但尚未收到回执的主题；失败时用它恢复可重试预览。 */
+	private committedName: string | null = null;
 	private lastError = "";
 
 	constructor(options: ThemeControllerOptions) {
@@ -99,9 +101,28 @@ export class ThemeController {
 		const name = this.previewName;
 		if (!name) return;
 		this.previewName = null;
+		this.committedName = name;
 		this.options.save({ theme: name });
 		this.installWatch(name);
 		this.rebuild(name);
+	}
+
+	/** settings.saved 回执：提交已完成，不再需要失败恢复。 */
+	commitSucceeded(): void { this.committedName = null; }
+
+	/**
+	 * settings.failed/command.error：保存失败时恢复可重试预览，保持选择名、快照与订阅一致。
+	 * 只报告真实错误，不假装已保存。
+	 */
+	commitFailed(message: string): void {
+		const name = this.committedName;
+		if (!name) return;
+		this.committedName = null;
+		this.previewName = name;
+		this.lastError = message;
+		this.installWatch(name);
+		this.rebuild(name);
+		this.options.onError(message);
 	}
 
 	/** 取消预览：回到已保存选择，不写配置。 */
