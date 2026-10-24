@@ -33,7 +33,10 @@ export class ThemeController {
 	private terminalBackground: Color | undefined;
 	private noColor = Boolean(process.env.NO_COLOR);
 	private watchCancel: () => void = () => {};
-	private ticket = 0;
+	/** 订阅代次：只在真正更换被监听文件时递增，普通快照重算不能作废当前订阅。 */
+	private watchTicket = 0;
+	/** 构建代次：丢弃迟到的解析结果，与订阅代次分开。 */
+	private buildTicket = 0;
 	private lastError = "";
 
 	constructor(options: ThemeControllerOptions) {
@@ -80,10 +83,11 @@ export class ThemeController {
 		if (this.effectiveName() === "system") this.rebuild("system");
 	}
 
-	/** 预览：只改渲染快照，不写配置。 */
+	/** 预览：只改渲染快照，不写配置；同时把 watch 切到新主题文件。 */
 	preview(name: string): void {
 		if (!this.names().includes(name)) return;
 		this.previewName = name;
+		this.installWatch(name);
 		this.rebuild(name);
 	}
 
@@ -93,6 +97,7 @@ export class ThemeController {
 		if (!name) return;
 		this.previewName = null;
 		this.options.save({ theme: name });
+		this.installWatch(name);
 		this.rebuild(name);
 	}
 
@@ -100,13 +105,17 @@ export class ThemeController {
 	cancel(): void {
 		if (this.previewName === null) return;
 		this.previewName = null;
-		this.rebuild(this.options.settings().theme);
+		const saved = this.options.settings().theme;
+		this.installWatch(saved);
+		this.rebuild(saved);
 	}
 
 	/** 由已保存设置变化（settings.saved）触发；预览中的选择不被覆盖。 */
 	settingsChanged(): void {
 		if (this.previewName !== null) return;
-		this.rebuild(this.options.settings().theme);
+		const saved = this.options.settings().theme;
+		this.installWatch(saved);
+		this.rebuild(saved);
 	}
 
 	close(): void {
@@ -124,24 +133,25 @@ export class ThemeController {
 
 	private installWatch(name: string): void {
 		this.watchCancel();
-		const ticket = ++this.ticket;
+		const ticket = ++this.watchTicket;
 		this.watchCancel = this.options.repository.watch(name, (result) => {
-			if (ticket !== this.ticket) return; // 迟到结果属于旧主题选择
+			if (ticket !== this.watchTicket) return; // 迟到结果属于旧主题选择
 			if (result instanceof Error) {
 				this.lastError = result.message;
 				this.options.onError(result.message);
 				return;
 			}
 			this.lastError = "";
+			// rebuild 只递增 buildTicket；当前订阅的后续更新仍然有效。
 			this.rebuild(name);
 		});
 	}
 
 	private rebuild(name: string): void {
-		const ticket = ++this.ticket;
+		const ticket = ++this.buildTicket;
 		try {
 			const next = this.build(name, ticket);
-			if (ticket !== this.ticket) return;
+			if (ticket !== this.buildTicket) return;
 			this.snapshotValue = next;
 			this.lastError = "";
 			this.options.onChange();
