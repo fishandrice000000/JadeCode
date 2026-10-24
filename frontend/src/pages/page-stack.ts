@@ -1,6 +1,7 @@
 import type { BackendClient } from "../bridge/client.ts";
 import type { ResolvedTheme } from "../theme/theme-resolver.ts";
 import type { SessionStore, TuiSettings } from "../state/session-store.ts";
+import type { KeymapAdapter } from "../editor/keymap-adapter.ts";
 
 /**
  * 完整页栈：同一时刻只有一个活动页；父子页 Esc 只退一级，父页保留筛选/选中。
@@ -18,6 +19,7 @@ export interface SessionItem {
 
 export interface PageContext {
 	state: SessionStore;
+	keymap: KeymapAdapter;
 	theme(): ResolvedTheme;
 	client(): BackendClient | null;
 	identity(): { sessionId: string; generation: string };

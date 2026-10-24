@@ -95,6 +95,7 @@ export class Application {
 			requestRender: () => this.host?.requestRender(),
 			notify: (message, error = false) => this.notify(message, error),
 			terminalHealthy: () => this.host !== undefined && !this.host.terminal.hasFailed(),
+			keymap: () => this.keymap,
 			teamActive: () => this.session.teamActive(),
 			actorName: (actor) => this.session.displayActor(actor) || actor,
 		});
@@ -352,6 +353,26 @@ export class Application {
 		}
 		if (this.keymap.matches("tui.altScreen.search", data) && this.host.mode() === "fullscreen") {
 			this.openSearchPage();
+			return { consume: true };
+		}
+		if (this.keymap.matches("app.permission.menu", data)) {
+			this.pages.push(new PermissionPage(this.pageContext()));
+			this.host.requestRender();
+			return { consume: true };
+		}
+		if (this.keymap.matches("app.session.new", data)) {
+			this.newSession();
+			return { consume: true };
+		}
+		if (this.keymap.matches("app.session.resume", data)) {
+			this.openResumePage();
+			return { consume: true };
+		}
+		// Pi Editor 的 LF/Ctrl+J 兼容分支绕过 keybinding manager；用户覆盖换行键后，
+		// 这里阻止旧默认再次插入换行，避免“显示已换键但旧键仍生效”。
+		if (this.keymap.isOverridden("tui.input.newLine")
+				&& (data === "\n" || matchesKey(data, "ctrl+j"))
+				&& !this.keymap.matches("tui.input.newLine", data)) {
 			return { consume: true };
 		}
 		return undefined;
@@ -811,6 +832,7 @@ export class Application {
 	private pageContext(): PageContext {
 		return {
 			state: this.session,
+			keymap: this.keymap,
 			theme: () => this.theme.snapshot(),
 			client: () => this.client ?? null,
 			identity: () => this.identity(),
@@ -931,14 +953,7 @@ export class Application {
 				else void this.copy(value);
 				return true;
 			}
-			case "/new": {
-				const client = this.client;
-				if (client) void client.command("session.new", { expectedSessionId: this.session.sessionId(),
-					generation: Number(this.session.generation()) }, this.identity()).then((result) => {
-					if (!result.ok) this.notify(result.message ?? "Could not start a new session", true);
-				});
-				return true;
-			}
+			case "/new": this.newSession(); return true;
 			case "/quit": void this.quit(); return true;
 			case "/name": {
 				const client = this.client;
@@ -953,6 +968,14 @@ export class Application {
 				this.notify(`Unknown command: ${raw.trim().split(/\s+/)[0]}. The draft was kept.`, true);
 				return false;
 		}
+	}
+
+	private newSession(): void {
+		const client = this.client;
+		if (client) void client.command("session.new", { expectedSessionId: this.session.sessionId(),
+			generation: Number(this.session.generation()) }, this.identity()).then((result) => {
+			if (!result.ok) this.notify(result.message ?? "Could not start a new session", true);
+		});
 	}
 
 	private changeThinking(value: string): void {

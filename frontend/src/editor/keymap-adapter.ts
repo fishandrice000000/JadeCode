@@ -180,6 +180,12 @@ export class KeymapAdapter {
 	piOverrides(): Record<string, string | string[]> {
 		const result: Record<string, string | string[]> = {};
 		for (const action of this.definitions) {
+			// HIDDEN 动作即使被配置绑定也不能交给 Pi；显式置空会清除 Pi 自带默认键
+			// （例如 jumpForward 的 ctrl+]），避免“目录隐藏但实际可执行”。
+			if (action.hidden) {
+				result[action.id] = [];
+				continue;
+			}
 			if (!this.overridden.has(action.id)) continue;
 			if (!["EDITOR", "SELECT", "ALT_SCREEN", "SEARCH"].includes(action.context)) continue;
 			const keys = this.bindings.get(action.id) ?? [];
@@ -187,6 +193,9 @@ export class KeymapAdapter {
 		}
 		return result;
 	}
+
+	/** @returns 该动作是否被用户显式覆盖（用于兼容 Pi 的硬编码 LF 分支）。 */
+	isOverridden(id: string): boolean { return this.overridden.has(id); }
 
 	/** @returns 动作当前键（含用户覆盖）；未知动作返回空数组。 */
 	keys(id: string): string[] {

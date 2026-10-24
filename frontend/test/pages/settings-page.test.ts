@@ -4,6 +4,7 @@ import { test } from "node:test";
 import { SETTINGS_FIELD_IDS, SettingsPage } from "../../src/pages/settings-page.ts";
 import type { PageContext } from "../../src/pages/page-stack.ts";
 import { SessionStore, parseTui } from "../../src/state/session-store.ts";
+import { KeymapAdapter } from "../../src/editor/keymap-adapter.ts";
 import { parseThemeDocument } from "../../src/theme/theme-document.ts";
 import { resolveTheme } from "../../src/theme/theme-resolver.ts";
 
@@ -19,7 +20,7 @@ function page(wheel: number): { value: SettingsPage; patches: Array<Record<strin
 	state.applySnapshot({ snapshot: { sessionId: "s", generation: "1", tui: settings, configRevision: "0" } } as never);
 	const patches: Array<Record<string, unknown>> = [];
 	const context: PageContext = {
-		state, theme: () => theme, client: () => null, identity: () => ({ sessionId: "s", generation: "1" }),
+		state, keymap: new KeymapAdapter({}), theme: () => theme, client: () => null, identity: () => ({ sessionId: "s", generation: "1" }),
 		closePage: () => {}, pushPage: () => {}, requestRender: () => {}, notify: () => {},
 		saveSettings: (patch) => {
 			patches.push(patch);

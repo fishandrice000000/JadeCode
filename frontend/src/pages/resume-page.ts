@@ -67,13 +67,14 @@ export class ResumePage implements Page {
 	}
 
 	handleInput(data: string): boolean {
-		if (matchesKey(data, "escape")) { this.context.closePage(); return true; }
-		if (matchesKey(data, "ctrl+p")) { this.showPath = !this.showPath; return true; }
-		if (matchesKey(data, "ctrl+s")) { this.sortRecent = !this.sortRecent; return true; }
-		if (matchesKey(data, "ctrl+n")) { this.namedOnly = !this.namedOnly; return true; }
-		if (matchesKey(data, "up")) { this.selected = Math.max(0, this.selected - 1); return true; }
-		if (matchesKey(data, "down")) { this.selected = Math.min(this.visible().length - 1, this.selected + 1); return true; }
-		if (matchesKey(data, "enter")) {
+		const keymap = this.context.keymap;
+		if (keymap.matches("tui.select.cancel", data)) { this.context.closePage(); return true; }
+		if (keymap.matches("app.session.togglePath", data)) { this.showPath = !this.showPath; return true; }
+		if (keymap.matches("app.session.toggleSort", data)) { this.sortRecent = !this.sortRecent; return true; }
+		if (keymap.matches("app.session.toggleNamedFilter", data)) { this.namedOnly = !this.namedOnly; return true; }
+		if (keymap.matches("tui.select.up", data)) { this.selected = Math.max(0, this.selected - 1); return true; }
+		if (keymap.matches("tui.select.down", data)) { this.selected = Math.min(this.visible().length - 1, this.selected + 1); return true; }
+		if (keymap.matches("tui.select.confirm", data)) {
 			const target = this.visible()[this.selected];
 			if (!target) return true;
 			const client = this.context.client();

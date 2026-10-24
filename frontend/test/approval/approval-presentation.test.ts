@@ -7,6 +7,7 @@ import { PresentedEvidence } from "../../src/terminal/presented-evidence.ts";
 import { parseThemeDocument } from "../../src/theme/theme-document.ts";
 import { resolveTheme } from "../../src/theme/theme-resolver.ts";
 import type { BackendClient } from "../../src/bridge/client.ts";
+import { KeymapAdapter } from "../../src/editor/keymap-adapter.ts";
 
 const theme = resolveTheme(parseThemeDocument(readFileSync(new URL("../../../assets/themes/jadecode.json", import.meta.url), "utf8")), "dark", {
 	mode: "256color", noColor: true,
@@ -36,7 +37,7 @@ function setup(presentedImpl?: (payload: Record<string, unknown>) => Promise<{ o
 		client: () => fake.client, evidence, presented,
 		revision: () => "0", identity: () => ({ sessionId: "s", generation: "1" }),
 		requestRender: () => { fake.renders += 1; }, notify: () => { fake.notifications += 1; fake.renders += 1; },
-		terminalHealthy: () => true, teamActive: () => false, actorName: (actor) => actor,
+		terminalHealthy: () => true, keymap: () => new KeymapAdapter({}), teamActive: () => false, actorName: (actor) => actor,
 	});
 	approval.setPresented(presented);
 	approval.setTheme(theme);

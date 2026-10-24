@@ -1,5 +1,6 @@
 import { matchesKey, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { isConfirmationPress } from "../terminal/input-kind.ts";
+import type { KeymapAdapter } from "../editor/keymap-adapter.ts";
 import { arrayValue, numberValue, text, type Payload } from "../bridge/wire.ts";
 import type { BackendClient } from "../bridge/client.ts";
 import type { InputEvidence, SequenceSource } from "../terminal/input-evidence.ts";
@@ -29,6 +30,8 @@ export interface ApprovalCallbacks {
 	notify: (message: string, error: boolean) => void;
 	/** 终端写失败/失效后不得再发布批准证据。 */
 	terminalHealthy: () => boolean;
+	/** 审批上下文也必须使用同一份用户覆盖键表。 */
+	keymap: () => KeymapAdapter;
 	teamActive: () => boolean;
 	actorName: (actor: string) => string;
 }
@@ -304,13 +307,14 @@ export class ApprovalController {
 			// release/repeat/paste 既不改变选择，也不构成确认；仍消费，避免落到编辑器。
 			return true;
 		}
-		if (matchesKey(data, "up") || matchesKey(data, "left") || matchesKey(data, "shift+tab")) {
+		const keymap = this.callbacks.keymap();
+		if (keymap.matches("approval.previous", data)) {
 			item.view.move(-1);
 			// 选择色不属于按钮几何：保持现有呈现证据，允许立即 Enter。
 			this.callbacks.requestRender();
 			return true;
 		}
-		if (matchesKey(data, "down") || matchesKey(data, "right") || matchesKey(data, "tab")) {
+		if (keymap.matches("approval.next", data)) {
 			item.view.move(1);
 			this.callbacks.requestRender();
 			return true;
@@ -325,11 +329,11 @@ export class ApprovalController {
 			this.callbacks.requestRender();
 			return true;
 		}
-		if (matchesKey(data, "escape")) {
+		if (keymap.matches("approval.deny", data)) {
 			this.answer(2, { keyAction: "approval.deny", mouse: undefined });
 			return true;
 		}
-		if (matchesKey(data, "enter")) {
+		if (keymap.matches("approval.confirm", data)) {
 			const choice = item.view.choice();
 			if (choice < 0) {
 				// 无默认：Enter 无选择时不答复。

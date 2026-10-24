@@ -6,6 +6,7 @@ import { InputEvidence } from "../../src/terminal/input-evidence.ts";
 import { PresentedEvidence } from "../../src/terminal/presented-evidence.ts";
 import { parseThemeDocument } from "../../src/theme/theme-document.ts";
 import { resolveTheme } from "../../src/theme/theme-resolver.ts";
+import { KeymapAdapter } from "../../src/editor/keymap-adapter.ts";
 
 const theme = resolveTheme(parseThemeDocument(readFileSync(new URL("../../../assets/themes/jadecode.json", import.meta.url), "utf8")), "dark", {
 	mode: "256color", noColor: true,
@@ -23,6 +24,7 @@ function controller(): { approval: ApprovalController; evidence: InputEvidence }
 		requestRender: () => {},
 		notify: () => {},
 		terminalHealthy: () => true,
+		keymap: () => new KeymapAdapter({}),
 		teamActive: () => false,
 		actorName: (actor) => actor,
 	});

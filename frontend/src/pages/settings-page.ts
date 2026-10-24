@@ -88,11 +88,12 @@ export class SettingsPage implements Page {
 	}
 
 	handleInput(data: string): boolean {
-		if (matchesKey(data, "escape")) { this.context.closePage(); return true; }
-		if (matchesKey(data, "up")) { this.selected = (this.selected - 1 + FIELDS.length) % FIELDS.length; return true; }
-		if (matchesKey(data, "down")) { this.selected = (this.selected + 1) % FIELDS.length; return true; }
+		const keymap = this.context.keymap;
+		if (keymap.matches("tui.select.cancel", data)) { this.context.closePage(); return true; }
+		if (keymap.matches("tui.select.up", data)) { this.selected = (this.selected - 1 + FIELDS.length) % FIELDS.length; return true; }
+		if (keymap.matches("tui.select.down", data)) { this.selected = (this.selected + 1) % FIELDS.length; return true; }
 		const field = FIELDS[this.selected]!;
-		if (matchesKey(data, "enter")) {
+		if (keymap.matches("tui.select.confirm", data)) {
 			if (field.kind === "theme") {
 				this.context.pushPage(new ThemePage(this.context, field.id as "theme" | "lightTheme" | "darkTheme"));
 			}

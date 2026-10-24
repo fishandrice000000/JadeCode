@@ -4,6 +4,7 @@ import { test } from "node:test";
 import { PermissionPage } from "../../src/pages/permission-page.ts";
 import type { PageContext } from "../../src/pages/page-stack.ts";
 import { SessionStore } from "../../src/state/session-store.ts";
+import { KeymapAdapter } from "../../src/editor/keymap-adapter.ts";
 import { InputEvidence } from "../../src/terminal/input-evidence.ts";
 import { parseThemeDocument } from "../../src/theme/theme-document.ts";
 import { resolveTheme } from "../../src/theme/theme-resolver.ts";
@@ -33,7 +34,7 @@ function setup(): { page: (intent: "runtime" | "default") => PermissionPage; com
 	} } as never);
 	const evidence = new InputEvidence();
 	const context: PageContext = {
-		state, theme: () => theme, client: () => client, identity: () => ({ sessionId: "s", generation: "1" }),
+		state, keymap: new KeymapAdapter({}), theme: () => theme, client: () => client, identity: () => ({ sessionId: "s", generation: "1" }),
 		closePage: () => {}, pushPage: () => {}, requestRender: () => {}, notify: () => {}, saveSettings: () => {},
 		themeNames: () => [], previewTheme: () => {}, commitTheme: () => {}, cancelTheme: () => {},
 		sessionTheme: () => "system", setDraft: () => {}, jumpToMatch: () => {},
