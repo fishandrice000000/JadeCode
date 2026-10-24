@@ -37,6 +37,9 @@ export interface TuiSettings {
 }
 
 export interface UsageSnapshot {
+	byActor?: Record<string, UsageSnapshot>;
+	byPurpose?: Record<string, UsageSnapshot>;
+	byModel?: Record<string, UsageSnapshot>;
 	inputTokens: number | null;
 	outputTokens: number | null;
 	cacheReadTokens: number | null;
@@ -373,6 +376,7 @@ function parseSnapshot(node: Payload): BackendSnapshot {
 		thinkingChoices: Array.isArray(node.thinkingChoices)
 			? node.thinkingChoices.filter((choice): choice is string => typeof choice === "string") : [],
 		usage: {
+			byActor: usageGroups(usageNode.byActor), byPurpose: usageGroups(usageNode.byPurpose), byModel: usageGroups(usageNode.byModel),
 			inputTokens: nullableNumber(usageNode, "inputTokens"),
 			outputTokens: nullableNumber(usageNode, "outputTokens"),
 			cacheReadTokens: nullableNumber(usageNode, "cacheReadTokens"),
@@ -421,3 +425,18 @@ function nullableNumber(node: Payload, field: string): number | null {
 }
 
 export { parseSnapshot };
+
+
+/** 分类只取标量，不递归读任意嵌套对象，也不重复累加账本。 */
+function usageGroups(value: unknown): Record<string, UsageSnapshot> {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+	const groups: Record<string, UsageSnapshot> = Object.create(null);
+	for (const [name, raw] of Object.entries(value)) {
+		if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+		const node = raw as Payload;
+		groups[name] = { inputTokens: nullableNumber(node, "inputTokens"), outputTokens: nullableNumber(node, "outputTokens"),
+			cacheReadTokens: nullableNumber(node, "cacheReadTokens"), cacheWriteTokens: nullableNumber(node, "cacheWriteTokens"),
+			reportedRequests: nullableNumber(node, "reportedRequests"), missingRequests: nullableNumber(node, "missingRequests") };
+	}
+	return groups;
+}
