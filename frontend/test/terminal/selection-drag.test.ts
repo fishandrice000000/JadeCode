@@ -62,3 +62,28 @@ test("copyOnSelect=false keeps the drag selection without copying", async () => 
 	assert.deepEqual(copied, ["alpha\nbeta"]);
 	tui.stop();
 });
+
+test("flash messages expire after their duration", async () => {
+	const { tui, terminal } = await drag();
+	tui.flash("FLASH_TIMEOUT", 25);
+	await terminal.waitForRender();
+	assert.ok(terminal.getViewport().some((line) => line.includes("FLASH_TIMEOUT")));
+	await new Promise((resolve) => setTimeout(resolve, 60));
+	await terminal.waitForRender();
+	assert.ok(terminal.getViewport().every((line) => !line.includes("FLASH_TIMEOUT")), "the flash must disappear");
+	tui.stop();
+});
+
+test("a failed copySelection result is shown as the real error", async () => {
+	const terminal = new VirtualTerminal(20, 4);
+	const tui = new TuiAltScreen(terminal, undefined, undefined, {
+		copySelection: async () => "CLIPBOARD_DENIED",
+	});
+	tui.addChild(new Text("alpha\nbeta\ngamma\ndelta", 0, 0));
+	tui.start();
+	await terminal.waitForRender();
+	await selectAlphaBeta(terminal);
+	assert.ok(terminal.getViewport().some((line) => line.includes("CLIPBOARD_DENIED")));
+	assert.ok(terminal.getViewport().every((line) => !line.includes("Copied!")), "failure must not claim success");
+	tui.stop();
+});
