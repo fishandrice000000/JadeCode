@@ -557,22 +557,19 @@ export class Application {
 			case "approval.removed":
 				this.approval.removed(message.payload);
 				return;
-			case "settings.saved":
-				if (this.pendingThemeSave) {
-					this.pendingThemeSave = false;
-					this.theme.commitSucceeded();
-				}
+			case "settings.saved": {
+				const saved = this.pendingSettings.shift();
+				if (saved?.theme) this.theme.commitSucceededFor(saved.theme);
 				this.session.applySettingsSaved(message.payload);
 				this.theme.settingsChanged();
 				this.applyLiveSettings();
 				return;
+			}
 			case "settings.failed": {
 				const failure = text(message.payload, "message", "Settings were not saved");
-				if (this.pendingThemeSave) {
-					this.pendingThemeSave = false;
-					this.theme.commitFailed(failure);
-				}
-				this.notify(failure, true);
+				const failed = this.pendingSettings.shift();
+				if (failed?.theme) this.theme.commitFailedFor(failed.theme, failure);
+				else this.notify(failure, true);
 				return;
 			}
 			case "diagnostic":
@@ -890,22 +887,25 @@ export class Application {
 		};
 	}
 
-	private pendingThemeSave = false;
+	/** 串行设置保存的待回执队列；Java PreferenceService 串行执行，saved/failed 顺序与提交一致。 */
+	private readonly pendingSettings: Array<{ patch: Record<string, unknown>; theme: string | null }> = [];
 
 	private saveSettings(patch: Record<string, unknown>): void {
 		const client = this.client;
 		if (!client) return;
-		if (typeof patch.theme === "string") this.pendingThemeSave = true;
+		const entry = { patch, theme: typeof patch.theme === "string" ? patch.theme : null };
+		this.pendingSettings.push(entry);
 		void client.command("settings.patch", {
 			expectedConfigRevision: Number(this.session.configRevision()),
 			patch,
 		}, this.identity()).then((result) => {
 			if (!result.ok) {
-				if (this.pendingThemeSave) {
-					this.pendingThemeSave = false;
-					this.theme.commitFailed(result.message ?? "The theme was not saved");
-				}
-				this.notify(result.message ?? "The setting was not saved", true);
+				// 命令级失败不会再有 settings.saved/failed 事件；从队列移除本次请求。
+				const index = this.pendingSettings.indexOf(entry);
+				if (index >= 0) this.pendingSettings.splice(index, 1);
+				const failure = result.message ?? "The setting was not saved";
+				if (entry.theme) this.theme.commitFailedFor(entry.theme, failure);
+				else this.notify(failure, true);
 			}
 		});
 	}

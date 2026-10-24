@@ -107,8 +107,12 @@ export class ThemeController {
 		this.rebuild(name);
 	}
 
-	/** settings.saved 回执：提交已完成，不再需要失败恢复。 */
+	/** settings.saved 回执：只清除与本次提交匹配的待定状态。 */
 	commitSucceeded(): void { this.committedName = null; }
+
+	commitSucceededFor(name: string): void {
+		if (this.committedName === name) this.committedName = null;
+	}
 
 	/**
 	 * settings.failed/command.error：保存失败时恢复可重试预览，保持选择名、快照与订阅一致。
@@ -117,7 +121,23 @@ export class ThemeController {
 	commitFailed(message: string): void {
 		const name = this.committedName;
 		if (!name) return;
+		this.commitFailedFor(name, message);
+	}
+
+	/**
+	 * 只恢复“仍是当前选择”的失败提交；提交后用户已预览/取消到更新状态时，
+	 * 旧回执只报告错误，不覆盖当前选择、快照或订阅。
+	 */
+	commitFailedFor(name: string, message: string): void {
+		if (this.committedName !== name) {
+			this.options.onError(message);
+			return;
+		}
 		this.committedName = null;
+		if (this.previewName !== null && this.previewName !== name) {
+			this.options.onError(message);
+			return;
+		}
 		this.previewName = name;
 		this.lastError = message;
 		this.installWatch(name);
