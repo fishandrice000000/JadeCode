@@ -44,7 +44,15 @@ export class DockView implements Component {
 export function framePage(page: Page, width: number): string[] {
 	const theme = page.theme();
 	const inner = Math.max(1, width);
-	const title = ` ${page.title} `;
+	// 标题不能把页面顶边撑出可用宽度；窄屏按字素边界截断，至少保留一个边框列。
+	let title = ` ${page.title} `;
+	if (visibleWidth(title) > inner) {
+		title = "";
+		for (const char of ` ${page.title} `) {
+			if (visibleWidth(title + char) > inner) break;
+			title += char;
+		}
+	}
 	const titleWidth = visibleWidth(title);
 	const left = Math.max(0, inner - titleWidth);
 	const top = theme.style("border", "─".repeat(left)) + theme.style("borderAccent", title);
