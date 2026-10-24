@@ -11,18 +11,18 @@ const theme = resolveTheme(parseThemeDocument(readFileSync(new URL("../../../ass
 	mode: "256color", noColor: true,
 });
 
-function session(): SessionStore {
+function session(tui: Record<string, unknown> = {}): SessionStore {
 	const store = new SessionStore();
 	store.applyBootstrap({ buildId: "b", protocolVersion: 1, projectVersion: "test", workspace: "/tmp",
-		themeDirectory: "/tmp", configRevision: "0", tui: {}, startup: { mode: "new", autoSubmit: false, resumeTarget: "" } } as never);
-	store.applySnapshot({ snapshot: { sessionId: "s", generation: "1", tui: {}, configRevision: "0" } } as never);
+		themeDirectory: "/tmp", configRevision: "0", tui, startup: { mode: "new", autoSubmit: false, resumeTarget: "" } } as never);
+	store.applySnapshot({ snapshot: { sessionId: "s", generation: "1", tui, configRevision: "0" } } as never);
 	return store;
 }
 
-function view(): { transcript: TranscriptStore; conversation: ConversationView; creates: () => number } {
+function view(tui: Record<string, unknown> = {}): { transcript: TranscriptStore; conversation: ConversationView; creates: () => number } {
 	const transcript = new TranscriptStore();
 	let creates = 0;
-	const conversation = new ConversationView(transcript, session(), {
+	const conversation = new ConversationView(transcript, session(tui), {
 		create: () => {
 			creates += 1;
 			let body = "";
@@ -69,4 +69,26 @@ test("updating one entry rebuilds only that card; a stable neighbour is reused",
 	const lines = conversation.render(80).join("\n");
 	assert.match(lines, /ONLY_R1_CHANGED/);
 	assert.equal(creates(), 3, "only the changed entry creates a new card");
+});
+
+
+test("the welcome screen follows real viewport rows and quietStartup", () => {
+	const tall = view();
+	tall.conversation.setViewportRows(22);
+	const tallLines = tall.conversation.render(120);
+	assert.ok(tallLines.length >= 8, "22 rows keeps the banner");
+	assert.ok(tallLines.some((line) => line.includes("JADE")));
+	assert.ok(tallLines.some((line) => line.includes("Workspace:")), "normal startup shows the workspace");
+
+	const short = view();
+	short.conversation.setViewportRows(21);
+	const shortLines = short.conversation.render(120);
+	assert.equal(shortLines.length, 4, "LINE branding, blank separator and workspace line");
+	assert.ok(shortLines.every((line) => !line.includes("JADE CODE") && !line.includes("█")));
+	assert.ok(shortLines.some((line) => line.includes("JadeCode vtest")));
+
+	const quiet = view({ quietStartup: true });
+	const quietLines = quiet.conversation.render(120).join("\n");
+	assert.doesNotMatch(quietLines, /Workspace:/, "quiet startup suppresses the workspace line");
+	assert.match(quietLines, /JadeCode/);
 });
