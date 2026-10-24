@@ -217,3 +217,41 @@ test("LF reassigned to cursorLeft reaches the real Editor and does not insert a 
 	const route = (app as unknown as { onGlobalInput(input: string): unknown }).onGlobalInput.bind(app);
 	assert.equal(route("\n"), undefined);
 });
+
+
+test("LF explicitly bound to submit reaches the real Editor and submits", () => {
+	const keymap = new KeymapAdapter({ "tui.input.newLine": ["ctrl+n"], "tui.input.submit": ["ctrl+j"] });
+	const pi = new KeybindingsManager(TUI_KEYBINDINGS, keymap.piOverrides() as never);
+	setKeybindings(pi);
+	const editor = new Editor({ terminal: { rows: 24 }, requestRender: () => {} } as unknown as TUI, {
+		borderColor: (text) => text,
+		selectList: { selectedPrefix: (t) => t, selectedText: (t) => t, description: (t) => t, scrollInfo: (t) => t, noMatch: (t) => t },
+	});
+	let submits = 0;
+	editor.onSubmit = () => { submits += 1; };
+	for (const key of ["a", "b", "c"]) editor.handleInput(key);
+	editor.handleInput("\n");
+	assert.equal(submits, 1, "LF must execute the explicitly rebound submit action");
+	assert.equal(editor.getText(), "");
+	// 生产全局路由也不能把显式 LF→submit 当作未绑定旧键消费。
+	const app = new Application();
+	const fields = app as unknown as { [key: string]: unknown };
+	fields["keymap"] = keymap;
+	fields["pages"] = new PageStack();
+	fields["host"] = { hasSelection: () => false, requestRender: () => {}, tui: () => ({}), mode: () => "fullscreen" };
+	fields["editor"] = { draft: () => "", setDraft: () => {}, focus: () => {} };
+	const route = (app as unknown as { onGlobalInput(input: string): unknown }).onGlobalInput.bind(app);
+	assert.equal(route("\n"), undefined);
+});
+
+test("SearchPage executes overridden searchNext/searchPrevious", () => {
+	const keymap = new KeymapAdapter({ "tui.altScreen.searchNext": ["ctrl+f"], "tui.altScreen.searchPrevious": ["ctrl+b"] });
+	const matches = ["m0", "m1", "m2"].map((snippet, index) => ({ id: `e${index}`, offset: index, snippet }));
+	const search = new SearchPage(pageContext(keymap), () => matches);
+	search.handleInput("q");
+	assert.match(search.render(80).join("\n"), /▸ m0/);
+	search.handleInput("\x06"); // ctrl+f
+	assert.match(search.render(80).join("\n"), /▸ m1/);
+	search.handleInput("\x02"); // ctrl+b
+	assert.match(search.render(80).join("\n"), /▸ m0/);
+});

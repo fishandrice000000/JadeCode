@@ -370,9 +370,13 @@ export class Application {
 		}
 		// Pi Editor 的 LF/Ctrl+J 兼容分支绕过 keybinding manager；用户覆盖换行键后，
 		// 这里阻止旧默认再次插入换行，避免“显示已换键但旧键仍生效”。
+		const lf = data === "\n" || matchesKey(data, "ctrl+j");
+		const submitReassigned = lf && this.keymap.isOverridden("tui.input.submit")
+			&& this.keymap.matches("tui.input.submit", data);
 		if (this.keymap.isOverridden("tui.input.newLine")
-				&& (data === "\n" || matchesKey(data, "ctrl+j"))
+				&& lf
 				&& !this.keymap.matches("tui.input.newLine", data)
+				&& !submitReassigned
 				&& this.keymap.matchAnyExcept(["EDITOR"], data, ["tui.input.newLine", "tui.input.submit"]) === null) {
 			// 旧换行键未被重新分配才拦截；若 LF 已绑定给光标/删除等编辑动作，
 			// 交给 Editor（P07 保证不会落入硬编码换行分支）。

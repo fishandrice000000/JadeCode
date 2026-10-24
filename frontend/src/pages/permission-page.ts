@@ -130,7 +130,12 @@ export class PermissionPage implements Page {
 			this.context.closePage();
 			return true;
 		}
-		if (matchesKey(data, "left") || matchesKey(data, "right") || matchesKey(data, "up") || matchesKey(data, "down")) {
+		if (keymap.matches("tui.select.up", data) || keymap.matches("tui.select.down", data)) {
+			this.confirmSelected = this.confirmSelected === 0 ? 1 : 0;
+			return true;
+		}
+		// left/right 没有注册的 SELECT 动作，作为页面局部按键保留；up/down 已被共享动作接管。
+		if (matchesKey(data, "left") || matchesKey(data, "right")) {
 			this.confirmSelected = this.confirmSelected === 0 ? 1 : 0;
 			return true;
 		}

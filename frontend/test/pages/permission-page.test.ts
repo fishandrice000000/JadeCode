@@ -14,7 +14,7 @@ const theme = resolveTheme(parseThemeDocument(readFileSync(new URL("../../../ass
 	mode: "256color", noColor: true,
 });
 
-function setup(): { page: (intent: "runtime" | "default") => PermissionPage; commands: Array<{ type: string; payload: Record<string, unknown> }> } {
+function setup(keymap = new KeymapAdapter({})): { page: (intent: "runtime" | "default") => PermissionPage; commands: Array<{ type: string; payload: Record<string, unknown> }> } {
 	const commands: Array<{ type: string; payload: Record<string, unknown> }> = [];
 	const client = {
 		command: async (type: string, payload: Record<string, unknown>) => {
@@ -34,7 +34,7 @@ function setup(): { page: (intent: "runtime" | "default") => PermissionPage; com
 	} } as never);
 	const evidence = new InputEvidence();
 	const context: PageContext = {
-		state, keymap: new KeymapAdapter({}), theme: () => theme, client: () => client, identity: () => ({ sessionId: "s", generation: "1" }),
+		state, keymap, theme: () => theme, client: () => client, identity: () => ({ sessionId: "s", generation: "1" }),
 		closePage: () => {}, pushPage: () => {}, requestRender: () => {}, notify: () => {}, saveSettings: () => {},
 		themeNames: () => [], previewTheme: () => {}, commitTheme: () => {}, cancelTheme: () => {},
 		sessionTheme: () => "system", setDraft: () => {}, jumpToMatch: () => {},
@@ -75,4 +75,20 @@ test("Full Access default confirmation uses the default intent and the config re
 	assert.equal(saved.payload.expectedConfigRevision, 7);
 	assert.equal(saved.payload.fullAccessConfirmationId, "fa-1");
 	assert.equal((saved.payload.evidence as { phase: string }).phase, "PRESS");
+});
+
+
+test("FullAccess second step uses the overridden select keys and ignores the replaced Down", async () => {
+	const { page, commands } = setup(new KeymapAdapter({ "tui.select.down": ["ctrl+n"] }));
+	const value = page("runtime");
+	value.handleInput("\x0e"); // ctrl+n -> auto-review
+	value.handleInput("\x0e"); // ctrl+n -> full-access
+	value.handleInput("\r");    // select.confirm (default enter)
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.ok(commands.some((c) => c.type === "permission.prepareFullAccess"));
+	value.render(80);
+	value.handleInput("\x0e"); // ctrl+n toggles to Confirm
+	assert.match(value.render(80).join("\n"), /▸ \[ Confirm Full Access \]/);
+	value.handleInput("\x1b[B"); // replaced Down must not toggle
+	assert.match(value.render(80).join("\n"), /▸ \[ Confirm Full Access \]/);
 });

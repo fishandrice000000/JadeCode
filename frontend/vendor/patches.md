@@ -4,7 +4,7 @@ Upstream: `/home/fishandrice/Backend/pi`, commit `4954d760504c11df9b2cbdc0403461
 Vendored copy: `frontend/vendor/pi-tui/`. Original and current SHA-256 per file: `provenance.json`.
 
 Six source files are modified: `src/terminal.ts`, `src/stdin-buffer.ts`, `src/tui.ts`, `src/tui-alt-screen.ts`, `src/keybindings.ts`, `src/components/editor.ts`.
-Everything else is byte-identical to the pinned commit. `provenance.json` lists P01–P06 and per-file original/current hashes. The upstream working tree is
+Everything else is byte-identical to the pinned commit. `provenance.json` lists P01–P07 and per-file original/current hashes. The upstream working tree is
 never touched; `scripts/verify-vendor.mjs` re-checks these hashes and fails the build when a vendored file drifts without a
 recorded patch.
 

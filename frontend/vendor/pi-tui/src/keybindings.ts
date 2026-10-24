@@ -286,8 +286,17 @@ export class KeybindingsManager {
 
 	/** Jade P07: match any binding whose id is not in `except`. */
 	matchesAnyExcept(data: string, except: Keybinding[]): boolean {
+		return this.matchesAnyInExcept(data, [], except);
+	}
+
+	/**
+	 * Jade P07: match bindings, optionally limited to id prefixes (e.g. editor/input).
+	 * The Editor must not treat a select/search binding as an LF reassignment.
+	 */
+	matchesAnyInExcept(data: string, prefixes: string[], except: Keybinding[]): boolean {
 		for (const id of Object.keys(this.definitions)) {
 			if (except.includes(id as Keybinding)) continue;
+			if (prefixes.length > 0 && !prefixes.some((prefix) => id.startsWith(prefix))) continue;
 			if (this.matches(data, id as Keybinding)) return true;
 		}
 		return false;

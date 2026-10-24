@@ -893,8 +893,11 @@ export class Editor implements Component, Focusable {
 			&& kb.matchesAny(data, "tui.input.newLine");
 		// Jade P07: LF explicitly rebound to a non-submit action must bypass the submit
 		// fallback too, so the later action handlers (cursor/delete/etc.) can run.
+		// Only editor/input bindings are relevant to the Editor's LF fallbacks; a select or
+		// search binding matching LF must not suppress the real submit binding.
 		const lfReassigned = data === "\n"
-			&& kb.matchesAnyExcept(data, ["tui.input.newLine", "tui.input.submit"]);
+			&& kb.matchesAnyInExcept(data, ["tui.editor.", "tui.input."],
+				["tui.input.newLine", "tui.input.submit"]);
 		if (
 			!lfRebound &&
 			(kb.matches(data, "tui.input.newLine") ||

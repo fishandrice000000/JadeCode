@@ -61,6 +61,14 @@ export class SearchPage implements Page {
 			this.jump();
 			return true;
 		}
+		if (keymap.matches("tui.altScreen.searchNext", data)) {
+			if (this.matches.length > 0) this.selected = (this.selected + 1) % this.matches.length;
+			return true;
+		}
+		if (keymap.matches("tui.altScreen.searchPrevious", data)) {
+			if (this.matches.length > 0) this.selected = (this.selected - 1 + this.matches.length) % this.matches.length;
+			return true;
+		}
 		this.input.handleInput(data);
 		const value = this.input.getValue();
 		if (value !== this.query) {
