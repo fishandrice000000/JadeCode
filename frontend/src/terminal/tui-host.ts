@@ -144,6 +144,7 @@ export class TuiHost {
 	}
 
 	setHardwareCursor(enabled: boolean): void {
+		this.options.showHardwareCursor = enabled;
 		this.screen?.setShowHardwareCursor(enabled);
 	}
 
@@ -152,14 +153,18 @@ export class TuiHost {
 	}
 
 	setWheelScrollLines(lines: number | "auto"): void {
+		// createScreen 从 options 读取初始值；实时设置必须同步回工厂，模式重建才不会回退。
+		this.options.wheelScrollLines = lines;
 		if (this.screen instanceof TuiAltScreen) this.screen.setWheelScrollLines(lines as WheelScrollLines);
 	}
 
 	setScrollbar(scrollbar: "auto" | "always" | "hidden"): void {
+		this.options.scrollbar = scrollbar;
 		if (this.screen instanceof TuiAltScreen) this.screen.setScrollbar?.(scrollbar);
 	}
 
 	setCopyOnSelect(enabled: boolean): void {
+		this.options.copyOnSelect = enabled;
 		if (this.screen instanceof TuiAltScreen) this.screen.setCopyOnSelect(enabled);
 	}
 
