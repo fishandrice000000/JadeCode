@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { MarkdownFactory } from "../../src/markdown/markdown-factory.ts";
 import { display } from "../../src/presentation/text-safety.ts";
 import { parseThemeDocument } from "../../src/theme/theme-document.ts";
@@ -24,10 +25,27 @@ test("tables keep CJK cells and long-cell tails, and unclosed fences still show 
 	assert.match(fence, /class A \{\}/);
 });
 
-test("Mermaid fences are transformed and still render without a Java engine", () => {
+test("an overflowing table cell wraps and keeps its tail, width budget and bottom border", () => {
+	const width = 30;
+	const tail = "TAIL_END";
+	const table = render(`| Name | Value |\n|---|---|\n| 中文字段 | ${"x".repeat(40)}${tail} |`, width);
+	const lines = table.split("\n");
+	assert.match(table, /中文/);
+	assert.match(table, /段/);
+	assert.match(table, new RegExp(tail), "the tail of an overflowing cell must remain visible");
+	for (const line of lines) assert.ok(visibleWidth(line) <= width, `line exceeds ${width}: ${JSON.stringify(line)}`);
+	assert.match(table, /[└┴┘]/, "the table must render its bottom border");
+});
+
+test("Mermaid fences render real box art with node labels, not the source fallback", () => {
 	const text = render("```mermaid\ngraph TD\nA-->B\n```", 60);
 	assert.ok(text.trim().length > 0);
 	assert.doesNotMatch(text, /```mermaid/);
+	assert.match(text, /A/);
+	assert.match(text, /B/);
+	assert.match(text, /[┌│└╭╰─]/);
+	assert.doesNotMatch(text, /A-->B/);
+	assert.doesNotMatch(text, /graph TD/);
 });
 
 test("model/tool control sequences are stripped before Markdown rendering", () => {

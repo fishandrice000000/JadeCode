@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -8,7 +8,7 @@ import { ThemeController } from "../../src/theme/theme-controller.ts";
 
 const builtin = new URL("../../../assets/themes/", import.meta.url).pathname;
 
-function controller(): { value: ThemeController; errors: string[]; saved: Array<Record<string, unknown>> } {
+function controller(): { value: ThemeController; errors: string[]; saved: Array<Record<string, unknown>>; directory: string } {
 	const custom = mkdtempSync(join(tmpdir(), "jade-theme-"));
 	writeFileSync(join(custom, "custom.json"), JSON.stringify({ name: "custom", colors: { accent: "#00ff00", text: "#ffffff", background: "#000000" } }));
 	const errors: string[] = [];
@@ -20,11 +20,12 @@ function controller(): { value: ThemeController; errors: string[]; saved: Array<
 		onError: (message) => { errors.push(message); },
 		onChange: () => {},
 	});
-	return { value, errors, saved };
+	return { value, errors, saved, directory: custom };
 }
 
-test("custom themes preview/cancel/commit without writing through the controller", () => {
-	const { value, saved } = controller();
+test("custom themes preview/cancel/commit without writing through the controller", (t) => {
+	const { value, saved, directory } = controller();
+	t.after(() => { value.close(); rmSync(directory, { recursive: true, force: true }); });
 	assert.ok(value.names().includes("custom"));
 	value.preview("custom");
 	assert.match(value.snapshot().name, /custom/);
@@ -36,8 +37,9 @@ test("custom themes preview/cancel/commit without writing through the controller
 	assert.deepEqual(saved, [{ theme: "custom" }]);
 });
 
-test("a bad theme file keeps the last valid snapshot and reports the real error", () => {
-	const { value, errors } = controller();
+test("a bad theme file keeps the last valid snapshot and reports the real error", (t) => {
+	const { value, errors, directory } = controller();
+	t.after(() => { value.close(); rmSync(directory, { recursive: true, force: true }); });
 	value.preview("custom");
 	const before = value.snapshot();
 	const repository = (value as unknown as { options: { repository: ThemeRepository } }).options.repository;
