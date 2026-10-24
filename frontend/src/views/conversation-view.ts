@@ -78,9 +78,10 @@ export class ConversationView implements Component {
 			// 卡后空行属于该条目缓存，快速路径与重排路径的间距保持一致。
 			lines.push("");
 		}
-		// 已删除/被回滚的条目不能继续占用缓存。
+		// 已删除/被回滚的条目不能继续占用缓存；用集合避免条目多时平方扫描。
+		const visibleIds = new Set(visible.map((entry) => entry.id));
 		for (const id of [...this.cards.keys()]) {
-			if (!visible.some((entry) => entry.id === id)) this.cards.delete(id);
+			if (!visibleIds.has(id)) this.cards.delete(id);
 		}
 		this.cachedLines = lines;
 		return lines;

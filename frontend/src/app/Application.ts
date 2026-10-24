@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import {
 	isKeyRelease,
-	isKeyRepeat,
 	matchesKey,
 	type Component,
 	type TUI,
@@ -274,8 +273,7 @@ export class Application {
 
 	/** 全局输入：页面优先，然后 97 动作；编辑器自身处理文本/Enter。 */
 	private onGlobalInput(data: string): { consume?: boolean; data?: string } | undefined {
-		// release/repeat 不驱动页面/全局动作；编辑器本身也不依赖 release。
-		if (isKeyRelease(data) || isKeyRepeat(data)) return { consume: true };
+		// 审批/权限页自行拒绝 release/repeat/paste；编辑器的长按重复键不能被全局吞掉。
 		if (this.pages.current()) {
 			if (this.pages.handleInput(data)) {
 				this.host.requestRender();

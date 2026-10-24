@@ -170,7 +170,8 @@ export class ApprovalView {
 		}
 		this.layout = {
 			rects: publishable ? rects : [],
-			digest: digest(publishable ? rects : [], this.selected),
+			// 选择色/箭头不属于按钮几何；同帧矩形可用时，改变选择不需要重新呈现即可确认。
+			digest: digest(publishable ? rects : []),
 			columns,
 			rows,
 		};
@@ -193,7 +194,7 @@ function clamp(value: number, min: number, max: number): number {
 	return Math.max(min, Math.min(max, value));
 }
 
-function digest(rects: ApprovalLayout["rects"], selected: number): string {
+function digest(rects: ApprovalLayout["rects"]): string {
 	let hash = 2166136261;
 	for (const rect of rects) {
 		const text = `${rect.x},${rect.y},${rect.width},${rect.height},${rect.choice};`;
@@ -202,6 +203,5 @@ function digest(rects: ApprovalLayout["rects"], selected: number): string {
 			hash = Math.imul(hash, 16777619);
 		}
 	}
-	hash ^= selected;
 	return (hash >>> 0).toString(16);
 }

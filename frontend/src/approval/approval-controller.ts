@@ -61,6 +61,10 @@ interface PendingApproval {
 	confirming: boolean;
 	presenting: boolean;
 	presentationFailures: number;
+	/** 呈现代次；invalidate/切换请求后递增，迟到回执不能复活旧证据。 */
+	presentationToken: number;
+	/** 用户在呈现回执到达前按下 Enter：等该帧证据成立后立即答复，不要求再按一次。 */
+	pendingChoice: { choice: number; keyAction: string; mouse: { type: string; button: string; x: number; y: number } | undefined; source: SequenceSource } | null;
 }
 
 export class ApprovalController {
@@ -124,6 +128,8 @@ export class ApprovalController {
 			confirming: false,
 			presenting: false,
 			presentationFailures: 0,
+			presentationToken: 0,
+			pendingChoice: null,
 		};
 		if (this.current) this.queue.push(item);
 		else {
@@ -185,6 +191,10 @@ export class ApprovalController {
 	/** 终端 resize/模式切换/暂停：Java 侧证据作废，Node 重新等待下一帧呈现。 */
 	invalidate(): void {
 		if (!this.current) return;
+		// 作废旧证据并让在途回执失效；下一帧必须重新呈现。
+		this.current.presentationToken += 1;
+		this.current.presenting = false;
+		this.current.pendingChoice = null;
 		this.current.selectable = false;
 		this.current.presentedFrame = -1;
 		this.current.presentedEpoch = -1;
@@ -209,6 +219,7 @@ export class ApprovalController {
 		const client = this.callbacks.client();
 		if (!client) return;
 		item.presenting = true;
+		const token = item.presentationToken;
 		const rawWatermark = this.callbacks.evidence.rawWatermark();
 		const decodedWatermark = this.callbacks.evidence.decodedSeq();
 		client.command("approval.presented", {
@@ -224,28 +235,31 @@ export class ApprovalController {
 			rawReceiptWatermark: rawWatermark,
 			decodedWatermark,
 		}, this.callbacks.identity()).then((result) => {
+			// 失效/切换后迟到的回执不能重新启用旧 epoch/旧帧。
+			if (item.presentationToken !== token || this.current !== item || item.loading) return;
 			item.presenting = false;
 			if (!result.ok) {
 				item.selectable = false;
+				item.pendingChoice = null;
 				item.presentationFailures += 1;
-				// 只自动重试少量次数；持续失败等待用户/下一次真实重绘，避免无输入重绘循环。
-				if (item.presentationFailures <= 2) {
-					this.callbacks.notify(result.message ?? "The approval layout was rejected; presenting again.", true);
-					this.callbacks.requestRender();
-				} else {
-					this.callbacks.notify(result.message ?? "The approval layout could not be presented; resize or switch pages, then try again.", true);
+				// 只在第一次失败提示一次；提示本身可能触发一次重绘，但不会在回调里再排重绘。
+				// 后续自然帧仍会尝试；持续失败时等待用户输入（Enter/方向键）或 resize 触发恢复。
+				if (item.presentationFailures === 1) {
+					this.callbacks.notify(result.message ?? "The approval layout was rejected; it will be presented again on the next frame.", true);
 				}
 				return;
 			}
-			if (item.loading || this.current !== item) return;
 			item.selectable = true;
 			item.presentedFrame = frame.frameId;
 			item.presentedEpoch = frame.epoch;
 			item.presentedDigest = layout.digest;
 			item.presentationFailures = 0;
 			// 成功呈现不请求重绘：否则会再次产生帧与 presented，形成循环。
+			const pending = item.pendingChoice;
+			item.pendingChoice = null;
+			if (pending) this.sendAnswer(item, pending.choice, pending.keyAction, pending.mouse, pending.source);
 		}).catch(() => {
-			item.presenting = false;
+			if (item.presentationToken === token) item.presenting = false;
 		});
 	}
 
@@ -262,16 +276,12 @@ export class ApprovalController {
 		}
 		if (matchesKey(data, "up") || matchesKey(data, "left") || matchesKey(data, "shift+tab")) {
 			item.view.move(-1);
-			// 选中色/箭头是布局的一部分；移动后必须重新呈现一帧才能确认。
-			item.selectable = false;
-			item.presentedDigest = "";
+			// 选择色不属于按钮几何：保持现有呈现证据，允许立即 Enter。
 			this.callbacks.requestRender();
 			return true;
 		}
 		if (matchesKey(data, "down") || matchesKey(data, "right") || matchesKey(data, "tab")) {
 			item.view.move(1);
-			item.selectable = false;
-			item.presentedDigest = "";
 			this.callbacks.requestRender();
 			return true;
 		}
@@ -326,10 +336,23 @@ export class ApprovalController {
 			return;
 		}
 		if (!item.selectable || item.presentedFrame < 0 || item.presentedEpoch < 0) {
-			this.callbacks.notify("Waiting for the approval frame to be presented; press again.", true);
+			if (item.loading) {
+				this.callbacks.notify("The complete approval parameters are still loading; press again after they appear.", true);
+				return;
+			}
+			// 画面已渲染但围栏/回执尚未完成：把这次新鲜 Enter 挂起，证据成立后立即答复。
+			// 不要求用户再按一次，也不放松 Java 对帧/epoch 的校验。
+			item.pendingChoice = { choice, keyAction: input.keyAction, mouse: input.mouse, source };
 			this.callbacks.requestRender();
 			return;
 		}
+		this.sendAnswer(item, choice, input.keyAction, input.mouse, source);
+	}
+
+	/** 用已成立的呈现证据发送答复；供正常路径与挂起的快速确认共用。 */
+	private sendAnswer(item: PendingApproval, choice: number,
+			keyAction: string, mouse: { type: string; button: string; x: number; y: number } | undefined,
+			source: SequenceSource): void {
 		const client = this.callbacks.client();
 		if (!client) return;
 		const layout = item.view.lastLayout();
@@ -348,8 +371,8 @@ export class ApprovalController {
 				rawStartReceipt: source.startReceipt,
 				rawEndReceipt: source.endReceipt,
 				decodedSeq: source.decodedSeq,
-				keyAction: input.keyAction,
-				mouse: input.mouse ?? null,
+				keyAction,
+				mouse: mouse ?? null,
 			},
 		}, this.callbacks.identity()).then((result) => {
 			item.confirming = false;

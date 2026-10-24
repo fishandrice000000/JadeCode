@@ -12,69 +12,184 @@ const theme = resolveTheme(parseThemeDocument(readFileSync(new URL("../../../ass
 	mode: "256color", noColor: true,
 });
 
-test("one stable presentation serves multiple frames; selection re-presents before confirming", async () => {
-	const commands: Array<{ type: string; payload: Record<string, unknown> }> = [];
-	const client = {
+interface Fake {
+	commands: Array<{ type: string; payload: Record<string, unknown> }>;
+	renders: number;
+	notifications: number;
+	client: BackendClient;
+}
+
+function setup(presentedImpl?: (payload: Record<string, unknown>) => Promise<{ ok: boolean; type: string; payload: Record<string, unknown> }>): {
+	fake: Fake; approval: ApprovalController; evidence: InputEvidence; presented: PresentedEvidence;
+} {
+	const fake: Fake = { commands: [], renders: 0, notifications: 0, client: undefined as unknown as BackendClient };
+	fake.client = {
 		command: async (type: string, payload: Record<string, unknown>) => {
-			commands.push({ type, payload });
+			fake.commands.push({ type, payload });
+			if (type === "approval.presented" && presentedImpl) return presentedImpl(payload);
 			return { ok: true, type: "command.result", payload: {} };
 		},
 	} as unknown as BackendClient;
 	const evidence = new InputEvidence();
 	const presented = new PresentedEvidence(evidence, () => {});
-	let renders = 0;
 	const approval = new ApprovalController({
-		client: () => client, evidence, presented,
+		client: () => fake.client, evidence, presented,
 		revision: () => "0", identity: () => ({ sessionId: "s", generation: "1" }),
-		requestRender: () => { renders += 1; }, notify: () => {},
+		requestRender: () => { fake.renders += 1; }, notify: () => { fake.notifications += 1; fake.renders += 1; },
 		terminalHealthy: () => true, teamActive: () => false, actorName: (actor) => actor,
 	});
 	approval.setPresented(presented);
 	approval.setTheme(theme);
+	return { fake, approval, evidence, presented };
+}
+
+function request(approval: ApprovalController): void {
 	approval.requested({
 		requestId: "r1", actor: "leader", runId: "run", tool: "bash", cwd: "/tmp", revision: "0",
 		inputJson: "{\"command\":\"echo hi\"}", suggestionId: null, suggestionScope: "",
 	} as never, () => undefined);
-	// 第一帧：登记呈现。
+}
+
+function render(approval: ApprovalController): void {
 	approval.active()!.render({ title: "Approval required", tool: "bash", scope: "s", parameters: "{}", actor: "leader",
 		loading: false, teamActive: false, actorName: (a) => a }, 80, 0, 40, 80);
-	renders = 0; // 忽略 requested() 的一次初始重绘
-	approval.onFrame({ frameId: 1, epoch: 0, columns: 80, rows: 40, rawWatermark: 0, decodedWatermark: 0 });
+}
+
+function frame(id: number, epoch: number): { frameId: number; epoch: number; columns: number; rows: number; rawWatermark: number; decodedWatermark: number } {
+	return { frameId: id, epoch, columns: 80, rows: 40, rawWatermark: 0, decodedWatermark: 0 };
+}
+
+function dispatch(evidence: InputEvidence, data: string, chunk: number): void {
+	evidence.rawChunk(data);
+	evidence.beginDispatch(chunk);
+}
+
+function end(evidence: InputEvidence): void { evidence.endDispatch(); }
+
+test("selection change keeps the valid geometry, so Down+Enter confirms immediately", async () => {
+	const { fake, approval, evidence } = setup();
+	request(approval);
+	render(approval);
+	fake.renders = 0;
+	approval.onFrame(frame(1, 0));
 	await new Promise((resolve) => setTimeout(resolve, 0));
-	assert.equal(commands.filter((c) => c.type === "approval.presented").length, 1);
-	assert.equal(renders, 0, "a successful presentation must not request another render");
-	// 同一布局的计时帧不再重复 presented。
-	approval.active()!.render({ title: "Approval required", tool: "bash", scope: "s", parameters: "{}", actor: "leader",
-		loading: false, teamActive: false, actorName: (a) => a }, 80, 0, 40, 80);
-	approval.onFrame({ frameId: 2, epoch: 0, columns: 80, rows: 40, rawWatermark: 0, decodedWatermark: 0 });
-	await new Promise((resolve) => setTimeout(resolve, 0));
-	assert.equal(commands.filter((c) => c.type === "approval.presented").length, 1);
-	// 选中变化 → 需要新一帧呈现；此前 Enter 不能确认。
+	assert.equal(fake.commands.filter((c) => c.type === "approval.presented").length, 1);
+	dispatch(evidence, "\x1b[B", 1);
 	approval.handleInput("\x1b[B");
+	end(evidence);
+	dispatch(evidence, "\r", 2);
 	approval.handleInput("\r");
-	assert.equal(commands.filter((c) => c.type === "approval.answer").length, 0, "selection change invalidates the old frame");
-	approval.active()!.render({ title: "Approval required", tool: "bash", scope: "s", parameters: "{}", actor: "leader",
-		loading: false, teamActive: false, actorName: (a) => a }, 80, 0, 40, 80);
-	approval.onFrame({ frameId: 3, epoch: 0, columns: 80, rows: 40, rawWatermark: 0, decodedWatermark: 0 });
+	end(evidence);
 	await new Promise((resolve) => setTimeout(resolve, 0));
-	assert.equal(commands.filter((c) => c.type === "approval.presented").length, 2);
-	// repeat / release / paste 不是确认。
-	evidence.rawChunk("x");
-	approval.handleInput("\x1b[13;1:2u");
-	approval.handleInput("\x1b[13;1:3u");
-	approval.handleInput("\x1b[200~pasted\x1b[201~");
-	assert.equal(commands.filter((c) => c.type === "approval.answer").length, 0);
-	// 新鲜 Enter 使用最后一次成功呈现的 frame 3。
-	evidence.rawChunk("\r");
-	evidence.beginDispatch(1);
+	const answers = fake.commands.filter((c) => c.type === "approval.answer");
+	assert.equal(answers.length, 1, "a fresh Enter after selection must answer without another frame");
+	const payload = answers[0]!.payload as { choice: number; evidence: { frameId: string; phase: string; terminalEpoch: number } };
+	assert.equal(payload.choice, 0);
+	assert.equal(payload.evidence.frameId, "1");
+	assert.equal(payload.evidence.phase, "PRESS");
+	assert.equal(payload.evidence.terminalEpoch, 0);
+	// 选择不改变几何，因此没有第二次 presented；成功呈现也没有额外重绘。
+	assert.equal(fake.commands.filter((c) => c.type === "approval.presented").length, 1);
+	assert.equal(fake.renders, 1, "only the selection input requested a render");
+});
+
+test("an Enter pressed before the presentation ACK is answered once the frame is confirmed", async () => {
+	let release: ((value: { ok: boolean; type: string; payload: Record<string, unknown> }) => void) | undefined;
+	const { fake, approval, evidence } = setup(async () => new Promise((resolve) => { release = resolve; }));
+	request(approval);
+	render(approval);
+	approval.onFrame(frame(1, 0));
+	dispatch(evidence, "\x1b[B", 1);
+	approval.handleInput("\x1b[B");
+	end(evidence);
+	dispatch(evidence, "\r", 2);
 	approval.handleInput("\r");
-	evidence.endDispatch();
+	end(evidence);
 	await new Promise((resolve) => setTimeout(resolve, 0));
-	const answers = commands.filter((c) => c.type === "approval.answer");
+	assert.equal(fake.commands.filter((c) => c.type === "approval.answer").length, 0, "answer waits for the frame evidence");
+	release?.({ ok: true, type: "command.result", payload: {} });
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	const answers = fake.commands.filter((c) => c.type === "approval.answer");
+	assert.equal(answers.length, 1, "the pending Enter is answered without another key press");
+	const payload = answers[0]!.payload as { choice: number; evidence: { frameId: string; terminalEpoch: number } };
+	assert.equal(payload.choice, 0);
+	assert.equal(payload.evidence.frameId, "1");
+});
+
+test("repeat/release/paste never answer an approval", async () => {
+	const { fake, approval, evidence } = setup();
+	request(approval);
+	render(approval);
+	approval.onFrame(frame(1, 0));
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	dispatch(evidence, "\x1b[13;1:2u", 1); approval.handleInput("\x1b[13;1:2u"); end(evidence);
+	dispatch(evidence, "\x1b[13;1:3u", 2); approval.handleInput("\x1b[13;1:3u"); end(evidence);
+	dispatch(evidence, "\x1b[200~pasted\x1b[201~", 3); approval.handleInput("\x1b[200~pasted\x1b[201~"); end(evidence);
+	assert.equal(fake.commands.filter((c) => c.type === "approval.answer").length, 0);
+});
+
+test("a late presented ACK after invalidation cannot restore the old epoch", async () => {
+	let releaseFirst: ((value: { ok: boolean; type: string; payload: Record<string, unknown> }) => void) | undefined;
+	let presentations = 0;
+	const { fake, approval, evidence, presented } = setup(async () => {
+		presentations += 1;
+		if (presentations === 1) {
+			return new Promise((resolve) => { releaseFirst = resolve; });
+		}
+		return { ok: true, type: "command.result", payload: {} };
+	});
+	request(approval);
+	render(approval);
+	approval.onFrame(frame(1, 0));
+	assert.equal(presentations, 1, "first presentation is in flight");
+	// 终端失效：epoch 推进，本地证据作废；旧回执仍在途。
+	presented.invalidate();
+	approval.invalidate();
+	render(approval);
+	approval.onFrame(frame(2, 1));
+	assert.equal(presentations, 2, "the new epoch must present even while the old request is in flight");
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	releaseFirst?.({ ok: true, type: "command.result", payload: {} });
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	dispatch(evidence, "\x1b[B", 2);
+	approval.handleInput("\x1b[B");
+	end(evidence);
+	dispatch(evidence, "\r", 3);
+	approval.handleInput("\r");
+	end(evidence);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	const answers = fake.commands.filter((c) => c.type === "approval.answer");
 	assert.equal(answers.length, 1);
-	const answer = answers[0]!.payload as { choice: number; evidence: { frameId: string; phase: string; terminalEpoch: number } };
-	assert.equal(answer.choice, 0);
-	assert.equal(answer.evidence.frameId, "3");
-	assert.equal(answer.evidence.phase, "PRESS");
-	assert.equal(answer.evidence.terminalEpoch, 0);
+	const payload = answers[0]!.payload as { evidence: { frameId: string; terminalEpoch: number } };
+	assert.equal(payload.evidence.frameId, "2");
+	assert.equal(payload.evidence.terminalEpoch, 1);
+});
+
+test("presentation failures notify once and do not schedule their own render loop", async () => {
+	let presentations = 0;
+	const { fake, approval } = setup(async () => {
+		presentations += 1;
+		return { ok: false, type: "command.error", payload: { code: "STALE_REVISION", message: "stale" } };
+	});
+	request(approval);
+	fake.renders = 0;
+	render(approval);
+	approval.onFrame(frame(1, 0));
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.equal(presentations, 1);
+	assert.equal(fake.notifications, 1);
+	assert.equal(fake.renders, 1, "the single notification may cause one render");
+	// 模拟这次重绘产生的下一帧；失败不再通知，也不再请求重绘。
+	render(approval);
+	approval.onFrame(frame(2, 0));
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.equal(presentations, 2);
+	assert.equal(fake.notifications, 1);
+	assert.equal(fake.renders, 1);
+	// 用户再次操作/自然帧仍可重试，但不会自激。
+	render(approval);
+	approval.onFrame(frame(3, 0));
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.equal(presentations, 3);
+	assert.equal(fake.renders, 1);
 });
