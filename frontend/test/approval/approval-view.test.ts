@@ -37,7 +37,7 @@ test("button rectangles point at the rendered option lines, not at shifted rows"
 
 test("long parameters are windowed; buttons stay visible and scroll changes the window", () => {
 	const view = new ApprovalView(theme, choices(true));
-	const parameters = Array.from({ length: 60 }, (_, index) => `line-${index}`).join("\n");
+	const parameters = [...Array.from({ length: 59 }, (_, index) => `line-${index}`), "UNIQUE_LAST_PARAMETER"].join("\n");
 	const lines = view.render(input(parameters), 80, 0, 24, 80);
 	assert.ok(lines.length <= 24, `approval must fit the viewport, got ${lines.length}`);
 	assert.ok(lines.some((line) => line.includes("PgUp/PgDn")));
@@ -46,6 +46,13 @@ test("long parameters are windowed; buttons stay visible and scroll changes the 
 	view.scrollBy(20);
 	const scrolled = view.render(input(parameters), 80, 0, 24, 80);
 	assert.ok(scrolled.some((line) => line.includes("line-20")), "PgDn window should move to the newer lines");
+	// 滚到末尾时最后一行必须真实可见，提示行只占额外预算。
+	view.scrollBy(10000);
+	const end = view.render(input(parameters), 80, 0, 24, 80);
+	assert.ok(end.some((line) => line.includes("UNIQUE_LAST_PARAMETER")), "the final parameter must remain reachable");
+	const hint = end.find((line) => line.includes("PgUp/PgDn"));
+	assert.ok(hint, "overflow hint must exist");
+	assert.match(hint!, /\d+-60 of 60/);
 });
 
 test("no approval rectangles when the card cannot be placed inside the viewport", () => {

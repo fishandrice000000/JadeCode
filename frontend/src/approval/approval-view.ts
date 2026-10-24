@@ -117,15 +117,17 @@ export class ApprovalView {
 		const headerLines = 1 + (input.teamActive && input.actor ? 1 : 0) + 2 + (input.loading ? 1 : 0);
 		// 底部：空行 + 三个选项 + 下边框；预留后剩余行数给参数窗口。
 		const reserved = headerLines + 1 + this.choices.length + 1;
-		const availableContent = Math.max(3, rows - Math.max(0, originY) - reserved);
+		const baseCapacity = Math.max(3, rows - Math.max(0, originY) - reserved);
 		const parameterLines = wrapTextWithAnsi(visibleEscapes(input.parameters), innerWidth);
-		const maxScroll = Math.max(0, parameterLines.length - availableContent);
+		const overflow = parameterLines.length > baseCapacity;
+		// 提示行单独占一行预算，绝不用它覆盖最后一个真实参数行。
+		const capacity = overflow ? Math.max(2, baseCapacity - 1) : baseCapacity;
+		const maxScroll = Math.max(0, parameterLines.length - capacity);
 		this.scroll = Math.max(0, Math.min(this.scroll, maxScroll));
-		const windowed = parameterLines.slice(this.scroll, this.scroll + availableContent);
-		if (parameterLines.length > availableContent) {
-			windowed[windowed.length - 1] = theme.style("dim",
-				`… ${this.scroll + 1}-${Math.min(parameterLines.length, this.scroll + availableContent)} of ${parameterLines.length} · PgUp/PgDn`);
-		}
+		const windowed = parameterLines.slice(this.scroll, this.scroll + capacity);
+		const hint = overflow
+			? theme.style("dim", `… ${this.scroll + 1}-${this.scroll + windowed.length} of ${parameterLines.length} · PgUp/PgDn`)
+			: "";
 
 		if (input.teamActive && input.actor) pushLine(theme.style("muted", `Actor: ${input.actorName(input.actor)}`));
 		pushLine(theme.style("muted", `Tool: ${input.tool}`));
@@ -133,6 +135,7 @@ export class ApprovalView {
 		pushLine(theme.bold(theme.style("muted", "Parameters")));
 		if (input.loading) pushLine(theme.style("dim", "Loading the complete parameters…"));
 		for (const line of windowed) pushLine(theme.style("text", line));
+		if (hint) pushLine(hint);
 		pushLine("");
 
 		const buttonX = margin + 3;

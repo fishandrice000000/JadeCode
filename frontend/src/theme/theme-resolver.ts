@@ -202,7 +202,8 @@ export interface ResolveOptions {
 export function resolveTheme(document: ThemeDocument, variantKey: string, options: ResolveOptions): ResolvedTheme {
 	const variant = pickVariant(document, variantKey);
 	const system = options.system;
-	const noColor = options.noColor === true || Boolean(process.env.NO_COLOR);
+	// 显式 false 允许测试/宿主覆盖环境；未提供时才读取 NO_COLOR。
+	const noColor = options.noColor ?? Boolean(process.env.NO_COLOR);
 	const appearance = system ? (system.dark ? "dark" : "light") : variant.appearance;
 	const vars = new Map<string, Color | undefined>();
 	// system 主题：普通前景/背景先绑定终端事实，其余变量仍来自主题。

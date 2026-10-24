@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import {
 	isKeyRelease,
+	isKeyRepeat,
 	matchesKey,
 	type Component,
 	type TUI,
@@ -72,7 +73,7 @@ export class Application {
 	private timer: NodeJS.Timeout | undefined;
 	private closing = false;
 	private exitMessage = "";
-	private snapshotBuffer: { id: string; chunks: string[]; generation: string } | undefined;
+	private snapshotBuffer: { id: string; chunks: string[]; generation: string; sourceSeq: string } | undefined;
 	private readonly openedAt = Date.now();
 	/** UI（主题/终端/编辑器/host）是否已建立；bootstrap 后的业务事件必须等它完成。 */
 	private readonly uiBarrier = new UiEventBarrier<WireMessage>();
@@ -273,6 +274,8 @@ export class Application {
 
 	/** 全局输入：页面优先，然后 97 动作；编辑器自身处理文本/Enter。 */
 	private onGlobalInput(data: string): { consume?: boolean; data?: string } | undefined {
+		// release/repeat 不驱动页面/全局动作；编辑器本身也不依赖 release。
+		if (isKeyRelease(data) || isKeyRepeat(data)) return { consume: true };
 		if (this.pages.current()) {
 			if (this.pages.handleInput(data)) {
 				this.host.requestRender();
@@ -465,7 +468,11 @@ export class Application {
 				return;
 			case "session.snapshot.begin":
 				if (!this.session.bootstrap()) return;
-				this.snapshotBuffer = { id: text(message.payload, "snapshotId"), chunks: [], generation: text(message.payload, "generation") };
+				this.snapshotBuffer = {
+					id: text(message.payload, "snapshotId"), chunks: [],
+					generation: text(message.payload, "generation"),
+					sourceSeq: text(message.payload, "sourceSeq", "0"),
+				};
 				return;
 			case "session.snapshot.chunk":
 				if (!this.session.bootstrap()) return;
@@ -659,7 +666,7 @@ export class Application {
 		this.client?.send("session.ready", {
 			snapshotId,
 			generation: buffer.generation,
-			lastSnapshotSeq: text(payload, "sourceSeq", "0"),
+			lastSnapshotSeq: buffer.sourceSeq,
 		}, this.identity());
 		this.host.requestRender(true);
 	}

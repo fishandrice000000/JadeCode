@@ -1,4 +1,5 @@
 import { matchesKey } from "@earendil-works/pi-tui";
+import { isConfirmationPress } from "../terminal/input-kind.ts";
 import type { Page, PageContext } from "./page-stack.ts";
 import type { ResolvedTheme } from "../theme/theme-resolver.ts";
 
@@ -79,6 +80,8 @@ export class PermissionPage implements Page {
 	}
 
 	handleInput(data: string): boolean {
+		// 权限页的 Enter/确认同样只接受真实 PRESS；release/repeat/paste 不提交任何命令。
+		if (!isConfirmationPress(data)) return true;
 		if (this.confirmingFullAccess) return this.handleConfirm(data);
 		if (matchesKey(data, "escape")) { this.context.closePage(); return true; }
 		if (matchesKey(data, "up")) { this.selected = (this.selected - 1 + PROFILES.length) % PROFILES.length; return true; }
@@ -104,9 +107,12 @@ export class PermissionPage implements Page {
 			});
 			return true;
 		}
+		// 默认权限保存使用配置 revision；本次切档使用权限 revision，两者不能混用。
+		const payload = this.intent === "default"
+			? { profile, expectedConfigRevision: Number(snapshot?.configRevision ?? 0) }
+			: { profile, expectedPermissionRevision: Number(expected) };
 		const type = this.intent === "default" ? "permission.default" : "permission.select";
-		client.command(type, { profile, expectedPermissionRevision: Number(expected),
-			fullAccessConfirmationId: null, evidence: null }, this.context.identity()).then((result) => {
+		client.command(type, payload, this.context.identity()).then((result) => {
 			if (!result.ok) this.error = result.message ?? "Could not change permission";
 			else this.context.closePage();
 			this.context.requestRender();
@@ -148,6 +154,7 @@ export class PermissionPage implements Page {
 			this.error = "The confirmation button is not fully visible; resize the terminal and press Enter again.";
 			return true;
 		}
+		const expectedConfig = Number(snapshot?.configRevision ?? 0);
 		void client.command("permission.presented", {
 			confirmationId: this.confirmationId,
 			intent: this.intent,
@@ -165,9 +172,13 @@ export class PermissionPage implements Page {
 				this.context.requestRender();
 				return;
 			}
-			return client.command("permission.select", {
+			const type = this.intent === "default" ? "permission.default" : "permission.select";
+			const identityPayload = this.intent === "default"
+				? { expectedConfigRevision: expectedConfig }
+				: { expectedPermissionRevision: revision };
+			return client.command(type, {
 				profile: "full-access",
-				expectedPermissionRevision: revision,
+				...identityPayload,
 				fullAccessConfirmationId: this.confirmationId,
 				evidence: {
 					phase: "PRESS",

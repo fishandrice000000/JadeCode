@@ -1,4 +1,5 @@
-import { isKeyRelease, matchesKey, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { matchesKey, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { isConfirmationPress } from "../terminal/input-kind.ts";
 import { arrayValue, numberValue, text, type Payload } from "../bridge/wire.ts";
 import type { BackendClient } from "../bridge/client.ts";
 import type { InputEvidence, SequenceSource } from "../terminal/input-evidence.ts";
@@ -52,10 +53,14 @@ interface PendingApproval {
 	loading: boolean;
 	blobRef: string;
 	presentedFrame: number;
+	presentedEpoch: number;
+	presentedDigest: string;
 	view: ApprovalView;
 	// 选中/确认前必须有一帧成功提交的呈现证据。
 	selectable: boolean;
 	confirming: boolean;
+	presenting: boolean;
+	presentationFailures: number;
 }
 
 export class ApprovalController {
@@ -112,9 +117,13 @@ export class ApprovalController {
 			loading,
 			blobRef,
 			presentedFrame: -1,
+			presentedEpoch: -1,
+			presentedDigest: "",
 			view: new ApprovalView(this.theme!, choices),
 			selectable: false,
 			confirming: false,
+			presenting: false,
+			presentationFailures: 0,
 		};
 		if (this.current) this.queue.push(item);
 		else {
@@ -132,6 +141,8 @@ export class ApprovalController {
 			if (!item || !item.loading || item.blobRef !== ref) continue;
 			item.parameters = value;
 			item.loading = false;
+			item.selectable = false;
+			item.presentedDigest = "";
 			item.view.invalidate();
 			changed = true;
 		}
@@ -176,6 +187,8 @@ export class ApprovalController {
 		if (!this.current) return;
 		this.current.selectable = false;
 		this.current.presentedFrame = -1;
+		this.current.presentedEpoch = -1;
+		this.current.presentedDigest = "";
 		this.callbacks.requestRender();
 	}
 
@@ -185,15 +198,17 @@ export class ApprovalController {
 	 */
 	onFrame(frame: FrameSnapshot): void {
 		const item = this.current;
-		if (!item || item.loading || item.confirming || !this.theme) return;
+		if (!item || item.loading || item.confirming || item.presenting || !this.theme) return;
 		if (!this.callbacks.terminalHealthy() || this.callbacks.presented.currentEpoch() !== frame.epoch) return;
 		const layout = item.view.lastLayout();
-		if (!layout) return;
-		if (this.lastPresented && this.lastPresented.requestId === item.requestId
-			&& this.lastPresented.frameId === frame.frameId) return;
-		this.lastPresented = { requestId: item.requestId, frameId: frame.frameId };
+		if (!layout || layout.rects.length === 0) return;
+		// 同一申请在同一 epoch 下已经有一份成功呈现证据：后续计时/状态重绘不再重复登记。
+		// 这既停止“presented 回执 → 重绘 → 再 presented”的循环，也保证答复引用的是
+		// Java 最后登记的那一帧，而不是被迟到回执替换掉的新帧。
+		if (item.selectable && item.presentedDigest === layout.digest && item.presentedEpoch === frame.epoch) return;
 		const client = this.callbacks.client();
 		if (!client) return;
+		item.presenting = true;
 		const rawWatermark = this.callbacks.evidence.rawWatermark();
 		const decodedWatermark = this.callbacks.evidence.decodedSeq();
 		client.command("approval.presented", {
@@ -209,17 +224,29 @@ export class ApprovalController {
 			rawReceiptWatermark: rawWatermark,
 			decodedWatermark,
 		}, this.callbacks.identity()).then((result) => {
+			item.presenting = false;
 			if (!result.ok) {
 				item.selectable = false;
-				this.callbacks.notify(result.message ?? "The approval layout was rejected; press again after the next frame.", true);
-				this.callbacks.requestRender();
+				item.presentationFailures += 1;
+				// 只自动重试少量次数；持续失败等待用户/下一次真实重绘，避免无输入重绘循环。
+				if (item.presentationFailures <= 2) {
+					this.callbacks.notify(result.message ?? "The approval layout was rejected; presenting again.", true);
+					this.callbacks.requestRender();
+				} else {
+					this.callbacks.notify(result.message ?? "The approval layout could not be presented; resize or switch pages, then try again.", true);
+				}
 				return;
 			}
-			if (item.loading) return;
+			if (item.loading || this.current !== item) return;
 			item.selectable = true;
 			item.presentedFrame = frame.frameId;
-			this.callbacks.requestRender();
-		}).catch(() => { /* 断连由 Application 统一处理。 */ });
+			item.presentedEpoch = frame.epoch;
+			item.presentedDigest = layout.digest;
+			item.presentationFailures = 0;
+			// 成功呈现不请求重绘：否则会再次产生帧与 presented，形成循环。
+		}).catch(() => {
+			item.presenting = false;
+		});
 	}
 
 	/**
@@ -229,17 +256,22 @@ export class ApprovalController {
 	handleInput(data: string): boolean {
 		const item = this.current;
 		if (!item) return false;
-		if (isKeyRelease(data)) {
-			// release 不改变选择，也不构成确认。
-			return matchesKey(data, "up") || matchesKey(data, "down") || matchesKey(data, "enter") || matchesKey(data, "escape");
+		if (!isConfirmationPress(data)) {
+			// release/repeat/paste 既不改变选择，也不构成确认；仍消费，避免落到编辑器。
+			return true;
 		}
 		if (matchesKey(data, "up") || matchesKey(data, "left") || matchesKey(data, "shift+tab")) {
 			item.view.move(-1);
+			// 选中色/箭头是布局的一部分；移动后必须重新呈现一帧才能确认。
+			item.selectable = false;
+			item.presentedDigest = "";
 			this.callbacks.requestRender();
 			return true;
 		}
 		if (matchesKey(data, "down") || matchesKey(data, "right") || matchesKey(data, "tab")) {
 			item.view.move(1);
+			item.selectable = false;
+			item.presentedDigest = "";
 			this.callbacks.requestRender();
 			return true;
 		}
@@ -293,7 +325,7 @@ export class ApprovalController {
 			this.callbacks.notify("Input evidence is unavailable; press again.", true);
 			return;
 		}
-		if (!item.selectable || item.presentedFrame < 0) {
+		if (!item.selectable || item.presentedFrame < 0 || item.presentedEpoch < 0) {
 			this.callbacks.notify("Waiting for the approval frame to be presented; press again.", true);
 			this.callbacks.requestRender();
 			return;
@@ -312,7 +344,7 @@ export class ApprovalController {
 				phase: "PRESS",
 				revision: Number(item.revision),
 				frameId: String(item.presentedFrame),
-				terminalEpoch: this.callbacks.presented.currentEpoch(),
+				terminalEpoch: item.presentedEpoch,
 				rawStartReceipt: source.startReceipt,
 				rawEndReceipt: source.endReceipt,
 				decodedSeq: source.decodedSeq,
@@ -322,8 +354,7 @@ export class ApprovalController {
 		}, this.callbacks.identity()).then((result) => {
 			item.confirming = false;
 			if (result.ok) {
-				// 真正移除由 approval.removed 事件完成，避免 Node 与 Java 状态分叉。
-				this.callbacks.requestRender();
+				// 真正移除由 approval.removed 事件完成；此处不请求重绘，避免确认回执再触发呈现循环。
 				return;
 			}
 			item.selectable = false;

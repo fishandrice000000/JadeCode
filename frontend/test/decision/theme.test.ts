@@ -31,8 +31,24 @@ test("system theme keeps terminal fg/bg and NO_COLOR emits no styling", () => {
 	assert.equal(dark.noColor, true);
 	assert.equal(dark.style("accent", "plain"), "plain");
 	assert.equal(dark.bold("plain"), "plain");
-	const colored = resolveTheme(builtin, "dark", { mode: "truecolor" });
+	const colored = resolveTheme(builtin, "dark", { mode: "truecolor", noColor: false });
 	assert.notEqual(colored.style("accent", "plain"), "plain");
+});
+
+test("NO_COLOR is honoured unless the host explicitly overrides it", () => {
+	const previous = process.env.NO_COLOR;
+	process.env.NO_COLOR = "1";
+	try {
+		const withoutOption = resolveTheme(builtin, "dark", { mode: "truecolor" });
+		assert.equal(withoutOption.noColor, true);
+		assert.equal(withoutOption.style("accent", "plain"), "plain");
+		const overridden = resolveTheme(builtin, "dark", { mode: "truecolor", noColor: false });
+		assert.equal(overridden.noColor, false);
+		assert.notEqual(overridden.style("accent", "plain"), "plain");
+	} finally {
+		if (previous === undefined) delete process.env.NO_COLOR;
+		else process.env.NO_COLOR = previous;
+	}
 });
 
 test("bad documents fail loudly", () => {

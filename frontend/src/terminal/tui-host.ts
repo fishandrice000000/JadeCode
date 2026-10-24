@@ -43,6 +43,7 @@ export interface TuiHostOptions {
 type JadeScreen = (TuiMainScreen | TuiAltScreen) & {
 	renderGate?: () => boolean;
 	addPriorityInputListener(listener: TuiInputListener): () => void;
+	removePriorityInputListener(listener: TuiInputListener): void;
 	mousePriorityHandler?: (event: TuiMouseEvent) => boolean;
 	setScrollbar?: (scrollbar: "auto" | "always" | "hidden") => void;
 };
@@ -127,6 +128,7 @@ export class TuiHost {
 		this.screen?.addPriorityInputListener(listener);
 		return () => {
 			this.priorityListeners.delete(listener);
+			this.screen?.removePriorityInputListener(listener);
 		};
 	}
 

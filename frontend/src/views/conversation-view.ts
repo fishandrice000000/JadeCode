@@ -15,10 +15,15 @@ import { BrandingView } from "./branding-view.ts";
  * 自己的渲染结果，不读 Pi 内部布局）。
  */
 export class ConversationView implements Component {
-	private readonly cards = new Map<string, { revision: number; key: string; card: MessageCard | ToolCard; lines: string[] }>();
+	/**
+	 * 每个条目缓存自己的卡对象与已渲染行（含卡后空行）。
+	 * 键包含正文 revision、宽度、主题和影响排版的设置，所以稳定旧卡不会因新 token 全部重建。
+	 */
+	private readonly cards = new Map<string, { entryKey: string; card: MessageCard | ToolCard; lines: string[] }>();
 	private readonly branding = new BrandingView();
-	private lastWidth = -1;
-	private lastKey = "";
+	private cachedLines: string[] | undefined;
+	private cachedRevision = -1;
+	private cachedKey = "";
 	private readonly offsets = new Map<string, number>();
 
 	constructor(
@@ -31,52 +36,60 @@ export class ConversationView implements Component {
 		const theme = this.session.snapshot() ? this.currentTheme() : undefined;
 		if (!theme) return [];
 		const settings = this.session.settings();
-		const key = `${width}:${theme.name}:${theme.mode}:${theme.noColor ? 1 : 0}:${settings?.thinkingVisible}:${settings?.outputPad}:${settings?.codeBlockIndent}:${this.session.teamActive()}`;
-		const entries = this.transcript.entries();
-		if (this.lastWidth === width && this.lastKey === key && this.cardsCover(entries)) {
-			const cached: string[] = [];
-			for (const entry of entries) {
-				const card = this.cards.get(entry.id);
-				if (card) cached.push(...card.lines);
-			}
-			return cached;
+		// transcript.revision() 在任何条目新增/更新/替换时递增；必须参与顶层缓存键。
+		const key = `${width}:${this.transcript.revision()}:${theme.name}:${theme.mode}:${theme.noColor ? 1 : 0}:` +
+			`${settings?.thinkingVisible}:${settings?.outputPad}:${settings?.codeBlockIndent}:${this.session.teamActive()}:` +
+			`${settings?.quietStartup}:${this.session.bootstrap()?.projectVersion ?? ""}`;
+		if (this.cachedLines && this.cachedRevision === this.transcript.revision() && this.cachedKey === key) {
+			return this.cachedLines;
 		}
-		this.lastWidth = width;
-		this.lastKey = key;
+		this.cachedRevision = this.transcript.revision();
+		this.cachedKey = key;
 		this.offsets.clear();
-		const lines: string[] = [];
+		const entries = this.transcript.entries();
 		const visible = entries.filter((entry) => entry.kind !== "THINKING" || settings?.thinkingVisible !== false);
 		if (visible.length === 0) {
-			const rows = this.session.snapshot() ? 24 : 24;
-			lines.push(...this.branding.render(theme, width, rows, this.session.bootstrap()?.projectVersion ?? ""));
+			// 空会话也走完整路径并缓存，避免第二次渲染错误地返回空数组。
+			const lines: string[] = [];
+			lines.push(...this.branding.render(theme, width, this.session.snapshot() ? 24 : 24,
+				this.session.bootstrap()?.projectVersion ?? ""));
 			lines.push("");
 			if (!settings?.quietStartup) {
 				lines.push(theme.style("dim", `Workspace: ${this.session.snapshot()?.workspace ?? ""}`));
 			}
 			this.offsets.set("__welcome__", 0);
+			this.cachedLines = lines;
 			return lines;
 		}
+		const lines: string[] = [];
+		const entryKeySuffix = `${width}:${theme.name}:${theme.mode}:${theme.noColor ? 1 : 0}:` +
+			`${settings?.outputPad}:${settings?.codeBlockIndent}:${settings?.thinkingVisible}:${this.session.teamActive()}`;
 		for (const entry of visible) {
 			this.offsets.set(entry.id, lines.length);
-			const card = this.cardFor(entry, theme, settings?.thinkingVisible !== false, settings?.outputPad ?? 1,
-				settings?.codeBlockIndent ?? "  ");
-			const cardKey = `${entry.revision}:${width}:${theme.name}:${theme.mode}:${theme.noColor ? 1 : 0}:${settings?.outputPad}:${settings?.codeBlockIndent}`;
-			const cached = this.cards.get(entry.id);
-			if (!cached || cached.revision !== entry.revision || cached.key !== cardKey || cached.card !== card) {
-				const cardLines = card.render(width);
-				this.cards.set(entry.id, { revision: entry.revision, key: cardKey, card, lines: cardLines });
-				lines.push(...cardLines);
-			} else {
-				lines.push(...cached.lines);
+			const entryKey = `${entry.revision}:${entry.status}:${entry.elapsedMs}:${entry.expanded}:${entryKeySuffix}`;
+			let cached = this.cards.get(entry.id);
+			if (!cached || cached.entryKey !== entryKey) {
+				const card = this.cardFor(entry, theme, settings?.thinkingVisible !== false, settings?.outputPad ?? 1,
+					settings?.codeBlockIndent ?? "  ");
+				cached = { entryKey, card, lines: card.render(width) };
+				this.cards.set(entry.id, cached);
 			}
+			lines.push(...cached.lines);
+			// 卡后空行属于该条目缓存，快速路径与重排路径的间距保持一致。
 			lines.push("");
 		}
+		// 已删除/被回滚的条目不能继续占用缓存。
+		for (const id of [...this.cards.keys()]) {
+			if (!visible.some((entry) => entry.id === id)) this.cards.delete(id);
+		}
+		this.cachedLines = lines;
 		return lines;
 	}
 
 	invalidate(): void {
 		this.cards.clear();
-		this.lastWidth = -1;
+		this.cachedLines = undefined;
+		this.cachedRevision = -1;
 	}
 
 	/** @returns 条目在文档中的起始行（搜索跳转用），未知返回 null。 */
@@ -93,12 +106,6 @@ export class ConversationView implements Component {
 			if (haystack.includes(needle)) return this.offsets.get(entry.id) ?? null;
 		}
 		return null;
-	}
-
-	private cardsCover(entries: readonly Entry[]): boolean {
-		if (this.cards.size !== entries.length) return false;
-		for (const entry of entries) if (!this.cards.has(entry.id)) return false;
-		return true;
 	}
 
 	private currentTheme(): ResolvedTheme {
