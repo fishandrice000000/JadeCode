@@ -1041,6 +1041,9 @@ export abstract class TuiBase extends Container implements TUI {
 	notifyRenderReady(): void {
 		if (!this.renderGateBlocked) return;
 		this.renderGateBlocked = false;
+		// Jade P08：被 gate 挡住时 renderRequested 仍为 true，但已没有排程。
+		// 先释放合并标志再排一次最新帧，否则 requestRender 会提前返回，drain 后永久停画。
+		this.renderRequested = false;
 		this.requestRender();
 	}
 

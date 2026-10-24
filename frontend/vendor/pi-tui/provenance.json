@@ -15,7 +15,8 @@
     "P04",
     "P05",
     "P06",
-    "P07"
+    "P07",
+    "P08"
   ],
   "files": [
     {
@@ -401,7 +402,7 @@
       "path": "src/tui.ts",
       "upstreamPath": "packages/tui/src/tui.ts",
       "originalSha256": "206519884c4cb27096d00048a2fc4e8a0c404714e548c8dd5b62c38060d3b240",
-      "currentSha256": "1c1031136a445b741a8763b0d38355b1c018e8d19643355d8c554aa30ee94aef"
+      "currentSha256": "0a4a16abe03e1e2bcaf3d235d6bce382958b0fdc8c018f08dcc97498a9e3f57c"
     },
     {
       "path": "src/undo-stack.ts",

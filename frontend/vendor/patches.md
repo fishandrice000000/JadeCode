@@ -92,3 +92,11 @@ recorded patch.
 - No syntax highlighting, chat viewport or Mermaid code is copied from `packages/coding-agent`; Jade's own modules wrap the
   public Pi Markdown/theme/selection APIs instead.
 - `packages/pi-tui/test/**` is vendored verbatim as upstream reference material and is **not** executed by Jade's test suite.
+
+
+## P08 — Resume rendering after stdout drain
+
+- File: `src/tui.ts` (`notifyRenderReady`).
+- 原因：P03 挡住一帧后保留 `renderRequested=true`，drain 回调再调用 `requestRender()` 会被该标志提前返回，界面永久停止重绘。
+- 修改：消费 gateBlocked 时先清理没有排程的合并标志，再按普通 16ms 策略排一帧最新状态。
+- 验证：`terminal-adapter.test.ts` 使用真实 JadeTerminal 的 false write/延迟 callback/drain 与真实 Pi TuiAltScreen；阻塞期间 100 次更新不渲染，drain 后只绘最新值一次。未改变上游调度间隔或输入抢占规则。
