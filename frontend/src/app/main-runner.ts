@@ -17,6 +17,8 @@ export interface RunnerHooks {
 	signals: Pick<EventEmitter, "once">;
 	/** 顶层强退入口；生产为 process.exit。 */
 	exit(code: number): void;
+	/** 立即写入进程退出状态；即使随后事件循环先清空，也不能退化成未完成 await 的 13。 */
+	setExitCode(code: number): void;
 	writeStderr(text: string): void;
 }
 
@@ -25,6 +27,7 @@ export async function runMain(application: RunnerApplication, hooks: RunnerHooks
 	for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143]] as const) {
 		hooks.signals.once(signal, () => {
 			signalExitCode = code;
+			hooks.setExitCode(code);
 			application.abort(`Interrupted by ${signal}`);
 			// 给同步终端恢复/最后一次写入一个极短窗口，不让关闭流程无限挂住。
 			const timer = setTimeout(() => hooks.exit(code), 200);
