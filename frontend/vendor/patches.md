@@ -100,3 +100,11 @@ recorded patch.
 - 原因：P03 挡住一帧后保留 `renderRequested=true`，drain 回调再调用 `requestRender()` 会被该标志提前返回，界面永久停止重绘。
 - 修改：消费 gateBlocked 时先清理没有排程的合并标志，再按普通 16ms 策略排一帧最新状态。
 - 验证：`terminal-adapter.test.ts` 使用真实 JadeTerminal 的 false write/延迟 callback/drain 与真实 Pi TuiAltScreen；阻塞期间 100 次更新不渲染，drain 后只绘最新值一次。未改变上游调度间隔或输入抢占规则。
+
+
+## P09 — Guard untrusted hyperlink URLs
+
+- File: `src/terminal-image.ts` (`hyperlink`).
+- 原因：上游直接把任意 URL 拼入 OSC8，不能满足批准的链接/控制字节安全边界。
+- 修改：拒绝 C0/C1/空白控制与非 http/https/mailto/file scheme；无效 URL 退为原显示文字，保留受信样式。
+- 验证：Jade 文本几何回归检查 javascript/data、OSC 终止符注入与正常 HTTPS；不引入另一套 Markdown 解析器。

@@ -730,6 +730,12 @@ export function renderImage(
  * @param url - The URL to link to
  */
 export function hyperlink(text: string, url: string): string {
+	// Jade P09：模型/文件给出的 URL 不是受信终端协议。拒绝控制字节和可执行 scheme，
+	// 防止关闭 OSC8 后注入另一条终端指令；失败只显示原有文字，不自动打开链接。
+	if (/[\u0000-\u0020\u007f-\u009f]/u.test(url)) return text;
+	try {
+		if (!["http:", "https:", "mailto:", "file:"].includes(new URL(url).protocol.toLowerCase())) return text;
+	} catch { return text; }
 	return `\x1b]8;;${url}\x1b\\${text}\x1b]8;;\x1b\\`;
 }
 

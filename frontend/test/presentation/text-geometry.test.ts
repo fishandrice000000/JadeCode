@@ -1,5 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { hyperlink } from "../../vendor/pi-tui/src/terminal-image.ts";
+
+test("untrusted hyperlinks cannot inject controls or executable URL schemes", () => {
+	for (const url of ["javascript:alert(1)", "data:text/html,unsafe", "https://example.test\x1b\\\x1b]52;c;payload\x07", "https://example.test\nnext"]) {
+		assert.equal(hyperlink("label", url), "label");
+	}
+	assert.equal(hyperlink("label", "https://example.test"), "\x1b]8;;https://example.test\x1b\\label\x1b]8;;\x1b\\");
+});
 import { stripTerminalSequences, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
 test("CJK, emoji and combining marks use terminal cell widths and wrap without loss", () => {
