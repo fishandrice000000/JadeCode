@@ -16,7 +16,6 @@
     <maven.compiler.release>21</maven.compiler.release>
     <maven.compiler.parameters>true</maven.compiler.parameters>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-    <jline.version>3.30.6</jline.version>
     <!-- 成套构建由 scripts/build-release.mjs 过滤覆盖；Java-only 构建明确标记未配对。 -->
     <jade.buildId>unpaired</jade.buildId>
     <jade.protocolVersion>1</jade.protocolVersion>
@@ -34,35 +33,6 @@
       <groupId>io.modelcontextprotocol.sdk</groupId>
       <artifactId>mcp-json-jackson2</artifactId>
       <version>2.1.0</version>
-    </dependency>
-    <!-- TUI：Unicode 17 字素分段。锁定 78.3，避免终端编辑/换行规则随系统 JDK 漂移。 -->
-    <dependency>
-      <groupId>com.ibm.icu</groupId>
-      <artifactId>icu4j</artifactId>
-      <version>78.3</version>
-    </dependency>
-    <!-- TUI：Markdown/高亮/Mermaid 固定纯计算库运行在封闭 GraalJS Context 中；Java 仍拥有布局与终端。 -->
-    <dependency>
-      <groupId>org.graalvm.polyglot</groupId>
-      <artifactId>polyglot</artifactId>
-      <version>24.1.2</version>
-    </dependency>
-    <dependency>
-      <groupId>org.graalvm.polyglot</groupId>
-      <artifactId>js-community</artifactId>
-      <version>24.1.2</version>
-      <type>pom</type>
-    </dependency>
-    <!-- TUI：JDK 只有 PNG/GIF 解码，JPEG/WebP 由 TwelveMonkeys ImageIO provider 补齐。 -->
-    <dependency>
-      <groupId>com.twelvemonkeys.imageio</groupId>
-      <artifactId>imageio-jpeg</artifactId>
-      <version>3.12.0</version>
-    </dependency>
-    <dependency>
-      <groupId>com.twelvemonkeys.imageio</groupId>
-      <artifactId>imageio-webp</artifactId>
-      <version>3.12.0</version>
     </dependency>
     <!-- LLM 客户端:官方 Anthropic Java SDK(课程用官方 Python SDK 的镜像),baseUrl 指向 DeepSeek /anthropic 端点 -->
     <dependency>
@@ -85,25 +55,6 @@
       <version>2.19.0</version>
     </dependency>
 
-    <!-- CLI 参数解析:run/repl 子命令 -->
-    <dependency>
-      <groupId>info.picocli</groupId>
-      <artifactId>picocli</artifactId>
-      <version>4.7.6</version>
-    </dependency>
-
-    <!-- JLine 只提供终端、列宽与底层输入；新 TUI 自己编辑和重画，不再依赖旧 LineReader。 -->
-    <dependency>
-      <groupId>org.jline</groupId>
-      <artifactId>jline-terminal</artifactId>
-      <version>${jline.version}</version>
-    </dependency>
-    <!-- 让 JLine 在真实终端工作；不需要再用外部 rlwrap 包一层。 -->
-    <dependency>
-      <groupId>org.jline</groupId>
-      <artifactId>jline-terminal-jni</artifactId>
-      <version>${jline.version}</version>
-    </dependency>
 
     <!-- 日志:anthropic-java 走 SLF4J,必须给一个实现 -->
     <dependency>

@@ -20,9 +20,10 @@
 
 ```
 src/main/java/com/jadecode/
-├── Main              # picocli 顶层入口：run / repl
-├── cli/              # repl 的统一 TUI、会话桥接；run 的独立纯文本输出与审批
-├── tui/              # 通用终端、输入解码、样式行、内联差分、编辑器与 Markdown
+├── Main              # 根入口：交互 TUI / --headless / help / version
+├── cli/              # 启动选项、后端协议/传输/会话桥、Node 前端监督与 headless
+│   └── backend/      # Java↔Node 私有 UDS 协议、快照、审批证据、设置唯一写者
+├── frontend/         # Node/Pi 终端前端（vendor 固定 Pi、主题/品牌唯一运行资源）
 ├── bootstrap/        # JadeCodeFactory：生产与离线共用的装配入口
 ├── config/           # 模型环境配置、统一 config.json 与界面／压缩设置
 ├── util/             # Json(共享 ObjectMapper), Ansi(终端色码), PathResolver(共享路径解析)
@@ -233,7 +234,7 @@ Esc/空 Enter/普通文字不答复审批；旧画面、旧输入水位、resize
 
 颜色尊重 `NO_COLOR`/`TERM=dumb`；只有受信编码器能输出 SGR/OSC8/终端协议，模型与工具正文先净化。
 全屏退出/窗口宽度变化可能清空并重放 scrollback，这是终端可寻址边界的正常行为。
-当前 Markdown 使用 Java 解析/排版（固定 GraalJS bundle 尚未交付），因此标题/列表/表格等视觉可用，但尚未宣称与 Pi 的 marked/highlight.js/Mermaid 完全一致；
+Markdown/高亮/Mermaid 由固定 Pi 的 Node 前端渲染；Java 只发送原始正文，不再保留旧 Java/Graal 解析与排版实现。
 真实 SSH/IME/图片终端/模型流仍需人工验收。详细限制见 `docs/tui-pi-replication/05-handover/design-deviations.md` 与 `acceptance-results.md`。
 
 架构、验证与未验证范围见 [TUI 任务单](docs/jobs/s13/pi-tui.md)，阅读入口见 [TUI 指南](docs/notes/s13/pi-tui-review.md)。
