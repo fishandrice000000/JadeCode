@@ -57,3 +57,43 @@ test("an orphan command response is reported without closing the connection", ()
 	assert.match(harness.fatal[0]!, /Orphan command response/);
 	assert.equal(harness.closed.length, 0);
 });
+
+
+test("a complete oversized frame with LF is rejected instead of dispatched", () => {
+	const harness = client();
+	const base = frame(1, { text: "" });
+	const padding = "x".repeat(1024 * 1024);
+	harness.ingest(Buffer.from(frame(1, { text: padding }), "utf8"));
+	assert.equal(harness.events.length, 0);
+	assert.match(harness.fatal[0]!, /exceeded the protocol limit/);
+	assert.equal(harness.closed.length, 1);
+	assert.equal(base.length < 1024 * 1024, true);
+});
+
+test("a fatal dispatch frame stops the rest of the batch and clears the buffer", () => {
+	const harness = client();
+	const missingId = JSON.stringify({ version: 1, connectionId: "conn-1", seq: "1",
+		type: "command.result", commandId: null, sessionId: null, generation: null, payload: {} }) + "\n";
+	const batch = missingId + missingId + frame(2, { text: "AFTER_FATAL" });
+	harness.ingest(Buffer.from(batch, "utf8"));
+	assert.equal(harness.fatal.length, 1);
+	assert.equal(harness.closed.length, 1);
+	assert.equal(harness.events.length, 0, "no business frame may be dispatched after a fatal one");
+	harness.ingest(Buffer.from(frame(3, { text: "AFTER_CLOSE" }), "utf8"));
+	assert.equal(harness.events.length, 0, "closed clients ignore later input");
+});
+
+test("a UTF-8 character split inside its byte sequence is reassembled", () => {
+	const harness = client();
+	const bytes = Buffer.from(frame(1, { text: "你好" }), "utf8");
+	const start = bytes.indexOf(Buffer.from("你", "utf8"));
+	for (const cut of [start + 1, start + 2]) {
+		const split = client();
+		split.ingest(bytes.subarray(0, cut));
+		split.ingest(bytes.subarray(cut));
+		assert.deepEqual(split.events.map((event) => (event as { seq: string }).seq), ["1"]);
+		assert.equal((split.events[0] as { payload: { text: string } }).payload.text, "你好");
+	}
+	harness.ingest(bytes);
+	assert.equal((harness.events[0] as { payload: { text: string } }).payload.text, "你好");
+});

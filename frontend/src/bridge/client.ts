@@ -123,13 +123,19 @@ export class BackendClient {
 	private ingest(chunk: Buffer): void {
 		if (this.closed) return;
 		this.buffer = this.buffer.length === 0 ? chunk : Buffer.concat([this.buffer, chunk]);
-		while (true) {
+		while (!this.closed) {
 			const newline = this.buffer.indexOf(0x0a);
 			if (newline < 0) {
 				if (this.buffer.length > MAX_FRAME_BYTES) {
 					this.options.onFatal("An inbound frame exceeded the protocol limit");
 					this.fail("An inbound frame exceeded the protocol limit");
 				}
+				return;
+			}
+			// 限额按“单帧 UTF-8 字节 + LF”计算；带 LF 的完整超长帧也必须拒绝。
+			if (newline + 1 > MAX_FRAME_BYTES) {
+				this.options.onFatal("An inbound frame exceeded the protocol limit");
+				this.fail("An inbound frame exceeded the protocol limit");
 				return;
 			}
 			const lineBytes = this.buffer.subarray(0, newline);
@@ -153,6 +159,7 @@ export class BackendClient {
 				return;
 			}
 			this.dispatch(message);
+			// dispatch 可能因致命帧关闭连接；本批剩余字节不能再进入业务派发。
 		}
 	}
 
@@ -220,6 +227,7 @@ export class BackendClient {
 	private fail(reason: string): void {
 		if (this.closed) return;
 		this.closed = true;
+		this.buffer = Buffer.alloc(0);
 		try { this.socket?.destroy(); } catch { /* 已断开。 */ }
 		for (const waiter of this.pending.values()) waiter.reject(new Error(reason));
 		this.pending.clear();
