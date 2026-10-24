@@ -31,6 +31,8 @@ export interface PageContext {
 	themeNames(): string[];
 	previewTheme(name: string): void;
 	commitTheme(): void;
+	/** 一次确认只由这里保存目标字段（theme/lightTheme/darkTheme）。 */
+	commitThemeTarget(target: "theme" | "lightTheme" | "darkTheme", name: string): void;
 	cancelTheme(): void;
 	sessionTheme(): string;
 	setDraft(text: string): void;

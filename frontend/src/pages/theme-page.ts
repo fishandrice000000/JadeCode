@@ -66,8 +66,8 @@ export class ThemePage implements Page {
 		if (keymap.matches("tui.select.confirm", data)) {
 			const name = this.names[this.selected]!;
 			this.context.previewTheme(name);
-			this.context.saveSettings({ [this.target]: name });
-			this.context.commitTheme();
+			// 一次 Enter 只发一次保存；页面不再额外 saveSettings。
+			this.context.commitThemeTarget(this.target, name);
 			this.context.closePage();
 			return true;
 		}

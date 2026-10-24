@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { SETTINGS_FIELD_IDS, SettingsPage } from "../../src/pages/settings-page.ts";
+import { ThemePage } from "../../src/pages/theme-page.ts";
 import type { PageContext } from "../../src/pages/page-stack.ts";
 import { SessionStore, parseTui } from "../../src/state/session-store.ts";
 import { KeymapAdapter } from "../../src/editor/keymap-adapter.ts";
@@ -26,7 +27,7 @@ function page(wheel: number): { value: SettingsPage; patches: Array<Record<strin
 			patches.push(patch);
 			if (typeof patch.fullscreenWheelScrollLines === "number") settings.fullscreenWheelScrollLines = patch.fullscreenWheelScrollLines;
 		},
-		themeNames: () => [], previewTheme: () => {}, commitTheme: () => {}, cancelTheme: () => {},
+		themeNames: () => [], previewTheme: () => {}, commitTheme: () => {}, commitThemeTarget: () => {}, cancelTheme: () => {},
 		sessionTheme: () => "system", setDraft: () => {}, jumpToMatch: () => {},
 		lastFrame: () => null, dockOriginY: () => 0, evidence: () => null, settings: () => settings,
 	};
@@ -56,4 +57,19 @@ test("a custom wheel value stays in the cycle between 5 and 10", () => {
 	value.handleInput("\x1b[C");
 	value.handleInput("\x1b[C");
 	assert.deepEqual(patches.map((patch) => patch.fullscreenWheelScrollLines), [10, 0]);
+});
+
+
+test("one theme confirmation sends exactly one save", () => {
+	const { value } = page(0);
+	const commits: string[] = [];
+	const patches: Array<Record<string, unknown>> = [];
+	const context = (value as unknown as { context: PageContext }).context;
+	const themeContext = { ...context, themeNames: () => ["system"], sessionTheme: () => "system",
+		previewTheme: () => {}, commitThemeTarget: (target: string, name: string) => { commits.push(`${target}:${name}`); },
+		saveSettings: (patch: Record<string, unknown>) => { patches.push(patch); } };
+	const themePage = new ThemePage(themeContext, "theme");
+	themePage.handleInput("\r");
+	assert.deepEqual(commits, ["theme:system"]);
+	assert.deepEqual(patches, [], "ThemePage must not call saveSettings separately");
 });

@@ -149,9 +149,18 @@ export class ThemeController {
 	cancel(): void {
 		if (this.previewName === null) return;
 		this.previewName = null;
+		// 取消是新的选择意图：在途提交的失败不能再复活已放弃的预览。
+		this.committedName = null;
 		const saved = this.options.settings().theme;
 		this.installWatch(saved);
 		this.rebuild(saved);
+	}
+
+	/** 清空预览但不改变已保存选择；用于配对主题保存后结束预览。 */
+	clearPreview(): void {
+		if (this.previewName === null) return;
+		this.previewName = null;
+		this.rebuild(this.options.settings().theme);
 	}
 
 	/** 由已保存设置变化（settings.saved）触发；预览中的选择不被覆盖。 */

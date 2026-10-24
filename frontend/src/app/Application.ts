@@ -864,6 +864,15 @@ export class Application {
 			themeNames: () => this.theme.names(),
 			previewTheme: (name) => this.theme.preview(name),
 			commitTheme: () => this.theme.commit(),
+			commitThemeTarget: (target, name) => {
+				if (target === "theme") {
+					this.theme.commit();
+					return;
+				}
+				// 配对主题只保存目标字段；不要顺带保存当前逻辑 theme。
+				this.theme.clearPreview();
+				this.saveSettings({ [target]: name });
+			},
 			cancelTheme: () => this.theme.cancel(),
 			sessionTheme: () => this.session.settings()?.theme ?? "system",
 			setDraft: (value) => this.editor.setDraft(value),
@@ -888,25 +897,29 @@ export class Application {
 	}
 
 	/** 串行设置保存的待回执队列；Java PreferenceService 串行执行，saved/failed 顺序与提交一致。 */
-	private readonly pendingSettings: Array<{ patch: Record<string, unknown>; theme: string | null }> = [];
+	private readonly pendingSettings: Array<{ patch: Record<string, unknown>; theme: string | null; commandId: string | null; removed: boolean }> = [];
 
 	private saveSettings(patch: Record<string, unknown>): void {
 		const client = this.client;
 		if (!client) return;
-		const entry = { patch, theme: typeof patch.theme === "string" ? patch.theme : null };
+		const entry = { patch, theme: typeof patch.theme === "string" ? patch.theme : null, commandId: null as string | null, removed: false };
 		this.pendingSettings.push(entry);
+		const handleFailure = (failure: string): void => {
+			if (entry.removed) return;
+			entry.removed = true;
+			const index = this.pendingSettings.indexOf(entry);
+			if (index >= 0) this.pendingSettings.splice(index, 1);
+			if (entry.theme) this.theme.commitFailedFor(entry.theme, failure);
+			else this.notify(failure, true);
+		};
 		void client.command("settings.patch", {
 			expectedConfigRevision: Number(this.session.configRevision()),
 			patch,
-		}, this.identity()).then((result) => {
-			if (!result.ok) {
-				// 命令级失败不会再有 settings.saved/failed 事件；从队列移除本次请求。
-				const index = this.pendingSettings.indexOf(entry);
-				if (index >= 0) this.pendingSettings.splice(index, 1);
-				const failure = result.message ?? "The setting was not saved";
-				if (entry.theme) this.theme.commitFailedFor(entry.theme, failure);
-				else this.notify(failure, true);
-			}
+		}, this.identity(), {
+			onCommandId: (id) => { entry.commandId = id; },
+			onCommandError: (message) => handleFailure(message),
+		}).then((result) => {
+			if (!result.ok) handleFailure(result.message ?? "The setting was not saved");
 		});
 	}
 

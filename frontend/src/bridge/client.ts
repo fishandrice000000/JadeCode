@@ -32,7 +32,7 @@ export class BackendClient {
 	private seq = 0n;
 	private connectionId = "";
 	private closed = false;
-	private readonly pending = new Map<string, { resolve: (value: CommandResult) => void; reject: (error: Error) => void }>();
+	private readonly pending = new Map<string, { resolve: (value: CommandResult) => void; reject: (error: Error) => void; onCommandError?: (message: string) => void }>();
 	private decoder = new TextDecoder("utf-8", { fatal: true });
 
 	constructor(options: BackendClientOptions) {
@@ -85,10 +85,11 @@ export class BackendClient {
 	}
 
 	/** 发送一条命令并等待 command.result/command.error。 */
-	command(type: string, payload: Payload, identity: { sessionId?: string | null; generation?: string | null } = {}): Promise<CommandResult> {
+	command(type: string, payload: Payload, identity: { sessionId?: string | null; generation?: string | null } = {}, hooks?: { onCommandId?: (id: string) => void; onCommandError?: (message: string) => void }): Promise<CommandResult> {
 		const commandId = `c-${++this.commandCounter}`;
+		hooks?.onCommandId?.(commandId);
 		const promise = new Promise<CommandResult>((resolve, reject) => {
-			this.pending.set(commandId, { resolve, reject });
+			this.pending.set(commandId, { resolve, reject, onCommandError: hooks?.onCommandError });
 		});
 		this.send(type, payload, { commandId, sessionId: identity.sessionId ?? null, generation: identity.generation ?? null });
 		return promise;
@@ -175,6 +176,8 @@ export class BackendClient {
 			}
 			this.pending.delete(id);
 			if (message.type === "command.error") {
+				// 同步通知：同一批帧里后续 settings.failed 之前先移除对应保存项。
+				waiter.onCommandError?.(typeof message.payload.message === "string" ? message.payload.message : "The command failed");
 				waiter.resolve({
 					ok: false,
 					type: message.type,

@@ -14,10 +14,16 @@ function harness(failCommand = false): {
 		commitSucceededFor: (name: string) => { succeeded.push(name); },
 		settingsChanged: () => {},
 	};
+	let patchCalls = 0;
 	fields["client"] = {
-		command: async (type: string) => type === "settings.patch" && failCommand
-			? { ok: false, type: "command.error", payload: { message: "rejected" } }
-			: { ok: true, type: "command.result", payload: {} },
+		command: async (type: string, _payload: unknown, _identity: unknown,
+			hooks?: { onCommandError?: (message: string) => void }) => {
+			if (type === "settings.patch" && failCommand && ++patchCalls === 1) {
+				hooks?.onCommandError?.("rejected");
+				return { ok: false, type: "command.error", payload: { message: "rejected" } };
+			}
+			return { ok: true, type: "command.result", payload: {} };
+		},
 	};
 	fields["host"] = {
 		setHardwareCursor: () => {}, setClearOnShrink: () => {}, setWheelScrollLines: () => {},
@@ -53,4 +59,14 @@ test("a command-level non-theme failure does not fail the pending theme", async 
 	invoke(app, { thinkingVisible: false });
 	await new Promise((resolve) => setTimeout(resolve, 0));
 	assert.deepEqual(failed, []);
+});
+
+
+test("a synchronously rejected non-theme command is removed before a merged settings.failed", async () => {
+	const { app, failed } = harness(true);
+	invoke(app, { thinkingVisible: false });
+	invoke(app, { theme: "b" });
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	event(app, "settings.failed", { message: "B_WRITE_FAILED" });
+	assert.deepEqual(failed, [["b", "B_WRITE_FAILED"]]);
 });

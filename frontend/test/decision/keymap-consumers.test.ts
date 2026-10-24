@@ -42,7 +42,7 @@ function pageContext(keymap: KeymapAdapter): PageContext {
 		state, keymap, theme: () => theme, client: () => null,
 		identity: () => ({ sessionId: "s", generation: "1" }), closePage: () => {}, pushPage: () => {},
 		requestRender: () => {}, notify: () => {}, saveSettings: () => {}, themeNames: () => [],
-		previewTheme: () => {}, commitTheme: () => {}, cancelTheme: () => {}, sessionTheme: () => "system",
+		previewTheme: () => {}, commitTheme: () => {}, commitThemeTarget: () => {}, cancelTheme: () => {}, sessionTheme: () => "system",
 		setDraft: () => {}, jumpToMatch: () => {}, lastFrame: () => null, dockOriginY: () => 0,
 		evidence: () => null, settings: () => state.settings(),
 	};

@@ -31,3 +31,25 @@ test("a late failure for an older commit must not overwrite a newer preview", ()
 	assert.equal(errors.at(-1), "old save failed");
 	value.close();
 });
+
+
+test("a late failure after cancel must not revive the abandoned preview", () => {
+	const repository = {
+		list: () => Object.keys(docs).map((name) => ({ name, path: name, builtin: false })),
+		load: (name: string) => ({ name, document: docs[name as keyof typeof docs], source: "", digest: name }),
+		watch: () => () => {},
+	};
+	const settings = { theme: "a", lightTheme: "light", darkTheme: "dark" };
+	const errors: string[] = [];
+	const value = new ThemeController({
+		repository: repository as never, settings: () => settings, save: () => {},
+		onError: (message) => { errors.push(message); }, onChange: () => {},
+	});
+	value.preview("b"); value.commit();
+	value.preview("c"); value.cancel();
+	value.commitFailedFor("b", "old save failed");
+	assert.equal(value.selectedName(), "a");
+	assert.match(value.snapshot().name, /a/);
+	assert.equal(errors.at(-1), "old save failed");
+	value.close();
+});

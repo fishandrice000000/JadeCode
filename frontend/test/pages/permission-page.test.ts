@@ -36,7 +36,7 @@ function setup(keymap = new KeymapAdapter({})): { page: (intent: "runtime" | "de
 	const context: PageContext = {
 		state, keymap, theme: () => theme, client: () => client, identity: () => ({ sessionId: "s", generation: "1" }),
 		closePage: () => {}, pushPage: () => {}, requestRender: () => {}, notify: () => {}, saveSettings: () => {},
-		themeNames: () => [], previewTheme: () => {}, commitTheme: () => {}, cancelTheme: () => {},
+		themeNames: () => [], previewTheme: () => {}, commitTheme: () => {}, commitThemeTarget: () => {}, cancelTheme: () => {},
 		sessionTheme: () => "system", setDraft: () => {}, jumpToMatch: () => {},
 		lastFrame: () => ({ frameId: 9, epoch: 0, rawWatermark: 5, decodedWatermark: 5, columns: 80, rows: 40 }),
 		dockOriginY: () => 0, evidence: () => { evidence.rawChunk("x"); return evidence.beginDispatch(6); },
