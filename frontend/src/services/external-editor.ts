@@ -28,26 +28,28 @@ export class ExternalEditor {
 		const ticket = ++this.counter;
 		const directory = mkdtempSync(join(tmpdir(), "jade-editor-"));
 		const path = join(directory, "draft.md");
-		writeFileSync(path, draft, "utf8");
-		await handoff.suspend();
-		let code: number;
 		try {
-			code = await new Promise<number>((resolve, reject) => {
-				// 让编辑器获得终端；命令按空白切分，不经过 shell（避免注入）。
-				const parts = command.trim().split(/\s+/);
-				const child = spawn(parts[0]!, [...parts.slice(1), path], { stdio: "inherit" });
-				child.on("error", reject);
-				child.on("exit", (exitCode) => resolve(exitCode ?? 1));
-			});
+			writeFileSync(path, draft, "utf8");
+			await handoff.suspend();
+			let code: number;
+			try {
+				code = await new Promise<number>((resolve, reject) => {
+					// 命令不经过 shell；普通程序与参数原样传递，文件路径始终是独立 argv。
+					const parts = command.trim().split(/\s+/);
+					const child = spawn(parts[0]!, [...parts.slice(1), path], { stdio: "inherit" });
+					child.once("error", reject);
+					child.once("exit", (exitCode) => resolve(exitCode ?? 1));
+				});
+			} finally {
+				handoff.resume();
+			}
+			// 后一次编辑已经启动时，迟到的旧结果不能覆盖新草稿。
+			if (code !== 0 || ticket !== this.counter) return null;
+			return { text: readFileSync(path, "utf8"), ticket };
 		} catch {
 			return null;
 		} finally {
-			handoff.resume();
-		}
-		try {
-			if (code !== 0) return null;
-			return { text: readFileSync(path, "utf8"), ticket };
-		} finally {
+			// 启动失败、非零退出、恢复失败和正常结果都经过同一临时资源清理。
 			try { rmSync(directory, { recursive: true, force: true }); } catch { /* 临时目录清理失败不影响草稿。 */ }
 		}
 	}

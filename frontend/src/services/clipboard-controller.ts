@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getNativeClipboard } from "@earendil-works/pi-tui";
@@ -16,10 +16,16 @@ export type CopyStatus = "DESKTOP" | "OSC52_SENT" | "FAILED";
 export class ClipboardController {
 	private readonly owned = new Set<string>();
 
+	/** 生产使用 native 后端与 stdout；测试注入本地夹具，绝不改动用户桌面剪贴板。 */
+	constructor(private readonly native = getNativeClipboard,
+		private readonly writeOsc = (value: string): Promise<void> => new Promise((resolve, reject) => {
+			process.stdout.write(value, (error) => error ? reject(error) : resolve());
+		})) {}
+
 	/** @returns 真实复制状态；失败时 error 为可显示原因。 */
 	async copy(text: string): Promise<{ status: CopyStatus; error?: string }> {
 		if (!text) return { status: "FAILED", error: "Nothing to copy" };
-		const clipboard = getNativeClipboard();
+		const clipboard = this.native();
 		if (clipboard?.setText) {
 			try {
 				await clipboard.setText(text);
@@ -30,7 +36,7 @@ export class ClipboardController {
 		}
 		try {
 			const encoded = Buffer.from(text, "utf8").toString("base64");
-			process.stdout.write(`\x1b]52;c;${encoded}\x07`);
+			await this.writeOsc(`\x1b]52;c;${encoded}\x07`);
 			return { status: "OSC52_SENT" };
 		} catch (error) {
 			return { status: "FAILED", error: (error as Error).message };
@@ -42,7 +48,7 @@ export class ClipboardController {
 	 * @returns 本次拥有的文件路径（调用方只清理自己登记的文件）
 	 */
 	async saveImage(): Promise<string | null> {
-		const clipboard = getNativeClipboard();
+		const clipboard = this.native();
 		if (!clipboard?.getImage) return null;
 		let image: Uint8Array | null | undefined;
 		try {
@@ -53,13 +59,16 @@ export class ClipboardController {
 		if (!image || image.length === 0) return null;
 		const directory = mkdtempSync(join(tmpdir(), "jade-paste-"));
 		const path = join(directory, `clipboard-${Date.now()}.png`);
+		// 先登记目录，即使写文件失败，退出清理也不会漏掉本次资源。
+		this.owned.add(directory);
 		writeFileSync(path, image);
-		this.owned.add(path);
 		return path;
 	}
 
 	/** 清理本次会话拥有的临时图片路径（不碰其它文件）。 */
 	cleanup(): void {
+		// 只删除 mkdtemp 创建并由本对象登记的目录，绝不清理任意剪贴板/用户路径。
+		for (const directory of this.owned) rmSync(directory, { recursive: true, force: true });
 		this.owned.clear();
 	}
 }
