@@ -23,7 +23,8 @@ export function suspendToShell(handoff: JobControlHandoff): void {
 		};
 		process.once("SIGCONT", resume);
 		// 某些无作业控制的环境里 kill(2) 成功返回但进程并不会真正停止；保留安全回退，
-		// 不能让界面永久停在已暂停状态。真正停止时该定时器随之冻结，SIGCONT 会先清除它。
+		// 不能让界面永久停在已暂停状态。真正停止时定时器冻结；恢复后 SIGCONT 或已到期回退
+		// 任一路径触发都只恢复一次，并统一清除计时器与监听。
 		timer = setTimeout(resume, 500);
 		timer.unref?.();
 		try {
