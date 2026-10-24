@@ -228,8 +228,13 @@ public final class BridgeApproval implements Approval, AutoCloseable {
         if (!isEnabled(presentation, choice))
             throw new ProtocolException(ProtocolError.INVALID_MESSAGE, "That approval option is not available");
         if (evidence.mouse() == null) {
-            if (!"approval.confirm".equals(evidence.keyAction()))
-                throw new ProtocolException(ProtocolError.INVALID_MESSAGE, "Only the confirm key answers an approval");
+            // Esc 是明确的“拒绝当前请求”；它只能产生 DENY，不能借动作名批准。
+            if ("approval.deny".equals(evidence.keyAction())) {
+                if (choice != Choice.DENY)
+                    throw new ProtocolException(ProtocolError.INVALID_MESSAGE, "The deny key can only deny the current request");
+            } else if (!"approval.confirm".equals(evidence.keyAction())) {
+                throw new ProtocolException(ProtocolError.INVALID_MESSAGE, "Only a fresh confirm or deny key answers an approval");
+            }
         } else {
             MouseEvidence mouse = evidence.mouse();
             if (!"press".equals(mouse.type()) || !"left".equals(mouse.button()))

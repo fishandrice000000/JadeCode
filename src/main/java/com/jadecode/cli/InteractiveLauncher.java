@@ -59,6 +59,10 @@ public final class InteractiveLauncher {
                     BackendApplication application = new BackendApplication(backendOptions, endpoint, credential,
                             distribution.buildId())) {
                 code = application.run();
+                if (code != 0) {
+                    String failure = application.failureMessage();
+                    if (failure != null && !failure.isBlank()) System.err.println("Backend stopped: " + failure);
+                }
             }
             return finish(code, node);
         } catch (IOException failure) {

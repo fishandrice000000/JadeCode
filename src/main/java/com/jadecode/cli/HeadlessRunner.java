@@ -16,6 +16,7 @@ import com.jadecode.safety.PermissionProfile;
 import com.jadecode.safety.PermissionState;
 import com.jadecode.session.SessionRuntime;
 import com.jadecode.util.TerminalText;
+import com.jadecode.safety.PermissionProfile;
 
 /**
  * 无界面任务入口：持久化新会话、执行一次初始任务、只把最终回答写到 stdout。
@@ -35,6 +36,12 @@ import com.jadecode.util.TerminalText;
  * 参数错误由调用方返回 2。</p>
  */
 public final class HeadlessRunner {
+    /** 测试可注入的会话装配；生产实现读取用户配置并安装真实客户端。 */
+    @FunctionalInterface
+    interface HostFactory {
+        SessionHost create(PrintStream err) throws IOException;
+    }
+
     private final PrintStream out;
     private final PrintStream err;
 
@@ -56,20 +63,46 @@ public final class HeadlessRunner {
             err.println("--headless requires a non-empty task");
             return 2;
         }
-        SessionHost host = null;
         try {
             Path configPath = JadeConfigFile.defaultPath();
             JadeConfigFile file = new JadeConfigFile(configPath);
             JadeSettings settings = file.load();
             PermissionState permissions = settings.permissions().state(file);
             // 默认 auto-review，不读取已保存默认；显式覆盖只改本次内存状态，不落盘。
-            permissions.select(options.permission() == null ? PermissionProfile.AUTO_REVIEW : options.permission());
+            permissions.select(headlessProfile(options.permission()));
             RuntimeFactory factory = new RuntimeFactory(settings, permissions);
             Path workspace = Path.of("").toAbsolutePath().normalize();
-            host = new SessionHost(new WorkspacePaths(workspace),
-                    generation -> factory.create(ignored -> { }, err::println, () -> ResponseStream.NONE,
+            HostFactory hostFactory = ignored -> new SessionHost(new WorkspacePaths(workspace),
+                    generation -> factory.create(noOutput(), ignoredErr -> { }, () -> ResponseStream.NONE,
                             ExecutionObserver.NONE),
-                    warning -> err.println(warning));
+                    warning -> ignored.println(warning));
+            return execute(options, hostFactory);
+        } catch (IOException | RuntimeException failure) {
+            err.println("Could not run the headless task: "
+                    + (failure.getMessage() == null ? failure.toString() : failure.getMessage()));
+            return 1;
+        }
+    }
+
+    /** @return 无界面本次运行的权限档位：缺省 auto-review；显式值仅本次生效。 */
+    static PermissionProfile headlessProfile(PermissionProfile override) {
+        return override == null ? PermissionProfile.AUTO_REVIEW : override;
+    }
+
+    /** 无界面不打印模型进展；只有真错误走 stderr。 */
+    private static java.util.function.Consumer<String> noOutput() {
+        return ignored -> { };
+    }
+
+    /**
+     * 可注入执行路径：真实 stdout 只写最终回答；失败写 stderr；等 Future（含 Memory/日志）后关闭。
+     *
+     * @param hostFactory 创建未打开会话的宿主；测试用假的 LlmClient，生产用用户配置
+     */
+    int execute(LaunchOptions options, HostFactory hostFactory) {
+        SessionHost host = null;
+        try {
+            host = hostFactory.create(err);
             SessionHost.Opened opened = host.open(null);
             // approval = null：没有人工通道；enableCron = false：不运行未来定时任务。
             CompletableFuture<String> result = host.startWithInitial(opened.generation(), options.initialPrompt(),

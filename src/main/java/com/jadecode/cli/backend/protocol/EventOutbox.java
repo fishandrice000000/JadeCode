@@ -122,12 +122,18 @@ public final class EventOutbox implements AutoCloseable {
             while (true) {
                 List<Pending> batch;
                 synchronized (this) {
-                    while (!closed && !overloaded && (queue.isEmpty() || !readyToFlush())) {
-                        long waitMillis = queue.isEmpty() ? 0 : Math.max(1, COALESCE_MILLIS - elapsedMillis());
-                        wait(waitMillis);
-                        if (!queue.isEmpty() && elapsedMillis() >= COALESCE_MILLIS) break;
+                    while (!overloaded) {
+                        if (queue.isEmpty()) {
+                            // 关闭后队列已空才退出；关闭前必须把 server.stopped/命令答复送出。
+                            if (closed) return;
+                            wait();
+                            continue;
+                        }
+                        if (closed || flushRequested || queue.size() >= 256 || queuedBytes >= FLUSH_BYTES
+                                || elapsedMillis() >= COALESCE_MILLIS) break;
+                        wait(Math.max(1, COALESCE_MILLIS - elapsedMillis()));
                     }
-                    if (closed || overloaded) return;
+                    if (overloaded) return;
                     batch = takeBatch();
                 }
                 writeBatch(batch);
@@ -214,7 +220,13 @@ public final class EventOutbox implements AutoCloseable {
             notifyAll();
         }
         try {
-            stopped.await(5, TimeUnit.SECONDS);
+            if (!stopped.await(5, TimeUnit.SECONDS)) {
+                synchronized (this) {
+                    if (failure == null) {
+                        failure = new IllegalStateException("The outbox did not drain within its shutdown budget");
+                    }
+                }
+            }
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
         }

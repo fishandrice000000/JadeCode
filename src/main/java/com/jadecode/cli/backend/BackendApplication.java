@@ -62,6 +62,12 @@ public final class BackendApplication implements AutoCloseable {
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicReference<String> failure = new AtomicReference<>();
     private final PreLicense preLicense;
+    /** 已接受的连接；关闭时直接关闭它来唤醒阻塞的 reader/writer。 */
+    private volatile SocketChannel channel;
+    /** 会话服务；run() 收尾时关闭其串行执行器与配置写者。 */
+    private volatile BackendSessionService service;
+    /** 协议会话；用于在收口时读取 outbox/传输层的真实失败。 */
+    private volatile ProtocolSession protocol;
 
     /** 握手前就需要读取的配置/设置快照；避免 hello 期间再读盘失败。 */
     private record PreLicense(PreferenceService preferences, JadeSettings settings, PermissionState permissions,
@@ -110,6 +116,7 @@ public final class BackendApplication implements AutoCloseable {
             SocketChannel channel;
             try {
                 channel = server.acceptOne(ACCEPT_TIMEOUT_MILLIS);
+                this.channel = channel;
             } catch (SocketTimeoutException timeout) {
                 throw new IOException("The Node frontend did not connect within "
                         + (ACCEPT_TIMEOUT_MILLIS / 1000) + " seconds", timeout);
@@ -125,17 +132,19 @@ public final class BackendApplication implements AutoCloseable {
                     hello -> greeting(hello, wireRef),
                     command -> dispatchInbound(command, assembler, serviceRef, wireRef),
                     () -> finish(serviceRef, "frontend-disconnected"),
-                    () -> ready(serviceRef));
+                    () -> ready(serviceRef),
+                    () -> openInitial(serviceRef));
             session = created;
+            this.protocol = created;
             sessionRef.set(created);
             PayloadTransfer payloads = new PayloadTransfer(created.outbox());
             WireContext wire = new WireContext(created, payloads);
             wireRef.set(wire);
-            diagnostics = BackendDiagnostics.install(wire);
             BackendSessionService service = new BackendSessionService(wire, preLicense.preferences(),
                     preLicense.factory(), snapshotSink(wire), message -> { }, options.startup());
+            diagnostics = BackendDiagnostics.install(wire);
+            this.service = service;
             serviceRef.set(service);
-            service.openInitial();
 
             // reader 线程：分帧、协议校验、分发；EOF 与致命协议错误都收口。
             Reader loop = new Reader(in, session, serviceRef);
@@ -153,8 +162,15 @@ public final class BackendApplication implements AutoCloseable {
             return 1;
         } finally {
             if (session != null) session.close();
+            BackendSessionService current = service;
+            if (current != null) current.close();
             if (diagnostics != null) diagnostics.close();
+            preLicense.preferences().close();
             server.close();
+            SocketChannel open = channel;
+            if (open != null) {
+                try { open.close(); } catch (IOException ignored) { /* 已关闭。 */ }
+            }
         }
     }
 
@@ -193,6 +209,23 @@ public final class BackendApplication implements AutoCloseable {
             } finally {
                 finish(serviceRef, "frontend-eof");
             }
+        }
+    }
+
+    /**
+     * server.hello/bootstrap 已发出后才打开会话并发送快照。
+     *
+     * <p>不能在 run() 一开始就 openInitial：那时协议仍是 ACCEPTED，快照 end 会用错屏障状态，
+     * 且 Node 还没有 bootstrap 的主题/设置。打开失败要主动收口，而不是留下半初始化连接。</p>
+     */
+    private void openInitial(AtomicReference<BackendSessionService> serviceRef) {
+        BackendSessionService service = serviceRef.get();
+        if (service == null) return;
+        try {
+            service.openInitial();
+        } catch (IOException | RuntimeException failure) {
+            this.failure.set("Could not open the initial session: " + failure.getMessage());
+            service.shutdown("session-open-failed");
         }
     }
 
@@ -334,10 +367,29 @@ public final class BackendApplication implements AutoCloseable {
         if (!closed.compareAndSet(false, true)) return;
         BackendSessionService service = serviceRef.get();
         if (service != null) {
-            try { service.shutdown(reason); } catch (RuntimeException failure) { /* 记录后继续清理。 */ }
+            try {
+                service.shutdown(reason);
+            } catch (RuntimeException ignored) {
+                // 关闭失败的细节由 service 的诊断/退出码报告，这里仍继续释放 transport。
+            }
+        }
+        // 传输层（outbox 过载/写失败）与收口阶段的失败都必须影响退出码，不能只记录诊断。
+        ProtocolSession protocolSession = protocol;
+        if (protocolSession != null && protocolSession.failureReason() != null) {
+            failure.compareAndSet(null, protocolSession.failureReason());
+        }
+        if (service != null && service.shutdownFailure() != null) {
+            failure.compareAndSet(null, service.shutdownFailure());
+        }
+        SocketChannel open = channel;
+        if (open != null) {
+            try { open.close(); } catch (IOException ignored) { /* 唤醒 reader 后关闭即可。 */ }
         }
         finished.countDown();
     }
+
+    /** @return 后端收口的真实失败原因；null 表示正常。 */
+    public String failureMessage() { return failure.get(); }
 
     @Override public void close() {
         finish(new AtomicReference<>(), "application-close");

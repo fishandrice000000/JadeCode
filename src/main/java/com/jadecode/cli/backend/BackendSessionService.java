@@ -55,9 +55,14 @@ public final class BackendSessionService implements AutoCloseable {
     /** 一次启动的意图，进入 server.bootstrap 供 Node 决定首轮/选择器行为。 */
     public record Startup(String mode, String prompt, String resumeTarget, boolean autoSubmit) { }
 
-    /** full-access 二次确认的一次性票据。 */
-    private record Ticket(String id, long revision, boolean presented, String frameId, long terminalEpoch,
-            long rawWatermark, long decodedWatermark, List<BridgeApproval.Rect> rects, int columns, int rows) { }
+    /**
+     * full-access 二次确认的一次性票据。
+     *
+     * @param intent runtime=只切换本次运行；default=同时保存启动默认。一次票据只服务一种意图。
+     */
+    private record Ticket(String id, long revision, String intent, boolean presented, String frameId,
+            long terminalEpoch, long rawWatermark, long decodedWatermark,
+            List<BridgeApproval.Rect> rects, int columns, int rows) { }
 
     /** 一个会话代次的全部前端协作对象；切换会话时整体替换。 */
     private static final class Generation {
@@ -97,7 +102,10 @@ public final class BackendSessionService implements AutoCloseable {
     private RestoredSession restored = null;
     private long snapshotCounter;
     private boolean startupRegistered;
-    private boolean starting;
+    /** 当前终端代次；resize/模式切换/暂停/编辑器交接后 Node 会递增，旧呈现证据随之作废。 */
+    private long terminalEpoch;
+    /** 收口阶段的真实失败；非 null 时进程退出码必须是 1。 */
+    private volatile String shutdownFailure;
 
     public BackendSessionService(WireContext wire, PreferenceService preferences, RuntimeFactory factory,
             SnapshotSink snapshots, Consumer<String> diagnostics, Startup startup) {
@@ -227,8 +235,7 @@ public final class BackendSessionService implements AutoCloseable {
             case "permission.default" -> defaultPermission(command);
             case "approval.presented" -> presented(command);
             case "approval.answer" -> answer(command);
-            case "terminal.suspend", "terminal.resume", "terminal.invalidate" ->
-                    wire.session().sendOk(command.commandId(), status("ok"), wire.sessionId(), wire.generation());
+            case "terminal.suspend", "terminal.resume", "terminal.invalidate" -> terminalInvalidated(command);
             case "state.refresh" -> {
                 sendStateSnapshot();
                 wire.session().sendOk(command.commandId(), status("ok"), wire.sessionId(), wire.generation());
@@ -376,7 +383,7 @@ public final class BackendSessionService implements AutoCloseable {
         long expected = longValue(command.payload(), "expectedPermissionRevision", -1);
         if (expected != state.snapshot().revision())
             throw new ProtocolException(ProtocolError.STALE_REVISION, "The permission revision changed");
-        if (profile == PermissionProfile.FULL_ACCESS) requireFullAccessEvidence(command);
+        if (profile == PermissionProfile.FULL_ACCESS) requireFullAccessEvidence(command, "runtime");
         state.select(profile);
         ObjectNode payload = status("ok");
         payload.put("profile", profile.value());
@@ -392,7 +399,7 @@ public final class BackendSessionService implements AutoCloseable {
         if (expected != revision)
             throw new ProtocolException(ProtocolError.STALE_REVISION, "The permission revision changed");
         String id = "fa-" + java.util.UUID.randomUUID().toString().substring(0, 8);
-        tickets.put(id, new Ticket(id, revision, false, "", 0, 0, 0, List.of(), 0, 0));
+        tickets.put(id, new Ticket(id, revision, "", false, "", -1, 0, 0, List.of(), 0, 0));
         ObjectNode payload = status("ok");
         payload.put("confirmationId", id);
         payload.put("permissionRevision", Long.toString(revision));
@@ -408,17 +415,30 @@ public final class BackendSessionService implements AutoCloseable {
         long revision = longValue(command.payload(), "revision", -1);
         if (revision != ticket.revision())
             throw new ProtocolException(ProtocolError.STALE_REVISION, "The permission revision changed");
+        String intent = command.payload().path("intent").asText("");
+        if (!intent.equals("runtime") && !intent.equals("default"))
+            throw new ProtocolException(ProtocolError.INVALID_MESSAGE, "Full Access intent must be runtime or default");
+        long epoch = longValue(command.payload(), "terminalEpoch", -1);
+        if (epoch != terminalEpoch)
+            throw new ProtocolException(ProtocolError.STALE_REVISION, "The terminal epoch changed");
+        String frameId = command.payload().path("frameId").asText("");
+        if (frameId.isBlank())
+            throw new ProtocolException(ProtocolError.INVALID_MESSAGE, "Full Access needs a committed frame");
         List<BridgeApproval.Rect> rects = rects(command.payload().path("actionRects"));
         int columns = command.payload().path("columns").asInt(0);
         int rows = command.payload().path("rows").asInt(0);
         if (columns < 1 || rows < 1)
             throw new ProtocolException(ProtocolError.INVALID_MESSAGE, "The viewport size is invalid");
+        boolean confirmButton = false;
         for (BridgeApproval.Rect rect : rects) {
             if (rect.x() < 0 || rect.y() < 0 || rect.x() + rect.width() > columns || rect.y() + rect.height() > rows)
                 throw new ProtocolException(ProtocolError.INVALID_MESSAGE, "A confirmation button is outside the viewport");
+            if (rect.choice() == 1) confirmButton = true;
         }
-        tickets.put(id, new Ticket(id, revision, true, command.payload().path("frameId").asText(""),
-                longValue(command.payload(), "terminalEpoch", 0), longValue(command.payload(), "rawReceiptWatermark", 0),
+        if (!confirmButton)
+            throw new ProtocolException(ProtocolError.INVALID_MESSAGE, "The confirmation frame has no enabled confirm button");
+        tickets.put(id, new Ticket(id, revision, intent, true, frameId, epoch,
+                longValue(command.payload(), "rawReceiptWatermark", 0),
                 longValue(command.payload(), "decodedWatermark", 0), rects, columns, rows));
         wire.session().sendOk(command.commandId(), status("ok"), wire.sessionId(), wire.generation());
     }
@@ -438,7 +458,7 @@ public final class BackendSessionService implements AutoCloseable {
             throw new ProtocolException(ProtocolError.INVALID_MESSAGE, invalid.getMessage(), invalid);
         }
         long expected = longValue(command.payload(), "expectedConfigRevision", -1);
-        if (profile == PermissionProfile.FULL_ACCESS) requireFullAccessEvidence(command);
+        if (profile == PermissionProfile.FULL_ACCESS) requireFullAccessEvidence(command, "default");
         preferences.saveDefaultPermission(profile, expected, new PreferenceService.Callback() {
             @Override public void saved(JadeSettings settings, long revision, Map<String, Object> applied) {
                 ObjectNode payload = status("saved");
@@ -456,13 +476,18 @@ public final class BackendSessionService implements AutoCloseable {
         });
     }
 
-    /** full-access 必须有：当前 revision 的票据、已提交帧、且本次确认来自呈现之后的新输入。 */
-    private void requireFullAccessEvidence(WireMessage command) throws ProtocolException {
+    /**
+     * full-access 必须有：同一次意图的票据、已提交帧、当前 revision/epoch，且确认来自呈现之后的新输入。
+     * 鼠标确认还必须落在该帧 confirm 按钮矩形内；键盘确认必须带显式 confirm 动作。
+     */
+    private void requireFullAccessEvidence(WireMessage command, String requiredIntent) throws ProtocolException {
         SessionRuntime runtime = requireSession(command);
         String id = command.payload().path("fullAccessConfirmationId").asText("");
         Ticket ticket = tickets.get(id);
         if (ticket == null || !ticket.presented())
             throw new ProtocolException(ProtocolError.NOT_READY, "Full Access must be confirmed on the permission page");
+        if (!requiredIntent.equals(ticket.intent()))
+            throw new ProtocolException(ProtocolError.STALE_REVISION, "This confirmation was prepared for a different intent");
         if (ticket.revision() != runtime.permissionState().snapshot().revision())
             throw new ProtocolException(ProtocolError.STALE_REVISION, "The permission revision changed");
         JsonNode evidence = command.payload().path("evidence");
@@ -472,18 +497,36 @@ public final class BackendSessionService implements AutoCloseable {
             throw new ProtocolException(ProtocolError.INVALID_MESSAGE, "Full Access needs a fresh key press");
         if (!ticket.frameId().equals(evidence.path("frameId").asText(""))
                 || longValue(evidence, "terminalEpoch", -1) != ticket.terminalEpoch()
-                || longValue(evidence, "rawStartReceipt", 0) <= ticket.rawWatermark())
+                || longValue(evidence, "rawStartReceipt", 0) <= ticket.rawWatermark()
+                || longValue(evidence, "decodedSeq", 0) < ticket.decodedWatermark())
             throw new ProtocolException(ProtocolError.STALE_REVISION,
                     "That confirmation belongs to an older layout; confirm again");
+        JsonNode mouse = evidence.path("mouse");
+        if (mouse.isObject()) {
+            int x = mouse.path("x").asInt(-1);
+            int y = mouse.path("y").asInt(-1);
+            boolean hit = "press".equals(mouse.path("type").asText())
+                    && "left".equals(mouse.path("button").asText())
+                    && ticket.rects().stream().anyMatch(rect -> rect.choice() == 1
+                        && x >= rect.x() && x < rect.x() + rect.width()
+                        && y >= rect.y() && y < rect.y() + rect.height());
+            if (!hit)
+                throw new ProtocolException(ProtocolError.INVALID_MESSAGE, "The Full Access click missed its button");
+        } else if (!"approval.confirm".equals(evidence.path("keyAction").asText())) {
+            throw new ProtocolException(ProtocolError.INVALID_MESSAGE, "Full Access needs an explicit confirm action");
+        }
         tickets.remove(id);
     }
 
     private void presented(WireMessage command) throws ProtocolException {
         requireSession(command);
         String requestId = requiredText(command, "requestId");
+        long epoch = longValue(command.payload(), "terminalEpoch", -1);
+        if (epoch != terminalEpoch)
+            throw new ProtocolException(ProtocolError.STALE_REVISION, "The terminal epoch changed; present the approval again");
         BridgeApproval.Presentation presentation = new BridgeApproval.Presentation(
                 command.payload().path("frameId").asText(""),
-                longValue(command.payload(), "terminalEpoch", 0),
+                epoch,
                 command.payload().path("columns").asInt(0),
                 command.payload().path("rows").asInt(0),
                 rects(command.payload().path("actionRects")),
@@ -523,10 +566,25 @@ public final class BackendSessionService implements AutoCloseable {
         wire.session().sendOk(command.commandId(), status("ok"), wire.sessionId(), wire.generation());
     }
 
-    /** 由 {approval.presented}/{approval.answer} 之外的失效事件调用：旧证据一律作废。 */
-    public void invalidatePresentedEvidence() {
-        serial.execute(() -> current.approval.invalidatePresented());
+    /**
+     * resize/模式重建/暂停/编辑器交接：递增终端代次，作废审批呈现证据与 FullAccess 票据。
+     *
+     * <p>Node 上传的是它重建后的新 epoch；Java 只接受严格递增，旧帧/旧票据不能再用。审批申请
+     * 本身仍 pending，下一帧重新呈现后才可确认。</p>
+     */
+    private void terminalInvalidated(WireMessage command) throws ProtocolException {
+        requireSession(command);
+        long presentedEpoch = longValue(command.payload(), "terminalEpoch", -1);
+        if (presentedEpoch < 0)
+            throw new ProtocolException(ProtocolError.INVALID_MESSAGE, "terminal.* needs the new terminalEpoch");
+        terminalEpoch = Math.max(terminalEpoch, presentedEpoch);
+        current.approval.invalidatePresented();
+        tickets.clear();
+        wire.session().sendOk(command.commandId(), status("ok"), wire.sessionId(), wire.generation());
     }
+
+    /** 当前终端代次；测试与诊断使用。 */
+    public long terminalEpoch() { return terminalEpoch; }
 
     /** 请求一次节流的状态刷新；观察器线程只投递请求，不等待渲染。 */
     public void requestStateSnapshot() {
@@ -627,9 +685,10 @@ public final class BackendSessionService implements AutoCloseable {
     private SessionRuntime requireSession(WireMessage command) throws ProtocolException {
         Generation generation = current;
         if (generation == null) throw new ProtocolException(ProtocolError.NOT_READY, "No session is open yet");
-        if (command.generation() != null && command.generation() != generation.generation)
+        // 会话命令必须带完整身份；缺失身份不能默认解释为“当前代次”。
+        if (command.generation() == null || command.generation() != generation.generation)
             throw new ProtocolException(ProtocolError.STALE_GENERATION, "This command belongs to an older session generation");
-        if (command.sessionId() != null && !command.sessionId().equals(generation.sessionId))
+        if (command.sessionId() == null || !command.sessionId().equals(generation.sessionId))
             throw new ProtocolException(ProtocolError.STALE_GENERATION, "This command belongs to another session");
         try {
             return host.current();
@@ -741,14 +800,16 @@ public final class BackendSessionService implements AutoCloseable {
         try {
             host.close();
         } catch (RuntimeException failure) {
-            sendDiagnostic("Session close failed: " + failure.getMessage());
+            shutdownFailure = "Session close failed: " + failure.getMessage();
+            sendDiagnostic(shutdownFailure);
         }
         boolean saved = true;
         try {
             preferences.awaitWrites();
         } catch (IOException failure) {
             saved = false;
-            diagnostics.accept("Preferences were not saved: " + failure.getMessage());
+            shutdownFailure = "Preferences were not saved: " + failure.getMessage();
+            diagnostics.accept(shutdownFailure);
         }
         ObjectNode payload = Json.mapper().createObjectNode();
         payload.put("reason", reason == null ? "" : reason);
@@ -757,6 +818,9 @@ public final class BackendSessionService implements AutoCloseable {
         wire.session().sendEvent("server.stopped", payload, wire.sessionId(), wire.generation());
         wire.session().flushAndClose();
     }
+
+    /** @return 收口阶段的失败原因；null 表示正常。 */
+    public String shutdownFailure() { return shutdownFailure; }
 
     @Override public void close() {
         shutdown("closed");
