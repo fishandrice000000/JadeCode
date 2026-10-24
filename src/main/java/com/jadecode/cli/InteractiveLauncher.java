@@ -55,16 +55,18 @@ public final class InteractiveLauncher {
             BackendApplication.Options backendOptions = new BackendApplication.Options(
                     JadeConfigFile.defaultPath(), options.permission(), startup);
             int code;
+            String backendFailure;
             try (LocalControlServer endpoint = server;
                     BackendApplication application = new BackendApplication(backendOptions, endpoint, credential,
                             distribution.buildId())) {
                 code = application.run();
-                if (code != 0) {
-                    String failure = application.failureMessage();
-                    if (failure != null && !failure.isBlank()) System.err.println("Backend stopped: " + failure);
-                }
+                backendFailure = application.failureMessage();
             }
-            return finish(code, node);
+            int exit = finish(code, node);
+            // 单独发给 Node 的信号会先关闭 UDS；随后 broken pipe 是退出结果，不覆盖信号身份。
+            if (code != 0 && exit != 129 && exit != 130 && exit != 143 && backendFailure != null && !backendFailure.isBlank())
+                System.err.println("Backend stopped: " + backendFailure);
+            return exit;
         } catch (IOException failure) {
             System.err.println("Could not start the interactive UI: " + failure.getMessage());
             if (node != null) node.destroy();
@@ -75,8 +77,11 @@ public final class InteractiveLauncher {
         }
     }
 
-    /** 子进程退出码非 0 但后端正常收口时，仍按真实失败报告（父进程返回值 1）。 */
-    private int finish(int backendCode, Process node) {
+    /**
+     * 有界等待界面退出；Node 的 SIGHUP/SIGINT/SIGTERM 身份优先于其断连引出的后端 IO 失败。
+     * 其它非零退出仍为故障 1，等待超时强退子进程，不把崩溃冒充正常退出。
+     */
+    static int finish(int backendCode, Process node) {
         try {
             if (!node.waitFor(NODE_EXIT_GRACE_MILLIS, java.util.concurrent.TimeUnit.MILLISECONDS)) {
                 System.err.println("The Node frontend did not exit after the backend stopped; terminating it.");
@@ -84,6 +89,7 @@ public final class InteractiveLauncher {
                 return backendCode == 0 ? 1 : backendCode;
             }
             int exit = node.exitValue();
+            if (exit == 129 || exit == 130 || exit == 143) return exit;
             if (backendCode != 0) return backendCode;
             if (exit != 0) {
                 System.err.println("The Node frontend exited with code " + exit + ".");
