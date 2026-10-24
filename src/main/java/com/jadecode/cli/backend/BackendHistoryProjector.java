@@ -30,7 +30,7 @@ import com.jadecode.session.history.RestoredSession;
  *   <li>用户输入历史只来自真实 USER 文本，系统/工具/摘要不算用户输入。</li>
  * </ul>
  *
- * <p>日志损坏不应让整个恢复失败：捕获单条投影异常，保留已投影部分并追加 warning 条目。</p>
+ * <p>日志损坏不应让整个恢复失败：投影异常时保留已投影部分并追加 warning 条目。</p>
  */
 public final class BackendHistoryProjector {
     /** 工具可信身份的可传输形式；未知来源为 null。 */
@@ -93,13 +93,14 @@ public final class BackendHistoryProjector {
                     }
                     case REPLACE_LAST -> {
                         Message replacement = entry.messages().getFirst();
-                        if (lastUser == null && "notification".equals(entry.reason())) {
+                        if ("notification".equals(entry.reason())) {
                             String previous = lastModel == null ? "" : lastModel.extractText();
                             String text = replacement.extractText();
                             String added = text.startsWith(previous) ? text.substring(previous.length()).strip() : text;
                             if (!added.isBlank()) notice("System", "Incoming", added, false);
                         }
-                        lastUser = message(replacement, lastUser);
+                        // 通知是注入模型的系统资料，不是用户新输入；不能污染输入历史。
+                        else lastUser = message(replacement, lastUser);
                         lastModel = replacement;
                     }
                     case REPLACE_HISTORY -> {
