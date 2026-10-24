@@ -80,6 +80,9 @@ export class Application {
 	/** UI（主题/终端/编辑器/host）是否已建立；bootstrap 后的业务事件必须等它完成。 */
 	private readonly uiBarrier = new UiEventBarrier<WireMessage>();
 	private stoppedReceived = false;
+	private closingAt = 0;
+	/** 用户退出后等待后端收尾的有界预算；超时保留错误而非当作成功。 */
+	private static readonly EXIT_GRACE_MS = 10_000;
 	/** 最近 64 条协议元数据；只在失败时输出，不倾倒 payload。 */
 	private readonly traceBuffer: Array<{ at: number; direction: string; type: string; seq: string; connection: string; uiReady: boolean }> = [];
 
@@ -1110,10 +1113,16 @@ export class Application {
 	private waitForExit(): Promise<number> {
 		return new Promise((resolve) => {
 			const check = (): void => {
-				if (this.closing || this.client?.isClosed()) {
+				// 退出意图不等于收口完成：必须等到 server.stopped 或真实断连。
+				if (this.stoppedReceived || this.client?.isClosed()) {
 					clearInterval(interval);
 					resolve(this.exitMessage ? 1 : 0);
 					return;
+				}
+				if (this.closing && Date.now() - this.closingAt >= Application.EXIT_GRACE_MS) {
+					clearInterval(interval);
+					this.reportFailure("Timed out waiting for the backend to stop after client.shutdown");
+					resolve(1);
 				}
 			};
 			const interval = setInterval(check, 100);
@@ -1125,6 +1134,7 @@ export class Application {
 	private async quit(): Promise<void> {
 		if (this.closing) return;
 		this.closing = true;
+		this.closingAt = Date.now();
 		const client = this.client;
 		if (client) {
 			try { await client.command("client.shutdown", { reason: "user" }, this.identity()); } catch { /* 已断开。 */ }
