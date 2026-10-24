@@ -36,3 +36,26 @@ test("hidden/auto scrollbars only render under their policy and clip", () => {
 	assert.equal(getScrollbarGeometry(box({ x: 100, clipX: 0, clipWidth: 80 })), undefined,
 		"a scrollbar column clipped by its parent is not interactive");
 });
+
+test("real ScrollView policy shows auto only while scrolling and hides it after the delay", async () => {
+	const { ScrollView } = await import("../../vendor/pi-tui/src/components/scroll-view.ts");
+	const child = { render: () => Array.from({ length: 100 }, (_, index) => `line ${index}`), invalidate: () => {} };
+	const scroll = new ScrollView(child as never, { scrollbar: "auto", scrollbarHideDelayMs: 10 });
+	scroll.updateLayout(100, 10, () => {});
+	assert.equal(scroll.isScrollbarVisible, false, "auto is hidden before activity");
+	scroll.scrollBy(5);
+	assert.equal(scroll.isScrollbarVisible, true, "scrolling reveals auto");
+	const realBox = {
+		component: scroll, rect: { x: 0, y: 0, width: 20, height: 10 }, clip: { x: 0, y: 0, width: 20, height: 10 },
+		children: [{ rect: { x: 0, y: 0, width: 20, height: 100 } }], layer: 0, scrollView: scroll,
+	} as never;
+	const geometry = getScrollbarGeometry(realBox)!;
+	assert.equal(geometry.thumbHeight, 2);
+	assert.equal(geometry.maxScrollTop, 90);
+	await new Promise((resolve) => setTimeout(resolve, 30));
+	assert.equal(scroll.isScrollbarVisible, false, "auto hides again after the delay");
+	scroll.setScrollbar("always");
+	assert.equal(scroll.isScrollbarVisible, true);
+	scroll.setScrollbar("hidden");
+	assert.equal(scroll.isScrollbarVisible, false);
+});
