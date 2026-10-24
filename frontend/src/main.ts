@@ -7,12 +7,16 @@ import { Application } from "./app/Application.ts";
  * CLI 任务、不执行 Agent。顶层异常先恢复终端（Application.shutdown），再把真实原因写到
  * stderr，避免留下 raw mode / alternate screen。
  */
+/** 已收到终止信号后的退出身份；run 正常/异常收尾都不能覆盖它。 */
+let signalExitCode: number | undefined;
+
 async function main(): Promise<number> {
 	const application = new Application();
 	// SIGINT/SIGTERM 默认会直接终止进程，raw mode/alternate screen 来不及恢复。
 	// 先走 abort 同步停终端，再用约定的 128+signal 退出；重复信号不会二次清理。
 	for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143]] as const) {
 		process.once(signal, () => {
+			signalExitCode = code;
 			application.abort(`Interrupted by ${signal}`);
 			process.exitCode = code;
 			// 给同步终端恢复/最后一次写入一个极短窗口，不让关闭流程无限挂住。
@@ -33,12 +37,13 @@ async function main(): Promise<number> {
 		const code = await application.run();
 		const failure = application.exitOutput();
 		if (failure) process.stderr.write(`JadeCode frontend: ${failure}\n`);
-		return code;
+		// abort 让 run 收尾时可能返回 1；信号码仍是本次进程的真实退出身份。
+		return signalExitCode ?? code;
 	} catch (error) {
 		process.stderr.write(`JadeCode frontend failed: ${(error as Error).message}\n`);
-		return 1;
+		return signalExitCode ?? 1;
 	}
 }
 
 const code = await main();
-process.exitCode = code;
+process.exitCode = signalExitCode ?? code;
