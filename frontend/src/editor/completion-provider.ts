@@ -31,10 +31,12 @@ export class JadeCompletionProvider implements AutocompleteProvider {
 	constructor(context: CompletionContext) {
 		this.context = context;
 		this.commandList = COMMANDS.map((command) => ({
-			name: command.name,
+			// Pi 的 CombinedAutocompleteProvider 自行补 `/`；这里必须传裸名，
+			// 否则 applyCompletion 会生成 `//settings`，Jade 的命令解析随即失败。
+			name: command.name.replace(/^\//, ""),
 			description: command.description,
 			argumentHint: command.arguments,
-			getArgumentCompletions: (prefix: string) => this.argumentCompletions(command.name, prefix),
+			getArgumentCompletions: (prefix: string) => this.argumentCompletions(`/${command.name.replace(/^\//, "")}`, prefix),
 		}));
 		this.paths = new CombinedAutocompleteProvider(this.commandList, context.workspace);
 	}

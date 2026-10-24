@@ -149,6 +149,7 @@ export const HIDDEN_COUNT = ACTIONS.filter((action) => action.hidden).length;
 export class KeymapAdapter {
 	private readonly definitions: ActionDefinition[];
 	private readonly bindings = new Map<string, string[]>();
+	private readonly overridden = new Set<string>();
 	private readonly problems: string[] = [];
 
 	constructor(overrides: Record<string, string[]> = {}) {
@@ -160,6 +161,7 @@ export class KeymapAdapter {
 				continue;
 			}
 			this.bindings.set(id, keys.filter((key) => key.trim().length > 0));
+			this.overridden.add(id);
 		}
 	}
 
@@ -169,6 +171,21 @@ export class KeymapAdapter {
 
 	definition(id: string): ActionDefinition | undefined {
 		return this.definitions.find((action) => action.id === id);
+	}
+
+	/**
+	 * @returns 只包含用户覆盖、且由 Pi Editor/选择器消费的动作键配置。
+	 * 未覆盖的编辑器动作保留 Pi 自己的默认键；应用级动作不传给 Pi。
+	 */
+	piOverrides(): Record<string, string | string[]> {
+		const result: Record<string, string | string[]> = {};
+		for (const action of this.definitions) {
+			if (!this.overridden.has(action.id)) continue;
+			if (!["EDITOR", "SELECT", "ALT_SCREEN", "SEARCH"].includes(action.context)) continue;
+			const keys = this.bindings.get(action.id) ?? [];
+			result[action.id] = keys.length === 1 ? keys[0]! : [...keys];
+		}
+		return result;
 	}
 
 	/** @returns 动作当前键（含用户覆盖）；未知动作返回空数组。 */

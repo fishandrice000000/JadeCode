@@ -1,7 +1,10 @@
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import {
+	KeybindingsManager,
+	TUI_KEYBINDINGS,
 	matchesKey,
+	setKeybindings,
 	type Component,
 	type TUI,
 	type TuiMouseEvent,
@@ -187,6 +190,9 @@ export class Application {
 		this.approval.setTheme(this.theme.snapshot());
 		const settings = bootstrap.tui;
 		this.keymap = new KeymapAdapter(settings.keybindings);
+		// 用户覆盖必须交给 Pi 的全局键表，Editor/选择器才会按覆盖执行；Jade 自己的全局动作
+		// 则通过 KeymapAdapter.matches 读取同一份覆盖。
+		setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS, this.keymap.piOverrides() as never));
 		const completion = new JadeCompletionProvider({
 			workspace: bootstrap.workspace,
 			commandSuggestions: () => this.session.settings()?.commandSuggestions !== false,
@@ -285,11 +291,11 @@ export class Application {
 		if (this.approval.hasPending()) return { consume: true };
 		// repeat/release 交回编辑器（长按输入），但不得触发全局退出/复制等动作。
 		if (!isGlobalActionPress(data)) return undefined;
-		if (matchesKey(data, "escape")) {
+		if (this.keymap.matches("app.interrupt", data)) {
 			this.editor.focus(this.host.tui()!);
 			return { consume: true };
 		}
-		if (matchesKey(data, "ctrl+c")) {
+		if (this.keymap.matches("app.clear", data)) {
 			if (this.host.hasSelection()) {
 				void this.host.copyActiveSelection();
 				return { consume: true };
@@ -301,50 +307,50 @@ export class Application {
 			void this.quit();
 			return { consume: true };
 		}
-		if (matchesKey(data, "ctrl+d")) {
+		if (this.keymap.matches("app.exit", data)) {
 			if (this.editor.draft().length === 0) {
 				void this.quit();
 				return { consume: true };
 			}
 			return undefined;
 		}
-		if (matchesKey(data, "ctrl+x")) {
+		if (this.keymap.matches("app.message.copy", data)) {
 			const value = this.transcript.lastReplyText();
 			if (!value) this.notify("No assistant reply to copy", true);
 			else void this.copy(value);
 			return { consume: true };
 		}
-		if (matchesKey(data, "ctrl+o")) {
+		if (this.keymap.matches("app.tools.expand", data)) {
 			const expanded = !(this.session.settings()?.toolsExpanded ?? false);
 			this.transcript.setToolsExpanded(expanded);
 			this.notify(expanded ? "Tools expanded" : "Tools collapsed", false);
 			return { consume: true };
 		}
-		if (matchesKey(data, "ctrl+t")) {
+		if (this.keymap.matches("app.thinking.toggle", data)) {
 			const settings = this.session.settings();
 			if (settings) this.saveSettings({ thinkingVisible: !settings.thinkingVisible });
 			return { consume: true };
 		}
-		if (matchesKey(data, "ctrl+g")) {
+		if (this.keymap.matches("app.editor.external", data)) {
 			void this.openExternalEditor();
 			return { consume: true };
 		}
-		if (matchesKey(data, "ctrl+v")) {
+		if (this.keymap.matches("app.clipboard.pasteImage", data)) {
 			void this.pasteClipboard();
 			return { consume: true };
 		}
-		if (matchesKey(data, "ctrl+z")) {
+		if (this.keymap.matches("app.suspend", data)) {
 			suspendToShell({
 				beforeSuspend: async () => { this.onTerminalInvalidate("suspend"); this.host.suspendTerminal(); },
 				afterResume: () => { this.onTerminalInvalidate("resume"); this.host.resumeTerminal(); this.theme.reload(); },
 			});
 			return { consume: true };
 		}
-		if (matchesKey(data, "shift+tab")) {
+		if (this.keymap.matches("app.thinking.cycle", data)) {
 			this.cycleThinking();
 			return { consume: true };
 		}
-		if (matchesKey(data, "ctrl+shift+f") && this.host.mode() === "fullscreen") {
+		if (this.keymap.matches("tui.altScreen.search", data) && this.host.mode() === "fullscreen") {
 			this.openSearchPage();
 			return { consume: true };
 		}

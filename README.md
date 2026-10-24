@@ -23,7 +23,6 @@ src/main/java/com/jadecode/
 ├── Main              # 根入口：交互 TUI / --headless / help / version
 ├── cli/              # 启动选项、后端协议/传输/会话桥、Node 前端监督与 headless
 │   └── backend/      # Java↔Node 私有 UDS 协议、快照、审批证据、设置唯一写者
-├── frontend/         # Node/Pi 终端前端（vendor 固定 Pi、主题/品牌唯一运行资源）
 ├── bootstrap/        # JadeCodeFactory：生产与离线共用的装配入口
 ├── config/           # 模型环境配置、统一 config.json 与界面／压缩设置
 ├── util/             # Json(共享 ObjectMapper), Ansi(终端色码), PathResolver(共享路径解析)
@@ -46,6 +45,8 @@ src/main/java/com/jadecode/
 ├── session/          # SessionRuntime(单消费者、历史、记忆时机、服务关闭) / SessionInbox / SessionEvent
 └── agent/            # AgentExecutor(模型请求、工具批次、压缩步骤及嵌套结果)
 ```
+
+仓库根 `frontend/` 是 Node/Pi 终端前端（固定 vendor、主题/品牌唯一运行资源）；交互模式由 Java 启动并监督它。
 
 仓库根 `skills/<name>/SKILL.md` 存放可被 `load_skill` 加载的真实技能:system prompt 只带 name + description 的目录,完整正文仅在模型调用 `load_skill` 后作为 tool_result 进入消息。
 

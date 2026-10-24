@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Application } from "../../src/app/Application.ts";
+import { KeymapAdapter } from "../../src/editor/keymap-adapter.ts";
 
 /**
  * 直接驱动生产 Application.onGlobalInput 的全局路由。
@@ -28,6 +29,7 @@ function harness(): Harness {
 		tui: () => ({}),
 		mode: () => "fullscreen",
 	};
+	fields["keymap"] = new KeymapAdapter({});
 	fields["client"] = {
 		command: async (type: string) => {
 			if (type === "client.shutdown") state.quits += 1;

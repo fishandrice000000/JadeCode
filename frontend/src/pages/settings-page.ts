@@ -37,8 +37,18 @@ const FIELDS: Field[] = [
 	{ id: "thinkingVisible", label: "Thinking visible", kind: "bool" },
 	{ id: "toolsExpanded", label: "Tools expanded", kind: "bool" },
 	{ id: "commandSuggestions", label: "Command suggestions", kind: "bool" },
-	{ id: "codeBlockIndent", label: "Code block indent", kind: "string" },
 ];
+
+/** 菜单只暴露 18 个有效字段；codeBlockIndent 等非菜单配置仍由 Java 保存并被 Markdown 消费。 */
+export const SETTINGS_FIELD_IDS = FIELDS.map((field) => field.id);
+
+/** fullscreenWheelScrollLines 的既定离散候选；当前自定义值插在相邻档位之间。 */
+function wheelCandidates(current: number): number[] {
+	const base = [0, 1, 2, 3, 5, 10];
+	if (base.includes(current)) return base;
+	const sorted = [...base, current].sort((a, b) => a - b);
+	return sorted;
+}
 
 export class SettingsPage implements Page {
 	readonly title = "Settings";
@@ -99,6 +109,12 @@ export class SettingsPage implements Page {
 				next = !(current === true);
 				break;
 			case "int": {
+				if (field.id === "fullscreenWheelScrollLines") {
+					const candidates = wheelCandidates(typeof current === "number" ? current : 0);
+					const index = candidates.indexOf(typeof current === "number" ? current : 0);
+					next = candidates[(index + direction + candidates.length) % candidates.length];
+					break;
+				}
 				const min = field.min ?? 0;
 				const max = field.max ?? 100;
 				const value = typeof current === "number" ? current : 0;
