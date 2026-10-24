@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jadecode.local/protocol/tui-bridge-v1.schema.json",
+  "title": "JadeCode internal TUI bridge protocol v1",
+  "description": "Private NDJSON envelope used only between the JadeCode Java backend and the Node terminal frontend. Not a public RPC service.",
+  "type": "object",
+  "required": ["version", "connectionId", "seq", "type", "commandId", "sessionId", "generation", "payload"],
+  "properties": {
+    "version": { "const": 1 },
+    "connectionId": { "type": "string" },
+    "seq": { "type": "string", "pattern": "^[0-9]+$" },
+    "type": { "type": "string" },
+    "commandId": { "type": ["string", "null"] },
+    "sessionId": { "type": ["string", "null"] },
+    "generation": { "type": ["string", "null"], "pattern": "^[0-9]+$" },
+    "payload": { "type": "object" }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "commandTypes": {
+      "enum": [
+        "client.hello", "session.ready", "session.submit", "session.promoteBuffer", "session.new",
+        "session.list", "session.find", "session.resume", "session.rename", "session.thinking",
+        "settings.patch", "permission.select", "permission.prepareFullAccess", "permission.presented",
+        "permission.cancelFullAccess", "permission.default", "approval.presented", "approval.answer",
+        "terminal.suspend", "terminal.resume", "terminal.invalidate", "state.refresh", "client.shutdown",
+        "payload.begin", "payload.chunk", "payload.end"
+      ]
+    },
+    "eventTypes": {
+      "enum": [
+        "server.hello", "server.bootstrap", "session.snapshot.begin", "session.snapshot.chunk",
+        "session.snapshot.end", "command.result", "command.error", "stream.started", "stream.delta",
+        "stream.preview.started", "stream.preview.delta", "stream.preview.closed", "stream.ended",
+        "execution.notice", "display.clock", "state.snapshot", "message", "task.submitted", "task.result",
+        "task.failed", "approval.requested", "approval.removed", "settings.saved", "settings.failed",
+        "diagnostic", "server.stopped", "payload.begin", "payload.chunk", "payload.end"
+      ]
+    },
+    "approvalPresentation": {
+      "type": "object",
+      "required": ["requestId", "runId", "revision", "frameId", "terminalEpoch", "columns", "rows", "actionRects", "layoutDigest", "rawReceiptWatermark", "decodedWatermark"],
+      "properties": {
+        "requestId": { "type": "string" },
+        "runId": { "type": "string" },
+        "revision": { "type": "string", "pattern": "^[0-9]+$" },
+        "frameId": { "type": "string" },
+        "terminalEpoch": { "type": "integer", "minimum": 0 },
+        "columns": { "type": "integer", "minimum": 1 },
+        "rows": { "type": "integer", "minimum": 1 },
+        "actionRects": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["x", "y", "width", "height", "choice"],
+            "properties": {
+              "x": { "type": "integer", "minimum": 0 },
+              "y": { "type": "integer", "minimum": 0 },
+              "width": { "type": "integer", "minimum": 1 },
+              "height": { "type": "integer", "minimum": 1 },
+              "choice": { "enum": [0, 1, 2] }
+            },
+            "additionalProperties": false
+          }
+        },
+        "layoutDigest": { "type": "string" },
+        "rawReceiptWatermark": { "type": "integer", "minimum": 0 },
+        "decodedWatermark": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": true
+    }
+  }
+}

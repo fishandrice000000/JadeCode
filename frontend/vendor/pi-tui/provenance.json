@@ -12,7 +12,9 @@
     "P01",
     "P02",
     "P03",
-    "P04"
+    "P04",
+    "P05",
+    "P06"
   ],
   "files": [
     {
@@ -23,28 +25,16 @@
     },
     {
       "path": "LICENSE",
-      "upstreamPath": "packages/tui/LICENSE",
+      "upstreamPath": "LICENSE",
       "originalSha256": "0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48",
       "currentSha256": "0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48",
       "note": "Pi monorepo root MIT license"
-    },
-    {
-      "path": "README.md",
-      "upstreamPath": "packages/tui/README.md",
-      "originalSha256": "13e8b964f1fd06010ec13b71fdfc3069f4fa36b42567262762ef68f76e56e4e0",
-      "currentSha256": "13e8b964f1fd06010ec13b71fdfc3069f4fa36b42567262762ef68f76e56e4e0"
     },
     {
       "path": "native/clipboard.h",
       "upstreamPath": "packages/tui/native/clipboard.h",
       "originalSha256": "e9c420915ee63594eb42687364324b33d487e269a84aba58f7b1c1103dc9d2a2",
       "currentSha256": "e9c420915ee63594eb42687364324b33d487e269a84aba58f7b1c1103dc9d2a2"
-    },
-    {
-      "path": "native/darwin/README.md",
-      "upstreamPath": "packages/tui/native/darwin/README.md",
-      "originalSha256": "de34e2dfb2b600fe67df5aae2fa58eef26ac84644a0f0d44cf0a09d46f3d2730",
-      "currentSha256": "de34e2dfb2b600fe67df5aae2fa58eef26ac84644a0f0d44cf0a09d46f3d2730"
     },
     {
       "path": "native/darwin/build.sh",
@@ -65,16 +55,16 @@
       "currentSha256": "7ec59a02fff9562f6354274ad070ba35f8e0998b3b111eb27ad3de579ffb6c65"
     },
     {
+      "path": "native/darwin/README.md",
+      "upstreamPath": "packages/tui/native/darwin/README.md",
+      "originalSha256": "de34e2dfb2b600fe67df5aae2fa58eef26ac84644a0f0d44cf0a09d46f3d2730",
+      "currentSha256": "de34e2dfb2b600fe67df5aae2fa58eef26ac84644a0f0d44cf0a09d46f3d2730"
+    },
+    {
       "path": "native/darwin/src/darwin-platform.m",
       "upstreamPath": "packages/tui/native/darwin/src/darwin-platform.m",
       "originalSha256": "485690f7ab57364b1a5e8a1fd82e227c16255ecd23f801d695f75ee2ec0692a1",
       "currentSha256": "485690f7ab57364b1a5e8a1fd82e227c16255ecd23f801d695f75ee2ec0692a1"
-    },
-    {
-      "path": "native/linux/README.md",
-      "upstreamPath": "packages/tui/native/linux/README.md",
-      "originalSha256": "a06e3ff9ed53919f7d6147f2d016e837cbe780e01615053d01002754d83a522d",
-      "currentSha256": "a06e3ff9ed53919f7d6147f2d016e837cbe780e01615053d01002754d83a522d"
     },
     {
       "path": "native/linux/build.sh",
@@ -95,6 +85,12 @@
       "currentSha256": "522d2550f7fa5d0d5bd204f45983f786ce2be9cf80f27f00179640d31d0689d6"
     },
     {
+      "path": "native/linux/README.md",
+      "upstreamPath": "packages/tui/native/linux/README.md",
+      "originalSha256": "a06e3ff9ed53919f7d6147f2d016e837cbe780e01615053d01002754d83a522d",
+      "currentSha256": "a06e3ff9ed53919f7d6147f2d016e837cbe780e01615053d01002754d83a522d"
+    },
+    {
       "path": "native/linux/src/clipboard-worker.h",
       "upstreamPath": "packages/tui/native/linux/src/clipboard-worker.h",
       "originalSha256": "a4a670338d49e97002e4ffb9c0e22e28e9536938ec182d7beb7fa8f69856cd81",
@@ -111,12 +107,6 @@
       "upstreamPath": "packages/tui/native/napi.h",
       "originalSha256": "3ef7b32eb0b6f4227cea85a521a1dc4cb68f2db070c600bf845a3905bcfd8f13",
       "currentSha256": "3ef7b32eb0b6f4227cea85a521a1dc4cb68f2db070c600bf845a3905bcfd8f13"
-    },
-    {
-      "path": "native/win32/README.md",
-      "upstreamPath": "packages/tui/native/win32/README.md",
-      "originalSha256": "5b00a5533ea3b8bea1667d0fe2f34345d97a7164bec3652bcbf03b4eee53d991",
-      "currentSha256": "5b00a5533ea3b8bea1667d0fe2f34345d97a7164bec3652bcbf03b4eee53d991"
     },
     {
       "path": "native/win32/build.mjs",
@@ -137,6 +127,12 @@
       "currentSha256": "51bee02bcb73b165ab92af75ae15b88aba3f5d99f072e63ef60af92ffdc4d565"
     },
     {
+      "path": "native/win32/README.md",
+      "upstreamPath": "packages/tui/native/win32/README.md",
+      "originalSha256": "5b00a5533ea3b8bea1667d0fe2f34345d97a7164bec3652bcbf03b4eee53d991",
+      "currentSha256": "5b00a5533ea3b8bea1667d0fe2f34345d97a7164bec3652bcbf03b4eee53d991"
+    },
+    {
       "path": "native/win32/src/win32-platform.c",
       "upstreamPath": "packages/tui/native/win32/src/win32-platform.c",
       "originalSha256": "5b0d373af1358ca9bf9257085a36ad8f74dadcfc1e9b7fd53320fc21833b8389",
@@ -147,6 +143,12 @@
       "upstreamPath": "packages/tui/package.json",
       "originalSha256": "a6a82af81ed5b6069267eabfdcf047d0af8013695b0e64d72f3c9f44f8e8124e",
       "currentSha256": "a6a82af81ed5b6069267eabfdcf047d0af8013695b0e64d72f3c9f44f8e8124e"
+    },
+    {
+      "path": "README.md",
+      "upstreamPath": "packages/tui/README.md",
+      "originalSha256": "13e8b964f1fd06010ec13b71fdfc3069f4fa36b42567262762ef68f76e56e4e0",
+      "currentSha256": "13e8b964f1fd06010ec13b71fdfc3069f4fa36b42567262762ef68f76e56e4e0"
     },
     {
       "path": "src/alt-screen-search.ts",
@@ -362,7 +364,7 @@
       "path": "src/stdin-buffer.ts",
       "upstreamPath": "packages/tui/src/stdin-buffer.ts",
       "originalSha256": "82da9ff728e77269bbfa24c28eda81f26f744efef9e05113c2401ed52c823054",
-      "currentSha256": "82da9ff728e77269bbfa24c28eda81f26f744efef9e05113c2401ed52c823054"
+      "currentSha256": "b73fd6ce6d45b0e9ffaf82a1e41e9c30348596c0a5e82b113c8e49e330fddef2"
     },
     {
       "path": "src/terminal-colors.ts",
@@ -380,13 +382,13 @@
       "path": "src/terminal.ts",
       "upstreamPath": "packages/tui/src/terminal.ts",
       "originalSha256": "7a75ac820dff409781f1ca59a0354d97282044f444a38322eb4e1886cb7fe247",
-      "currentSha256": "86b70506d2363876f8b3e8b217204df917385bb66a1606854e3c2be8593f68d4"
+      "currentSha256": "2c05e5ad070d49cf88a9229f6afc3d24ba3f711942a5566851c1f9087af64926"
     },
     {
       "path": "src/tui-alt-screen.ts",
       "upstreamPath": "packages/tui/src/tui-alt-screen.ts",
       "originalSha256": "dd978db4f24a07e58a6e63819388a07700cb6237bbc0c8e9994bfc5f5d656800",
-      "currentSha256": "176bcc3249b35d05c958bb1453ad819bc364bc337acc484ed0cb2ef38660bf07"
+      "currentSha256": "c3974684663ddd1c5eaba3f33f9053bde22c7076c92b0cb9321d23051e4d4565"
     },
     {
       "path": "src/tui-main-screen.ts",

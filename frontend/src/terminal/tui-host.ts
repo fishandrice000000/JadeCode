@@ -33,9 +33,11 @@ export interface TuiHostOptions {
 	onWritable: () => void;
 	onWriteFailure: (message: string) => void;
 	onResize: () => void;
-	onInputStart: () => void;
+	onInputStart: (chunk: number) => void;
 	onInputEnd: () => void;
 	onRawInput: (data: string) => void;
+	/** screen 创建/重建完成后调用；宿主在这里安装监听与焦点，保证不只生效一次。 */
+	onScreenReady: () => void;
 }
 
 type JadeScreen = (TuiMainScreen | TuiAltScreen) & {
@@ -51,6 +53,9 @@ export class TuiHost {
 	private screen: JadeScreen | undefined;
 	private root: Component | undefined;
 	private modeValue: UiMode;
+	private readonly priorityListeners = new Set<TuiInputListener>();
+	private mouseHandler: ((event: TuiMouseEvent) => boolean) | undefined;
+	private focusTarget: Component | null = null;
 
 	constructor(options: TuiHostOptions) {
 		this.options = options;
@@ -84,9 +89,10 @@ export class TuiHost {
 	start(): void {
 		if (!this.root) throw new Error("The TUI root is not installed yet");
 		if (!this.screen) this.screen = this.createScreen(this.modeValue);
-		this.screen.setFocus(this.root);
+		this.screen.setFocus(this.focusTarget ?? this.root);
 		this.screen.renderGate = () => this.terminal.canRender();
 		this.screen.start();
+		this.options.onScreenReady();
 	}
 
 	/** regular ↔ fullscreen：保留根组件，重建终端层。 */
@@ -109,18 +115,24 @@ export class TuiHost {
 		this.screen?.invalidate();
 	}
 
-	/** 聚焦组件（编辑器/页面/审批由 Application 决定）。 */
+	/** 聚焦组件（编辑器/页面/审批由 Application 决定）；记住以便重建后恢复。 */
 	setFocus(component: Component | null): void {
+		this.focusTarget = component;
 		this.screen?.setFocus(component);
 	}
 
-	/** P02：优先级输入监听（审批首选）。 */
+	/** P02：优先级输入监听（审批首选）；screen 重建时自动重新注册。 */
 	addPriorityInputListener(listener: TuiInputListener): () => void {
-		return this.screen ? this.screen.addPriorityInputListener(listener) : () => {};
+		this.priorityListeners.add(listener);
+		this.screen?.addPriorityInputListener(listener);
+		return () => {
+			this.priorityListeners.delete(listener);
+		};
 	}
 
-	/** P02：鼠标优先级处理器（只在 fullscreen 有意义）。 */
+	/** P02：鼠标优先级处理器（只在 fullscreen 有意义）；screen 重建后仍生效。 */
 	setMousePriorityHandler(handler: ((event: TuiMouseEvent) => boolean) | undefined): void {
+		this.mouseHandler = handler;
 		if (this.screen) this.screen.mousePriorityHandler = handler;
 	}
 
@@ -205,21 +217,28 @@ export class TuiHost {
 	private createScreen(mode: UiMode): JadeScreen {
 		const root = this.root!;
 		const onFrame = this.options.onFrameWritten;
+		let screen: JadeScreen;
 		if (mode === "regular") {
-			const screen = new JadeMainScreen(this.terminal, this.options.showHardwareCursor, onFrame);
-			screen.addChild(root);
-			return screen as unknown as JadeScreen;
+			const main = new JadeMainScreen(this.terminal, this.options.showHardwareCursor, onFrame);
+			main.addChild(root);
+			screen = main as unknown as JadeScreen;
+		} else {
+			const alt = new JadeAltScreen(this.terminal, {
+				showHardwareCursor: this.options.showHardwareCursor,
+				wheelScrollLines: this.options.wheelScrollLines,
+				scrollbar: this.options.scrollbar,
+				copyOnSelect: this.options.copyOnSelect,
+				copySelection: this.options.copySelection,
+				onFrame,
+			});
+			alt.setLayoutRoot(root);
+			screen = alt as unknown as JadeScreen;
 		}
-		const screen = new JadeAltScreen(this.terminal, {
-			showHardwareCursor: this.options.showHardwareCursor,
-			wheelScrollLines: this.options.wheelScrollLines,
-			scrollbar: this.options.scrollbar,
-			copyOnSelect: this.options.copyOnSelect,
-			copySelection: this.options.copySelection,
-			onFrame,
-		});
-		screen.setLayoutRoot(root);
-		return screen as unknown as JadeScreen;
+		// 每次新建 screen 都重新挂优先级监听/鼠标处理；旧 screen 已 stop，不会重复消费输入。
+		for (const listener of this.priorityListeners) screen.addPriorityInputListener(listener);
+		screen.mousePriorityHandler = this.mouseHandler;
+		screen.setFocus(this.focusTarget ?? root);
+		return screen;
 	}
 }
 

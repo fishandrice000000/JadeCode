@@ -11,7 +11,7 @@
 | 语言 | Java 21(record / sealed / 虚拟线程) |
 | 构建 | Maven 单模块,`mvn package` 产出 `target/jadecode.jar` |
 | LLM 接入 | Anthropic 消息格式 + 可配置 base URL(**DeepSeek /anthropic 端点**,已实测) |
-| 框架 | 无(CLI 形态,不用 Spring Boot) |
+| 框架 | 无(CLI 形态,不用 Spring Boot);交互 TUI 由固定 Pi 的 Node 前端承担 |
 | 持久化 | 工作区 `.jadecode/`，按 tasks / memory / teams 等用途分目录 |
 
 ## 目录结构
@@ -173,7 +173,7 @@ Fetch 默认启用：没有 `mcp.servers` 配置时，JadeCode 自动采用以�
 模型只能按已启用名称调用 `connect_mcp`，不能提交启动命令或自动下载依赖。
 连接完成后的下一次请求会出现 `mcp__fetch__fetch`；同一回复中猜测尚未发现的名字会被拒绝。
 
-可在 `./jade repl` 中输入：
+可在 `./jade` 创建的交互会话中输入：
 
 ```text
 连接 fetch 服务，读取 https://example.com，概括页面内容并附来源。每次最多读取 5000 字符。
@@ -199,8 +199,9 @@ Leader 和常驻队友各自按需连接；一次性子代理暂不接入 MCP。
 ```sh
 mvn -q package                              # 构建(直接跑即可,无需设 JAVA_HOME)
 mvn -q test                                 # 单元测试
-./jade repl                                 # 交互
-./jade run "任务"                            # 一次性
+./jade                                      # 交互（Node TUI）
+./jade "任务"                                # 新会话并提交首轮
+./jade --headless "任务"                     # 无界面，stdout 只有最终回答
 ```
 
 TUI 默认使用 Pi 原生 fullscreen，也可在 `/settings` 切换为 regular；两种模式共用编辑器、消息、工具卡和命令，不保留旧底锚内联模式。
@@ -249,8 +250,8 @@ Esc/空 Enter/普通文字不答复审批；旧画面、旧输入水位、resize
 | Full Access | 普通操作免询问，包括普通删除和越界 | 显式 deny/ask、根目录/设备保护及强制人工项仍有效；需询问的项直接拒绝 |
 
 ```sh
-./jade repl --permission auto-review
-./jade run --permission workspace "任务"
+./jade --permission auto-review
+./jade --headless --permission workspace "任务"
 ```
 
 会话内 `/permission read-only` 等命令只改变本次 CLI；`/permission default workspace` 同时保存启动默认。
@@ -275,9 +276,9 @@ deny → ask → 默认硬保护/强制人工 → allow → 档位普通策略�
 ### 会话保存与恢复
 
 ```sh
-./jade repl --resume                         # 选择当前工作区的历史会话
-./jade repl --resume <完整 UUID>             # 直接恢复
-./jade repl --resume "会话名称"              # 名称匹配，重复时选择
+./jade --resume                              # 选择当前工作区的历史会话
+./jade --resume=<完整 UUID>                   # 直接恢复
+./jade --resume=<会话名称>                    # 名称匹配，重复时选择
 ```
 
 REPL 默认新建并保存主会话。`/resume` 打开可筛选选择器，

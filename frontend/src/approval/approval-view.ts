@@ -35,6 +35,8 @@ export interface ApprovalRenderInput {
 	actor: string;
 	teamActive: boolean;
 	actorName: (actor: string) => string;
+	/** 完整参数仍在装载时不能选择/确认。 */
+	loading: boolean;
 }
 
 export class ApprovalView {
@@ -74,6 +76,7 @@ export class ApprovalView {
 		}
 	}
 
+	/** 参数窗口滚动；render 时会按实际行数夹紧并参与布局。 */
 	scrollBy(lines: number): void {
 		this.scroll = Math.max(0, this.scroll + lines);
 	}
@@ -83,8 +86,14 @@ export class ApprovalView {
 	invalidate(): void { this.layout = undefined; }
 
 	/**
+	 * 渲染审批卡，并记录“真实同帧按钮格坐标”。
+	 *
+	 * 长参数不是整个文档无限增长：这里按可用行数开一个参数窗口，PgUp/PgDn 只移动窗口。
+	 * 因此卡片总能完整落在视口内；若 originY<0、或按钮行超出 0..rows-1、或参数仍在加载，
+	 * 就不发布任何批准矩形（视觉上仍显示申请，但无法误点/误确认）。
+	 *
 	 * @param width 终端列宽
-	 * @param originY 本卡片第一行在视口中的屏幕行（0 基）；main screen 用文档行
+	 * @param originY 本卡片第一行在视口中的屏幕行（0 基）
 	 * @param rows 终端行数
 	 */
 	render(input: ApprovalRenderInput, width: number, originY: number, rows: number, columns: number): string[] {
@@ -104,56 +113,68 @@ export class ApprovalView {
 			const padded = content + " ".repeat(Math.max(0, innerWidth - visibleWidth(content)));
 			lines.push(border("│") + " " + theme.withBackground("text", "panelBg", padded) + " " + border("│"));
 		};
-		const pushWrapped = (label: string, text: string): void => {
-			pushLine(theme.bold(theme.style("muted", label)));
-			const wrapped = wrapTextWithAnsi(visibleEscapes(text), innerWidth);
-			for (const line of wrapped) pushLine(theme.style("text", line));
-		};
+
+		const headerLines = 1 + (input.teamActive && input.actor ? 1 : 0) + 2 + (input.loading ? 1 : 0);
+		// 底部：空行 + 三个选项 + 下边框；预留后剩余行数给参数窗口。
+		const reserved = headerLines + 1 + this.choices.length + 1;
+		const availableContent = Math.max(3, rows - Math.max(0, originY) - reserved);
+		const parameterLines = wrapTextWithAnsi(visibleEscapes(input.parameters), innerWidth);
+		const maxScroll = Math.max(0, parameterLines.length - availableContent);
+		this.scroll = Math.max(0, Math.min(this.scroll, maxScroll));
+		const windowed = parameterLines.slice(this.scroll, this.scroll + availableContent);
+		if (parameterLines.length > availableContent) {
+			windowed[windowed.length - 1] = theme.style("dim",
+				`… ${this.scroll + 1}-${Math.min(parameterLines.length, this.scroll + availableContent)} of ${parameterLines.length} · PgUp/PgDn`);
+		}
 
 		if (input.teamActive && input.actor) pushLine(theme.style("muted", `Actor: ${input.actorName(input.actor)}`));
 		pushLine(theme.style("muted", `Tool: ${input.tool}`));
 		pushLine(theme.style("muted", `Scope: ${input.scope || "(this request only)"}`));
-		pushWrapped("Parameters", input.parameters);
+		pushLine(theme.bold(theme.style("muted", "Parameters")));
+		if (input.loading) pushLine(theme.style("dim", "Loading the complete parameters…"));
+		for (const line of windowed) pushLine(theme.style("text", line));
 		pushLine("");
-		// 选项从当前行开始；矩形稍后加上 originY。
-		const optionStart = lines.length - 1;
+
 		const buttonX = margin + 3;
 		const buttonWidth = Math.max(8, boxWidth - 6);
 		const rects: ApprovalLayout["rects"] = [];
-		for (const [position, choice] of this.choices.entries()) {
+		for (const choice of this.choices) {
 			const isSelected = this.selected === choice.index;
 			const label = choice.label;
 			let text: string;
-			if (!choice.enabled) {
-				text = palette.disabled(`[ ${label} ]`);
-			} else if (isSelected) {
+			if (!choice.enabled) text = palette.disabled(`[ ${label} ]`);
+			else if (isSelected) {
 				text = choice.index === 0 ? palette.once(` ${label} `)
 					: choice.index === 1 ? palette.similar(` ${label} `) : palette.deny(` ${label} `);
-			} else {
-				text = `[ ${label} ]`;
-			}
+			} else text = `[ ${label} ]`;
 			const marker = isSelected ? "▸ " : "  ";
 			const padding = " ".repeat(Math.max(0, innerWidth - visibleWidth(marker + `[ ${label} ]`)));
+			const lineIndex = lines.length;
 			pushLine("  " + marker + text + padding);
 			if (choice.enabled) {
-				rects.push({ x: buttonX, y: 0, width: Math.min(buttonWidth, visibleWidth(` ${label} `) + 2), height: 1, choice: choice.index });
+				// 每个按钮绑定自己真实的行号；禁用项仍占行，但不会让后续选项的矩形错位。
+				rects.push({ x: buttonX, y: originY + lineIndex, width: Math.min(buttonWidth, visibleWidth(` ${label} `) + 2), height: 1, choice: choice.index });
 			}
-			void position;
 		}
 		lines.push(border("╰" + "─".repeat(Math.max(0, boxWidth - 2)) + "╯"));
 
-		// 把选项的局部行号换算为视口行；main 模式没有滚动偏移，originY 已经是文档行。
-		const offset = Math.max(0, optionStart);
+		// 按钮真实视口行 = originY + 卡片内行号；越界/负原点/加载中都不允许发布命中。
+		let publishable = !input.loading && originY >= 0;
 		for (const rect of rects) {
-			rect.y = clamp(originY + offset + rects.indexOf(rect), 0, Math.max(0, rows - 1));
-			rect.x = clamp(rect.x, 0, Math.max(0, columns - 1));
+			if (rect.y < 0 || rect.y >= rows) publishable = false;
+			rect.x = Math.max(0, Math.min(rect.x, Math.max(0, columns - 1)));
 			rect.width = Math.max(1, Math.min(rect.width, columns - rect.x));
 		}
-		this.layout = { rects, digest: digest(rects, this.selected), columns, rows };
+		this.layout = {
+			rects: publishable ? rects : [],
+			digest: digest(publishable ? rects : [], this.selected),
+			columns,
+			rows,
+		};
 		const padded: string[] = [];
 		const marginText = " ".repeat(margin);
 		for (const line of lines) padded.push(marginText + line + marginText);
-		return padded;
+		return padded.slice(0, Math.max(1, rows));
 	}
 
 	/** @returns 命中该格坐标的选项序号；无命中 -1。 */

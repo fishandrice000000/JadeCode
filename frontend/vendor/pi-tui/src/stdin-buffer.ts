@@ -294,8 +294,9 @@ export type StdinBufferOptions = {
 };
 
 export type StdinBufferEventMap = {
-	data: [string];
-	paste: [string];
+	/** sequence plus the raw stdin chunk id in which its first byte arrived (Jade patch P06). */
+	data: [string, number];
+	paste: [string, number];
 };
 
 /**
@@ -310,6 +311,11 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 	private pasteMode: boolean = false;
 	private pasteBuffer: string = "";
 	private pendingKittyPrintableCodepoint: number | undefined;
+	/**
+	 * Jade patch P06: raw stdin chunk id of the first byte currently buffered. A sequence may
+	 * span chunks, so its source is the chunk that carried its first byte, not the last one.
+	 */
+	private bufferChunk = 0;
 
 	constructor(options: StdinBufferOptions = {}) {
 		super();
@@ -317,7 +323,12 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		this.escapeTimeoutMs = options.escapeTimeout ?? DEFAULT_ESCAPE_TIMEOUT_MS;
 	}
 
-	public process(data: string | Buffer): void {
+	/**
+	 * Jade patch P06: chunkId identifies the raw stdin chunk supplied by ProcessTerminal.
+	 * It is propagated with each emitted sequence so approval freshness can be judged against
+	 * the true start of the sequence rather than the dispatch that happened to complete it.
+	 */
+	public process(data: string | Buffer, chunkId = 0): void {
 		// Clear any pending timeout
 		if (this.timeout) {
 			clearTimeout(this.timeout);
@@ -343,6 +354,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 			return;
 		}
 
+		if (this.buffer.length === 0) this.bufferChunk = chunkId;
 		this.buffer += str;
 
 		if (this.pasteMode) {
@@ -358,10 +370,10 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 				this.pasteBuffer = "";
 				this.pendingKittyPrintableCodepoint = undefined;
 
-				this.emit("paste", pastedContent);
+				this.emit("paste", pastedContent, this.bufferChunk);
 
 				if (remaining.length > 0) {
-					this.process(remaining);
+					this.process(remaining, this.bufferChunk);
 				}
 			}
 			return;
@@ -392,10 +404,10 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 				this.pasteBuffer = "";
 				this.pendingKittyPrintableCodepoint = undefined;
 
-				this.emit("paste", pastedContent);
+				this.emit("paste", pastedContent, this.bufferChunk);
 
 				if (remaining.length > 0) {
-					this.process(remaining);
+					this.process(remaining, this.bufferChunk);
 				}
 			}
 			return;
@@ -423,7 +435,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 						// Recover the Alt key and reparse its tail so batched text,
 						// Enter, and control keys are not swallowed as one event.
 						this.emitDataSequence(sequence.slice(0, 2));
-						this.process(sequence.slice(2));
+						this.process(sequence.slice(2), this.bufferChunk);
 					} else {
 						this.emitDataSequence(sequence);
 					}
@@ -432,7 +444,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		}
 	}
 
-	private emitDataSequence(sequence: string): void {
+	private emitDataSequence(sequence: string, chunk = this.bufferChunk): void {
 		const rawCodepoint = sequence.length === 1 ? sequence.codePointAt(0) : undefined;
 		if (rawCodepoint !== undefined && rawCodepoint === this.pendingKittyPrintableCodepoint) {
 			this.pendingKittyPrintableCodepoint = undefined;
@@ -440,7 +452,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		}
 
 		this.pendingKittyPrintableCodepoint = parseUnmodifiedKittyPrintableCodepoint(sequence);
-		this.emit("data", sequence);
+		this.emit("data", sequence, chunk);
 	}
 
 	flush(): string[] {

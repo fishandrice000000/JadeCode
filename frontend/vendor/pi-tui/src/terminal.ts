@@ -160,6 +160,8 @@ export class ProcessTerminal implements Terminal {
 	private keyboardProtocolBufferFlushTimer?: ReturnType<typeof setTimeout>;
 	private stdinBuffer?: StdinBuffer;
 	private stdinDataHandler?: (data: string) => void;
+	/** Jade patch P06: raw chunk id carried by the sequence currently being dispatched. */
+	private sequenceChunk = 0;
 	/**
 	 * Jade patch P01: receives every raw stdin chunk exactly as the OS delivered it,
 	 * before StdinBuffer splitting/normalization. The host uses this watermark to decide
@@ -171,6 +173,11 @@ export class ProcessTerminal implements Terminal {
 	 * `undefined` keeps Pi's own environment/SSH heuristic; the host sets this before start().
 	 */
 	private escapeTimeoutOverrideMs?: number;
+
+	/** Jade patch P06: chunk id of the sequence currently being forwarded (0 = unknown). */
+	currentInputChunk(): number {
+		return this.sequenceChunk;
+	}
 
 	/** Jade patch P01: install the raw chunk tap; it must never write to the terminal. */
 	setRawInputTap(tap: ((data: string) => void) | undefined): void {
@@ -263,7 +270,8 @@ export class ProcessTerminal implements Terminal {
 		});
 
 		// Forward individual sequences to the input handler
-		this.stdinBuffer.on("data", (sequence) => {
+		this.stdinBuffer.on("data", (sequence, chunk) => {
+			this.sequenceChunk = chunk;
 			if (isProgramStatusReply(sequence)) {
 				if (this.programStatusQueryPending) {
 					this.programStatusQueryPending = false;
@@ -285,18 +293,21 @@ export class ProcessTerminal implements Terminal {
 		});
 
 		// Re-wrap paste content with bracketed paste markers for existing editor handling
-		this.stdinBuffer.on("paste", (content) => {
+		this.stdinBuffer.on("paste", (content, chunk) => {
+			this.sequenceChunk = chunk;
 			if (this.inputHandler) {
 				this.inputHandler(`\x1b[200~${content}\x1b[201~`);
 			}
 		});
 
 		// Handler that pipes stdin data through the buffer
+		let chunkId = 0;
 		this.stdinDataHandler = (data: string) => {
-			// Jade patch P01: record the raw chunk before any buffering so the host can tell
+			// Jade patch P01/P06: record the raw chunk before any buffering so the host can tell
 			// "the ESC arrived before the approval frame" from "the whole key arrived after it".
+			chunkId += 1;
 			this.rawInputTap?.(data);
-			this.stdinBuffer!.process(data);
+			this.stdinBuffer!.process(data, chunkId);
 		};
 	}
 

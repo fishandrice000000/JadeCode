@@ -33,7 +33,9 @@ export interface PageContext {
 	sessionTheme(): string;
 	setDraft(text: string): void;
 	jumpToMatch(query: string): void;
-	lastFrame(): { frameId: number; epoch: number; rawWatermark: number; decodedWatermark: number } | null;
+	lastFrame(): { frameId: number; epoch: number; rawWatermark: number; decodedWatermark: number; columns: number; rows: number } | null;
+	/** 停靠区第一行在视口中的屏幕行（frame 顶边框之前）。 */
+	dockOriginY(): number;
 	/** 当前按键序列来源（Full Access 二次确认需要新鲜 PRESS）。 */
 	evidence(): { startReceipt: number; endReceipt: number; decodedSeq: number } | null;
 	settings(): TuiSettings | null;

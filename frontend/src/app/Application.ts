@@ -9,6 +9,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { BackendClient } from "../bridge/client.ts";
 import { PayloadAssembler } from "../bridge/payload-assembler.ts";
+import { UiEventBarrier } from "./ui-barrier.ts";
 import { arrayValue, numberValue, text, type Payload, type WireMessage } from "../bridge/wire.ts";
 import { SessionStore, type TuiSettings } from "../state/session-store.ts";
 import { TranscriptStore, type Entry, type ToolIdentity } from "../state/transcript-store.ts";
@@ -73,6 +74,11 @@ export class Application {
 	private exitMessage = "";
 	private snapshotBuffer: { id: string; chunks: string[]; generation: string } | undefined;
 	private readonly openedAt = Date.now();
+	/** UI（主题/终端/编辑器/host）是否已建立；bootstrap 后的业务事件必须等它完成。 */
+	private readonly uiBarrier = new UiEventBarrier<WireMessage>();
+	private stoppedReceived = false;
+	/** 最近 64 条协议元数据；只在失败时输出，不倾倒 payload。 */
+	private readonly traceBuffer: Array<{ at: number; direction: string; type: string; seq: string; connection: string; uiReady: boolean }> = [];
 
 	constructor() {
 		this.conversation = new ConversationView(this.transcript, this.session, this.markdown);
@@ -85,6 +91,7 @@ export class Application {
 			identity: () => this.identity(),
 			requestRender: () => this.host?.requestRender(),
 			notify: (message, error = false) => this.notify(message, error),
+			terminalHealthy: () => this.host !== undefined && !this.host.terminal.hasFailed(),
 			teamActive: () => this.session.teamActive(),
 			actorName: (actor) => this.session.displayActor(actor) || actor,
 		});
@@ -96,6 +103,18 @@ export class Application {
 				layout.dock.invalidate();
 			},
 		};
+	}
+
+	/**
+	 * UI 初始化完成后消费暂存事件。
+	 *
+	 * <p>socket 可能把 hello/bootstrap/完整快照合成一次写入；Node 的 reader 会同步消费完这批帧。
+	 * 因此“bootstrap 已 apply”不等于“editor/host 已建立”。先按序入队，初始化完成后再消费，
+	 * 快照 end 才会在编辑器存在时安装并发送 ready。不用 sleep，也不丢快照。</p>
+	 */
+	private activateUi(): void {
+		// 消费顺序严格等于 socket 到达顺序；快照 end 在编辑器/host 建立后才会发 ready。
+		this.uiBarrier.activate((message) => this.handleEvent(message));
 	}
 
 	/** 启动：连接、握手、bootstrap、主题、终端，然后进入快照同步。 */
@@ -111,6 +130,7 @@ export class Application {
 			socketPath,
 			onEvent: (message) => this.onEvent(message),
 			onClosed: (reason) => this.onClosed(reason),
+			onFatal: (reason, error) => this.reportFailure(reason, error),
 		});
 		this.client = client;
 		try {
@@ -118,16 +138,18 @@ export class Application {
 			await client.hello(credential, buildId);
 			await this.waitForBootstrap();
 			this.setupThemeAndTerminal();
-			this.setupInput();
 			this.host.start();
 			if (this.session.bootstrap()?.startup.mode === "picker") this.openResumePage();
+			this.activateUi();
 			this.armTimer();
 			return await this.waitForExit();
 		} catch (failure) {
-			this.exitMessage = (failure as Error).message;
+			this.reportFailure("The frontend failed to start", failure);
+			this.dumpTrace();
 			return 1;
 		} finally {
 			this.shutdown();
+			if (this.exitMessage) this.dumpTrace();
 		}
 	}
 
@@ -159,7 +181,8 @@ export class Application {
 			onChange: () => this.host?.requestRender(true),
 		});
 		this.conversation.setThemeAccessor(() => this.theme.snapshot());
-		this.presented = new PresentedEvidence(this.evidence, (frame) => this.onFramePresented(frame));
+		// 审批呈现由 afterFrame 回调统一处理；这里不再重复通知，避免同一帧两次 presented。
+		this.presented = new PresentedEvidence(this.evidence, () => {});
 		this.approval.setPresented(this.presented);
 		this.approval.setTheme(this.theme.snapshot());
 		const settings = bootstrap.tui;
@@ -203,30 +226,50 @@ export class Application {
 			},
 			showHardwareCursor: settings.showHardwareCursor,
 			escapeTimeoutMillis: settings.escapeTimeoutMillis,
-			onFrameWritten: () => this.host.terminal.afterFrame(() => this.afterFrame()),
+			onFrameWritten: () => {
+				const epoch = this.presented.currentEpoch();
+				this.host.terminal.afterFrame(() => this.afterFrame(epoch));
+			},
 			onWritable: () => this.host.notifyRenderReady(),
 			onWriteFailure: (message) => this.notify(message, true),
 			onResize: () => this.onTerminalInvalidate("resize"),
-			onInputStart: () => this.evidence.beginDispatch(),
+			onInputStart: (chunk) => this.evidence.beginDispatch(chunk),
 			onInputEnd: () => this.evidence.endDispatch(),
 			onRawInput: (chunk) => this.evidence.rawChunk(chunk),
+			onScreenReady: () => this.installScreenListeners(),
 		});
 		this.host.setRoot(this.root);
 		this.host.setMousePriorityHandler((event) => this.approval.handleMouse(event));
+		this.host.setFocus(this.editor.editor);
 		this.transcript.install([]);
 		this.syncTranscriptHistoryMessage();
 	}
 
-	private setupInput(): void {
+	/**
+	 * screen 创建/模式重建后安装监听与焦点。
+	 *
+	 * <p>这段必须在 Pi screen 存在之后执行；第一轮把它放在 host.start() 之前，导致监听被静默
+	 * 跳过、焦点落在没有 handleInput 的 root 上。TuiHost 会记住优先级监听/鼠标处理并在重建时
+	 * 重新安装，这里只补普通的全局输入监听。</p>
+	 */
+	private installScreenListeners(): void {
 		const tui = this.host.tui();
 		if (!tui) return;
-		tui.addPriorityInputListener((data) => {
-			if (this.approval.hasPending()) return this.approval.handleInput(data) ? { consume: true } : undefined;
+		this.priorityDisposer?.();
+		this.priorityDisposer = this.host.addPriorityInputListener((data) => {
+			if (this.approval.hasPending()) {
+				return this.approval.handleInput(data) ? { consume: true } : undefined;
+			}
 			return undefined;
 		});
-		tui.addInputListener((data) => this.onGlobalInput(data));
-		this.host.setFocus(this.editor.editor);
+		this.offscreenDisposer?.();
+		const dispose = tui.addInputListener((data) => this.onGlobalInput(data));
+		this.offscreenDisposer = dispose;
+		this.host.setFocus(this.pages.current() || this.approval.hasPending() ? this.root : this.editor.editor);
 	}
+
+	private offscreenDisposer: (() => void) | undefined;
+	private priorityDisposer: (() => void) | undefined;
 
 	/** 全局输入：页面优先，然后 97 动作；编辑器自身处理文本/Enter。 */
 	private onGlobalInput(data: string): { consume?: boolean; data?: string } | undefined {
@@ -306,6 +349,8 @@ export class Application {
 		return undefined;
 	}
 
+	private dockOriginY = 0;
+
 	private renderRoot(width: number): string[] {
 		const settings = this.session.settings();
 		const conversation = this.conversation.render(width);
@@ -318,18 +363,21 @@ export class Application {
 			const rows = this.host.terminal.rows;
 			const viewportTop = this.host.mode() === "fullscreen" ? this.host.viewportTop() : 0;
 			const origin = Math.max(0, conversation.length - viewportTop);
-			const current = this.currentApprovalValues;
+			this.dockOriginY = origin;
+			const current = this.approval.currentData();
 			const approvalLines = approvalView.render({
-				title: current?.title ?? "Approval required",
+				title: "Approval required",
 				tool: current?.tool ?? "",
 				scope: current?.scope ?? "",
 				parameters: current?.parameters ?? "",
 				actor: current?.actor ?? "",
+				loading: current?.loading ?? true,
 				teamActive: snapshot?.teamActive === true,
 				actorName: (actor) => this.session.displayActor(actor) || actor,
 			}, width, origin, rows, width);
 			lines.push(...approvalLines);
 		} else {
+			this.dockOriginY = Math.max(0, conversation.length - (this.host.mode() === "fullscreen" ? this.host.viewportTop() : 0));
 			const dockLines = this.dock.render(width);
 			lines.push(...dockLines);
 		}
@@ -337,13 +385,78 @@ export class Application {
 		return lines;
 	}
 
-	private currentApprovalValues: { title: string; tool: string; scope: string; parameters: string; actor: string } | null = null;
 
 	private identity(): { sessionId: string; generation: string } {
 		return { sessionId: this.session.sessionId(), generation: this.session.generation() };
 	}
 
+	private lastServerSeq = 0n;
+	private lastServerConnection = "";
+
+	/** 记录一条协议元数据（方向/type/seq/连接/UI 状态），不记录正文或凭据。 */
+	private trace(direction: string, message: WireMessage): void {
+		this.traceBuffer.push({
+			at: Date.now(), direction, type: message.type, seq: message.seq,
+			connection: message.connectionId.slice(0, 12), uiReady: this.uiBarrier.isReady(),
+		});
+		if (this.traceBuffer.length > 64) this.traceBuffer.shift();
+	}
+
+	/**
+	 * 把异步失败（socket 回调/render/未捕获异常）送进可报告的出口。
+	 * 不假装正常关闭；保留第一次原因。
+	 */
+	reportFailure(reason: string, error?: unknown): void {
+		if (!this.exitMessage) {
+			const detail = error instanceof Error ? `${reason}: ${error.message}` : reason;
+			this.exitMessage = detail;
+		}
+		if (error instanceof Error) process.stderr.write(`${error.stack ?? error.message}\n`);
+	}
+
+	/**
+	 * 接收方向隔离：只接受本连接、递增 seq，且会话事件属于当前代次。
+	 * bootstrap/hello/新快照是代次切换边界，不按旧代次过滤。
+	 */
+	private admissible(message: WireMessage): boolean {
+		if (message.type === "server.hello") return true;
+		if (message.type === "server.bootstrap") return true;
+		if (this.lastServerConnection && message.connectionId !== this.lastServerConnection) return false;
+		let seq: bigint;
+		try { seq = BigInt(message.seq); } catch { return false; }
+		if (seq <= this.lastServerSeq) return false;
+		this.lastServerSeq = seq;
+		if (this.lastPublishConnection() !== message.connectionId) this.lastServerConnection = message.connectionId;
+		const sessionBound = !message.type.startsWith("session.snapshot.")
+			&& message.type !== "command.result" && message.type !== "command.error"
+			&& message.type !== "server.stopped" && message.type !== "diagnostic"
+			&& message.type !== "payload.begin" && message.type !== "payload.chunk" && message.type !== "payload.end";
+		if (sessionBound) {
+			const generation = this.session.generation();
+			const sessionId = this.session.sessionId();
+			if (message.generation !== null && generation && message.generation !== generation) return false;
+			if (message.sessionId !== null && sessionId && message.sessionId !== sessionId) return false;
+		}
+		return true;
+	}
+
+	private lastPublishConnection(): string {
+		return this.lastServerConnection;
+	}
+
 	private onEvent(message: WireMessage): void {
+		if (!this.admissible(message)) return;
+		this.trace("in", message);
+		// bootstrap 先建立设置；其余需要编辑器/终端的事件在 UI 初始化后按序消费。
+		if (message.type !== "server.hello" && message.type !== "server.bootstrap") {
+			this.uiBarrier.offer(message, (queued) => this.handleEvent(queued));
+			return;
+		}
+		this.handleEvent(message);
+	}
+
+	/** 真正处理一条已通过身份/序号校验的事件；队列重放也走这里（不重复做 seq 校验）。 */
+	private handleEvent(message: WireMessage): void {
 		switch (message.type) {
 			case "server.bootstrap":
 				this.session.applyBootstrap(message.payload);
@@ -351,13 +464,16 @@ export class Application {
 				this.bootstrapResolve = undefined;
 				return;
 			case "session.snapshot.begin":
+				if (!this.session.bootstrap()) return;
 				this.snapshotBuffer = { id: text(message.payload, "snapshotId"), chunks: [], generation: text(message.payload, "generation") };
 				return;
 			case "session.snapshot.chunk":
+				if (!this.session.bootstrap()) return;
 				if (!this.snapshotBuffer || this.snapshotBuffer.id !== text(message.payload, "snapshotId")) return;
 				this.snapshotBuffer.chunks.push(text(message.payload, "encodedEntries"));
 				return;
 			case "session.snapshot.end":
+				if (!this.session.bootstrap()) return;
 				this.finishSnapshot(message.payload);
 				return;
 			case "state.snapshot":
@@ -395,17 +511,9 @@ export class Application {
 				return;
 			case "approval.requested":
 				this.approval.requested(message.payload, (ref) => this.assembler.resolve(ref));
-				this.currentApprovalValues = {
-					title: "Approval required",
-					tool: text(message.payload, "tool"),
-					scope: text(message.payload, "suggestionScope") || "(this request only)",
-					parameters: text(message.payload, "inputJson", "{}"),
-					actor: text(message.payload, "actor"),
-				};
 				return;
 			case "approval.removed":
 				this.approval.removed(message.payload);
-				if (!this.approval.hasPending()) this.currentApprovalValues = null;
 				return;
 			case "settings.saved":
 				this.session.applySettingsSaved(message.payload);
@@ -421,7 +529,7 @@ export class Application {
 			case "command.error":
 				return;
 			case "server.stopped":
-				this.exitMessage = "";
+				this.stoppedReceived = true;
 				this.closing = true;
 				return;
 			case "payload.begin":
@@ -577,14 +685,8 @@ export class Application {
 			this.notify((error as Error).message, true);
 			return;
 		}
-		const request = this.currentApprovalValues;
-		if (request && request.parameters === "{}") {
-			const value = this.assembler.resolve(id);
-			if (value !== undefined) {
-				request.parameters = value;
-				this.approval.blobReady(id, value);
-			}
-		}
+		const value = this.assembler.resolve(id);
+		if (value !== undefined) this.approval.blobReady(id, value);
 		this.host.requestRender();
 	}
 
@@ -597,17 +699,13 @@ export class Application {
 		return text(payload, field);
 	}
 
-	private afterFrame(): void {
-		if (!this.presented || !this.host) return;
-		const frame = this.presented;
-		frame.published(this.host.terminal.columns, this.host.terminal.rows, (value) => {
+	/** 帧围栏：写失败或渲染后终端已失效（resize/暂停）时不发布呈现证据。 */
+	private afterFrame(epoch: number): void {
+		if (!this.presented || !this.host || this.host.terminal.hasFailed()) return;
+		this.presented.publishedAt(this.host.terminal.columns, this.host.terminal.rows, epoch, (value) => {
 			this.presentedFrame = value;
 			this.approval.onFrame(value);
 		});
-	}
-
-	private onFramePresented(_frame: FrameSnapshot): void {
-		this.approval.onFrame(_frame);
 	}
 
 	private onSessionStateChanged(): void {
@@ -653,11 +751,18 @@ export class Application {
 		this.timer.unref?.();
 	}
 
+	/**
+	 * 终端失效：递增 epoch、作废已呈现审批/确认证据，并把新 epoch 交给 Java。
+	 * 业务连接与任务保持；不重连、不重提。
+	 */
 	private onTerminalInvalidate(reason: string): void {
-		this.presented?.invalidate();
+		if (!this.presented) return;
+		const epoch = this.presented.invalidate();
 		this.approval.invalidate();
 		const client = this.client;
-		if (client) void client.command("terminal.invalidate", { reason }, this.identity()).catch(() => {});
+		if (client) {
+			void client.command("terminal.invalidate", { reason, terminalEpoch: epoch }, this.identity()).catch(() => {});
+		}
 		this.host?.requestRender(true);
 	}
 
@@ -723,7 +828,10 @@ export class Application {
 				epoch: this.presentedFrame.epoch,
 				rawWatermark: this.presentedFrame.rawWatermark,
 				decodedWatermark: this.presentedFrame.decodedWatermark,
+				columns: this.presentedFrame.columns,
+				rows: this.presentedFrame.rows,
 			} : null,
+			dockOriginY: () => this.dockOriginY,
 			evidence: () => this.evidence.active(),
 			settings: () => this.session.settings(),
 		};
@@ -785,7 +893,12 @@ export class Application {
 			case "/model": this.pages.push(new ModelPage(this.pageContext())); this.host.requestRender(); return true;
 			case "/session": this.pages.push(new SessionPage(this.pageContext())); this.host.requestRender(); return true;
 			case "/mcp": this.pages.push(new McpPage(this.pageContext())); this.host.requestRender(); return true;
-			case "/permission": this.pages.push(new PermissionPage(this.pageContext())); this.host.requestRender(); return true;
+			case "/permission": {
+				const intent = argument.trim() === "default" ? "default" : "runtime";
+				this.pages.push(new PermissionPage(this.pageContext(), intent));
+				this.host.requestRender();
+				return true;
+			}
 			case "/resume":
 				if (argument.trim()) {
 					const client = this.client;
@@ -943,9 +1056,13 @@ export class Application {
 	}
 
 	private onClosed(reason: string): void {
-		if (this.closing) return;
+		if (this.closing) {
+			// 只有收到 server.stopped 后的关闭才是正常收口；否则保留真实原因。
+			if (!this.stoppedReceived && !this.exitMessage) this.exitMessage = `The backend closed unexpectedly: ${reason}`;
+			return;
+		}
 		this.closing = true;
-		if (!reason.includes("frontend closed") && !reason.includes("backend closed")) this.exitMessage = reason;
+		if (!this.stoppedReceived) this.exitMessage = `The backend closed before server.stopped: ${reason}`;
 	}
 
 	private shutdown(): void {
@@ -955,6 +1072,22 @@ export class Application {
 		try { this.theme?.close(); } catch { /* 无 watch。 */ }
 		this.clipboard.cleanup();
 		this.client?.close();
+	}
+
+	/** 失败时输出协议元数据环形缓冲（无正文/凭据），便于区分双方先后顺序。 */
+	private dumpTrace(): void {
+		if (this.traceBuffer.length === 0) return;
+		process.stderr.write("--- frontend protocol trace (metadata only) ---\n");
+		for (const item of this.traceBuffer) {
+			process.stderr.write(`${item.at} ${item.direction} ${item.type} seq=${item.seq} conn=${item.connection} uiReady=${item.uiReady}\n`);
+		}
+	}
+
+	/** 未捕获异常/异步失败统一收口：报告、停终端、关闭连接。 */
+	abort(reason: string, error?: unknown): void {
+		this.reportFailure(reason, error);
+		try { this.client?.close(); } catch { /* 已关闭。 */ }
+		try { this.host?.stop(); } catch { /* 终端可能已恢复。 */ }
 	}
 
 	/** 退出时只打印真实结果/回放提示一次；不重复 farewell。 */

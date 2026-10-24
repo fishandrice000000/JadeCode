@@ -17,6 +17,10 @@
     <maven.compiler.parameters>true</maven.compiler.parameters>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <jline.version>3.30.6</jline.version>
+    <!-- 成套构建由 scripts/build-release.mjs 过滤覆盖；Java-only 构建明确标记未配对。 -->
+    <jade.buildId>unpaired</jade.buildId>
+    <jade.protocolVersion>1</jade.protocolVersion>
+    <jade.paired>false</jade.paired>
   </properties>
 
   <dependencies>
@@ -118,6 +122,22 @@
   </dependencies>
 
   <build>
+    <resources>
+      <resource>
+        <directory>src/main/resources</directory>
+        <filtering>false</filtering>
+        <excludes>
+          <exclude>META-INF/jade-build.properties</exclude>
+        </excludes>
+      </resource>
+      <resource>
+        <directory>src/main/resources</directory>
+        <filtering>true</filtering>
+        <includes>
+          <include>META-INF/jade-build.properties</include>
+        </includes>
+      </resource>
+    </resources>
     <plugins>
       <!-- JDK 21 仅限本项目:Maven 本身和其他项目继续用系统默认 Java 8,
            只有本项目的编译/测试通过 toolchain 切换到 JDK 21。 -->

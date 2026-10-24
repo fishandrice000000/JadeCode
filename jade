@@ -1,6 +1,10 @@
 #!/usr/bin/env sh
 # JadeCode 启动脚本:运行时只为本项目使用 JDK 21,不改系统默认(Java 8)。
-# 用法: ./jade repl   |   ./jade run "任务"   |   ./jade --version
+# 用法: ./jade                        打开空白 Node TUI
+#       ./jade "任务"                  新会话并自动提交首轮
+#       ./jade --headless "任务"       纯 Java 无界面执行
+#       ./jade --resume[=<id|name>]    恢复会话
+# 交互模式需要同目录下的 target/frontend（由 node scripts/build-release.mjs 生成）。
 
 DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 JAVA_HOME="${JAVA21_HOME:-/usr/lib/jvm/java-21-openjdk-amd64}"

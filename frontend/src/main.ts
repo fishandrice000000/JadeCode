@@ -9,6 +9,15 @@ import { Application } from "./app/Application.ts";
  */
 async function main(): Promise<number> {
 	const application = new Application();
+	// socket 回调 / Pi render 中的异常不能只交给未捕获处理器静默退出；先恢复终端。
+	process.on("uncaughtException", (error) => {
+		application.abort("Uncaught frontend exception", error);
+		process.exitCode = 1;
+	});
+	process.on("unhandledRejection", (error) => {
+		application.abort("Unhandled frontend rejection", error);
+		process.exitCode = 1;
+	});
 	try {
 		const code = await application.run();
 		const failure = application.exitOutput();

@@ -39,3 +39,6 @@ frontend/node_modules/
 frontend/dist/
 frontend/dist-test/
 frontend/vendor/pi-tui/dist/
+
+# 成套发行产物（由 scripts/build-release.mjs 生成）
+dist/

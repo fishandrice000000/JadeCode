@@ -22,8 +22,8 @@ export interface JadeTerminalOptions {
 	onWritable: () => void;
 	onWriteFailure: (message: string) => void;
 	onRawInput: (data: string) => void;
-	/** Pi 派发一个输入序列前后的钩子；用于把来源水位绑定到这次按键。 */
-	onInputStart?: () => void;
+	/** Pi 派发一个输入序列前后的钩子；参数是该序列第一个字节所在的 raw 块 id。 */
+	onInputStart?: (chunk: number) => void;
 	onInputEnd?: () => void;
 }
 
@@ -42,6 +42,7 @@ export class JadeTerminal implements Terminal {
 	private progressTimer: NodeJS.Timeout | undefined;
 	private progressActive = false;
 	private failureReported = false;
+	private failed = false;
 
 	constructor(options: JadeTerminalOptions) {
 		this.options = options;
@@ -68,7 +69,7 @@ export class JadeTerminal implements Terminal {
 
 	start(onInput: (data: string) => void, onResize: () => void): void {
 		this.inner.start((data) => {
-			this.options.onInputStart?.();
+			this.options.onInputStart?.(this.inner.currentInputChunk());
 			try {
 				onInput(data);
 			} finally {
@@ -151,6 +152,12 @@ export class JadeTerminal implements Terminal {
 		if (this.draining) return;
 		while (this.queue.length > 0) {
 			if (this.blocked) return;
+			if (this.failed) {
+				// 写失败后既不能继续生成帧，也不能执行围栏回调（否则会发布未成功提交的证据）。
+				this.queue.length = 0;
+				this.queuedChars = 0;
+				return;
+			}
 			const item = this.queue[0]!;
 			if (item.kind === "sentinel") {
 				if (this.pendingWrites > 0) return; // 等这一帧的写完成
@@ -161,7 +168,11 @@ export class JadeTerminal implements Terminal {
 			this.queue.shift();
 			this.queuedChars -= item.chars;
 			this.pendingWrites += 1;
-			const accepted = process.stdout.write(item.data, () => {
+			const accepted = process.stdout.write(item.data, (error?: Error | null) => {
+				if (error) {
+					this.fail(`Terminal output failed: ${error.message}`);
+					return;
+				}
 				this.pendingWrites -= 1;
 				if (!this.blocked) this.pump();
 			});
@@ -178,8 +189,14 @@ export class JadeTerminal implements Terminal {
 	}
 
 	private fail(message: string): void {
+		this.failed = true;
+		this.queue.length = 0;
+		this.queuedChars = 0;
 		if (this.failureReported) return;
 		this.failureReported = true;
 		this.options.onWriteFailure(message);
 	}
+
+	/** @returns 本终端是否已经出现不可恢复的写失败（此时不得发布任何呈现证据）。 */
+	hasFailed(): boolean { return this.failed; }
 }

@@ -26,8 +26,12 @@ export class PermissionPage implements Page {
 	private error = "";
 	private confirmSelected = 0; // 0 = Cancel, 1 = Confirm (默认 Cancel)
 
-	constructor(context: PageContext) {
+	private readonly intent: "runtime" | "default";
+	private rects: Array<{ x: number; y: number; width: number; height: number; choice: number }> = [];
+
+	constructor(context: PageContext, intent: "runtime" | "default" = "runtime") {
 		this.context = context;
+		this.intent = intent;
 		const current = context.state.snapshot()?.permission?.profile ?? "workspace";
 		this.selected = Math.max(0, PROFILES.indexOf(current as (typeof PROFILES)[number]));
 	}
@@ -46,16 +50,25 @@ export class PermissionPage implements Page {
 		const theme = this.context.theme();
 		const lines: string[] = [];
 		if (this.confirmingFullAccess) {
-			lines.push(theme.bold(theme.style("warning", "Full Access requires a second confirmation")));
+			lines.push(theme.bold(theme.style("warning", `Full Access requires a second confirmation (${this.intent})`)));
 			lines.push(theme.style("text", "This profile can run operations without asking again."));
 			lines.push("");
 			const cancel = this.confirmSelected === 0 ? theme.bold(theme.style("accent", "▸ [ Cancel ]")) : "  [ Cancel ]";
 			const confirm = this.confirmSelected === 1 ? theme.bold(theme.style("error", "▸ [ Confirm Full Access ]")) : "  [ Confirm Full Access ]";
 			lines.push(cancel);
+			const confirmLine = lines.length;
 			lines.push(confirm);
 			if (this.error) lines.push(theme.style("error", this.error));
+			// 真实按钮矩形：page body 从 dock 顶边框下一行开始（framePage 的 top border）。越界不发布。
+			const frame = this.context.lastFrame();
+			const origin = this.context.dockOriginY() + 1;
+			const y = origin + confirmLine;
+			this.rects = frame && y >= 0 && y < frame.rows
+				? [{ x: 2, y, width: Math.max(8, Math.min(30, width - 4)), height: 1, choice: 1 }]
+				: [];
 			return lines.map((line) => line.slice(0, Math.max(0, width)));
 		}
+		this.rects = [];
 		for (const [index, profile] of PROFILES.entries()) {
 			const marker = index === this.selected ? "▸ " : "  ";
 			const line = `${marker}${LABELS[profile]}${profile === "full-access" ? theme.style("dim", "  (asks for confirmation)") : ""}`;
@@ -91,7 +104,8 @@ export class PermissionPage implements Page {
 			});
 			return true;
 		}
-		client.command("permission.select", { profile, expectedPermissionRevision: Number(expected),
+		const type = this.intent === "default" ? "permission.default" : "permission.select";
+		client.command(type, { profile, expectedPermissionRevision: Number(expected),
 			fullAccessConfirmationId: null, evidence: null }, this.context.identity()).then((result) => {
 			if (!result.ok) this.error = result.message ?? "Could not change permission";
 			else this.context.closePage();
@@ -127,21 +141,22 @@ export class PermissionPage implements Page {
 			this.error = "The permission confirmation needs a committed frame; press Enter again.";
 			return true;
 		}
+		this.context.requestRender();
 		const revision = Number(snapshot?.permission?.revision ?? 0);
 		const evidence = this.context.evidence();
-		if (!evidence) {
-			this.error = "Input evidence is unavailable; press Enter again.";
+		if (!evidence || this.rects.length === 0) {
+			this.error = "The confirmation button is not fully visible; resize the terminal and press Enter again.";
 			return true;
 		}
 		void client.command("permission.presented", {
 			confirmationId: this.confirmationId,
-			intent: "runtime",
+			intent: this.intent,
 			revision,
 			frameId: String(frame.frameId),
 			terminalEpoch: frame.epoch,
-			columns: snapshot ? 80 : 80,
-			rows: 24,
-			actionRects: [{ x: 2, y: 0, width: 20, height: 1, choice: 1 }],
+			columns: frame.columns,
+			rows: frame.rows,
+			actionRects: this.rects,
 			rawReceiptWatermark: frame.rawWatermark,
 			decodedWatermark: frame.decodedWatermark,
 		}, this.context.identity()).then((presented) => {

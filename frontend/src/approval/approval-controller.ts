@@ -26,8 +26,19 @@ export interface ApprovalCallbacks {
 	identity: () => { sessionId: string; generation: string };
 	requestRender: () => void;
 	notify: (message: string, error: boolean) => void;
+	/** 终端写失败/失效后不得再发布批准证据。 */
+	terminalHealthy: () => boolean;
 	teamActive: () => boolean;
 	actorName: (actor: string) => string;
+}
+
+export interface ApprovalDisplayData {
+	requestId: string;
+	tool: string;
+	scope: string;
+	parameters: string;
+	actor: string;
+	loading: boolean;
 }
 
 interface PendingApproval {
@@ -39,6 +50,7 @@ interface PendingApproval {
 	scope: string;
 	parameters: string;
 	loading: boolean;
+	blobRef: string;
 	presentedFrame: number;
 	view: ApprovalView;
 	// 选中/确认前必须有一帧成功提交的呈现证据。
@@ -98,6 +110,7 @@ export class ApprovalController {
 			scope: text(payload, "suggestionScope"),
 			parameters,
 			loading,
+			blobRef,
 			presentedFrame: -1,
 			view: new ApprovalView(this.theme!, choices),
 			selectable: false,
@@ -110,16 +123,33 @@ export class ApprovalController {
 		this.callbacks.requestRender();
 	}
 
-	/** blob 组装完成后补齐参数（LOADING → SELECTABLE 需要等下一帧围栏）。 */
+	/**
+	 * blob 组装完成后按引用补齐**对应**申请；不同请求的大参数不会互相串写。
+	 */
 	blobReady(ref: string, value: string): void {
+		let changed = false;
 		for (const item of [this.current, ...this.queue]) {
-			if (!item || !item.loading) continue;
-			// requested 时未保存 ref，这里用参数内容为空且 loading 判定；Application 只对当前审批调用。
+			if (!item || !item.loading || item.blobRef !== ref) continue;
 			item.parameters = value;
 			item.loading = false;
+			item.view.invalidate();
+			changed = true;
 		}
-		this.callbacks.requestRender();
-		void ref;
+		if (changed) this.callbacks.requestRender();
+	}
+
+	/** @returns 当前正在显示的申请资料；渲染与答复共用这一份记录。 */
+	currentData(): ApprovalDisplayData | null {
+		const item = this.current;
+		if (!item) return null;
+		return {
+			requestId: item.requestId,
+			tool: item.tool,
+			scope: item.scope,
+			parameters: item.parameters,
+			actor: item.actor,
+			loading: item.loading,
+		};
 	}
 
 	/** 打开下一份排队申请（前一份答复/撤回后）。 */
@@ -156,6 +186,7 @@ export class ApprovalController {
 	onFrame(frame: FrameSnapshot): void {
 		const item = this.current;
 		if (!item || item.loading || item.confirming || !this.theme) return;
+		if (!this.callbacks.terminalHealthy() || this.callbacks.presented.currentEpoch() !== frame.epoch) return;
 		const layout = item.view.lastLayout();
 		if (!layout) return;
 		if (this.lastPresented && this.lastPresented.requestId === item.requestId

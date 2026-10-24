@@ -67,6 +67,16 @@ export class PresentedEvidence {
 		this.publish(frame);
 	}
 
+	/**
+	 * 用渲染时的 epoch 发布；如果该帧生成后终端已经失效（resize/暂停），则不发布。
+	 * 这是“围栏绑定生成该帧时的布局/代次”的检查点。
+	 */
+	publishedAt(columns: number, rows: number, epoch: number, deliver: (frame: FrameSnapshot) => void): boolean {
+		if (epoch !== this.epoch) return false;
+		this.published(columns, rows, deliver);
+		return true;
+	}
+
 	/** 当前帧身份（给需要等待下一帧的调用方）。 */
 	currentFrameId(): number {
 		return this.frameId;

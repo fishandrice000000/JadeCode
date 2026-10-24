@@ -13,6 +13,8 @@ export interface BackendClientOptions {
 	socketPath: string;
 	onEvent: (message: WireMessage) => void;
 	onClosed: (reason: string) => void;
+	/** 协议/传输层致命错误：保留第一次原因并进入统一收口。 */
+	onFatal: (reason: string, error?: Error) => void;
 }
 
 export interface CommandResult {
@@ -56,6 +58,7 @@ export class BackendClient {
 			socket.once("connect", () => resolve());
 			socket.once("error", (error) => {
 				reject(error);
+				this.options.onFatal(`Socket error: ${error.message}`, error);
 				this.fail(`Socket error: ${error.message}`);
 			});
 			socket.on("data", (chunk) => this.ingest(chunk));
@@ -122,7 +125,10 @@ export class BackendClient {
 		while (true) {
 			const newline = this.buffer.indexOf(0x0a);
 			if (newline < 0) {
-				if (this.buffer.length > MAX_FRAME_BYTES) this.fail("An inbound frame exceeded the protocol limit");
+				if (this.buffer.length > MAX_FRAME_BYTES) {
+					this.options.onFatal("An inbound frame exceeded the protocol limit");
+					this.fail("An inbound frame exceeded the protocol limit");
+				}
 				return;
 			}
 			const lineBytes = this.buffer.subarray(0, newline);
@@ -131,6 +137,7 @@ export class BackendClient {
 			try {
 				line = this.decoder.decode(lineBytes);
 			} catch {
+				this.options.onFatal("The backend sent invalid UTF-8");
 				this.fail("The backend sent invalid UTF-8");
 				return;
 			}
@@ -140,6 +147,7 @@ export class BackendClient {
 				message = parseFrame(line);
 			} catch (error) {
 				const reason = error instanceof ProtocolViolation ? error.message : String(error);
+				this.options.onFatal(`Invalid backend message: ${reason}`);
 				this.fail(`Invalid backend message: ${reason}`);
 				return;
 			}
@@ -150,9 +158,21 @@ export class BackendClient {
 	private dispatch(message: WireMessage): void {
 		if (message.type === "command.result" || message.type === "command.error") {
 			const id = message.commandId;
-			if (!id) return;
+			if (!id) {
+				// 握手/ready 的错误可能没有 commandId；不能再静默丢弃。
+				const detail = message.type === "command.error"
+					? `${String(message.payload.code ?? "ERROR")}: ${String(message.payload.message ?? "")}`
+					: "A command result arrived without a commandId";
+				this.options.onFatal(detail);
+				this.fail(detail);
+				return;
+			}
 			const waiter = this.pending.get(id);
-			if (!waiter) return;
+			if (!waiter) {
+				// 已关闭/已超时的答复：记录真实错误类别，但不影响连接。
+				this.options.onFatal(`Orphan command response: ${String(message.payload.code ?? message.type)}`);
+				return;
+			}
 			this.pending.delete(id);
 			if (message.type === "command.error") {
 				waiter.resolve({

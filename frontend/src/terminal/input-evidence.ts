@@ -21,6 +21,8 @@ export class InputEvidence {
 	private receipt = 0;
 	private decoded = 0;
 	private pendingStart: number | null = null;
+	/** 最近一次 beginDispatch 收到的原始块 id；0 表示该路径没有来源（paste 等）。 */
+	private lastChunk = 0;
 	private current: SequenceSource | null = null;
 
 	/** 由 ProcessTerminal 的 raw tap 在 StdinBuffer 之前调用。 */
@@ -30,8 +32,10 @@ export class InputEvidence {
 	}
 
 	/** Pi 即将把一个输入序列派发给 listeners/焦点组件。 */
-	beginDispatch(): SequenceSource {
-		const start = this.pendingStart ?? this.receipt;
+	beginDispatch(chunk = 0): SequenceSource {
+		// P06 给出“该序列第一个字节所在 raw 块”；没有来源时退回本块之前的保守水位。
+		const start = chunk > 0 ? chunk : (this.pendingStart ?? this.receipt);
+		this.lastChunk = chunk;
 		this.decoded += 1;
 		this.current = { startReceipt: start, endReceipt: this.receipt, decodedSeq: this.decoded };
 		return this.current;
@@ -52,6 +56,9 @@ export class InputEvidence {
 	rawWatermark(): number {
 		return this.receipt;
 	}
+
+	/** @returns 当前序列的原始块 id（0 表示未知）。 */
+	sequenceChunk(): number { return this.lastChunk; }
 
 	/** @returns 已派发的序列数量。 */
 	decodedSeq(): number {
