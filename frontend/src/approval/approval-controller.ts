@@ -63,6 +63,8 @@ interface PendingApproval {
 	presentationFailures: number;
 	/** 呈现代次；invalidate/切换请求后递增，迟到回执不能复活旧证据。 */
 	presentationToken: number;
+	/** 最近一次发送的呈现布局摘要；用于识别 ACK 在途时的布局变化。 */
+	inflightDigest: string;
 	/** 用户在呈现回执到达前按下 Enter：等该帧证据成立后立即答复，不要求再按一次。 */
 	pendingChoice: { choice: number; keyAction: string; mouse: { type: string; button: string; x: number; y: number } | undefined; source: SequenceSource } | null;
 }
@@ -129,6 +131,7 @@ export class ApprovalController {
 			presenting: false,
 			presentationFailures: 0,
 			presentationToken: 0,
+			inflightDigest: "",
 			pendingChoice: null,
 		};
 		if (this.current) this.queue.push(item);
@@ -203,22 +206,49 @@ export class ApprovalController {
 	}
 
 	/**
+	 * 布局/可见性变化：作废当前证据、在途 ACK 与挂起确认。
+	 * 与选择色无关；选中变化不会走到这里。
+	 */
+	private clearEvidence(item: PendingApproval): void {
+		item.presentationToken += 1;
+		item.presenting = false;
+		item.inflightDigest = "";
+		item.selectable = false;
+		item.presentedFrame = -1;
+		item.presentedEpoch = -1;
+		item.presentedDigest = "";
+		item.pendingChoice = null;
+	}
+
+	/**
 	 * 每帧 stdout 完成：为当前申请登记呈现证据。
 	 * 参数仍在加载或审批已答复时跳过。
 	 */
 	onFrame(frame: FrameSnapshot): void {
 		const item = this.current;
-		if (!item || item.loading || item.confirming || item.presenting || !this.theme) return;
+		if (!item || item.loading || item.confirming || !this.theme) return;
 		if (!this.callbacks.terminalHealthy() || this.callbacks.presented.currentEpoch() !== frame.epoch) return;
 		const layout = item.view.lastLayout();
-		if (!layout || layout.rects.length === 0) return;
+		if (!layout) return;
+		if (layout.rects.length === 0) {
+			// 按钮不可见/几何不可用：旧证据与挂起 Enter 都不能在下一帧被自动采用。
+			if (item.selectable || item.presenting || item.pendingChoice) this.clearEvidence(item);
+			return;
+		}
+		// 布局移动/参数或可见性变化会改变按钮几何；必须作废旧证据与在途 ACK。
+		// 只改变选中颜色时 digest 不变，因此快速 Down+Enter 仍可用同一份证据。
+		if (item.presenting) {
+			if (item.inflightDigest === layout.digest) return;
+			this.clearEvidence(item);
+		}
+		const layoutChanged = item.presentedDigest !== "" && item.presentedDigest !== layout.digest;
+		if (layoutChanged) this.clearEvidence(item);
 		// 同一申请在同一 epoch 下已经有一份成功呈现证据：后续计时/状态重绘不再重复登记。
-		// 这既停止“presented 回执 → 重绘 → 再 presented”的循环，也保证答复引用的是
-		// Java 最后登记的那一帧，而不是被迟到回执替换掉的新帧。
 		if (item.selectable && item.presentedDigest === layout.digest && item.presentedEpoch === frame.epoch) return;
 		const client = this.callbacks.client();
 		if (!client) return;
 		item.presenting = true;
+		item.inflightDigest = layout.digest;
 		const token = item.presentationToken;
 		const rawWatermark = this.callbacks.evidence.rawWatermark();
 		const decodedWatermark = this.callbacks.evidence.decodedSeq();

@@ -50,9 +50,9 @@ function request(approval: ApprovalController): void {
 	} as never, () => undefined);
 }
 
-function render(approval: ApprovalController): void {
+function render(approval: ApprovalController, origin = 0, rows = 40): void {
 	approval.active()!.render({ title: "Approval required", tool: "bash", scope: "s", parameters: "{}", actor: "leader",
-		loading: false, teamActive: false, actorName: (a) => a }, 80, 0, 40, 80);
+		loading: false, teamActive: false, actorName: (a) => a }, 80, origin, rows, 80);
 }
 
 function frame(id: number, epoch: number): { frameId: number; epoch: number; columns: number; rows: number; rawWatermark: number; decodedWatermark: number } {
@@ -122,10 +122,16 @@ test("repeat/release/paste never answer an approval", async () => {
 	render(approval);
 	approval.onFrame(frame(1, 0));
 	await new Promise((resolve) => setTimeout(resolve, 0));
-	dispatch(evidence, "\x1b[13;1:2u", 1); approval.handleInput("\x1b[13;1:2u"); end(evidence);
-	dispatch(evidence, "\x1b[13;1:3u", 2); approval.handleInput("\x1b[13;1:3u"); end(evidence);
-	dispatch(evidence, "\x1b[200~pasted\x1b[201~", 3); approval.handleInput("\x1b[200~pasted\x1b[201~"); end(evidence);
+	// 先建立一个真实选择，确保“没有 answer”不是因为无默认选择。
+	dispatch(evidence, "\x1b[B", 1); approval.handleInput("\x1b[B"); end(evidence);
+	dispatch(evidence, "\x1b[13;1:2u", 2); approval.handleInput("\x1b[13;1:2u"); end(evidence);
+	dispatch(evidence, "\x1b[13;1:3u", 3); approval.handleInput("\x1b[13;1:3u"); end(evidence);
+	dispatch(evidence, "\x1b[200~pasted\x1b[201~", 4); approval.handleInput("\x1b[200~pasted\x1b[201~"); end(evidence);
 	assert.equal(fake.commands.filter((c) => c.type === "approval.answer").length, 0);
+	// 之后的新鲜 PRESS Enter 仍能确认，证明过滤没有把页面弄坏。
+	dispatch(evidence, "\r", 5); approval.handleInput("\r"); end(evidence);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.equal(fake.commands.filter((c) => c.type === "approval.answer").length, 1);
 });
 
 test("a late presented ACK after invalidation cannot restore the old epoch", async () => {
@@ -163,6 +169,56 @@ test("a late presented ACK after invalidation cannot restore the old epoch", asy
 	const payload = answers[0]!.payload as { evidence: { frameId: string; terminalEpoch: number } };
 	assert.equal(payload.evidence.frameId, "2");
 	assert.equal(payload.evidence.terminalEpoch, 1);
+});
+
+test("layout movement while the ACK is in flight invalidates the old evidence and pending Enter", async () => {
+	let releaseFirst: ((value: { ok: boolean; type: string; payload: Record<string, unknown> }) => void) | undefined;
+	let presentations = 0;
+	const { fake, approval, evidence } = setup(async () => {
+		presentations += 1;
+		if (presentations === 1) return new Promise((resolve) => { releaseFirst = resolve; });
+		return { ok: true, type: "command.result", payload: {} };
+	});
+	request(approval);
+	render(approval, 0);
+	approval.onFrame(frame(1, 0));
+	dispatch(evidence, "\x1b[B", 1);
+	approval.handleInput("\x1b[B");
+	end(evidence);
+	dispatch(evidence, "\r", 2);
+	approval.handleInput("\r");
+	end(evidence);
+	// 卡片因转录/视口变化下移：同一 epoch、不同几何。
+	render(approval, 3);
+	approval.onFrame(frame(2, 0));
+	assert.equal(presentations, 2, "the new layout must present even while the old ACK is in flight");
+	releaseFirst?.({ ok: true, type: "command.result", payload: {} });
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.equal(fake.commands.filter((c) => c.type === "approval.answer").length, 0,
+		"an Enter bound to the old layout must not be auto-sent");
+	// 新布局的 ACK 成立后，新鲜 Down+Enter 使用 frame2。
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	dispatch(evidence, "\x1b[B", 3); approval.handleInput("\x1b[B"); end(evidence);
+	dispatch(evidence, "\r", 4); approval.handleInput("\r"); end(evidence);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	const answers = fake.commands.filter((c) => c.type === "approval.answer");
+	assert.equal(answers.length, 1);
+	assert.equal((answers[0]!.payload as { evidence: { frameId: string } }).evidence.frameId, "2");
+});
+
+test("buttons moved out of the viewport clear the evidence and cannot be answered", async () => {
+	const { fake, approval, evidence } = setup();
+	request(approval);
+	render(approval, 0);
+	approval.onFrame(frame(1, 0));
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	// origin 36 + 按钮行超出 40 行视口：rects 为空。
+	render(approval, 36);
+	approval.onFrame(frame(2, 0));
+	dispatch(evidence, "\x1b[B", 1); approval.handleInput("\x1b[B"); end(evidence);
+	dispatch(evidence, "\r", 2); approval.handleInput("\r"); end(evidence);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.equal(fake.commands.filter((c) => c.type === "approval.answer").length, 0);
 });
 
 test("presentation failures notify once and do not schedule their own render loop", async () => {

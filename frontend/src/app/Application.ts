@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import {
 	isKeyRelease,
+	isKeyRepeat,
 	matchesKey,
 	type Component,
 	type TUI,
