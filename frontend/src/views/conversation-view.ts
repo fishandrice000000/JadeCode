@@ -24,6 +24,7 @@ export class ConversationView implements Component {
 	private cachedLines: string[] | undefined;
 	private cachedRevision = -1;
 	private cachedKey = "";
+	private viewportRows = 24;
 	private readonly offsets = new Map<string, number>();
 
 	constructor(
@@ -32,12 +33,17 @@ export class ConversationView implements Component {
 		private readonly factory: MarkdownFactory,
 	) {}
 
+	/** 终端真实行数；欢迎区档位与缓存都依赖它，不能写死 24。 */
+	setViewportRows(rows: number): void {
+		this.viewportRows = Math.max(1, Math.floor(rows));
+	}
+
 	render(width: number): string[] {
 		const theme = this.session.snapshot() ? this.currentTheme() : undefined;
 		if (!theme) return [];
 		const settings = this.session.settings();
 		// transcript.revision() 在任何条目新增/更新/替换时递增；必须参与顶层缓存键。
-		const key = `${width}:${this.transcript.revision()}:${theme.name}:${theme.mode}:${theme.noColor ? 1 : 0}:` +
+		const key = `${width}:${this.viewportRows}:${this.transcript.revision()}:${theme.name}:${theme.mode}:${theme.noColor ? 1 : 0}:` +
 			`${settings?.thinkingVisible}:${settings?.outputPad}:${settings?.codeBlockIndent}:${this.session.teamActive()}:` +
 			`${settings?.quietStartup}:${this.session.bootstrap()?.projectVersion ?? ""}`;
 		if (this.cachedLines && this.cachedRevision === this.transcript.revision() && this.cachedKey === key) {
@@ -51,7 +57,7 @@ export class ConversationView implements Component {
 		if (visible.length === 0) {
 			// 空会话也走完整路径并缓存，避免第二次渲染错误地返回空数组。
 			const lines: string[] = [];
-			lines.push(...this.branding.render(theme, width, this.session.snapshot() ? 24 : 24,
+			lines.push(...this.branding.render(theme, width, this.viewportRows,
 				this.session.bootstrap()?.projectVersion ?? ""));
 			lines.push("");
 			if (!settings?.quietStartup) {

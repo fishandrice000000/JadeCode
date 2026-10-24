@@ -48,12 +48,16 @@ export class BrandingView {
 		const mode = this.mode(width, rows);
 		if (mode === "LINE") return this.line(theme, width, version);
 		if (mode === "COMPACT") {
-			return this.mascot.map((line, index) => {
+			const lines = this.mascot.map((line, index) => {
 				const styled = this.styleMascotLine(theme, line);
 				if (index !== 0) return styled;
+				// 旧紧凑档保留 3 列间隔，使首行落在 29 列预算内。
 				const wordmark = theme.bold(theme.style("brandBannerBody", "JADE CODE"));
-				return `${styled} ${wordmark}`;
+				return `${styled}   ${wordmark}`;
 			});
+			lines.push(theme.style("text", `JadeCode v${version}`));
+			lines.push(theme.style("dim", this.fit("coding agent · JadeCode", width)));
+			return lines;
 		}
 		const lines: string[] = [];
 		for (let index = 0; index < 6; index++) {
@@ -89,8 +93,9 @@ export class BrandingView {
 		let out = "";
 		for (const char of line) {
 			if ("┏━┓┃┣┫┗┛".includes(char)) out += theme.style("brandFrame", char);
-			else if (char === "●" || char === "▸" || char === "_") out += theme.style("brandAccent", char);
+			else if (char === "●" || char === "▸" || char === "_" || char === "$") out += theme.style("brandAccent", char);
 			else if ("ready".includes(char) && line.includes("ready")) out += theme.style("text", char);
+			else if ("jade".includes(char) && line.includes("jade")) out += theme.style("text", char);
 			else if ("JADE".includes(char) && line.includes("JADE")) out += theme.style("brandPrimary", char);
 			else out += theme.style("brandPrimary", char);
 		}

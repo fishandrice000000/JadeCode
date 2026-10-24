@@ -35,8 +35,13 @@ test("full/compact/line tiers follow measured width and the 22-row height floor"
 	assert.equal(full[6], "JadeCode v9.9.9");
 	assert.match(full[7]!, /^coding agent/);
 	const compact = view.render(theme, 80, 24, "9.9.9");
-	assert.equal(compact.length, 6);
+	assert.equal(compact.length, 8);
 	assert.match(compact[0]!, /JADE CODE/);
+	assert.match(compact[6]!, /JadeCode v9\.9\.9/);
+	assert.match(compact[7]!, /^coding agent/);
+	const compactAt29 = view.render(theme, 29, 22, "9.9.9");
+	assert.equal(compactAt29.length, 8);
+	assert.match(compactAt29[6]!, /v9\.9\.9/);
 	const short = view.render(theme, 120, 21, "9.9.9");
 	assert.equal(short.length, 2);
 	assert.doesNotMatch(short.join("\n"), /┏|█/);

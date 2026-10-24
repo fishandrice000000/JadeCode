@@ -389,6 +389,8 @@ export class Application {
 
 	private renderRoot(width: number): string[] {
 		const settings = this.session.settings();
+		// 欢迎区必须使用真实终端高度，低窗口才能降档；缓存键也包含它。
+		this.conversation.setViewportRows(this.host.terminal.rows);
 		const conversation = this.conversation.render(width);
 		const lines = [...conversation];
 		const approvalView = this.approval.active();
