@@ -44,13 +44,14 @@ export class DockView implements Component {
 export function framePage(page: Page, width: number): string[] {
 	const theme = page.theme();
 	const inner = Math.max(1, width);
-	// 标题不能把页面顶边撑出可用宽度；窄屏按字素边界截断，至少保留一个边框列。
+	// 标题不能把页面顶边撑出可用宽度；窄屏按完整字素截断，避免拆开 VS16/ZWJ/组合字符。
 	let title = ` ${page.title} `;
 	if (visibleWidth(title) > inner) {
 		title = "";
-		for (const char of ` ${page.title} `) {
-			if (visibleWidth(title + char) > inner) break;
-			title += char;
+		const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+		for (const { segment } of graphemes.segment(` ${page.title} `)) {
+			if (visibleWidth(title + segment) > inner) break;
+			title += segment;
 		}
 	}
 	const titleWidth = visibleWidth(title);

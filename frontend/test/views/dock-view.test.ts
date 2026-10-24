@@ -40,3 +40,18 @@ test("dock priority is approval, then page, then editor", () => {
 	dock.setContent({ editor: { render: () => ["editor"] } as never });
 	assert.deepEqual(dock.render(20), ["editor"]);
 });
+
+
+test("title truncation keeps VS16/ZWJ graphemes intact and never overflows", () => {
+	const emoji = framePage(page("❤️XYZ", ["body"]), 2);
+	assert.equal(visibleWidth(emoji[0]!), 2);
+	assert.doesNotMatch(emoji[0]!, /❤(?!️)/, "VS16 must not be split from the heart");
+	assert.ok(emoji[0]!.endsWith(" "), "only the leading space remains before the border");
+
+	const family = framePage(page("👨‍👩‍👧‍👦XYZ", ["body"]), 1);
+	assert.equal(family[0], " ", "a width-1 budget can only keep the leading space");
+
+	const fits = framePage(page("❤️", ["body"]), 4);
+	assert.ok(fits[0]!.includes("❤️"), "a complete grapheme that fits is preserved");
+	assert.equal(visibleWidth(fits[0]!), 4);
+});
