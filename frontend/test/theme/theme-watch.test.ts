@@ -100,3 +100,45 @@ test("auto watches the resolved pair file, re-subscribes on scheme change, and c
 	assert.equal(changes, afterClose);
 	assert.equal(errors.length, errorsBefore);
 });
+
+
+test("commit watches the submitted theme while the async settings reply is still pending", () => {
+	const callbacks = new Map<string, (result: unknown) => void>();
+	const watched: string[] = [];
+	const docs = { a: document("a", "#ff0000"), b: document("b", "#0000ff") };
+	const settings = { theme: "a", lightTheme: "light", darkTheme: "dark" };
+	const repository = {
+		list: () => [{ name: "a", path: "a", builtin: false }, { name: "b", path: "b", builtin: false }],
+		load: (name: string) => ({ name, document: docs[name as keyof typeof docs], source: "", digest: name }),
+		watch: (name: string, callback: (result: unknown) => void) => {
+			watched.push(name);
+			callbacks.set(name, callback);
+			return () => { callbacks.delete(name); };
+		},
+	};
+	let changes = 0;
+	const errors: string[] = [];
+	const value = new ThemeController({
+		repository: repository as never,
+		settings: () => settings,
+		save: () => { /* 异步：后端回执尚未到达，settings 仍是 a */ },
+		onError: (message) => { errors.push(message); }, onChange: () => { changes += 1; },
+	});
+	const oldA = callbacks.get("a")!;
+	value.preview("b");
+	value.commit();
+	assert.match(value.snapshot().name, /b/);
+	assert.equal(watched.at(-1), "b", "the submitted theme must be watched before settings.saved");
+	assert.equal(callbacks.has("a"), false);
+	const before = changes;
+	oldA(new Error("late a"));
+	assert.equal(errors.length, 0, "the old file callback must be rejected during the save window");
+	assert.equal(changes, before);
+	// 回执后 settings 才更新；订阅仍应指向 b，并接受 b 的更新。
+	settings.theme = "b";
+	value.settingsChanged();
+	assert.equal(watched.at(-1), "b");
+	const afterReply = changes;
+	callbacks.get("b")!({ name: "b", document: docs.b, source: "", digest: "2" });
+	assert.equal(changes, afterReply + 1);
+});

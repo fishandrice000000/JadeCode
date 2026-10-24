@@ -138,9 +138,13 @@ export class ThemeController {
 		return this.previewName ?? this.options.settings().theme;
 	}
 
-	/** auto 监听当前明暗配对的实际文件，而不是不存在的逻辑名 auto。 */
-	private watchSourceName(): string {
-		const name = this.effectiveName();
+	/**
+	 * 解析“这次订阅要监听哪个文件”。
+	 *
+	 * <p>必须使用调用方传入的逻辑选择，而不是再次读取 settings().theme：commit 发出异步保存后、
+	 * settings.saved 回执到达前，store 仍是旧主题；若在此回读会把刚提交的新主题订阅成旧文件。</p>
+	 */
+	private watchSourceName(name: string): string {
 		if (name !== "auto") return name === "system" ? "jadecode" : name;
 		const pair = this.dark ? this.options.settings().darkTheme : this.options.settings().lightTheme;
 		if (!pair || pair === "auto" || pair === "system") return "jadecode";
@@ -151,7 +155,7 @@ export class ThemeController {
 		if (this.closed) return;
 		this.watchCancel();
 		const ticket = ++this.watchTicket;
-		const source = this.watchSourceName();
+		const source = this.watchSourceName(name);
 		this.watchCancel = this.options.repository.watch(source, (result) => {
 			if (ticket !== this.watchTicket || this.closed) return; // 旧选择/关闭后的迟到结果
 			if (result instanceof Error) {
