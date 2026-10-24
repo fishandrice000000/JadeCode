@@ -41,9 +41,13 @@ public final class DisplayClock {
     public synchronized void paused(String actor, boolean pause, long sampledElapsedNanos) {
         Turn turn = turns.get(actor);
         if (turn == null) return;
-        if (sampledElapsedNanos > 0) reanchor(actor, turn, sampledElapsedNanos);
+        long now = System.nanoTime();
+        // 先把本次采样带进新对象；不能先写 map，再用旧 turn 覆盖回去。
+        // DISPLAY_STOP 后的审批恢复不能把 Memory 阶段时间加回已经冻结的回答。
+        long sampled = turn.displayStopped() ? turn.sampledElapsedNanos()
+                : sampledElapsedNanos > 0 ? sampledElapsedNanos : elapsed(turn, now);
         int depth = Math.max(0, turn.pauseDepth() + (pause ? 1 : -1));
-        turns.put(actor, new Turn(turn.runId(), System.nanoTime(), turn.sampledElapsedNanos(), depth, turn.displayStopped()));
+        turns.put(actor, new Turn(turn.runId(), now, sampled, depth, turn.displayStopped()));
         publish(actor);
     }
 
@@ -51,8 +55,9 @@ public final class DisplayClock {
     public synchronized void displayStopped(String actor, boolean stopped, long sampledElapsedNanos) {
         Turn turn = turns.get(actor);
         if (turn == null) return;
-        if (sampledElapsedNanos > 0) reanchor(actor, turn, sampledElapsedNanos);
-        turns.put(actor, new Turn(turn.runId(), System.nanoTime(), turn.sampledElapsedNanos(), turn.pauseDepth(), stopped));
+        long now = System.nanoTime();
+        long sampled = sampledElapsedNanos > 0 ? sampledElapsedNanos : elapsed(turn, now);
+        turns.put(actor, new Turn(turn.runId(), now, sampled, turn.pauseDepth(), stopped));
         publish(actor);
     }
 
@@ -60,7 +65,9 @@ public final class DisplayClock {
     public synchronized void ended(String actor, String runId, long elapsedNanos) {
         Turn turn = turns.get(actor);
         if (turn != null && (runId == null || runId.equals(turn.runId()))) {
-            completed.put(actor, Math.max(0, elapsedNanos > 0 ? elapsedNanos : elapsed(turn, System.nanoTime())));
+            // 业务结束可能晚于最终回答（例如 Memory 提取）；保持显示截止时刻的耗时。
+            completed.put(actor, Math.max(0, turn.displayStopped() ? turn.sampledElapsedNanos()
+                    : elapsedNanos > 0 ? elapsedNanos : elapsed(turn, System.nanoTime())));
             turns.remove(actor);
         }
         publish(actor);
@@ -86,11 +93,6 @@ public final class DisplayClock {
         for (String actor : turns.keySet()) result.put(actor, tick(actor));
         for (String actor : completed.keySet()) result.putIfAbsent(actor, tick(actor));
         return Map.copyOf(result);
-    }
-
-    private void reanchor(String actor, Turn turn, long sampledElapsedNanos) {
-        turns.put(actor, new Turn(turn.runId(), System.nanoTime(), Math.max(0, sampledElapsedNanos),
-                turn.pauseDepth(), turn.displayStopped()));
     }
 
     private static long elapsed(Turn turn, long nowNanos) {
