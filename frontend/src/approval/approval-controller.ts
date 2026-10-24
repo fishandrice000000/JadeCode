@@ -319,12 +319,12 @@ export class ApprovalController {
 			this.callbacks.requestRender();
 			return true;
 		}
-		if (matchesKey(data, "pageup" as never)) {
+		if (keymap.matches("approval.pageUp", data)) {
 			item.view.scrollBy(-5);
 			this.callbacks.requestRender();
 			return true;
 		}
-		if (matchesKey(data, "pagedown" as never)) {
+		if (keymap.matches("approval.pageDown", data)) {
 			item.view.scrollBy(5);
 			this.callbacks.requestRender();
 			return true;

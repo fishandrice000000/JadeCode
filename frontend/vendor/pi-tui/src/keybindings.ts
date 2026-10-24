@@ -275,6 +275,24 @@ export class KeybindingsManager {
 		return false;
 	}
 
+	/**
+	 * Jade patch P07: does this input match any binding other than `except`?
+	 * Used by Editor to avoid the hard-coded LF/Ctrl+J newline fallback stealing a key
+	 * that the user explicitly rebound to another action.
+	 */
+	matchesAny(data: string, except?: Keybinding): boolean {
+		return this.matchesAnyExcept(data, except ? [except] : []);
+	}
+
+	/** Jade P07: match any binding whose id is not in `except`. */
+	matchesAnyExcept(data: string, except: Keybinding[]): boolean {
+		for (const id of Object.keys(this.definitions)) {
+			if (except.includes(id as Keybinding)) continue;
+			if (this.matches(data, id as Keybinding)) return true;
+		}
+		return false;
+	}
+
 	getKeys(keybinding: Keybinding): KeyId[] {
 		return [...(this.keysById.get(keybinding) ?? [])];
 	}

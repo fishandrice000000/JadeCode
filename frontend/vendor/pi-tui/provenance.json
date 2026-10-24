@@ -14,7 +14,8 @@
     "P03",
     "P04",
     "P05",
-    "P06"
+    "P06",
+    "P07"
   ],
   "files": [
     {
@@ -190,7 +191,7 @@
       "path": "src/components/editor.ts",
       "upstreamPath": "packages/tui/src/components/editor.ts",
       "originalSha256": "48c6a498527df4f645f66574904bdc82c1a4021b29ff81674132219043d4d016",
-      "currentSha256": "48c6a498527df4f645f66574904bdc82c1a4021b29ff81674132219043d4d016"
+      "currentSha256": "0c0232aaf0d14ba46e0f4760c724ae5c011226b2feed0cf9bb9563f1f372a393"
     },
     {
       "path": "src/components/h-stack.ts",
@@ -298,7 +299,7 @@
       "path": "src/keybindings.ts",
       "upstreamPath": "packages/tui/src/keybindings.ts",
       "originalSha256": "475760dd4e3d02eca46bb5ee8704cd387c397b40d7a1f8967bdac3c481f5f702",
-      "currentSha256": "475760dd4e3d02eca46bb5ee8704cd387c397b40d7a1f8967bdac3c481f5f702"
+      "currentSha256": "e15e9f7dbfe292fa8aada098fba9dbaec779c25ead8db12c7476c6491aed7441"
     },
     {
       "path": "src/keys.ts",

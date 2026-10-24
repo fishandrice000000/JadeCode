@@ -92,6 +92,8 @@ export class SettingsPage implements Page {
 		if (keymap.matches("tui.select.cancel", data)) { this.context.closePage(); return true; }
 		if (keymap.matches("tui.select.up", data)) { this.selected = (this.selected - 1 + FIELDS.length) % FIELDS.length; return true; }
 		if (keymap.matches("tui.select.down", data)) { this.selected = (this.selected + 1) % FIELDS.length; return true; }
+		if (keymap.matches("tui.select.pageUp", data)) { this.selected = (this.selected - 10 + FIELDS.length) % FIELDS.length; return true; }
+		if (keymap.matches("tui.select.pageDown", data)) { this.selected = (this.selected + 10) % FIELDS.length; return true; }
 		const field = FIELDS[this.selected]!;
 		if (keymap.matches("tui.select.confirm", data)) {
 			if (field.kind === "theme") {

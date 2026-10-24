@@ -1,9 +1,9 @@
-# Vendored Pi TUI patches (P01–P06)
+# Vendored Pi TUI patches (P01–P07)
 
 Upstream: `/home/fishandrice/Backend/pi`, commit `4954d760504c11df9b2cbdc040346107b6a8153d`, package `packages/tui` (version 1.3.0, MIT).
 Vendored copy: `frontend/vendor/pi-tui/`. Original and current SHA-256 per file: `provenance.json`.
 
-Four source files are modified: `src/terminal.ts`, `src/stdin-buffer.ts`, `src/tui.ts`, `src/tui-alt-screen.ts`.
+Six source files are modified: `src/terminal.ts`, `src/stdin-buffer.ts`, `src/tui.ts`, `src/tui-alt-screen.ts`, `src/keybindings.ts`, `src/components/editor.ts`.
 Everything else is byte-identical to the pinned commit. `provenance.json` lists P01–P06 and per-file original/current hashes. The upstream working tree is
 never touched; `scripts/verify-vendor.mjs` re-checks these hashes and fails the build when a vendored file drifts without a
 recorded patch.
@@ -74,6 +74,17 @@ recorded patch.
 - **Impact:** approval freshness only; sequence parsing, paste handling and timers are unchanged.
 - **Regression:** `test/terminal/input-evidence.test.ts` drives the real vendored `StdinBuffer` with a split CSI-u Enter and
   asserts the sequence starts at chunk 1, plus `BridgeApprovalTest` rejecting an old watermark.
+
+## P07 — LF/Ctrl+J reassignment priority (`src/keybindings.ts`, `src/components/editor.ts`)
+
+- **Why:** Pi's Editor hard-codes LF/Ctrl+J as a newline and also lets the default `enter` binding match LF for submit.
+  When Jade users rebind `tui.input.newLine` (or bind LF to a cursor/delete action), those fallbacks must not steal the key.
+- **Change:** `KeybindingsManager.matchesAny/matchesAnyExcept`; Editor skips the hard-coded newline block when LF is bound
+  to another action, and skips the submit fallback when LF is bound to a non-submit action. No parser/rendering change.
+- **Impact:** only explicit user keybinding overrides. Defaults keep Pi behavior. Jade Application consumes an unbound LF
+  when newLine is overridden so it cannot fall back to newline.
+- **Regression:** `test/decision/keymap-consumers.test.ts` (LF rebound to cursorLeft moves the cursor, no newline; old
+  default blocked) and the hidden-action Editor test.
 
 ## Not patched (deliberately)
 

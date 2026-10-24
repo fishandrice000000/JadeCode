@@ -887,14 +887,22 @@ export class Editor implements Component, Focusable {
 			return;
 		}
 
-		// New line
+		// New line. Jade patch P07: if the user rebound LF/Ctrl+J to another action,
+		// the hard-coded LF compatibility branches must not steal it.
+		const lfRebound = data === "\n" && !kb.matches(data, "tui.input.newLine")
+			&& kb.matchesAny(data, "tui.input.newLine");
+		// Jade P07: LF explicitly rebound to a non-submit action must bypass the submit
+		// fallback too, so the later action handlers (cursor/delete/etc.) can run.
+		const lfReassigned = data === "\n"
+			&& kb.matchesAnyExcept(data, ["tui.input.newLine", "tui.input.submit"]);
 		if (
-			kb.matches(data, "tui.input.newLine") ||
-			(data.charCodeAt(0) === 10 && data.length > 1) ||
-			data === "\x1b\r" ||
-			data === "\x1b[13;2~" ||
-			(data.length > 1 && data.includes("\x1b") && data.includes("\r")) ||
-			(data === "\n" && data.length === 1)
+			!lfRebound &&
+			(kb.matches(data, "tui.input.newLine") ||
+				(data.charCodeAt(0) === 10 && data.length > 1) ||
+				data === "\x1b\r" ||
+				data === "\x1b[13;2~" ||
+				(data.length > 1 && data.includes("\x1b") && data.includes("\r")) ||
+				(data === "\n" && data.length === 1))
 		) {
 			if (this.shouldSubmitOnBackslashEnter(data, kb)) {
 				this.handleBackspace();
@@ -906,7 +914,7 @@ export class Editor implements Component, Focusable {
 		}
 
 		// Submit (Enter)
-		if (kb.matches(data, "tui.input.submit")) {
+		if (!lfReassigned && kb.matches(data, "tui.input.submit")) {
 			if (this.disableSubmit) return;
 
 			// Workaround for terminals without Shift+Enter support:

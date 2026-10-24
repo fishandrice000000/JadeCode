@@ -83,10 +83,11 @@ export class PermissionPage implements Page {
 		// 权限页的 Enter/确认同样只接受真实 PRESS；release/repeat/paste 不提交任何命令。
 		if (!isConfirmationPress(data)) return true;
 		if (this.confirmingFullAccess) return this.handleConfirm(data);
-		if (matchesKey(data, "escape")) { this.context.closePage(); return true; }
-		if (matchesKey(data, "up")) { this.selected = (this.selected - 1 + PROFILES.length) % PROFILES.length; return true; }
-		if (matchesKey(data, "down")) { this.selected = (this.selected + 1) % PROFILES.length; return true; }
-		if (!matchesKey(data, "enter")) return false;
+		const keymap = this.context.keymap;
+		if (keymap.matches("tui.select.cancel", data)) { this.context.closePage(); return true; }
+		if (keymap.matches("tui.select.up", data)) { this.selected = (this.selected - 1 + PROFILES.length) % PROFILES.length; return true; }
+		if (keymap.matches("tui.select.down", data)) { this.selected = (this.selected + 1) % PROFILES.length; return true; }
+		if (!keymap.matches("tui.select.confirm", data)) return false;
 		const profile = PROFILES[this.selected]!;
 		const client = this.context.client();
 		if (!client) return true;
@@ -121,7 +122,8 @@ export class PermissionPage implements Page {
 	}
 
 	private handleConfirm(data: string): boolean {
-		if (matchesKey(data, "escape")) {
+		const keymap = this.context.keymap;
+		if (keymap.matches("tui.select.cancel", data)) {
 			const client = this.context.client();
 			if (client) void client.command("permission.cancelFullAccess", { confirmationId: this.confirmationId }, this.context.identity());
 			this.confirmingFullAccess = false;
@@ -132,7 +134,7 @@ export class PermissionPage implements Page {
 			this.confirmSelected = this.confirmSelected === 0 ? 1 : 0;
 			return true;
 		}
-		if (!matchesKey(data, "enter")) return false;
+		if (!keymap.matches("tui.select.confirm", data)) return false;
 		if (this.confirmSelected === 0) {
 			const client = this.context.client();
 			if (client) void client.command("permission.cancelFullAccess", { confirmationId: this.confirmationId }, this.context.identity());

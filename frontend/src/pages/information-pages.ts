@@ -63,13 +63,13 @@ export class HotkeysPage extends InformationPage {
 	}
 
 	handleInput(data: string): boolean {
-		if (matchesKey(data, "escape")) { this.context.closePage(); return true; }
+		if (this.context.keymap.matches("tui.select.cancel", data)) { this.context.closePage(); return true; }
 		const groups = this.keymap.groups();
-		if (matchesKey(data, "tab") || matchesKey(data, "right") || matchesKey(data, "down")) {
+		if (this.context.keymap.matches("tui.select.down", data) || matchesKey(data, "tab") || matchesKey(data, "right")) {
 			this.category = (this.category + 1) % (groups.length + 1);
 			return true;
 		}
-		if (matchesKey(data, "shift+tab") || matchesKey(data, "left") || matchesKey(data, "up")) {
+		if (this.context.keymap.matches("tui.select.up", data) || matchesKey(data, "shift+tab") || matchesKey(data, "left")) {
 			this.category = (this.category - 1 + groups.length + 1) % (groups.length + 1);
 			return true;
 		}
@@ -98,7 +98,7 @@ export class ModelPage extends InformationPage {
 	}
 
 	handleInput(data: string): boolean {
-		if (matchesKey(data, "escape")) { this.context.closePage(); return true; }
+		if (this.context.keymap.matches("tui.select.cancel", data)) { this.context.closePage(); return true; }
 		return false;
 	}
 }
@@ -125,7 +125,7 @@ export class SessionPage extends InformationPage {
 	}
 
 	handleInput(data: string): boolean {
-		if (matchesKey(data, "escape")) { this.context.closePage(); return true; }
+		if (this.context.keymap.matches("tui.select.cancel", data)) { this.context.closePage(); return true; }
 		return false;
 	}
 }
@@ -154,7 +154,7 @@ export class McpPage extends InformationPage {
 	}
 
 	handleInput(data: string): boolean {
-		if (matchesKey(data, "escape")) { this.context.closePage(); return true; }
+		if (this.context.keymap.matches("tui.select.cancel", data)) { this.context.closePage(); return true; }
 		return false;
 	}
 }

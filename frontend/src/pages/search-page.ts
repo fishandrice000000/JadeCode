@@ -47,16 +47,17 @@ export class SearchPage implements Page {
 	}
 
 	handleInput(data: string): boolean {
-		if (matchesKey(data, "escape")) { this.context.closePage(); return true; }
-		if (matchesKey(data, "up")) {
+		const keymap = this.context.keymap;
+		if (keymap.matches("tui.altScreen.searchClose", data)) { this.context.closePage(); return true; }
+		if (keymap.matches("tui.select.up", data)) {
 			this.selected = Math.max(0, this.selected - 1);
 			return true;
 		}
-		if (matchesKey(data, "down")) {
+		if (keymap.matches("tui.select.down", data)) {
 			this.selected = Math.min(this.matches.length - 1, this.selected + 1);
 			return true;
 		}
-		if (matchesKey(data, "enter")) {
+		if (keymap.matches("tui.select.confirm", data)) {
 			this.jump();
 			return true;
 		}

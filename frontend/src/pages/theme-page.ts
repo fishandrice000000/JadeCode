@@ -47,22 +47,23 @@ export class ThemePage implements Page {
 	}
 
 	handleInput(data: string): boolean {
-		if (matchesKey(data, "escape")) {
+		const keymap = this.context.keymap;
+		if (keymap.matches("tui.select.cancel", data)) {
 			this.context.cancelTheme();
 			this.context.closePage();
 			return true;
 		}
-		if (matchesKey(data, "up")) {
+		if (keymap.matches("tui.select.up", data)) {
 			this.selected = (this.selected - 1 + this.names.length) % this.names.length;
 			this.context.previewTheme(this.names[this.selected]!);
 			return true;
 		}
-		if (matchesKey(data, "down")) {
+		if (keymap.matches("tui.select.down", data)) {
 			this.selected = (this.selected + 1) % this.names.length;
 			this.context.previewTheme(this.names[this.selected]!);
 			return true;
 		}
-		if (matchesKey(data, "enter")) {
+		if (keymap.matches("tui.select.confirm", data)) {
 			const name = this.names[this.selected]!;
 			this.context.previewTheme(name);
 			this.context.saveSettings({ [this.target]: name });

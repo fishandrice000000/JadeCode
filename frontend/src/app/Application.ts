@@ -372,7 +372,10 @@ export class Application {
 		// 这里阻止旧默认再次插入换行，避免“显示已换键但旧键仍生效”。
 		if (this.keymap.isOverridden("tui.input.newLine")
 				&& (data === "\n" || matchesKey(data, "ctrl+j"))
-				&& !this.keymap.matches("tui.input.newLine", data)) {
+				&& !this.keymap.matches("tui.input.newLine", data)
+				&& this.keymap.matchAnyExcept(["EDITOR"], data, ["tui.input.newLine", "tui.input.submit"]) === null) {
+			// 旧换行键未被重新分配才拦截；若 LF 已绑定给光标/删除等编辑动作，
+			// 交给 Editor（P07 保证不会落入硬编码换行分支）。
 			return { consume: true };
 		}
 		return undefined;

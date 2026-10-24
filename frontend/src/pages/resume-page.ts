@@ -74,6 +74,8 @@ export class ResumePage implements Page {
 		if (keymap.matches("app.session.toggleNamedFilter", data)) { this.namedOnly = !this.namedOnly; return true; }
 		if (keymap.matches("tui.select.up", data)) { this.selected = Math.max(0, this.selected - 1); return true; }
 		if (keymap.matches("tui.select.down", data)) { this.selected = Math.min(this.visible().length - 1, this.selected + 1); return true; }
+		if (keymap.matches("tui.select.pageUp", data)) { this.selected = Math.max(0, this.selected - 10); return true; }
+		if (keymap.matches("tui.select.pageDown", data)) { this.selected = Math.min(this.visible().length - 1, this.selected + 10); return true; }
 		if (keymap.matches("tui.select.confirm", data)) {
 			const target = this.visible()[this.selected];
 			if (!target) return true;

@@ -11,6 +11,9 @@ import {
 import { KeymapAdapter } from "../../src/editor/keymap-adapter.ts";
 import { SettingsPage } from "../../src/pages/settings-page.ts";
 import { PermissionPage } from "../../src/pages/permission-page.ts";
+import { ThemePage } from "../../src/pages/theme-page.ts";
+import { SearchPage } from "../../src/pages/search-page.ts";
+import { ModelPage } from "../../src/pages/information-pages.ts";
 import { ApprovalController } from "../../src/approval/approval-controller.ts";
 import { InputEvidence } from "../../src/terminal/input-evidence.ts";
 import { PresentedEvidence } from "../../src/terminal/presented-evidence.ts";
@@ -132,4 +135,85 @@ test("overriding newLine blocks Pi's LF/Ctrl+J compatibility path", () => {
 	const route = (app as unknown as { onGlobalInput(input: string): unknown }).onGlobalInput.bind(app);
 	assert.deepEqual(route("\n"), { consume: true });
 	assert.equal(route("\x0e"), undefined, "the overridden newline key still reaches the editor");
+});
+
+
+test("approval pageDown uses the overridden key and the old PageDown does not scroll", () => {
+	const keymap = new KeymapAdapter({ "approval.pageDown": ["ctrl+f"] });
+	const evidence = new InputEvidence();
+	const presented = new PresentedEvidence(evidence, () => {});
+	const approval = new ApprovalController({
+		client: () => null, evidence, presented, revision: () => "0",
+		identity: () => ({ sessionId: "s", generation: "1" }), requestRender: () => {},
+		notify: () => {}, terminalHealthy: () => true, keymap: () => keymap,
+		teamActive: () => false, actorName: (actor) => actor,
+	});
+	approval.setPresented(presented);
+	approval.setTheme(theme);
+	const parameters = Array.from({ length: 40 }, (_, index) => `p-${index}`).join("\n");
+	approval.requested({ requestId: "r", actor: "leader", runId: "run", tool: "bash", cwd: "/tmp", revision: "0",
+		inputJson: parameters, suggestionId: null, suggestionScope: "" } as never, () => undefined);
+	const render = (): string => approval.active()!.render({ title: "Approval required", tool: "bash", scope: "s",
+		parameters, actor: "leader", loading: false, teamActive: false, actorName: (a) => a }, 80, 0, 24, 80).join("\n");
+	render();
+	approval.handleInput("\x06"); // ctrl+f
+	const afterCustom = render();
+	assert.match(afterCustom, /p-5/);
+	approval.handleInput("\x1b[6~"); // old PageDown
+	assert.equal(render(), afterCustom, "the replaced PageDown must not scroll");
+});
+
+test("theme and search pages read the shared select/search keys", () => {
+	const keymap = new KeymapAdapter({ "tui.select.down": ["ctrl+n"], "tui.altScreen.searchClose": ["ctrl+w"] });
+	const previews: string[] = [];
+	const closes: number[] = [];
+	const base = pageContext(keymap);
+	const themeContext = { ...base, themeNames: () => ["system", "dark"], sessionTheme: () => "system",
+		previewTheme: (name: string) => { previews.push(name); }, closePage: () => { closes.push(1); } };
+	const themePage = new ThemePage(themeContext, "theme");
+	themePage.handleInput("\x0e");
+	assert.deepEqual(previews, ["dark"]);
+	themePage.handleInput("\x1b[B");
+	assert.deepEqual(previews, ["dark"], "the replaced Down must not preview again");
+
+	let closed = 0;
+	const search = new SearchPage({ ...base, closePage: () => { closed += 1; } }, () => []);
+	search.handleInput("\x17"); // ctrl+w
+	assert.equal(closed, 1);
+	search.handleInput("\x1b");
+	assert.equal(closed, 1, "the replaced Esc must not close");
+});
+
+test("information pages close with the overridden select.cancel", () => {
+	const keymap = new KeymapAdapter({ "tui.select.cancel": ["ctrl+w"] });
+	let closed = 0;
+	const page = new ModelPage({ ...pageContext(keymap), closePage: () => { closed += 1; } });
+	page.handleInput("\x17");
+	assert.equal(closed, 1);
+	page.handleInput("\x1b");
+	assert.equal(closed, 1, "the replaced Esc must not close");
+});
+
+test("LF reassigned to cursorLeft reaches the real Editor and does not insert a newline", () => {
+	const keymap = new KeymapAdapter({ "tui.input.newLine": ["ctrl+n"], "tui.editor.cursorLeft": ["ctrl+j"] });
+	const pi = new KeybindingsManager(TUI_KEYBINDINGS, keymap.piOverrides() as never);
+	setKeybindings(pi);
+	const editor = new Editor({ terminal: { rows: 24 }, requestRender: () => {} } as unknown as TUI, {
+		borderColor: (text) => text,
+		selectList: { selectedPrefix: (t) => t, selectedText: (t) => t, description: (t) => t, scrollInfo: (t) => t, noMatch: (t) => t },
+	});
+	for (const key of ["a", "b", "c"]) editor.handleInput(key);
+	assert.deepEqual(editor.getCursor(), { line: 0, col: 3 });
+	editor.handleInput("\n");
+	assert.equal(editor.getText(), "abc", "LF must not insert a newline when rebound");
+	assert.deepEqual(editor.getCursor(), { line: 0, col: 2 }, "LF must execute the rebound cursorLeft action");
+	// Application 不应拦截已重新分配的 LF。
+	const app = new Application();
+	const fields = app as unknown as { [key: string]: unknown };
+	fields["keymap"] = keymap;
+	fields["pages"] = new PageStack();
+	fields["host"] = { hasSelection: () => false, requestRender: () => {}, tui: () => ({}), mode: () => "fullscreen" };
+	fields["editor"] = { draft: () => "", setDraft: () => {}, focus: () => {} };
+	const route = (app as unknown as { onGlobalInput(input: string): unknown }).onGlobalInput.bind(app);
+	assert.equal(route("\n"), undefined);
 });

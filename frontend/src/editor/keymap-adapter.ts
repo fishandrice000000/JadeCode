@@ -212,8 +212,13 @@ export class KeymapAdapter {
 
 	/** 在给定上下文中匹配第一个动作。 */
 	matchAny(contexts: readonly ActionContext[], data: string): string | null {
+		return this.matchAnyExcept(contexts, data, []);
+	}
+
+	/** 与 {@link matchAny} 相同，但忽略指定动作（用于 LF 兼容检查）。 */
+	matchAnyExcept(contexts: readonly ActionContext[], data: string, except: readonly string[]): string | null {
 		for (const action of this.definitions) {
-			if (action.hidden || !contexts.includes(action.context)) continue;
+			if (action.hidden || !contexts.includes(action.context) || except.includes(action.id)) continue;
 			if (this.matches(action.id, data)) return action.id;
 		}
 		return null;
