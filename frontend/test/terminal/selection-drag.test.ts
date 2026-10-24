@@ -87,3 +87,30 @@ test("a failed copySelection result is shown as the real error", async () => {
 	assert.ok(terminal.getViewport().every((line) => !line.includes("Copied!")), "failure must not claim success");
 	tui.stop();
 });
+
+test("copy success uses the default flash duration and failure uses the long error duration", async () => {
+	async function run(copySelection: (text: string) => Promise<true | string>): Promise<Array<[string, number | undefined]>> {
+		const terminal = new VirtualTerminal(20, 4);
+		const calls: Array<[string, number | undefined]> = [];
+		const tui = new TuiAltScreen(terminal, undefined, undefined, { copySelection });
+		const originalFlash = tui.flash.bind(tui);
+		tui.flash = (message: string, durationMs?: number) => {
+			calls.push([message, durationMs]);
+			originalFlash(message, 10);
+		};
+		tui.addChild(new Text("alpha\nbeta", 0, 0));
+		tui.start();
+		await terminal.waitForRender();
+		terminal.sendInput("\x1b[<0;1;1M");
+		terminal.sendInput("\x1b[<32;3;1M");
+		terminal.sendInput("\x1b[<0;3;1m");
+		await terminal.waitForRender();
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		tui.stop();
+		return calls;
+	}
+	assert.deepEqual(await run(async () => true), [["Copied!", undefined]],
+		"success relies on the default duration");
+	assert.deepEqual(await run(async () => "CLIPBOARD_DENIED"), [["CLIPBOARD_DENIED", 5000]],
+		"copy errors stay visible longer");
+});
