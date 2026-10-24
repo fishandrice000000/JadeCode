@@ -8,6 +8,7 @@ const docs = {
 	a: parseThemeDocument(JSON.stringify({ name: "a", colors: { accent: "#ff0000", text: "#ffffff", background: "#000000" } })),
 	b: parseThemeDocument(JSON.stringify({ name: "b", colors: { accent: "#00ff00", text: "#ffffff", background: "#000000" } })),
 	c: parseThemeDocument(JSON.stringify({ name: "c", colors: { accent: "#0000ff", text: "#ffffff", background: "#000000" } })),
+	a2: parseThemeDocument(JSON.stringify({ name: "a", colors: { accent: "#123456", text: "#ffffff", background: "#000000" } })),
 };
 
 test("a late failure for an older commit must not overwrite a newer preview", () => {
@@ -66,9 +67,10 @@ test("clearPreview restores the saved theme subscription and rejects the preview
 		},
 	};
 	const settings = { theme: "a", lightTheme: "a", darkTheme: "a" };
+	const errors: string[] = [];
 	const value = new ThemeController({
 		repository: repository as never, settings: () => settings, save: () => {},
-		onError: () => {}, onChange: () => {},
+		onError: (message) => { errors.push(message); }, onChange: () => {},
 	});
 	value.preview("b");
 	const previewB = callbacks.get("b")!;
@@ -77,9 +79,12 @@ test("clearPreview restores the saved theme subscription and rejects the preview
 	assert.match(value.snapshot().name, /a/);
 	assert.equal(watched.at(-1), "a", "the saved theme must be watched again");
 	assert.equal(callbacks.has("b"), false, "the preview subscription must be cancelled");
+	const beforeAccent = value.snapshot().colors.get("accent");
 	previewB({ name: "b", document: docs.b, source: "", digest: "late" });
+	previewB(new Error("late b error"));
 	assert.match(value.snapshot().name, /a/, "a late preview update must not change the saved snapshot");
-	callbacks.get("a")!({ name: "a", document: docs.a, source: "", digest: "2" });
-	assert.match(value.snapshot().name, /a/);
+	assert.equal(errors.length, 0, "a late preview error must not be reported");
+	callbacks.get("a")!({ name: "a", document: docs.a2, source: "", digest: "2" });
+	assert.notEqual(value.snapshot().colors.get("accent"), beforeAccent, "the current a subscription must still apply updates");
 	value.close();
 });
