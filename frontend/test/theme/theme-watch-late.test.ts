@@ -59,9 +59,11 @@ test("a late failure after cancel must not revive the abandoned preview", () => 
 test("clearPreview restores the saved theme subscription and rejects the preview file", () => {
 	const callbacks = new Map<string, (result: unknown) => void>();
 	const watched: string[] = [];
+	let currentA = docs.a;
 	const repository = {
 		list: () => Object.keys(docs).map((name) => ({ name, path: name, builtin: false })),
-		load: (name: string) => ({ name, document: docs[name as keyof typeof docs], source: "", digest: name }),
+		// watch 回调会重新 load；让 a 的真实加载结果可更新，才能证明新颜色生效。
+		load: (name: string) => ({ name, document: name === "a" ? currentA : docs[name as keyof typeof docs], source: "", digest: name }),
 		watch: (name: string, callback: (result: unknown) => void) => {
 			watched.push(name); callbacks.set(name, callback); return () => { callbacks.delete(name); };
 		},
@@ -84,7 +86,9 @@ test("clearPreview restores the saved theme subscription and rejects the preview
 	previewB(new Error("late b error"));
 	assert.match(value.snapshot().name, /a/, "a late preview update must not change the saved snapshot");
 	assert.equal(errors.length, 0, "a late preview error must not be reported");
+	currentA = docs.a2;
 	callbacks.get("a")!({ name: "a", document: docs.a2, source: "", digest: "2" });
-	assert.notEqual(value.snapshot().colors.get("accent"), beforeAccent, "the current a subscription must still apply updates");
+	assert.deepEqual(value.snapshot().colors.get("accent"), { kind: "rgb", r: 18, g: 52, b: 86 },
+		"the current a subscription must reload and apply the new accent");
 	value.close();
 });
