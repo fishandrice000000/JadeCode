@@ -9,6 +9,17 @@ import { Application } from "./app/Application.ts";
  */
 async function main(): Promise<number> {
 	const application = new Application();
+	// SIGINT/SIGTERM 默认会直接终止进程，raw mode/alternate screen 来不及恢复。
+	// 先走 abort 同步停终端，再用约定的 128+signal 退出；重复信号不会二次清理。
+	for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143]] as const) {
+		process.once(signal, () => {
+			application.abort(`Interrupted by ${signal}`);
+			process.exitCode = code;
+			// 给同步终端恢复/最后一次写入一个极短窗口，不让关闭流程无限挂住。
+			const timer = setTimeout(() => process.exit(code), 200);
+			timer.unref?.();
+		});
+	}
 	// socket 回调 / Pi render 中的异常不能只交给未捕获处理器静默退出；先恢复终端。
 	process.on("uncaughtException", (error) => {
 		application.abort("Uncaught frontend exception", error);
