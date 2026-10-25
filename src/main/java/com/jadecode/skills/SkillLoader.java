@@ -119,6 +119,9 @@ public final class SkillLoader {
                 .collect(Collectors.joining("\n"));
     }
 
+    /** 界面只展示已扫描的技能名；返回不可变副本，不包含 SKILL.md 原文或重新读盘。 */
+    public List<String> names() { return List.copyOf(registry.keySet()); }
+
     /**
      * 按名取回完整 SKILL.md 原文。
      *

@@ -32,12 +32,14 @@ public record BackendSnapshot(String sessionId, String title, long generation, S
         String thinking, String thinkingLabel, List<String> thinkingChoices,
         Usage usage, Context context, Permission permission, List<Actor> actors, boolean teamActive,
         List<Mcp> mcp, Map<String, String> background, String bufferSummary, String bufferState,
-        Tui tui, long configRevision, Capabilities capabilities, Map<String, DisplayClock.Tick> clocks) {
+        Tui tui, long configRevision, Capabilities capabilities, Map<String, DisplayClock.Tick> clocks,
+        Map<String, List<String>> resources) {
 
     /** 累计用量；null 字段表示“没有报告”，不是 0。 */
     public record Usage(Long inputTokens, Long outputTokens, Long cacheReadTokens, Long cacheWriteTokens,
             Long reportedRequests, Long missingRequests, Map<String, SessionUsage.Totals> byActor,
-            Map<String, SessionUsage.Totals> byPurpose, Map<String, SessionUsage.Totals> byModel) { }
+            Map<String, SessionUsage.Totals> byPurpose, Map<String, SessionUsage.Totals> byModel,
+            Integer recentCacheHitPercent) { }
 
     /** 最近一次响应的上下文占用；window 未知时整体为 null。 */
     public record Context(Long occupiedTokens, Integer windowTokens, Integer remainingPercent) { }
@@ -78,7 +80,7 @@ public record BackendSnapshot(String sessionId, String title, long generation, S
             Map<String, String> actors, String bufferSummary, String bufferState,
             Map<String, String> background, Map<String, DisplayClock.Tick> clocks) {
         JadeSettings.Tui tui = settings.tui();
-        Usage usage = display == null ? new Usage(null, null, null, null, null, null, Map.of(), Map.of(), Map.of()) : usage(display.usage());
+        Usage usage = display == null ? usage(null) : usage(display.usage());
         Context context = display == null ? null : context(display.context());
         Permission permissionView = permission == null ? null
                 : new Permission(permission.profile().value(), permission.profile().label(), permission.revision(),
@@ -117,15 +119,19 @@ public record BackendSnapshot(String sessionId, String title, long generation, S
                 configRevision,
                 new Capabilities(display != null && !display.thinkingChoices().isEmpty(), true, true,
                         !servers.isEmpty(), !tui.externalEditor().isBlank(), false),
-                Map.copyOf(clocks == null ? Map.of() : clocks));
+                Map.copyOf(clocks == null ? Map.of() : clocks), display == null ? Map.of() : display.resources());
     }
 
     private static Usage usage(SessionUsage.Snapshot snapshot) {
-        if (snapshot == null) return new Usage(null, null, null, null, null, null, Map.of(), Map.of(), Map.of());
+        if (snapshot == null) return new Usage(null, null, null, null, null, null, Map.of(), Map.of(), Map.of(), null);
         SessionUsage.Totals total = snapshot.total();
+        var recent = snapshot.recentLeaderUsage();
+        // Anthropic 普通 input 不含缓存读写，分母必须是同一次请求的完整输入；0/缺报都隐藏。
+        Integer hit = recent == null || recent.totalInputTokens() == 0 ? null
+                : (int) Math.round(100.0 * recent.cacheReadInputTokens() / recent.totalInputTokens());
         return new Usage(total.inputTokens(), total.outputTokens(), total.cacheReadTokens(),
                 total.cacheWriteTokens(), total.reportedRequests(), total.missingRequests(),
-                snapshot.byActor(), snapshot.byPurpose(), snapshot.byModel());
+                snapshot.byActor(), snapshot.byPurpose(), snapshot.byModel(), hit);
     }
 
     private static Context context(ContextUsage value) {
@@ -142,6 +148,7 @@ public record BackendSnapshot(String sessionId, String title, long generation, S
         node.put("gitBranch", gitBranch);
         node.put("model", model);
         node.put("modelSource", modelSource);
+        node.set("resources", Json.mapper().valueToTree(resources));
         putNullable(node, "contextWindowTokens", contextWindowTokens);
         putNullable(node, "maxInputTokens", maxInputTokens);
         putNullable(node, "maxOutputTokens", maxOutputTokens);
@@ -156,6 +163,7 @@ public record BackendSnapshot(String sessionId, String title, long generation, S
         putNullable(usageNode, "cacheWriteTokens", usage.cacheWriteTokens());
         putNullable(usageNode, "reportedRequests", usage.reportedRequests());
         putNullable(usageNode, "missingRequests", usage.missingRequests());
+        putNullable(usageNode, "recentCacheHitPercent", usage.recentCacheHitPercent());
         // 分类来自 Java 的同一账本；Node 只投影，不能把分类再加回总数。
         usageNode.set("byActor", Json.mapper().valueToTree(usage.byActor()));
         usageNode.set("byPurpose", Json.mapper().valueToTree(usage.byPurpose()));

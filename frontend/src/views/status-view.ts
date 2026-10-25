@@ -24,7 +24,8 @@ export class StatusView {
 		parts.push(`in ${formatTokens(usage.inputTokens)} · out ${formatTokens(usage.outputTokens)}`);
 		if (usage.cacheReadTokens !== null) parts.push(`R ${formatTokens(usage.cacheReadTokens)}`);
 		if (usage.cacheWriteTokens !== null) parts.push(`W ${formatTokens(usage.cacheWriteTokens)}`);
-		// 桥接目前只有累计值，没有最近请求的 CH 分母；不能用累计输入伪造命中率。
+		// Java 使用同一次正式请求的真实分母；缺报隐藏，不能用累计输入伪造命中率。
+		if (usage.recentCacheHitPercent != null) parts.push(`CH ${usage.recentCacheHitPercent}%`);
 		if (snapshot.context) parts.push(`ctx ~${formatTokens(snapshot.context.occupiedTokens)}/${formatTokens(snapshot.context.windowTokens)} · ${formatPercent(snapshot.context.remainingPercent)} left`);
 		if (snapshot.permission) parts.push(`perm ${snapshot.permission.profile}`);
 

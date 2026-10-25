@@ -115,11 +115,27 @@ public final class SessionRuntime implements AutoCloseable {
     private volatile ContextUsage contextUsage;
     /** 只读 MCP 服务快照；工厂在装配时绑定 McpManager.snapshot，UI 不直接依赖 mcp 包。 */
     private java.util.function.Supplier<List<com.jadecode.mcp.McpManager.ServerSnapshot>> mcpSnapshot = List::of;
+    /** 装配时实际采用的资源名称；展示不再自行扫描文件或推测已加载的内容。 */
+    private Map<String, List<String>> resources = Map.of();
+
+    /** 会话启动前绑定只读目录，逐组复制，不能把完整指令正文作为展示资料传给前端。 */
+    public void resources(Map<String, List<String>> value) {
+        if (consumer != null || journal != null) throw new IllegalStateException("Session is already started");
+        var copy = new java.util.LinkedHashMap<String, List<String>>();
+        value.forEach((group, names) -> copy.put(group, List.copyOf(names)));
+        resources = Map.copyOf(copy);
+    }
 
     /** 界面读取的纯资料，不包含可修改的消息列表、日志写者、线程或审批授权。 */
     public record Display(String id, String title, String model, ModelMetadata metadata, ThinkingSettings thinking,
-            String thinkingLabel, List<ThinkingSettings> thinkingChoices, SessionUsage.Snapshot usage, ContextUsage context) {
-        public Display { thinkingChoices = List.copyOf(thinkingChoices); }
+            String thinkingLabel, List<ThinkingSettings> thinkingChoices, SessionUsage.Snapshot usage, ContextUsage context,
+            Map<String, List<String>> resources) {
+        public Display {
+            thinkingChoices = List.copyOf(thinkingChoices);
+            var copy = new java.util.LinkedHashMap<String, List<String>>();
+            resources.forEach((group, names) -> copy.put(group, List.copyOf(names)));
+            resources = Map.copyOf(copy);
+        }
     }
 
     /**
@@ -158,7 +174,7 @@ public final class SessionRuntime implements AutoCloseable {
         return new Display(sessionId(), metadata == null ? "" : metadata.title(), model,
                 profile == null ? new ModelMetadata(ModelMetadata.Limits.unknown(), "") : profile.metadata(), setting,
                 profile == null ? "default" : profile.thinkingLabel(setting),
-                profile == null ? List.of(ThinkingSettings.DEFAULT) : profile.thinkingChoices(), usage.snapshot(), contextUsage);
+                profile == null ? List.of(ThinkingSettings.DEFAULT) : profile.thinkingChoices(), usage.snapshot(), contextUsage, resources);
     }
 
     /** 只取当前设置，供新队友/一次性子任务在创建时继承；不会改已有队友。 */

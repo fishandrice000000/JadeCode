@@ -14,6 +14,25 @@ import com.jadecode.session.SessionUsage;
 
 /** 用真实去重账本经过 wire 投影，防止 Node 分类资料与累计总数脱节或重复相加。 */
 class BackendSnapshotTest {
+    @Test void cacheHitUsesTheLastFormalLeaderReportAndMissingClearsIt() {
+        var ledger = new SessionUsage(ignored -> { });
+        ledger.record(new UsageRecord("r1", "fixture", "leader", UsageRecord.Purpose.FORMAL,
+                new ModelResponse.Usage(20, 10, 60, 20)));
+        ledger.record(new UsageRecord("m", "fixture", "leader", UsageRecord.Purpose.MEMORY,
+                new ModelResponse.Usage(1000, 10)));
+        assertEquals(60, wire(ledger).path("usage").path("recentCacheHitPercent").asInt());
+        ledger.record(new UsageRecord("r2", "fixture", "leader", UsageRecord.Purpose.FORMAL, null));
+        assertTrue(wire(ledger).path("usage").path("recentCacheHitPercent").isNull());
+    }
+
+    private com.fasterxml.jackson.databind.JsonNode wire(SessionUsage ledger) {
+        var display = new SessionRuntime.Display("session", "title", "fixture",
+                new ModelMetadata(ModelMetadata.Limits.unknown(), "fixture"), ThinkingSettings.DEFAULT,
+                "default", List.of(), ledger.snapshot(), null, Map.of("Context", List.of("AGENTS.md")));
+        return BackendSnapshot.capture(1, display, null, JadeSettings.defaults(), 0, List.of(), Map.of(),
+                "", "", Map.of(), Map.of()).toJson();
+    }
+
     @Test void serializesRealUsageGroupsAndMissingReportsWithoutDoubleCounting() {
         SessionUsage ledger = new SessionUsage(ignored -> { });
         var formal = new UsageRecord("r1", "fixture", "leader", UsageRecord.Purpose.FORMAL, new ModelResponse.Usage(20, 10));
@@ -21,7 +40,7 @@ class BackendSnapshotTest {
         ledger.record(new UsageRecord("r2", "fixture", "agent_1", UsageRecord.Purpose.SUBAGENT, null));
         var display = new SessionRuntime.Display("session", "title", "fixture",
                 new ModelMetadata(ModelMetadata.Limits.unknown(), "fixture"), ThinkingSettings.DEFAULT,
-                "default", List.of(), ledger.snapshot(), null);
+                "default", List.of(), ledger.snapshot(), null, Map.of());
         var json = BackendSnapshot.capture(1, display, null, JadeSettings.defaults(), 0, List.of(), Map.of(),
                 "", "", Map.of(), Map.of()).toJson().path("usage");
         assertEquals(20, json.path("inputTokens").asLong());

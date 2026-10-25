@@ -1,6 +1,6 @@
 import { AltScreenSearchIndex } from "@earendil-works/pi-tui/dist/alt-screen-search.js";
 import { clipLine, singleLine } from "../presentation/text-safety.ts";
-import { sliceByColumn, stripTerminalSequences, visibleWidth, type Component } from "@earendil-works/pi-tui";
+import { sliceByColumn, stripTerminalSequences, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 import type { Entry, TranscriptStore } from "../state/transcript-store.ts";
 import type { ResolvedTheme } from "../theme/theme-resolver.ts";
 import type { MarkdownFactory } from "../markdown/markdown-factory.ts";
@@ -102,6 +102,11 @@ export class ConversationView implements Component {
 			}
 			if (this.resourcesExpanded) {
 				const snapshot = this.session.snapshot();
+				for (const [group, names] of Object.entries(snapshot?.resources ?? {})) {
+					for (const line of names.length ? wrapTextWithAnsi(singleLine(`${group} · ${names.join(", ")}`), Math.max(1, width)) : []) {
+						lines.push(theme.style("muted", line));
+					}
+				}
 				for (const value of [snapshot?.model ? `Model · ${snapshot.model}` : "", snapshot?.workspace ? `Workspace · ${snapshot.workspace}` : "",
 					snapshot?.permission ? `Permission · ${snapshot.permission.profile}` : ""]) {
 					if (value) lines.push(theme.style("muted", clipLine(singleLine(value), width)));

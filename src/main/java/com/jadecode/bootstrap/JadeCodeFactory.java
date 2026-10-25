@@ -1,6 +1,7 @@
 package com.jadecode.bootstrap;
 
 import java.io.IOException;
+import java.util.List;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -366,10 +367,11 @@ public final class JadeCodeFactory {
         hooks.register(Hooks.PRE_TOOL_USE, permissionHook(gate));
         presentation.register(hooks, cwd, output);
 
+        String instructions = projectInstructions(cwd);
         AgentExecutor engine = new AgentExecutor(formalClient,
                 tools,
                 (isLeader ? systemPrompt(cwd, skillLoader.catalog()) : teammatePrompt(cwd, actor, role, skillLoader.catalog()))
-                        + mcpPrompt(mcp.availableServers()) + projectInstructions(cwd),
+                        + mcpPrompt(mcp.availableServers()) + instructions,
                 formalMaxTokens,
                 hooks,
                 compactor, streams);
@@ -380,6 +382,9 @@ public final class JadeCodeFactory {
         SessionRuntime runtime = new SessionRuntime(engine, memory, background, cron, output, errors);
         // 只读服务快照：MCP 页面不会触发连接/认证，也不会把配置中的命令/凭据暴露给 UI。
         runtime.services(mcp::snapshot);
+        // 名单来自同一次实际装配，不读取另一份资源或把指令全文发到终端。
+        runtime.resources(Map.of("Context", instructions.isEmpty() ? List.of() : List.of("AGENTS.md"),
+                "Skills", skillLoader.names()));
         runtime.onClose(mcp::close);
         runtime.permissions(permissions);
         runtime.historyState(manager, config.model(), isLeader ? team::hasLiveMembers : () -> false);

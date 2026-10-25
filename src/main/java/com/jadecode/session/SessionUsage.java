@@ -34,8 +34,13 @@ public final class SessionUsage {
         }
     }
     /** 分类不写入大段清单；需要时可从逐次记录重建，避免 session.json 随队友调用无限膨胀。 */
-    public record Snapshot(Totals total, Map<String, Totals> byActor, Map<String, Totals> byPurpose, Map<String, Totals> byModel) {
+    public record Snapshot(Totals total, Map<String, Totals> byActor, Map<String, Totals> byPurpose, Map<String, Totals> byModel,
+            ModelResponse.Usage recentLeaderUsage) {
         public Snapshot { byActor = Map.copyOf(byActor); byPurpose = Map.copyOf(byPurpose); byModel = Map.copyOf(byModel); }
+        /** 没有逐次报告来源的旧调用不得用累计值推算最近请求命中率。 */
+        public Snapshot(Totals total, Map<String, Totals> byActor, Map<String, Totals> byPurpose, Map<String, Totals> byModel) {
+            this(total, byActor, byPurpose, byModel, null);
+        }
     }
     private final Set<String> seen = new HashSet<>();
     private final Map<String, Totals> actors = new LinkedHashMap<>(), purposes = new LinkedHashMap<>(), models = new LinkedHashMap<>();
@@ -90,7 +95,11 @@ public final class SessionUsage {
         String purpose = record.purpose().name();
         purposes.put(purpose, purposes.getOrDefault(purpose, Totals.empty()).add(record.usage()));
         models.put(record.model(), models.getOrDefault(record.model(), Totals.empty()).add(record.usage()));
-        snapshot = new Snapshot(total, actors, purposes, models);
+        // 页脚 CH 只取 Leader 最近一次正式请求，Memory/队友不能覆盖它。
+        // 正式请求缺报时清空旧值；restore 也经过这里，按日志事实重建而非额外保存一份统计。
+        var recent = record.purpose() == UsageRecord.Purpose.FORMAL && record.actor().equals("leader")
+                ? record.usage() : snapshot.recentLeaderUsage();
+        snapshot = new Snapshot(total, actors, purposes, models, recent);
     }
 
     /** 只关闭账本，日志仍由拥有它的主 SessionRuntime 关闭并释放文件锁。 */

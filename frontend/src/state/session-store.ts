@@ -37,6 +37,7 @@ export interface TuiSettings {
 }
 
 export interface UsageSnapshot {
+	recentCacheHitPercent?: number | null;
 	byActor?: Record<string, UsageSnapshot>;
 	byPurpose?: Record<string, UsageSnapshot>;
 	byModel?: Record<string, UsageSnapshot>;
@@ -94,6 +95,7 @@ export interface ClockTick {
 }
 
 export interface BackendSnapshot {
+	resources?: Record<string, string[]>;
 	sessionId: string;
 	title: string;
 	generation: string;
@@ -311,6 +313,12 @@ export function parseTui(node: Payload): TuiSettings {
 }
 
 function parseSnapshot(node: Payload): BackendSnapshot {
+	const resources: Record<string, string[]> = {};
+	if (node.resources && typeof node.resources === "object" && !Array.isArray(node.resources)) {
+		for (const [group, values] of Object.entries(node.resources)) {
+			if (Array.isArray(values)) resources[group] = values.filter((value): value is string => typeof value === "string");
+		}
+	}
 	const tui = typeof node.tui === "object" && node.tui !== null ? parseTui(node.tui as Payload) : parseTui({});
 	const usageNode = typeof node.usage === "object" && node.usage !== null ? (node.usage as Payload) : {};
 	const contextNode = typeof node.context === "object" && node.context !== null ? (node.context as Payload) : null;
@@ -367,7 +375,7 @@ function parseSnapshot(node: Payload): BackendSnapshot {
 		workspace: text(node, "workspace"),
 		gitBranch: text(node, "gitBranch"),
 		model: text(node, "model"),
-		modelSource: text(node, "modelSource"),
+		modelSource: text(node, "modelSource"), resources,
 		contextWindowTokens: nullableNumber(node, "contextWindowTokens"),
 		maxInputTokens: nullableNumber(node, "maxInputTokens"),
 		maxOutputTokens: nullableNumber(node, "maxOutputTokens"),
@@ -376,6 +384,7 @@ function parseSnapshot(node: Payload): BackendSnapshot {
 		thinkingChoices: Array.isArray(node.thinkingChoices)
 			? node.thinkingChoices.filter((choice): choice is string => typeof choice === "string") : [],
 		usage: {
+			recentCacheHitPercent: nullableNumber(usageNode, "recentCacheHitPercent"),
 			byActor: usageGroups(usageNode.byActor), byPurpose: usageGroups(usageNode.byPurpose), byModel: usageGroups(usageNode.byModel),
 			inputTokens: nullableNumber(usageNode, "inputTokens"),
 			outputTokens: nullableNumber(usageNode, "outputTokens"),
