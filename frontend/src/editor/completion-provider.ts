@@ -52,18 +52,41 @@ export class JadeCompletionProvider implements AutocompleteProvider {
 		options: { signal: AbortSignal; force?: boolean }): Promise<AutocompleteSuggestions | null> {
 		const line = lines[cursorLine] ?? "";
 		const beforeCursor = line.slice(0, cursorCol);
+		// 裸 @ 路径沿 Pi 的目录枚举继续补全；默认 Combined provider 的 @ 分支要求额外 fd，
+		// Jade 并未装配它。只移去本次路径标记，再把标记加回候选，不复制文件扫描算法。
+		const at = beforeCursor.match(/(?:^|[\s(])(@(?:"[^"]*|[^\s]*))$/u)?.[1];
+		if (at) {
+			const start = beforeCursor.lastIndexOf(at);
+			const query = [...lines];
+			query[cursorLine] = line.slice(0, start) + line.slice(start + 1);
+			const suggestions = await this.paths.getSuggestions(query, cursorLine, cursorCol - 1, { ...options, force: true });
+			return suggestions ? { prefix: `@${suggestions.prefix}`, items: suggestions.items.map((item) => ({ ...item, value: `@${item.value}` })) } : null;
+		}
+		const token = beforeCursor.trimStart();
+		const absolutePath = token.startsWith("/") && !token.includes(" ") &&
+			(token.slice(1).includes("/") || !COMMANDS.some((command) => command.name.startsWith(token)));
 		// slash 候选受 commandSuggestions 控制；参数/路径候选不受影响。
-		if (beforeCursor.startsWith("/") && !beforeCursor.includes(" ")) {
+		if (!absolutePath && beforeCursor.startsWith("/") && !beforeCursor.includes(" ")) {
 			if (!this.context.commandSuggestions()) return null;
 		}
-		return this.paths.getSuggestions(lines, cursorLine, cursorCol, options);
+		return this.paths.getSuggestions(lines, cursorLine, cursorCol, absolutePath ? { ...options, force: true } : options);
 	}
 
 	applyCompletion(lines: string[], cursorLine: number, cursorCol: number, item: AutocompleteItem, prefix: string) {
+		if (prefix.startsWith("/") && item.value.startsWith("/")) {
+			// Pi 将行首 /prefix 一律当命令，原先会给绝对目录加第二个 / 和尾空格，断开后续层级。
+			const changed = [...lines];
+			const start = cursorCol - prefix.length;
+			const line = lines[cursorLine] ?? "";
+			changed[cursorLine] = line.slice(0, start) + item.value + line.slice(cursorCol);
+			return { lines: changed, cursorLine, cursorCol: start + item.value.length };
+		}
 		return this.paths.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
 	}
 
 	shouldTriggerFileCompletion(lines: string[], cursorLine: number, cursorCol: number): boolean {
+		const prefix = (lines[cursorLine] ?? "").slice(0, cursorCol).trimStart();
+		if (prefix.startsWith("/") && prefix.slice(1).includes("/")) return true;
 		return this.paths.shouldTriggerFileCompletion?.(lines, cursorLine, cursorCol) ?? true;
 	}
 

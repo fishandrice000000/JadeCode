@@ -108,3 +108,10 @@ recorded patch.
 - 原因：上游直接把任意 URL 拼入 OSC8，不能满足批准的链接/控制字节安全边界。
 - 修改：拒绝 C0/C1/空白控制与非 http/https/mailto/file scheme；无效 URL 退为原显示文字，保留受信样式。
 - 验证：Jade 文本几何回归检查 javascript/data、OSC 终止符注入与正常 HTTPS；不引入另一套 Markdown 解析器。
+
+## P10 — Keep absolute paths out of the slash-command menu
+
+- File: `src/components/editor.ts` (`isInSlashCommandContext`).
+- 原因：行首绝对路径在第二个 `/` 后仍被 Editor 当 slash 命令，Tab 不进入 forced file 路径，首层后无法连续补全。
+- 修改：保留单斜杠命令前缀；含后续 `/` 的输入按普通路径处理。文件枚举/取消/版本与光标快照逻辑不变。
+- 验证：`decision/completion-provider.test.ts` 使用真实 Pi Editor、临时三级目录连续 Tab，覆盖相对/绝对/@路径，且保留命令补全回归。

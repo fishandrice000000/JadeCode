@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { JadeCompletionProvider } from "../../src/editor/completion-provider.ts";
 import { parseCommand } from "../../src/editor/commands.ts";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Editor, type TUI } from "@earendil-works/pi-tui";
 
 function provider(): JadeCompletionProvider {
 	return new JadeCompletionProvider({
@@ -14,6 +18,27 @@ function provider(): JadeCompletionProvider {
 }
 
 const options = () => ({ signal: new AbortController().signal });
+
+test("real Editor repeatedly completes relative, absolute and @ directory levels without fd", async () => {
+	const root = mkdtempSync(join(tmpdir(), "jade-completion-"));
+	try {
+		mkdirSync(join(root, "alpha/beta"), { recursive: true });
+		writeFileSync(join(root, "alpha/beta/note.txt"), "fixture");
+		const value = new JadeCompletionProvider({ workspace: root, commandSuggestions: () => true,
+			sessions: async () => [], thinking: () => [], permissions: () => [] });
+		const theme = { borderColor: (v: string) => v, selectList: { selectedPrefix: (v: string) => v,
+			selectedText: (v: string) => v, description: (v: string) => v, scrollInfo: (v: string) => v, noMatch: (v: string) => v } };
+		for (const prefix of ["./a", `${root}/a`, "@./a"]) {
+			const editor = new Editor({ requestRender: () => {}, terminal: { rows: 30, columns: 100 } } as unknown as TUI, theme);
+			editor.setAutocompleteProvider(value); editor.setText(prefix);
+			for (const suffix of ["alpha/", "alpha/beta/", "alpha/beta/note.txt"]) {
+				editor.handleInput("\t");
+				await new Promise((resolve) => setTimeout(resolve, 10));
+				assert.ok(editor.getText().trimEnd().endsWith(suffix), `${prefix} expected ${suffix}, got ${editor.getText()}`);
+			}
+		}
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
 
 test("slash suggestions apply to a single slash and parse as a real command", async () => {
 	const value = provider();

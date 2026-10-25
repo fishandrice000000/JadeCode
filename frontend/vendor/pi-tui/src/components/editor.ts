@@ -2211,7 +2211,9 @@ export class Editor implements Component, Focusable {
 	}
 
 	private isInSlashCommandContext(textBeforeCursor: string): boolean {
-		return this.isSlashMenuAllowed() && textBeforeCursor.trimStart().startsWith("/");
+		// Jade P10：首个词中第二个 / 表示绝对路径；参数里的 / 不改变已有命令上下文。
+		const token = textBeforeCursor.trimStart().split(/\s/, 1)[0]!;
+		return this.isSlashMenuAllowed() && token.startsWith("/") && !token.slice(1).includes("/");
 	}
 
 	// Autocomplete methods
