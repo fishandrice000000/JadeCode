@@ -632,10 +632,33 @@ def verify(case, name):
         else:
             case.send("\x1b" if name == "approval-deny" else "\x1b[B\r")
         case.until("JADE_VERIFY_DONE")
+        if name in ("regular-approval", "approval-deny"):
+            # 真正的结果浮层必须既可见又能消失；仅检查输出字节含标签会漏掉残留和焦点被夺走。
+            label = "Denied" if name == "approval-deny" else "Allowed once"
+            case.until(label)
+            calls_before_typing = len(case.server.calls)
+            case.send("DRAFT_AFTER_APPROVAL")
+            case.drain(.2)
+            case.snapshot("approval-result")
+            case.drain(5.1)
+            case.snapshot("approval-result-expired")
+            parsed = subprocess.run([shutil.which("node"), str(REPO / "scripts/tui-screen.mjs"), str(case.directory)],
+                                    capture_output=True, text=True, check=True)
+            screens = json.loads(parsed.stdout)
+            shown, expired = screens[-2]["text"], screens[-1]["text"]
+            lines = shown.splitlines()
+            result_y = next(index for index, line in enumerate(lines) if label in line)
+            draft_y = next(index for index, line in enumerate(lines) if "DRAFT_AFTER_APPROVAL" in line)
+            assert result_y < draft_y, "result overlay did not sit above the editor"
+            assert label not in expired and "DRAFT_AFTER_APPROVAL" in expired, "result persisted or consumed the draft"
+            assert "Approval ·" not in expired, "approval result accumulated in transcript"
+            assert len(case.server.calls) == calls_before_typing, "typing after approval unexpectedly submitted a request"
+            case.send("\x03")  # 只清理本夹具的草稿，再按既有流程退出。
+            case.drain(.1)
         if name == "approval-deny":
             assert not case.target.exists(), "Deny executed the write"
             case.finish()
-            return {"exit": 0, "deniedWrite": True}
+            return {"exit": 0, "deniedWrite": True, "resultOverlayExpired": True, "draftPreserved": True}
         assert case.target.read_text() == "APPROVAL_OK", "approval did not execute exactly the requested write"
         task_calls = [call for call in case.server.calls if call.get("tools")]
         assert len(task_calls) == (3 if name == "regular-approval" else 2), "task was retried/resubmitted unexpectedly"
@@ -646,7 +669,8 @@ def verify(case, name):
             case.process.wait(timeout=5)
         else:
             case.finish()
-        return {"approvedWrite": True, "formalRequests": len(task_calls), "httpRequests": len(case.server.calls), "exit": case.process.returncode}
+        return {"approvedWrite": True, "formalRequests": len(task_calls), "httpRequests": len(case.server.calls), "exit": case.process.returncode,
+                **({"resultOverlayExpired": True, "draftPreserved": True} if name == "regular-approval" else {})}
     if name == "long-output":
         case.until("LONG_END")
         case.drain(.2)

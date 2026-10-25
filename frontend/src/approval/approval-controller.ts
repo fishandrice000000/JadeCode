@@ -34,7 +34,7 @@ export interface ApprovalCallbacks {
 	keymap: () => KeymapAdapter;
 	teamActive: () => boolean;
 	actorName: (actor: string) => string;
-	/** 后端接受答复后保留显示记录；不会把本地选择冒充已经批准。 */
+	/** 后端接受答复后显示临时结果；不会把本地选择冒充已经批准，也不要求写入历史。 */
 	onAnswered?: (data: ApprovalDisplayData, choice: number) => void;
 }
 
@@ -398,6 +398,7 @@ export class ApprovalController {
 		const layout = item.view.lastLayout();
 		if (!layout) return;
 		item.confirming = true;
+		const identity = this.callbacks.identity();
 		client.command("approval.answer", {
 			requestId: item.requestId,
 			runId: item.runId,
@@ -414,12 +415,15 @@ export class ApprovalController {
 				keyAction,
 				mouse: mouse ?? null,
 			},
-		}, this.callbacks.identity()).then((result) => {
+		}, identity).then((result) => {
 			item.confirming = false;
+			// removed 可能先于 ACK，不能要求 current 仍为此申请；但旧会话 ACK 不能显示到新会话。
+			const currentIdentity = this.callbacks.identity();
+			if (currentIdentity.sessionId !== identity.sessionId || currentIdentity.generation !== identity.generation) return;
 			if (result.ok) {
 				this.callbacks.onAnswered?.({ requestId: item.requestId, tool: item.tool, scope: item.scope,
 					parameters: item.parameters, actor: item.actor, loading: false }, choice);
-				// 真正移除由 approval.removed 事件完成；此处不请求重绘，避免确认回执再触发呈现循环。
+				// 真正移除由 approval.removed 完成；结果浮层可以重绘，但这里不推进队列或主动重新登记呈现。
 				return;
 			}
 			item.selectable = false;

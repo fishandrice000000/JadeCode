@@ -34,6 +34,7 @@ import { KeymapAdapter } from "../editor/keymap-adapter.ts";
 import { JadeCompletionProvider } from "../editor/completion-provider.ts";
 import { EditorController } from "../editor/editor-controller.ts";
 import { ApprovalController } from "../approval/approval-controller.ts";
+import { ApprovalResultToast } from "../approval/approval-result-toast.ts";
 import { PageStack, type Page, type PageContext, type SessionItem } from "../pages/page-stack.ts";
 import { SettingsPage } from "../pages/settings-page.ts";
 import { ResumePage } from "../pages/resume-page.ts";
@@ -72,6 +73,8 @@ export class Application {
 	private readonly status: StatusView;
 	private readonly dock = new DockView();
 	private readonly approval: ApprovalController;
+	private readonly approvalResult = new ApprovalResultToast(() => this.theme.snapshot(), () => this.host?.requestRender());
+	private approvalResultOverlay: OverlayHandle | undefined;
 	private readonly root: Component;
 	private client: BackendClient | undefined;
 	private theme!: ThemeController;
@@ -111,9 +114,9 @@ export class Application {
 			teamActive: () => this.session.teamActive(),
 			actorName: (actor) => this.session.displayActor(actor) || actor,
 			onAnswered: (data, choice) => {
-				const label = choice === 0 ? "Allow once" : choice === 1 ? "Allow similar" : "Deny";
-				this.transcript.notice(data.actor, `Approval · ${label}`,
-					`Tool: ${data.tool}\nScope: ${data.scope}\n${visibleEscapes(data.parameters)}`);
+				if (this.closing) return;
+				this.approvalResult.show(data, choice, this.session.teamActive() ? this.session.displayActor(data.actor) || data.actor : "");
+				this.installApprovalResultOverlay();
 			},
 		});
 		const layout = this;
@@ -309,6 +312,7 @@ export class Application {
 	private installScreenListeners(): void {
 		// 模式重建/恢复时旧浮层已属于旧screen；统一关闭，避免遗留输入捕获或正文高亮。
 		this.closeSearchOverlay();
+		this.clearApprovalResult();
 		const tui = this.host.tui();
 		if (!tui) return;
 		this.installTerminalColors();
@@ -822,6 +826,9 @@ export class Application {
 				if (entry) entries.push(entry);
 			}
 		}
+		// 完整快照是会话切换边界；旧界面结果/排队申请不跨代次复活。
+		this.clearApprovalResult();
+		this.approval.clear();
 		this.transcript.install(entries);
 		this.session.applySnapshot(payload);
 		this.editor.rememberInputs(this.transcript.userTexts());
@@ -1223,6 +1230,33 @@ export class Application {
 		this.host?.requestRender();
 	}
 
+	/**
+	 * 结果是屏幕相对浮层，覆盖对话末尾而不增加文档行，也不改变焦点/审批按钮几何。
+	 * row/width 每帧读取最新布局，跟随多行草稿和 resize；空间不足时隐藏，绝不盖住输入栏。
+	 */
+	private installApprovalResultOverlay(): void {
+		this.approvalResultOverlay?.hide();
+		const screen = this.host?.tui();
+		if (!screen) return;
+		const app = this;
+		const overlayWidth = (): number => Math.max(1, Math.min(76, app.host.terminal.columns - 2));
+		this.approvalResultOverlay = screen.showOverlay(this.approvalResult, {
+			get width() { return overlayWidth(); },
+			get row() { return app.dockOriginY - app.approvalResult.height(overlayWidth()); },
+			col: 1,
+			nonCapturing: true,
+			visible: () => app.approvalResult.hasResult() && !app.closing && !app.approval.hasPending() && !app.pages.current()
+				&& app.dockOriginY >= app.approvalResult.height(overlayWidth()),
+		});
+	}
+
+	/** 释放旧 screen 上的浮层句柄和唯一临时结果；不修改转录或后端审批状态。 */
+	private clearApprovalResult(): void {
+		this.approvalResultOverlay?.hide();
+		this.approvalResultOverlay = undefined;
+		this.approvalResult.clear();
+	}
+
 	private renderFooter(width: number): string[] {
 		const lines = this.status.render(this.theme.snapshot(), width);
 		if (this.toast) lines[0] = clipLine(singleLine(visibleEscapes(this.toast)), width);
@@ -1321,6 +1355,7 @@ export class Application {
 	}
 
 	private onClosed(reason: string): void {
+		this.clearApprovalResult();
 		if (this.closing) {
 			// 只有收到 server.stopped 后的关闭才是正常收口；否则保留真实原因。
 			if (!this.stoppedReceived && !this.exitMessage) this.exitMessage = `The backend closed unexpectedly: ${reason}`;
@@ -1331,6 +1366,7 @@ export class Application {
 	}
 
 	private async shutdown(): Promise<void> {
+		this.clearApprovalResult();
 		if (this.timer) clearTimeout(this.timer);
 		if (this.toastTimer) clearTimeout(this.toastTimer);
 		this.colorTicket++; this.colorDisposer?.();

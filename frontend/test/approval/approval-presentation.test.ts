@@ -18,16 +18,21 @@ interface Fake {
 	renders: number;
 	notifications: number;
 	client: BackendClient;
+	answers: number;
+	identity: { sessionId: string; generation: string };
 }
 
-function setup(presentedImpl?: (payload: Record<string, unknown>) => Promise<{ ok: boolean; type: string; payload: Record<string, unknown> }>): {
+function setup(presentedImpl?: (payload: Record<string, unknown>) => Promise<{ ok: boolean; type: string; payload: Record<string, unknown> }>,
+	answerImpl?: () => Promise<{ ok: boolean; type: string; payload: Record<string, unknown> }>): {
 	fake: Fake; approval: ApprovalController; evidence: InputEvidence; presented: PresentedEvidence;
 } {
-	const fake: Fake = { commands: [], renders: 0, notifications: 0, client: undefined as unknown as BackendClient };
+	const fake: Fake = { commands: [], renders: 0, notifications: 0, client: undefined as unknown as BackendClient,
+		answers: 0, identity: { sessionId: "s", generation: "1" } };
 	fake.client = {
 		command: async (type: string, payload: Record<string, unknown>) => {
 			fake.commands.push({ type, payload });
 			if (type === "approval.presented" && presentedImpl) return presentedImpl(payload);
+			if (type === "approval.answer" && answerImpl) return answerImpl();
 			return { ok: true, type: "command.result", payload: {} };
 		},
 	} as unknown as BackendClient;
@@ -35,9 +40,10 @@ function setup(presentedImpl?: (payload: Record<string, unknown>) => Promise<{ o
 	const presented = new PresentedEvidence(evidence, () => {});
 	const approval = new ApprovalController({
 		client: () => fake.client, evidence, presented,
-		revision: () => "0", identity: () => ({ sessionId: "s", generation: "1" }),
+		revision: () => "0", identity: () => fake.identity,
 		requestRender: () => { fake.renders += 1; }, notify: () => { fake.notifications += 1; fake.renders += 1; },
 		terminalHealthy: () => true, keymap: () => new KeymapAdapter({}), teamActive: () => false, actorName: (actor) => actor,
+		onAnswered: () => { fake.answers += 1; },
 	});
 	approval.setPresented(presented);
 	approval.setTheme(theme);
@@ -263,4 +269,22 @@ test("presentation failures notify once and do not schedule their own render loo
 	await new Promise((resolve) => setTimeout(resolve, 0));
 	assert.equal(presentations, 3);
 	assert.equal(fake.renders, 1);
+});
+
+test("result feedback waits for an accepted ACK and cannot leak across session generations", async () => {
+	for (const mode of ["accepted-after-removal", "rejected", "switched"] as const) {
+		let answer!: (value: { ok: boolean; type: string; payload: Record<string, unknown> }) => void;
+		const pending = new Promise<{ ok: boolean; type: string; payload: Record<string, unknown> }>((resolve) => { answer = resolve; });
+		const { fake, approval, evidence } = setup(undefined, () => pending);
+		request(approval); render(approval); approval.onFrame(frame(1, 0));
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		dispatch(evidence, "\x1b[B", 1); approval.handleInput("\x1b[B"); end(evidence);
+		dispatch(evidence, "\r", 2); approval.handleInput("\r"); end(evidence);
+		assert.equal(fake.answers, 0, "local choice alone must not produce a result");
+		if (mode === "switched") fake.identity = { sessionId: "s", generation: "2" };
+		if (mode === "accepted-after-removal") approval.removed({ requestId: "r1" } as never);
+		answer({ ok: mode !== "rejected", type: "command.result", payload: {} });
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		assert.equal(fake.answers, mode === "accepted-after-removal" ? 1 : 0);
+	}
 });
