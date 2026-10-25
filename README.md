@@ -44,6 +44,7 @@ src/main/java/com/jadecode/
 ├── team/             # 常驻队友、独立派工编号、文件邮箱与结果提交
 ├── mcp/              # 真实 stdio 服务连接、工具发现与文本调用；官方 Java SDK 隔离层
 ├── workflow/         # 可信预设编排、有界模型步骤、schema 校验、journal 与显式续跑
+├── goal/             # 会话目标状态、独立完成判断与同轮继续的决策
 ├── cron/             # CronProducer 定时生产、时间规则、待交付状态与工作区持久化
 ├── session/          # SessionRuntime(单消费者、历史、记忆时机、服务关闭) / SessionInbox / SessionEvent
 └── agent/            # AgentExecutor(模型请求、工具批次、压缩步骤及嵌套结果)
@@ -230,6 +231,36 @@ s16 新增 `Workflow` 工具：模型选择宿主登记的流程名称与参数�
 工程证据见 [s16 任务单](docs/jobs/s16/workflow-runtime.md)，阅读顺序、问题和用户独立真机步骤见
 [s16 指南](docs/notes/s16/workflow-runtime-review.md)。
 
+## Goal Loop
+
+s17 新增会话级 `/goal`：主模型准备结束时，独立、无工具的判断请求检查已有对话证据是否满足条件。
+未满足则把具体理由送回同一任务继续；原必等后台与 Stop hook 先处理，目标满足后再沿原 Memory/日志路径收尾。
+
+```text
+/goal 修复登录问题，直到登录相关测试退出码为 0，并且没有修改测试文件
+/goal
+/goal clear
+```
+
+设置条件即开始工作；每个 Leader 会话一个目标，新条件替换旧条件，忙时排在当前任务之后。
+查看与清除本地完成，不调用模型；小写 stop/off/reset/none/cancel 也可用作 clear 别名。
+清除只停止 Goal 推动，不撤销已开始的请求/工具，也不取消已排队的新目标命令。
+CLI 首轮与无界面模式同样支持，例如 `./jade --headless "/goal 阅读指定文件并准确报告内容，不修改文件"`。
+
+判断沿当前模型客户端，输出额度取正式额度与 512 的较小值，独立计入 GOAL 用量。
+只读取最近最多 24000 字符的对话资料，不发送思考/签名；关键证据被压缩/裁剪后不会自动找回。
+明确要求 ok/reason/impossible 三个字段；坏结构、截断、拒绝、缺失停止原因或请求工具均明确失败，不自动重试或假成功。
+判断器仍可能误判，实际测试和工具证据仍必不可少；Workflow completed 不直接等于 Goal 已达成。
+
+目标驱动的每个大轮次最多 100 个主循环请求步骤、8 次未满足后的自动继续；这些不是 HTTP 尝试或费用上限。
+判断错误/达到上限保留 ACTIVE 并交回用户；已满足为 ACHIEVED、无法完成为 IMPOSSIBLE、主动清除为 CLEARED。
+无界面未完成失败不打印候选回答，退出码为 1。没有活跃目标时沿原行为，不增加判断请求。
+目标状态保存为会话 v3 元数据，兼容读取 v1/v2；旧二进制不保证读新 v3。
+恢复聊天只恢复目标状态，活跃目标重新计数/时间，历史总用量保留；不会自动重放旧任务，等待新用户输入。
+
+工程证据见 [s17 任务单](docs/jobs/s17/goal-loop.md)，完整阅读顺序、问题与真机步骤见
+[s17 指南](docs/notes/s17/goal-loop-review.md)。
+
 ## 运行
 
 ```sh
@@ -261,7 +292,7 @@ write 显示前 10 行并标 `Preview · not executed`，edit 显示片段 diff 
 Esc 关闭本地菜单/搜索/候选；审批时拒绝当前申请，不是 Agent 单轮取消。regular 模式不捕获鼠标，滚轮/拖选交给终端。
 退出时恢复终端并打印一次 Session/ID/Resume；fullscreen 默认把最终转录重放到主屏，`tui.fullscreenExitOutput=resume-hint` 时只保留恢复提示。
 
-命令只列真实后端：`/settings /name /session /hotkeys /copy /new /resume /quit /model /thinking /permission /mcp`。
+命令只列真实后端：`/settings /name /session /hotkeys /copy /new /resume /quit /model /thinking /permission /mcp /goal`。
 旧 `/help`、`/exit`、`/usage`、`/theme`、`/rename` 别名已移除；未知 slash 留在本地报英文错误并保留草稿，不发给模型。
 `/model` 只读；`/mcp` 只读服务/工具清单，无连接/配置/OAuth 按钮；缺取消/树/分叉/模型热切换/扩展管理等后端的入口统一隐藏。
 审批以“仅本次/允许此类/拒绝”接管 dock，显示完整真实参数和长期范围，不显示内部 reason；默认无选择；鼠标首次点击只选中，再点同项或按 Enter 才确认；卡片与输入栏同宽，窗口无法安全显示审阅区时不发布批准动作。
@@ -368,7 +399,7 @@ REPL 默认新建并保存主会话。`/resume` 打开可筛选选择器，
 - [ ] s14:真实 MCP stdio、动态工具与 Fetch 已接入；工程证据见任务单，用户理解与独立真机验收待完成
 - [ ] s15:主体集成已具备，整体核对、截断保护与阅读指南已交付；用户理解与独立真机验收待完成
 - [ ] s16:Workflow 工具、可信预设、编排、结构校验、运行记录与续跑已接入；工程验证与指南已交付，用户理解和独立真机验收待完成
-- [ ] s17:待后续逐章实现(见映射表)
+- [ ] s17:Goal 命令、独立完成判断、同轮继续、失败上限与状态恢复已接入；工程验证与指南已交付，用户理解和独立真机验收待完成
 
 s15 从现有装配、会话事件、工具批次与结束判断串联前面各章，不重复建设主循环。
 课程差异、验证与边界见 [s15 任务单](docs/jobs/s15/integrated-harness.md)，
