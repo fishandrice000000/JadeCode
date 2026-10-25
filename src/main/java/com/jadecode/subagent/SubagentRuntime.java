@@ -168,6 +168,8 @@ public class SubagentRuntime {
      * <p>只有拿到正式模型回复才消耗一轮，最多 30 轮；摘要和失败重试不算。
      * 第 30 次若能结束就返回 DONE，否则先给已调用工具加上结果，再返回 STOPPED，
      * 不发第 31 次请求。正式请求的超限错误才考虑压缩重试，生成摘要失败不能再套一层重试。</p>
+     * <p>明确以 max_tokens 截断的回复在采用前失败，既不返回 DONE 总结，也不执行其中工具。
+     * 不自动增大输出额度或续写；外层统一发出一次 FAILED，父 Agent 得到真实失败而非半份结论。</p>
      *
      * <p>LlmException（包括父会话退出）由外层报告 FAILED 后重新抛出；
      * 归档出错和调用 ID 重复也有各自的 FAILED 处理。其它自定义工具或 hook 的意外运行异常
@@ -175,7 +177,7 @@ public class SubagentRuntime {
      * @param prompt 子任务描述；启用压缩时须符合压缩器对请求的要求，不修改原字符串
      * @param context 父任务来源、询问用户的方法和会话退出检查，不可为 null
      * @return 最终文字，空白时使用已有无摘要提示；轮数用完则返回 STOPPED 提示
-     * @throws LlmException 模型或压缩摘要失败，或用户已退出父会话
+     * @throws LlmException 模型或压缩摘要失败、输出被 max_tokens 截断，或用户已退出父会话
      * @throws IllegalStateException 压缩归档等运行失败，不能继续
      * @throws NullPointerException context 为 null
      */
@@ -272,6 +274,11 @@ public class SubagentRuntime {
                 // 2.4 正式请求成功:额度归零(下一次正式请求又是一次新机会),
                 //     而且只有这一刻才消耗一个子代理轮次。
                 checkSessionOpen(context);
+                // 子代理有独立循环，也必须在追加 assistant 与执行工具前挡住输出截断。
+                // 放在上下文超限补救的 catch 之外，避免把输出不足当成输入过长来重试。
+                if ("max_tokens".equals(response.stopReason())) {
+                    throw new LlmException("Model output reached max_tokens; the response is incomplete and its tool calls were not executed");
+                }
                 reactiveRetries = 0;
                 turns++;
 

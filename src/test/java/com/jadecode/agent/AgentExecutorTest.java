@@ -13,6 +13,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jadecode.hooks.Hooks;
 import com.jadecode.session.SessionRuntime;
 import com.jadecode.llm.CompleteRequest;
+import com.jadecode.llm.LlmException;
 import com.jadecode.llm.ModelResponse;
 import com.jadecode.llm.RecordingLlmClient;
 import com.jadecode.llm.ScriptedLlmClient;
@@ -33,6 +34,8 @@ import com.jadecode.tools.Tool;
 import com.jadecode.util.Json;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -94,6 +97,36 @@ class AgentExecutorTest {
         assertEquals(2, messages.size());
         assertEquals(Role.ASSISTANT, messages.get(1).role());
         assertEquals("你好", messages.get(1).extractText());
+    }
+
+    /** 截断正文和截断回复里的完整工具块都不能被会话当作成功，且不能自动再请求模型。 */
+    @ParameterizedTest
+    @ValueSource(booleans = { false, true })
+    void truncatedResponseFailsWithoutAdoptionOrToolExecution(boolean withTool) throws Exception {
+        AtomicInteger requests = new AtomicInteger();
+        AtomicInteger executed = new AtomicInteger();
+        AtomicInteger completed = new AtomicInteger();
+        Hooks hooks = new Hooks();
+        hooks.register(Hooks.PRE_TOOL_USE, params -> { executed.incrementAndGet(); return null; });
+        hooks.register(Hooks.TURN_END, params -> { completed.incrementAndGet(); return null; });
+        ContentBlock block = withTool ? toolUse("cut", "bash", "true") : new TextBlock("尚未输出完的结论");
+        AgentExecutor executor = new AgentExecutor(request -> {
+            // 第二条完整回复仅供旧实现结束：测试应捕获截断本身，不能靠假客户端耗尽触发错误。
+            return requests.getAndIncrement() == 0
+                    ? new ModelResponse(Message.assistant(List.of(block)), new ModelResponse.Usage(0, 1), "max_tokens")
+                    : assistant(new TextBlock("不应请求这一轮"));
+        }, Map.of("bash", new BashTool()), "test-system", 8000, hooks);
+        List<Message> messages = new ArrayList<>(List.of(Message.userText("完成任务")));
+
+        // 走真实会话结束路径；异常必须来自截断检查，而不是工具或网络失败。
+        try (SessionRuntime session = new SessionRuntime(executor, ignored -> { }, ignored -> { })) {
+            LlmException failure = assertThrows(LlmException.class, () -> session.run(messages));
+            assertTrue(failure.getMessage().contains("max_tokens"));
+            assertEquals(1, requests.get());
+            assertEquals(0, executed.get(), "截断回复不能进入工具执行或权限 hook");
+            assertEquals(0, completed.get(), "不能发布正常任务完成 hook");
+            assertEquals(List.of(Message.userText("完成任务")), messages, "不把截断回复采用为可执行历史");
+        }
     }
 
     /** ② 一次 tool_use:回灌一条 user 消息,含一个 tool_result,id 逐块对应 */

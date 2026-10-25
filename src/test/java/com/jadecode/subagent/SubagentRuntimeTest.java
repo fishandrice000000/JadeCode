@@ -24,6 +24,8 @@ import com.jadecode.messages.ToolUseBlock;
 import com.jadecode.tools.Tool;
 import com.jadecode.util.Json;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -131,6 +133,30 @@ class SubagentRuntimeTest {
         assertEquals(1, ends.size());
         assertEquals("(no summary)", ends.get(0).get(Hooks.PARAM_OUTPUT));
         assertEquals(SubagentOutcome.DONE, ends.get(0).get(Hooks.PARAM_OUTCOME));
+    }
+
+    /** 子代理遇到输出截断应恰好报告一次 FAILED，不能执行该回复的工具或返回 DONE 摘要。 */
+    @ParameterizedTest
+    @ValueSource(booleans = { false, true })
+    void truncatedResponseFailsWithoutRunningTools(boolean withTool) {
+        Hooks hooks = new Hooks();
+        List<Map<String, ?>> ends = recordEnds(hooks);
+        FakeTool tool = new FakeTool("bash", "不应执行");
+        var requests = new java.util.concurrent.atomic.AtomicInteger();
+        ContentBlock block = withTool ? toolUse("cut", "bash") : new TextBlock("尚未完成的总结");
+        SubagentRuntime runtime = runtime(request -> {
+            // 为旧实现提供正常结束机会，避免脚本耗尽掩盖错误的 DONE 或工具副作用。
+            return requests.getAndIncrement() == 0
+                    ? new ModelResponse(Message.assistant(List.of(block)), new ModelResponse.Usage(0, 1), "max_tokens")
+                    : assistant(new TextBlock("不应请求这一轮"));
+        }, Map.of("bash", tool), hooks);
+
+        LlmException failure = assertThrows(LlmException.class, () -> runtime.run("完成子任务"));
+        assertTrue(failure.getMessage().contains("max_tokens"));
+        assertEquals(1, requests.get());
+        assertEquals(0, tool.calls);
+        assertEquals(1, ends.size());
+        assertEquals(SubagentOutcome.FAILED, ends.getFirst().get(Hooks.PARAM_OUTCOME));
     }
 
     /** ③ 工具执行与回灌:已知工具执行一次;第二次请求带匹配 id / output 的 tool_result */

@@ -154,12 +154,15 @@ public class AgentExecutor implements AutoCloseable {
      * <p>catch 覆盖正式请求准备与响应校验；只有 LlmException 中的上下文超限才进入补救。网络、限流等错误不能一律当作上下文超限；
      * 生成摘要失败也不能再套进超限重试。已成功换上的历史不会因后续模型失败而恢复成旧版。
      * 定时任务第一次回答前如何恢复历史，由会话的失败处理单独处理。</p>
+     * <p>服务端明确以 max_tokens 截断时，这份回复不能作为完整行动采用：即使某个工具块的
+     * JSON 完整，也无法据此认定整份回复已经生成完。这里按请求失败交回会话，不追加回复、
+     * 不执行其中的工具，也不自动扩大用户额度或续写；已显示的流式片段仍只是未完成预览。</p>
      * @param messages 当前历史；本方法读取它，但 adoptHistory 函数会直接更新这个列表的内容
      * @param activeRequest 本次用户请求，压缩后仍须记住
      * @param taskSystem 本任务开始时准备好的 system 提示词
      * @param adoptHistory 收到新历史时立即执行的函数，由会话提供，必须在返回前完成列表内容替换
      * @return ASSISTANT 回复和其中的工具调用；已检查一批内的调用 ID 不重复，但尚未执行工具
-     * @throws LlmException 不能重试的模型错误、重试次数用完，或压缩摘要失败
+     * @throws LlmException 不能重试的模型错误、输出被 max_tokens 截断、重试次数用完，或压缩摘要失败
      * @throws IllegalArgumentException 回复不是 ASSISTANT，或工具调用 ID 重复
      * @throws IllegalStateException 用户已退出，包括等模型回答时才退出的情况
      */
@@ -208,6 +211,11 @@ public class AgentExecutor implements AutoCloseable {
                         : client.complete(request, observed);
                 // 完整消息通过角色和工具 ID 校验后才结束预览，返回给 Session 采用。
                 ensureOpen();
+                // 输出额度耗尽与输入上下文太长是两种失败，不能靠压缩或执行半份行动来掩盖。
+                // 在生成 ModelReply 之前拒绝，Leader 和常驻队友便都不会把它判成正常完成。
+                if ("max_tokens".equals(response.stopReason())) {
+                    throw new LlmException("Model output reached max_tokens; the response is incomplete and its tool calls were not executed");
+                }
                 if (response.message().role() != Role.ASSISTANT) {
                     throw new IllegalArgumentException("Formal model response must be ASSISTANT");
                 }
