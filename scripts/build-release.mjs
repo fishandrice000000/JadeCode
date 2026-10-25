@@ -98,6 +98,13 @@ const vendorDist = path.join(frontend, "vendor/pi-tui");
 copySelected(vendorDist, path.join(targetFrontend, "vendor/pi-tui"),
 	["dist", "package.json", "LICENSE", "README.md", "native"]);
 const productionDependencies = ["marked", "get-east-asian-width", "grok-mermaid", "highlight.js"];
+/** npm 包的许可文件大小写并不统一；缺少许可必须阻断装配，不能静默漏发。 */
+function dependencyLicense(name) {
+	const directory = path.join(frontend, "node_modules", name);
+	const file = fs.readdirSync(directory).find((entry) => /^licen[cs]e(?:\.(?:md|txt))?$/i.test(entry));
+	if (!file) throw new Error(`Missing license for production dependency: ${name}`);
+	return file;
+}
 for (const dependency of productionDependencies) {
 	copyDirectory(path.join(frontend, "node_modules", dependency), path.join(targetFrontend, "node_modules", dependency),
 		(name) => name !== "node_modules");
@@ -105,6 +112,15 @@ for (const dependency of productionDependencies) {
 fs.mkdirSync(path.join(targetFrontend, "node_modules/@earendil-works"), { recursive: true });
 copySelected(vendorDist, path.join(targetFrontend, "node_modules/@earendil-works/pi-tui"),
 	["dist", "package.json", "LICENSE", "native"]);
+
+/** 成套输出指纹包含编译 JS 与生产依赖；校验器不能只比较两个 buildId 字符串。 */
+function releaseFiles(directory, prefix = "") {
+	return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+		const relative = path.join(prefix, entry.name);
+		return entry.isDirectory() ? releaseFiles(path.join(directory, entry.name), relative)
+			: [{ path: relative, sha256: sha(read(path.join(directory, entry.name))) }];
+	});
+}
 
 const assetFiles = walk(path.join(frontend, "assets")).sort();
 const manifest = {
@@ -119,7 +135,8 @@ const manifest = {
 	native: [path.join(frontend, "vendor/pi-tui/native/linux/prebuilds/linux-x64/linux-platform-x11.node")]
 		.map((file) => ({ path: path.relative(frontend, file), sha256: sha(read(file)) })),
 	assets: assetFiles.map((file) => ({ path: file, sha256: sha(read(path.join(frontend, "assets", file))) })),
-	licenses: ["vendor/pi-tui/LICENSE"],
+	licenses: ["vendor/pi-tui/LICENSE", ...productionDependencies.map((name) => `node_modules/${name}/${dependencyLicense(name)}`)],
+	files: releaseFiles(targetFrontend).sort((a, b) => a.path.localeCompare(b.path)),
 };
 fs.writeFileSync(path.join(targetFrontend, "frontend-manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
 
@@ -132,8 +149,8 @@ copyDirectory(targetFrontend, path.join(dist, "lib/frontend"));
 fs.mkdirSync(path.join(dist, "licenses"), { recursive: true });
 fs.copyFileSync(path.join(frontend, "vendor/pi-tui/LICENSE"), path.join(dist, "licenses/pi-tui-MIT.txt"));
 for (const dependency of productionDependencies) {
-	const file = path.join(frontend, "node_modules", dependency, "LICENSE");
-	if (fs.existsSync(file)) fs.copyFileSync(file, path.join(dist, "licenses", `${dependency}.txt`));
+	const file = path.join(frontend, "node_modules", dependency, dependencyLicense(dependency));
+	fs.copyFileSync(file, path.join(dist, "licenses", `${dependency}.txt`));
 }
 fs.writeFileSync(path.join(dist, "jade"), `#!/bin/sh
 # JadeCode 成套发行入口：相对自身位置定位 JAR，不依赖 cwd 或源码目录。
