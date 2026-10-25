@@ -6,6 +6,7 @@ import {
 	KeybindingsManager,
 	TUI_KEYBINDINGS,
 	setKeybindings,
+	visibleWidth,
 	type TUI,
 } from "@earendil-works/pi-tui";
 import { KeymapAdapter } from "../../src/editor/keymap-adapter.ts";
@@ -291,6 +292,23 @@ test("SearchPage never lets the internal Input fallback jump/close on replaced E
 	search.handleInput("\x19"); // ctrl+y
 	assert.equal(jumps, 1);
 	assert.equal(closed, 1);
+});
+
+test("compact search has three bounded rows and updates the transcript before overlay rendering", () => {
+	const highlights: Array<[string, number]> = [];
+	const keymap = new KeymapAdapter({ "tui.altScreen.searchNext": ["ctrl+f"] });
+	const search = new SearchPage({ ...pageContext(keymap), setSearchHighlight: (query, selected) => { highlights.push([query, selected]); } },
+		() => [{ id: "a", offset: 0, snippet: "first" }, { id: "b", offset: 10, snippet: "second" }]);
+	search.handleInput("q");
+	assert.deepEqual(highlights.at(-1), ["q", 0]);
+	search.handleInput("\x06");
+	assert.deepEqual(highlights.at(-1), ["q", 1], "the primary transcript renders before the overlay");
+	for (const width of [1, 2, 20, 48]) {
+		const rows = search.renderOverlay(width);
+		assert.equal(rows.length, 3);
+		for (const row of rows) assert.ok(visibleWidth(row) <= width);
+	}
+	assert.match(search.renderOverlay(48).join("\n"), /2\/2/);
 });
 
 

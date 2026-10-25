@@ -10,6 +10,7 @@ import {
 	type TUI,
 	type TuiMouseEvent,
 	type TerminalColors,
+	type OverlayHandle,
 } from "@earendil-works/pi-tui";
 import { BackendClient } from "../bridge/client.ts";
 import { PayloadAssembler } from "../bridge/payload-assembler.ts";
@@ -281,6 +282,7 @@ export class Application {
 		this.host.setFullscreenLayout(fullscreen, fullscreen.scroll);
 		this.host.setMousePriorityHandler((event) => {
 			if (this.approval.hasPending()) return this.approval.handleMouse(event);
+			if (this.pages.current() instanceof SearchPage) return false; // 搜索浮层交给 Pi 命中，不能拦成 dock 点击。
 			if (this.pages.current()) {
 				if (event.type === "press" && event.button === "left") {
 					this.dock.handlePagePress(event.y - this.dockOriginY, event.x); this.host.requestRender();
@@ -305,6 +307,8 @@ export class Application {
 	 * 重新安装，这里只补普通的全局输入监听。</p>
 	 */
 	private installScreenListeners(): void {
+		// 模式重建/恢复时旧浮层已属于旧screen；统一关闭，避免遗留输入捕获或正文高亮。
+		this.closeSearchOverlay();
 		const tui = this.host.tui();
 		if (!tui) return;
 		this.installTerminalColors();
@@ -504,7 +508,8 @@ export class Application {
 				actorName: (actor) => this.session.displayActor(actor) || actor,
 			}, width, origin, this.host.terminal.rows, width, bottom - origin);
 		}
-		this.dock.setContent({ page: this.pages.current(), editor: this.editor?.editor, maxRows: bottom });
+		const page = this.pages.current();
+		this.dock.setContent({ page: page instanceof SearchPage ? undefined : page, editor: this.editor?.editor, maxRows: bottom });
 		return this.dock.render(width);
 	}
 
@@ -649,6 +654,7 @@ export class Application {
 				this.taskFinished(message.payload, true);
 				return;
 			case "approval.requested":
+				this.closeSearchOverlay(); // 搜索框不能覆盖审批，也不能继续持有输入焦点。
 				if (this.pages.current()) {
 					this.theme.cancel(); this.conversation.setSearchQuery("", 0); this.pages.clear(); this.host.setFocus(this.editor.editor);
 				}
@@ -942,11 +948,33 @@ export class Application {
 		this.host.requestRender();
 	}
 
+	private searchOverlay: OverlayHandle | undefined;
+
+	/** 恢复 Pi 风格右上角浮层；页面栈仍负责输入路由，底部保留原草稿。 */
 	private openSearchPage(): void {
-		this.pages.push(new SearchPage(this.pageContext(), (query) =>
-			this.conversation.search(query, Math.max(1, this.host.terminal.columns - (this.session.settings()?.fullscreenScrollbar === "always" ? 1 : 0)))));
+		const screen = this.host.tui();
+		if (!screen || this.pages.current()) return;
+		const page = new SearchPage(this.pageContext(), (query) =>
+			this.conversation.search(query, Math.max(1, this.host.terminal.columns - (this.session.settings()?.fullscreenScrollbar === "always" ? 1 : 0))));
+		this.pages.push(page);
 		this.host.setFocus(this.root);
+		const overlay = {
+			render: (width: number) => page.renderOverlay(width), invalidate: () => page.invalidate(),
+			get focused() { return page.focused; }, set focused(value: boolean) { page.focused = value; },
+		};
+		this.searchOverlay = screen.showOverlay(overlay, { anchor: "top-right", width: "40%", minWidth: 32, margin: 1 });
 		this.host.requestRender();
+	}
+
+	/** 关闭浮层及其页面/高亮；没有搜索时不干扰其它页面。 */
+	private closeSearchOverlay(): void {
+		this.searchOverlay?.hide();
+		this.searchOverlay = undefined;
+		if (this.pages.current() instanceof SearchPage) {
+			this.pages.pop();
+			this.conversation.setSearchQuery("", 0);
+			this.host.setFocus(this.editor.editor);
+		}
 	}
 
 	private pageContext(): PageContext {
@@ -957,7 +985,8 @@ export class Application {
 			client: () => this.client ?? null,
 			identity: () => this.identity(),
 			closePage: () => {
-				if (this.pages.pop() instanceof SearchPage) this.conversation.setSearchQuery("", 0);
+				if (this.pages.current() instanceof SearchPage) this.closeSearchOverlay();
+				else this.pages.pop();
 				this.editor.focus(this.host.tui()!);
 				this.host.requestRender();
 			},

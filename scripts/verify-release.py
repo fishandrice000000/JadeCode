@@ -352,8 +352,14 @@ def verify(case, name):
         case.send("first\x1b[13;2usecond\nthird"); case.drain(.15)
         assert not case.server.calls, "newline submitted the draft"
         case.send("\x03"); case.drain(.15)
-        case.send("\x12"); case.until("Search"); case.drain(.15)
+        case.send("DRAFT_SEARCH_KEPT"); case.drain(.1)
+        case.send("\x12"); case.until("Find in transcript"); case.drain(.15)
+        current = screen("search-overlay")
+        lines = current.splitlines()
+        assert lines[2].index("Find in transcript") > 60, "search is not a top-right overlay"
+        assert "DRAFT_SEARCH_KEPT" in current, "search replaced the editor dock"
         case.send("\x1b"); case.drain(.1)
+        case.send("\x03"); case.drain(.1)
         case.finish()
         return {"exit": 0, "draftRepaint": True, "pageReleaseFiltered": True, "newlinePreserved": True, "searchKey": "ctrl+r"}
     if name == "commands":
