@@ -58,41 +58,47 @@ export function highlightCode(code: string, language: string | undefined, theme:
 	}
 }
 
-/** 把 highlight.js 的 HTML 片段转成主题 ANSI 行；只识别它自己的 span class。 */
+/**
+ * 把 highlight.js 自己生成的 HTML span 转成主题 ANSI 行，不处理外部任意 HTML。
+ *
+ * 每段文字在输出时才套样式，避免先生成空样式再误把 reset 放到文字前面。栈保存嵌套角色：
+ * 内层结束恢复父层，跨行注释也继续沿用角色；每段独立关闭样式，下一行不会污染终端。
+ * 返回值保留源码行数与解码后的文字，没有文件或终端 IO。
+ */
 function toAnsiLines(html: string, theme: ResolvedTheme): string[] {
 	const lines: string[] = [];
 	let current = "";
-	let reset = false;
+	let segment = "";
+	const roles: (Role | undefined)[] = [];
 	let i = 0;
+	// 先输出旧角色的文字，再更新栈；未知 span 继承父角色，不清除外层颜色。
+	const flushSegment = (): void => {
+		const role = roles.at(-1);
+		current += role ? theme.style(role, segment) : segment;
+		segment = "";
+	};
 	const flushLine = (): void => {
-		lines.push(reset ? `${current}\x1b[39m` : current);
+		flushSegment();
+		lines.push(current);
 		current = "";
-		reset = false;
 	};
 	while (i < html.length) {
 		const char = html[i]!;
 		if (char === "<") {
 			const end = html.indexOf(">", i);
 			if (end < 0) {
-				current += html.slice(i);
+				segment += html.slice(i);
 				break;
 			}
 			const tag = html.slice(i + 1, end);
 			if (tag === "/span") {
-				if (reset) {
-					current += "\x1b[39m";
-					reset = false;
-				}
+				flushSegment();
+				roles.pop();
 			} else if (tag.startsWith("span ")) {
+				flushSegment();
 				const match = /class="([^"]+)"/.exec(tag);
-				const role = match ? CLASS_ROLES[match[1]!] : undefined;
-				if (role) {
-					const color = theme.colors.get(role);
-					if (color) {
-						current += theme.style(role, "\u0000").replace("\u0000", "");
-						reset = true;
-					}
-				}
+				const role = match?.[1]?.split(/\s+/).map((name) => CLASS_ROLES[name]).find((value) => value !== undefined);
+				roles.push(role ?? roles.at(-1));
 			}
 			i = end + 1;
 			continue;
@@ -101,7 +107,7 @@ function toAnsiLines(html: string, theme: ResolvedTheme): string[] {
 			const semi = html.indexOf(";", i);
 			if (semi > i) {
 				const entity = html.slice(i, semi + 1);
-				current += decodeEntity(entity);
+				segment += decodeEntity(entity);
 				i = semi + 1;
 				continue;
 			}
@@ -111,7 +117,7 @@ function toAnsiLines(html: string, theme: ResolvedTheme): string[] {
 			i++;
 			continue;
 		}
-		current += char;
+		segment += char;
 		i++;
 	}
 	flushLine();
