@@ -65,7 +65,8 @@ export class ApprovalResultToast implements Component {
 		if (!result || width < 1) return [];
 		const theme = this.theme();
 		const role: Role = result.choice === 2 ? "error" : result.choice === 1 ? "warning" : "success";
-		const surface: Role = result.choice === 2 ? "toolErrorBg" : result.choice === 1 ? "toolPendingBg" : "toolSuccessBg";
+		// 三种结果共用 Allow similar 的中性底色，只用边框和结果标题的红/黄/绿表达差异。
+		const surface: Role = "toolPendingBg";
 		const label = result.choice === 2 ? "× Denied" : result.choice === 1 ? "✓ Allowed similar" : "✓ Allowed once";
 		const badge = theme.bold(theme.style(role, `[ ${label} ]`));
 		const tool = theme.bold(theme.style("accent", result.tool));
