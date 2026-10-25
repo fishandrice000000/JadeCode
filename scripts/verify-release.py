@@ -532,6 +532,19 @@ def verify(case, name):
         screens = json.loads(parsed.stdout)
         assert "ROW_000" in screens[1]["text"], "history did not scroll to the first row"
         assert "LONG_END" in screens[2]["text"], "scroll-to-bottom lost the final output"
+        # 搜索不能只改变浮层计数；无需Enter，导航中的正文匹配就应进入真实PTY视口。
+        case.send("\x12"); case.until("Find in transcript"); case.drain(.1)
+        case.send("ROW_"); case.drain(.15)
+        case.send("\x1b[B" * 80); case.drain(.2)
+        case.snapshot("search-down")
+        case.send("\x1b[A" * 60); case.drain(.2)
+        case.snapshot("search-up")
+        parsed = subprocess.run([shutil.which("node"), str(REPO / "scripts/tui-screen.mjs"), str(case.directory)],
+                                capture_output=True, text=True, check=True)
+        screens = json.loads(parsed.stdout)
+        assert "ROW_080" in screens[-2]["text"], "Down changed the selection but did not reveal its transcript row"
+        assert "ROW_020" in screens[-1]["text"], "Up changed the selection but did not reveal its transcript row"
+        case.send("\x1b"); case.drain(.1)
     elif name == "node-exit":
         os.kill(case.node_pid(), signal.SIGKILL)
         case.process.wait(timeout=12)

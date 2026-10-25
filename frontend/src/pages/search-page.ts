@@ -21,8 +21,8 @@ export class SearchPage implements Page {
 		this.context = context;
 		this.search = search;
 		this.input = new Input({ prompt: " ", placeholder: "Find in transcript" });
-		// 提交/跳转只由页面键表（tui.select.confirm）决定；Input 的默认 Enter/LF 回退不能
-		// 绕过覆盖去 jump 或关闭页面。Input 只负责查询文本编辑。
+		// 确认并关闭只由页面键表（tui.select.confirm）决定；上下导航会预览匹配位置，
+		// Input 的默认 Enter/LF 回退不能绕过覆盖去确认。Input 只负责查询文本编辑。
 	}
 
 	private readonly search: (query: string) => Array<{ id: string; offset: number; snippet: string }>;
@@ -90,12 +90,12 @@ export class SearchPage implements Page {
 		if (keymap.matches("tui.altScreen.searchClose", data)) { this.context.closePage(); return true; }
 		if (keymap.matches("tui.select.up", data)) {
 			this.selected = Math.max(0, this.selected - 1);
-			this.context.setSearchHighlight?.(this.query, this.selected);
+			this.revealSelected();
 			return true;
 		}
 		if (keymap.matches("tui.select.down", data)) {
 			this.selected = Math.min(this.matches.length - 1, this.selected + 1);
-			this.context.setSearchHighlight?.(this.query, this.selected);
+			this.revealSelected();
 			return true;
 		}
 		if (keymap.matches("tui.select.confirm", data)) {
@@ -104,12 +104,12 @@ export class SearchPage implements Page {
 		}
 		if (keymap.matches("tui.altScreen.searchNext", data)) {
 			if (this.matches.length > 0) this.selected = (this.selected + 1) % this.matches.length;
-			this.context.setSearchHighlight?.(this.query, this.selected);
+			this.revealSelected();
 			return true;
 		}
 		if (keymap.matches("tui.altScreen.searchPrevious", data)) {
 			if (this.matches.length > 0) this.selected = (this.selected - 1 + this.matches.length) % this.matches.length;
-			this.context.setSearchHighlight?.(this.query, this.selected);
+			this.revealSelected();
 			return true;
 		}
 		// 未匹配当前页面确认动作的 Enter/LF 不得落入 Input 的 submit 回退。
@@ -127,8 +127,19 @@ export class SearchPage implements Page {
 		this.selected = 0;
 		this.matches = this.query.trim() ? this.search(this.query) : [];
 		// 浮层在主布局之后合成；必须在下一帧布局之前更新正文高亮，不能等浮层 render 才设置。
-		this.context.setSearchHighlight?.(this.query, this.selected);
+		this.revealSelected();
 		this.context.requestRender();
+	}
+
+	/**
+	 * 搜索预览：高亮与正文滚动必须使用同一个匹配，不能只更新浮层计数。
+	 * 使用索引给出的真实文档行号，由Application驱动Pi视口；不关闭搜索、不改编辑器草稿。
+	 * 空结果只清理高亮，不跳到文档开头。
+	 */
+	private revealSelected(): void {
+		this.context.setSearchHighlight?.(this.query, this.selected);
+		const match = this.matches[this.selected];
+		if (match) this.context.jumpToMatch(this.query, match.offset);
 	}
 
 	private jump(): void {

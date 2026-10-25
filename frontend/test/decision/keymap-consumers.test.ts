@@ -285,12 +285,13 @@ test("SearchPage never lets the internal Input fallback jump/close on replaced E
 	const matches = ["m0", "m1", "m2"].map((snippet, index) => ({ id: `e${index}`, offset: index, snippet }));
 	const search = new SearchPage({ ...base, closePage: () => { closed += 1; }, jumpToMatch: () => { jumps += 1; } }, () => matches);
 	search.handleInput("q");
+	const previewJumps = jumps;
 	search.handleInput("\r"); // old Enter, replaced by ctrl+y
 	search.handleInput("\n"); // LF fallback
-	assert.equal(jumps, 0);
+	assert.equal(jumps, previewJumps, "replaced confirmation keys must not trigger any additional jump");
 	assert.equal(closed, 0);
 	search.handleInput("\x19"); // ctrl+y
-	assert.equal(jumps, 1);
+	assert.equal(jumps, previewJumps + 1);
 	assert.equal(closed, 1);
 });
 
@@ -320,5 +321,24 @@ test("search jumps to the selected result and keeps results past ten visible", (
 	for (let index = 0; index < 12; index++) page.handleInput("\x1b[B");
 	assert.match(page.render(80).join("\n"), /▸ match-12/);
 	page.handleInput("\r");
-	assert.deepEqual(offsets, [240]);
+	assert.equal(offsets.at(-1), 240);
+});
+
+test("search navigation reveals each selected match without closing the overlay", () => {
+	const offsets: number[] = [];
+	let closes = 0;
+	const matches = [5, 80, 160].map((offset) => ({ id: String(offset), offset, snippet: "match" }));
+	const page = new SearchPage({ ...pageContext(new KeymapAdapter({})),
+		jumpToMatch: (_query, offset) => { offsets.push(offset!); }, closePage: () => { closes++; } }, () => matches);
+	page.handleInput("match");
+	page.handleInput("\x1b[B"); // Down: off-screen second match
+	page.handleInput("\x1b[B"); // Down: third match
+	page.handleInput("\x1b[A"); // Up: second match
+	page.handleInput("\x07"); // Ctrl+G: next
+	page.handleInput("\x1b[13;2u"); // Shift+Enter: previous
+	assert.deepEqual(offsets, [5, 80, 160, 80, 160, 80]);
+	assert.equal(closes, 0, "preview navigation keeps the search open");
+	page.handleInput("\r");
+	assert.equal(offsets.at(-1), 80);
+	assert.equal(closes, 1, "only confirmation closes the overlay");
 });
