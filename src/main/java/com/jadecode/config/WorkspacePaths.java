@@ -25,6 +25,8 @@ public record WorkspacePaths(Path workspace) {
     public Path transcripts() { return root().resolve("transcripts"); }
     public Path toolResults() { return root().resolve("tool-results"); }
     public Path teams() { return root().resolve("teams"); }
+    /** Workflow 的快照、成功步骤和输出归当前工作区，不使用机器级配置目录。 */
+    public Path workflows() { return root().resolve("workflows"); }
     public Path approvalBackups() { return root().resolve("approvals/backups"); }
     public Path cronFile() { return root().resolve("cron/jobs.json"); }
 
