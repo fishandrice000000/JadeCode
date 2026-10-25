@@ -70,7 +70,7 @@ src/main/java/com/jadecode/
 | s12 | Cron Scheduler | `cron/` |
 | s13 | Agent Teams | `team/` |
 | s14 | MCP Plugin | `mcp/`、`tools/ToolCatalog` 与 MCP 工具适配器 |
-| s15 | 集成装配 | `agent/AsyncEventLoop` `context/SystemPromptBuilder` `llm/RetryPolicy`(完整版) |
+| s15 | 既有 Harness 集成与整体核对 | `bootstrap/JadeCodeFactory` `session/SessionRuntime` `agent/AgentExecutor` |
 | s16 | Workflow Runtime | `workflow/` |
 | s17 | Goal Loop | `goal/` |
 
@@ -334,7 +334,14 @@ REPL 默认新建并保存主会话。`/resume` 打开可筛选选择器，
 - [ ] s12:定时交付与持久恢复真机检查通过，事件化场景已获准代跑通过；源码学习与最终章节确认另记
 - [ ] s13:独立 Session Team、文件邮箱与结果提交已接入；工程验证见任务单，用户学习与真机验收待完成
 - [ ] s14:真实 MCP stdio、动态工具与 Fetch 已接入；工程证据见任务单，用户理解与独立真机验收待完成
-- [ ] s15–s17:逐章实现(见映射表)
+- [ ] s15:主体集成已具备，整体核对、截断保护与阅读指南已交付；用户理解与独立真机验收待完成
+- [ ] s16–s17:逐章实现(见映射表)
+
+s15 从现有装配、会话事件、工具批次与结束判断串联前面各章，不重复建设主循环。
+课程差异、验证与边界见 [s15 任务单](docs/jobs/s15/integrated-harness.md)，
+整体源码阅读顺序和问题见 [s15 指南](docs/notes/s15/integrated-harness-review.md)。
+正式行动回复若明确以 `max_tokens` 截断，父/队友与一次性子代理会拒绝采用和执行其中工具，
+不会把半份回复当正常完成，也不自动提高额度或续写；之前轮次已发生的副作用不回滚。
 
 由 `SessionRuntime` 在任务入口和完成处调用 Memory 服务。Memory 使用工作区 `.jadecode/memory/`，每次用户任务入口召回一次，真正结束后提取，新增成功后按数量尝试整理。
 辅助请求沿用现有客户端，不带工具；记忆维护失败告警，不抹掉已完成的主任务结果。
