@@ -33,6 +33,10 @@ ANSI = re.compile(rb"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)")
 class Endpoint(http.server.BaseHTTPRequestHandler):
     """只服务本次夹具；同一工具结果只发一次最终回答，不接触真实模型。"""
 
+    # 并行 Workflow 请求会复用 SDK 的连接池；使用标准 HTTP/1.1 + Content-Length，
+    # 流式分支仍显式 Connection: close，避免旧 HTTP/1.0 夹具在下一主请求上 Broken pipe。
+    protocol_version = "HTTP/1.1"
+
     def log_message(self, *_args):
         pass
 
@@ -56,19 +60,28 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
             requested = ("connect_mcp", {"name": "fixture"}) if not results else ("mcp__fixture__echo", {"text": "MCP_ECHO_OK"})
         if "JADE_VERIFY_TEAM" in text and len(results) < 2:
             requested = ("spawn_teammate", {"role": "local verifier"}) if not results else ("list_teammates", {})
+        if "JADE_VERIFY_WORKFLOW" in text and body.get("tools") and len(results) < 2:
+            # 第一轮运行固定文本流程，第二轮用真实返回的 run_id 恢复；不由夹具猜文件路径或调用缓存内部接口。
+            workflow_args = {"name": "review-changes", "args": {"changes": "return 1;"}} if not results else {
+                "name": "review-changes", "resume_from_run_id": json.loads(results[-1]["content"])["run_id"]}
+            requested = ("Workflow", workflow_args)
         tool = tool or requested is not None
         if tool:
             content = [{"type": "tool_use", "id": "verify-write", "name": "write_file",
                         "input": {"path": str(self.server.target), "content": "APPROVAL_OK"}}]
             if requested:
-                content = [{"type": "tool_use", "id": "verify-" + requested[0], "name": requested[0], "input": requested[1]}]
+                call_id = "verify-" + requested[0] + ("-" + str(len(results)) if requested[0] == "Workflow" else "")
+                content = [{"type": "tool_use", "id": call_id, "name": requested[0], "input": requested[1]}]
         else:
             answer = "PARTIAL_LIMIT_TEXT" if self.server.scenario == "output-limit" and body.get("tools") else "JADE_VERIFY_DONE"
             if not body.get("tools"):
-                answer = "[]"  # Memory 辅助请求返回合法空候选，避免把 JSON 错误当成功证据。
-                self.server.aux_requests += 1
-                if self.server.memory_delay: time.sleep(.4)
-                self.server.aux_finished = time.monotonic()
+                if "You are a focused workflow agent." in json.dumps(body.get("system", "")):
+                    answer = '{"findings":[]}'  # 独立 Workflow 请求必须满足实际输出 schema，不与 Memory 混同。
+                else:
+                    answer = "[]"  # Memory 辅助请求返回合法空候选，避免把 JSON 错误当成功证据。
+                    self.server.aux_requests += 1
+                    if self.server.memory_delay: time.sleep(.4)
+                    self.server.aux_finished = time.monotonic()
             if "JADE_VERIFY_LONG" in text and "JADE_VERIFY_TOOL" not in text:
                 answer = "\n".join(f"ROW_{i:03} 中文 body" for i in range(120)) + "\nLONG_END"
             content = [{"type": "text", "text": answer}]
@@ -316,7 +329,7 @@ def verify(case, name):
         data["mcp"]["servers"]["fixture"] = {"command": sys.executable,
             "args": [str(REPO / "scripts/mcp-fixture.py"), str(case.directory / "mcp.pid")], "readOnlyTools": ["echo"]}
         config.write_text(json.dumps(data))
-    prompt = "JADE_VERIFY_MCP" if name == "mcp" else "JADE_VERIFY_TEAM" if name == "team" else "JADE_VERIFY_TOOL" if name.startswith("approval") else "JADE_VERIFY_LONG" if name == "long-output" else ""
+    prompt = "JADE_VERIFY_WORKFLOW" if name == "workflow" else "JADE_VERIFY_MCP" if name == "mcp" else "JADE_VERIFY_TEAM" if name == "team" else "JADE_VERIFY_TOOL" if name.startswith("approval") else "JADE_VERIFY_LONG" if name == "long-output" else ""
     case.start("JADE_VERIFY_LONG" if name == "regular-approval" else "JADE_VERIFY_TEXT" if name in ("copy", "retry", "model-error", "output-limit") else prompt,
                shell=name == "approval-suspend", mode="regular" if name in ("regular", "regular-approval") else "fullscreen")
     if name == "input-routing":
@@ -418,6 +431,20 @@ def verify(case, name):
     if name == "regular-approval":
         case.until("LONG_END"); case.drain(.2)
         case.send("JADE_VERIFY_TOOL\r")
+    if name == "workflow":
+        case.until("JADE_VERIFY_DONE")
+        case.until("task_notification: review-changes")
+        assert "Workflow · Historical" not in ANSI.sub(b"", bytes(case.output)).decode("utf8", "replace"), "live workflow progress was marked as restored history"
+        # 正常运行四个审查步骤，恢复全命中；真正的主模型请求收到 is_error=false 与缓存统计。
+        formal = [call for call in case.server.calls if call.get("tools")]
+        steps = [call for call in case.server.calls if "You are a focused workflow agent." in json.dumps(call.get("system", ""))]
+        assert len(formal) == 3 and len(steps) == 4, "workflow resumed by rerunning model steps"
+        result = formal[-1]["messages"][-1]["content"][0]
+        assert result["type"] == "tool_result" and not result.get("is_error", False)
+        payload = json.loads(result["content"])
+        assert payload["status"] == "completed" and payload["usage"]["requests"] == 0 and payload["usage"]["cached_steps"] == 4
+        case.finish()
+        return {"exit": 0, "workflowRequests": len(steps), "formalRequests": len(formal), "resumeCachedSteps": 4, "progressVisible": True}
     if name in ("mcp", "team"):
         case.until("JADE_VERIFY_DONE")
         results = [block for call in case.server.calls for msg in call.get("messages", [])
@@ -567,7 +594,7 @@ def verify(case, name):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--release", type=Path, default=REPO / "dist/jadecode")
-    parser.add_argument("--scenario", action="append", choices=["java-only", "smoke", "input-routing", "commands", "regular", "regular-approval", "copy", "retry", "model-error", "output-limit", "headless", "headless-read-only", "headless-full-access", "headless-workspace", "headless-auto-review", "memory-delay", "mcp", "team", "resume", "long-output", "approval-resize", "approval-small", "approval-mouse", "approval-suspend", "approval-deny", "full-access", "sighup", "sigint", "sigterm", "java-exit", "node-exit"])
+    parser.add_argument("--scenario", action="append", choices=["java-only", "smoke", "input-routing", "commands", "regular", "regular-approval", "copy", "retry", "model-error", "output-limit", "headless", "headless-read-only", "headless-full-access", "headless-workspace", "headless-auto-review", "memory-delay", "mcp", "team", "workflow", "resume", "long-output", "approval-resize", "approval-small", "approval-mouse", "approval-suspend", "approval-deny", "full-access", "sighup", "sigint", "sigterm", "java-exit", "node-exit"])
     parser.add_argument("--report", type=Path, default=REPO / "target/tui-release-verification.json")
     options = parser.parse_args()
     release = options.release.resolve()
@@ -590,7 +617,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="jade-release-verify-") as directory:
         root = Path(directory)
         shutil.copytree(release, root / "release", symlinks=True)
-        for name in options.scenario or ["java-only", "smoke", "input-routing", "commands", "regular", "regular-approval", "copy", "retry", "model-error", "output-limit", "headless", "headless-read-only", "headless-full-access", "headless-workspace", "headless-auto-review", "memory-delay", "mcp", "team", "resume", "long-output", "approval-resize", "approval-small", "approval-mouse", "approval-suspend", "approval-deny", "full-access", "sighup", "sigint", "sigterm", "java-exit", "node-exit"]:
+        for name in options.scenario or ["java-only", "smoke", "input-routing", "commands", "regular", "regular-approval", "copy", "retry", "model-error", "output-limit", "headless", "headless-read-only", "headless-full-access", "headless-workspace", "headless-auto-review", "memory-delay", "mcp", "team", "workflow", "resume", "long-output", "approval-resize", "approval-small", "approval-mouse", "approval-suspend", "approval-deny", "full-access", "sighup", "sigint", "sigterm", "java-exit", "node-exit"]:
             case = Case(root, root / "release", shutil.which("node"), name)
             try:
                 result = {"name": name, "status": "pass", **verify(case, name)}

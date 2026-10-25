@@ -357,6 +357,18 @@ public final class JadeCodeFactory {
             for (Tool tool : CronTools.forScheduler(cron)) registered.put(tool.name(), tool);
         }
         for (Tool tool : TeamTools.forActor(team, actor)) registered.put(tool.name(), tool);
+        // Workflow 复用模型和用量账本，但每个步骤只有自己的输入且没有工具。
+        // 每次运行开始才快照思考设置；步骤输出独立封顶 2000，同时尊重用户更小的显式正式额度。
+        var workflowClient = tracked(client, config.model(), actor, com.jadecode.llm.UsageRecord.Purpose.WORKFLOW, usage, null);
+        var workflows = new com.jadecode.workflow.WorkflowRuntime(cwd,
+                com.jadecode.workflow.WorkflowDefinition.registry(List.of(com.jadecode.workflow.ReviewChangesWorkflow.definition())),
+                () -> new com.jadecode.workflow.WorkflowAgentRunner(workflowClient, config.baseUrl() + "|" + config.model(),
+                        Math.min(formalMaxTokens, 2000), thinking.get()),
+                com.jadecode.workflow.WorkflowRuntime.Limits.defaults(),
+                progress -> observer.publish(com.jadecode.execution.ExecutionNotice.event(
+                        com.jadecode.execution.ExecutionNotice.Kind.WORKFLOW, progress.runId(), "Workflow",
+                        progress.event() + ": " + progress.label(), progress.status())));
+        registered.put("Workflow", new com.jadecode.tools.WorkflowTool(workflows));
         // 每份 Session 独立持有连接；构造不启动进程，模型明确 connect 后才发现外部工具。
         var mcp = new com.jadecode.mcp.McpManager(settings.mcp().servers(), cwd, errors);
         if (!mcp.availableServers().isEmpty()) registered.put("connect_mcp", new com.jadecode.tools.ConnectMcpTool(mcp));
@@ -386,6 +398,7 @@ public final class JadeCodeFactory {
         runtime.resources(Map.of("Context", instructions.isEmpty() ? List.of() : List.of("AGENTS.md"),
                 "Skills", skillLoader.names()));
         runtime.onClose(mcp::close);
+        runtime.onClose(workflows::close);
         runtime.permissions(permissions);
         runtime.historyState(manager, config.model(), isLeader ? team::hasLiveMembers : () -> false);
         runtime.telemetry(usage, isLeader, formalClient, thinking);
@@ -487,6 +500,8 @@ public final class JadeCodeFactory {
                 + " You may continue other work or return after dispatch; reports wake you by default."
                 + " Review reports and actual changes before declaring the user's overall goal complete."
                 + " task remains available for one-shot subagents and is distinct from Team assignments."
+                + " Workflow runs a saved orchestration synchronously. For review-changes, first collect the actual change text and pass args.changes."
+                + " Internal workflow agents only analyze supplied text; their verdicts are not executed tests. Resume requires the same input and model settings."
                 + " Write detailed Chinese JavaDoc and inline comments for beginner learning."
                 // 二层知识注入的第一层:只放目录(常驻成本小),完整 SKILL.md 走 load_skill 的 tool_result
                 + "\n\nSkills available:\n" + catalog + "\n\n"

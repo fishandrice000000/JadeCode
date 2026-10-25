@@ -20,8 +20,14 @@ public record WorkflowAgentRunner(LlmClient client, String model, int maxTokens,
         if (model == null || model.isBlank() || maxTokens < 1) throw new IllegalArgumentException("Invalid workflow runner");
     }
 
-    /** 模型和格式提示版本参与缓存身份，避免换模型/额度/思考设置后错用旧步骤结果。 */
-    String identity() { return "workflow-runner-v1|" + model + "|" + maxTokens + "|" + thinking.name(); }
+    /** 端点/模型和格式提示版本参与缓存身份；只存哈希，不把端点可能携带的认证片段写进快照。 */
+    String identity() {
+        try {
+            String basis = "workflow-runner-v1|" + model + "|" + maxTokens + "|" + thinking.name();
+            return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(basis.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        } catch (java.security.NoSuchAlgorithmException impossible) { throw new IllegalStateException("SHA-256 unavailable", impossible); }
+    }
 
     /**
      * 发一次无工具请求，schema 是提示而非服务端约束；真实解析与校验由 WorkflowContext 完成。

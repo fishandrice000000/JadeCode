@@ -116,7 +116,7 @@ public final class BackendObserver implements ExecutionObserver {
     /** 用量/工具/轮次结束后刷新 footer 与 Team 状态；250ms 节流，不轮询。 */
     private void maybeRefreshSnapshot(ExecutionNotice.Kind kind) {
         boolean interesting = switch (kind) {
-            case USAGE, TOOL_END, TURN_END, SESSION, MODEL, BUFFER, BACKGROUND, COMPACT -> true;
+            case USAGE, TOOL_END, TURN_END, SESSION, MODEL, BUFFER, BACKGROUND, COMPACT, WORKFLOW -> true;
             default -> false;
         };
         if (!interesting || snapshotRefresh == null) return;

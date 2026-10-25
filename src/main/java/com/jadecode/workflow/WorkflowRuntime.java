@@ -76,7 +76,10 @@ public final class WorkflowRuntime implements AutoCloseable {
                 active.add(run);
             }
             try {
-                session.snapshot("running", run.usage());
+                // 已完成 run 的恢复先保留原成功产物。缓存语义校验发生在脚本重放时，不能一开始
+                // 就把旧 completed 改成 running，后来发现坏缓存又用错误正文覆盖成功证据。
+                boolean preserveSuccess = resume != null && session.header.path("status").asText().equals("completed");
+                if (!preserveSuccess) session.snapshot("running", run.usage());
                 run.event("task_started", definition.name(), "running");
                 JsonNode result;
                 String status;
@@ -96,13 +99,16 @@ public final class WorkflowRuntime implements AutoCloseable {
                         status = "cancelled"; result = Json.mapper().createObjectNode().put("error", "Workflow cancelled");
                     }
                     run.finished = true;
-                    session.output(result);
-                    session.snapshot(status, run.usage());
+                    if (!preserveSuccess || status.equals("completed")) {
+                        session.output(result);
+                        session.snapshot(status, run.usage());
+                    }
                 }
                 run.event("task_notification", definition.name(), status);
                 ObjectNode response = Json.mapper().createObjectNode().put("run_id", session.header.get("run_id").asText())
                         .put("workflow", name).put("status", status).put("output_file", session.directory.resolve("output.json").toString());
                 response.set("result", result.deepCopy()); response.set("usage", run.usage());
+                response.put("output_preserved", preserveSuccess && !status.equals("completed"));
                 return response;
             } finally {
                 run.cancel(); active.remove(run);

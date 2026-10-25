@@ -7,11 +7,11 @@ package com.jadecode.llm;
  * @param requestId 本次调用的独立编号，用于恢复和重复提交时去重
  * @param model 实际请求的模型名称
  * @param actor Leader、队友或一次性子代理的身份
- * @param purpose 正式任务、一次性子任务、摘要、记忆或辅助审批
+ * @param purpose 正式任务、一次性子任务、Workflow 步骤、摘要、记忆或辅助审批
  * @param usage 服务端实际报告的值，可能缺失
  */
 public record UsageRecord(String requestId, String model, String actor, Purpose purpose, ModelResponse.Usage usage) {
-    public enum Purpose { FORMAL, SUBAGENT, SUMMARY, MEMORY, APPROVAL }
+    public enum Purpose { FORMAL, SUBAGENT, SUMMARY, MEMORY, APPROVAL, WORKFLOW }
 
     public UsageRecord {
         if (requestId == null || requestId.isBlank() || model == null || actor == null || actor.isBlank() || purpose == null)

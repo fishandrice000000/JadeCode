@@ -25,7 +25,8 @@ public final class PermissionGate {
     private final McpPermissionCheck mcp;
     private final PermissionRuleMatcher matcher = new PermissionRuleMatcher();
     private final DefaultPermissionRules defaults = new DefaultPermissionRules();
-    private static final Set<String> INTERNAL = Set.of("glob", "todo_write", "compact", "load_skill", "task",
+    // Workflow 仅分析传入文本并写宿主管理的运行记录，不获得文件/Shell 能力；显式 deny/ask 仍优先。
+    private static final Set<String> INTERNAL = Set.of("glob", "todo_write", "compact", "load_skill", "task", "Workflow",
             "create_task", "get_task", "list_tasks", "update_task", "claim_task", "complete_task",
             "connect_mcp", "schedule_cron", "list_crons", "cancel_cron", "spawn_teammate", "list_teammates", "close_teammate",
             "shutdown_teammate", "assign_task", "send_message", "submit_task_result", "reopen_task", "retry_team_message");

@@ -223,6 +223,13 @@ class WorkflowRuntimeTest {
                     WorkflowRuntime.Limits.defaults(), ignored -> { })) {
                 assertThrows(IOException.class, () -> changedModel.run("saved", null, id, origin()));
             }
+            Path journal = output.resolveSibling("journal.jsonl");
+            ObjectNode entry = object(Files.readString(journal)); entry.put("value", false);
+            Files.writeString(journal, entry + "\n");
+            var invalidCache = runtime.run("saved", null, id, origin());
+            assertEquals("failed", invalidCache.path("status").asText());
+            assertTrue(invalidCache.path("output_preserved").asBoolean());
+            assertEquals(original, Files.readString(output), "坏缓存失败不能覆盖旧成功产物");
             Files.writeString(output.resolveSibling("journal.jsonl"), "broken", StandardOpenOption.APPEND);
             assertThrows(IOException.class, () -> runtime.run("saved", null, id, origin()));
             assertEquals(original, Files.readString(output));

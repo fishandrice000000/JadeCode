@@ -749,6 +749,15 @@ export class Application {
 			case "SUBAGENT":
 				this.transcript.notice(actor, "Subagent", detail, false);
 				break;
+
+			case "WORKFLOW": {
+				// 进度只显示宿主事件，不变成用户指令；最终成功与否仍由工具结果和任务状态决定。
+				const failed = state === "failed" || state === "cancelled";
+				const entry = this.transcript.notice(actor, "Workflow", `${detail} · ${state}`, failed);
+				// 普通 notice 默认标 Historical；这里是当前运行事实，状态已在正文，不能误标成历史恢复。
+				this.transcript.update(entry.id, (current) => ({ ...current, status: failed ? "ERROR" : "" }));
+				break;
+			}
 			case "BACKGROUND":
 				this.transcript.notice(actor, "Background", `${text(payload, "id")} ${state}`, false);
 				break;

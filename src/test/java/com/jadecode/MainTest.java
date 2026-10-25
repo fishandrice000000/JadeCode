@@ -95,6 +95,8 @@ class MainTest {
                         + " You may continue other work or return after dispatch; reports wake you by default."
                         + " Review reports and actual changes before declaring the user's overall goal complete."
                         + " task remains available for one-shot subagents and is distinct from Team assignments."
+                        + " Workflow runs a saved orchestration synchronously. For review-changes, first collect the actual change text and pass args.changes."
+                        + " Internal workflow agents only analyze supplied text; their verdicts are not executed tests. Resume requires the same input and model settings."
                         + " Write detailed Chinese JavaDoc and inline comments for beginner learning."
                         + "\n\nSkills available:\n- pdf: 处理 PDF\n\n"
                         + "Use load_skill to read the full instructions when a skill applies."
