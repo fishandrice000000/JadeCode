@@ -33,15 +33,18 @@ def main():
             + "import{ClipboardController}from " + json.dumps(module.as_uri()) + ";\n"
             + "for(const [phase,text]of [['blocked','BLOCKED'],['allowed','TMUX_CLIPBOARD_OK']]){\n"
             + "while(!existsSync(" + json.dumps(directory + "/") + "+phase))await new Promise(r=>setTimeout(r,10));\n"
-            + "const result=await new ClipboardController().copy(text);writeFileSync(" + json.dumps(directory + "/")
+            + "const result=phase==='blocked'?(process.stdout.write('\\x1b]52;c;'+Buffer.from(text).toString('base64')+'\\x07'),{rawOsc52:true}):await new ClipboardController().copy(text);writeFileSync(" + json.dumps(directory + "/")
             + "+phase+'.json',JSON.stringify(result));}\nsetInterval(()=>{},1000);\n")
         def run(*args):
             # 每条命令固定绑定本次 socket，绝不能省略 -S 而操作用户 tmux。
             return subprocess.run([tmux, "-S", socket, *args], env=env, capture_output=True, text=True, timeout=5, check=True)
         master, slave = pty.openpty()
+        other_master, other_slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+        fcntl.ioctl(other_slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
         output = bytearray()
         client = None
+        other_client = None
         def drain(seconds):
             end = time.monotonic() + seconds
             while time.monotonic() < end:
@@ -60,26 +63,36 @@ def main():
             client = subprocess.Popen([tmux, "-S", socket, "attach-session", "-t", "verify"],
                 env=env, stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
             drain(.4)
+            # 另一个会话稍后附着，验证复制不误发到服务器的“最近客户端”。
+            run("new-session", "-d", "-s", "other", "/bin/sleep", "30")
+            other_client = subprocess.Popen([tmux, "-S", socket, "attach-session", "-t", "other"],
+                env=env, stdin=other_slave, stdout=other_slave, stderr=other_slave, start_new_session=True)
+            drain(.3)
             (work / "blocked").touch(); wait(work / "blocked.json")
             assert not run("list-buffers").stdout.strip(), "external policy accepted an application's OSC52"
             before = len(output)
-            run("set-option", "-s", "set-clipboard", "on")
             (work / "allowed").touch(); wait(work / "allowed.json")
             assert run("show-buffer").stdout == "TMUX_CLIPBOARD_OK"
             assert base64.b64encode(b"TMUX_CLIPBOARD_OK") in output[before:], "OSC52 was not forwarded to the fake outer terminal"
-            assert json.loads((work / "allowed.json").read_text())["status"] == "OSC52_SENT"
+            other_output = bytearray()
+            while select.select([other_master], [], [], 0)[0]: other_output.extend(os.read(other_master, 65536))
+            assert base64.b64encode(b"TMUX_CLIPBOARD_OK") not in other_output, "copy leaked to another session's client"
+            assert json.loads((work / "allowed.json").read_text())["status"] == "TMUX_SENT"
+            assert run("show-option", "-sv", "set-clipboard").stdout.strip() == "external", "controller changed server policy"
             report = {"tmux": subprocess.check_output([tmux, "-V"], text=True).strip(),
-                "externalBlocksApplication": True, "onCreatesBufferAndForwardsOsc52": True,
+                "externalBlocksRawApplicationOsc52": True, "loadBufferForwardsWithExternalUnchanged": True,
+                "otherSessionClientUnaffected": True,
                 "desktopClipboardTouched": False, "exit": 0}
             target = ROOT / "target/tmux-clipboard-verification.json"
             target.parent.mkdir(exist_ok=True); target.write_text(json.dumps(report, indent=2) + "\n")
             print(json.dumps(report))
         finally:
             subprocess.run([tmux, "-S", socket, "kill-server"], env=env, capture_output=True, timeout=5)
-            if client:
-                try: client.wait(timeout=3)
-                except subprocess.TimeoutExpired: os.kill(client.pid, signal.SIGKILL); client.wait(timeout=3)
-            os.close(master); os.close(slave)
+            for owned_client in (client, other_client):
+                if owned_client:
+                    try: owned_client.wait(timeout=3)
+                    except subprocess.TimeoutExpired: os.kill(owned_client.pid, signal.SIGKILL); owned_client.wait(timeout=3)
+            os.close(master); os.close(slave); os.close(other_master); os.close(other_slave)
 
 
 if __name__ == "__main__":

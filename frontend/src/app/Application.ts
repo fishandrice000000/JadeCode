@@ -39,7 +39,7 @@ import { ResumePage } from "../pages/resume-page.ts";
 import { HotkeysPage, McpPage, ModelPage, SessionPage } from "../pages/information-pages.ts";
 import { PermissionPage } from "../pages/permission-page.ts";
 import { SearchPage } from "../pages/search-page.ts";
-import { ClipboardController, OSC52_SENT_MESSAGE } from "../services/clipboard-controller.ts";
+import { ClipboardController } from "../services/clipboard-controller.ts";
 import { ExternalEditor } from "../services/external-editor.ts";
 import { suspendToShell } from "../services/job-control.ts";
 import { clipLine, display, singleLine, visibleEscapes } from "../presentation/text-safety.ts";
@@ -244,7 +244,7 @@ export class Application {
 			copySelection: async (value) => {
 				const result = await this.clipboard.copy(value);
 				if (result.status === "FAILED") return result.error ?? false;
-				if (result.status === "OSC52_SENT") return OSC52_SENT_MESSAGE;
+				// 成功写出请求即给短反馈；OSC52 无客户端ACK，状态不冒充DESKTOP。
 				// Pi 的选区复制路径负责一次限时 flash；不要再追加永久 Notice 卡。
 				return true;
 			},
@@ -1185,7 +1185,6 @@ export class Application {
 	private async copy(value: string): Promise<void> {
 		const result = await this.clipboard.copy(value);
 		if (result.status === "FAILED") this.flash(result.error ?? "Copy failed", true);
-		else if (result.status === "OSC52_SENT") this.flash(OSC52_SENT_MESSAGE, true);
 		else this.flash("Copied!", false);
 	}
 
