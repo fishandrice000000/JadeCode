@@ -395,7 +395,12 @@ def verify(case, name):
         return {"exit": 0, "commands": 12, "httpRequests": 0, "renamedAndResumed": True}
     if name in ("retry", "model-error", "output-limit"):
         case.until("JADE_VERIFY_DONE" if name == "retry" else "LOCAL_MODEL_FAILURE" if name == "model-error" else "Incomplete reply")
-        if name == "output-limit": assert b"PARTIAL_LIMIT_TEXT" in case.output
+        if name == "output-limit":
+            # 截断正文可以保留为预览；同时等待真实任务失败，不能只凭界面标记就认定正确收尾。
+            assert b"PARTIAL_LIMIT_TEXT" in case.output
+            case.until("Model output reached max_tokens")
+            assert len([call for call in case.server.calls if call.get("tools")]) == 1, "truncation silently retried the model"
+            assert case.server.aux_requests == 0, "truncated turn incorrectly reached Memory maintenance"
         if name == "retry": assert len([call for call in case.server.calls if call.get("tools")]) == 2
         case.finish()
         return {"exit": 0, "modelBoundary": name, "httpRequests": len(case.server.calls)}

@@ -182,6 +182,8 @@ public class AgentExecutor implements AutoCloseable {
 
             ResponseStream display = java.util.Objects.requireNonNull(streams.get());
             boolean[] textDisplayed = { false };
+            // 响应校验失败也可能已拿到停止原因，失败出口仍须保留它，不能丢掉截断提示。
+            String stopReason = "";
             // 每次尝试（含压缩重试）生成独立观察 ID；旧预览不能续写到新请求。
             String observationRequestId = java.util.UUID.randomUUID().toString();
             display.requestStarted(observationRequestId);
@@ -209,6 +211,7 @@ public class AgentExecutor implements AutoCloseable {
                         snapshot.definitions());
                 ModelResponse response = observed == ResponseStream.NONE ? client.complete(request)
                         : client.complete(request, observed);
+                stopReason = response.stopReason();
                 // 完整消息通过角色和工具 ID 校验后才结束预览，返回给 Session 采用。
                 ensureOpen();
                 // 输出额度耗尽与输入上下文太长是两种失败，不能靠压缩或执行半份行动来掩盖。
@@ -227,7 +230,7 @@ public class AgentExecutor implements AutoCloseable {
                 return new ModelReply(response.message(), calls, textDisplayed[0], response.usage(), snapshot,
                         observationRequestId, displayCompletedNanos);
             } catch (LlmException failure) {
-                display.failed();
+                display.failed(stopReason);
                 // 配置关闭就直接暴露本次错误，不额外重试同一历史。开启时也只补救真正的上下文超限。
                 ensureOpen();
                 if (compactor == null || !compactor.policy().reactiveEnabled() || !ContextCompactor.isContextOverflow(failure)

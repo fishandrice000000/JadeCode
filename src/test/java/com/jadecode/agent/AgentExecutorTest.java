@@ -15,6 +15,7 @@ import com.jadecode.session.SessionRuntime;
 import com.jadecode.llm.CompleteRequest;
 import com.jadecode.llm.LlmException;
 import com.jadecode.llm.ModelResponse;
+import com.jadecode.llm.ResponseStream;
 import com.jadecode.llm.RecordingLlmClient;
 import com.jadecode.llm.ScriptedLlmClient;
 import com.jadecode.messages.ContentBlock;
@@ -106,6 +107,13 @@ class AgentExecutorTest {
         AtomicInteger requests = new AtomicInteger();
         AtomicInteger executed = new AtomicInteger();
         AtomicInteger completed = new AtomicInteger();
+        AtomicInteger previewFailures = new AtomicInteger();
+        AtomicInteger previewCompletions = new AtomicInteger();
+        var stopReason = new java.util.concurrent.atomic.AtomicReference<String>();
+        ResponseStream preview = new ResponseStream() {
+            @Override public void failed(String reason) { stopReason.set(reason); previewFailures.incrementAndGet(); }
+            @Override public void complete(String reason) { previewCompletions.incrementAndGet(); }
+        };
         Hooks hooks = new Hooks();
         hooks.register(Hooks.PRE_TOOL_USE, params -> { executed.incrementAndGet(); return null; });
         hooks.register(Hooks.TURN_END, params -> { completed.incrementAndGet(); return null; });
@@ -115,7 +123,7 @@ class AgentExecutorTest {
             return requests.getAndIncrement() == 0
                     ? new ModelResponse(Message.assistant(List.of(block)), new ModelResponse.Usage(0, 1), "max_tokens")
                     : assistant(new TextBlock("不应请求这一轮"));
-        }, Map.of("bash", new BashTool()), "test-system", 8000, hooks);
+        }, Map.of("bash", new BashTool()), "test-system", 8000, hooks, null, () -> preview);
         List<Message> messages = new ArrayList<>(List.of(Message.userText("完成任务")));
 
         // 走真实会话结束路径；异常必须来自截断检查，而不是工具或网络失败。
@@ -125,6 +133,9 @@ class AgentExecutorTest {
             assertEquals(1, requests.get());
             assertEquals(0, executed.get(), "截断回复不能进入工具执行或权限 hook");
             assertEquals(0, completed.get(), "不能发布正常任务完成 hook");
+            assertEquals("max_tokens", stopReason.get(), "失败出口也保留截断原因，供界面解释未完成");
+            assertEquals(1, previewFailures.get());
+            assertEquals(0, previewCompletions.get(), "校验失败不能发布正常预览完成");
             assertEquals(List.of(Message.userText("完成任务")), messages, "不把截断回复采用为可执行历史");
         }
     }

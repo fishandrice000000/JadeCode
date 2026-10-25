@@ -50,4 +50,11 @@ public interface ResponseStream {
 
     /** 请求或完整响应校验失败，结束预览并标明不完整；不能将预览当成有效历史。 */
     default void failed() { }
+
+    /**
+     * 失败时仍传递服务端已报告的停止原因，让界面区分输出截断与一般请求错误。
+     * 默认委托旧 failed，旧展示实现仍能收到一次失败通知；不采用消息或执行工具。
+     * @param stopReason 已取得的真实停止原因；没有完整响应时传空串，不根据异常文字猜测
+     */
+    default void failed(String stopReason) { failed(); }
 }
