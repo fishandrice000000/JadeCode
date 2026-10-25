@@ -43,6 +43,7 @@ src/main/java/com/jadecode/
 ├── tasks/            # 持久任务图：创建 / 依赖 / 认领 / 完成与解锁，六工具由父循环使用
 ├── team/             # 常驻队友、独立派工编号、文件邮箱与结果提交
 ├── mcp/              # 真实 stdio 服务连接、工具发现与文本调用；官方 Java SDK 隔离层
+├── workflow/         # 可信预设编排、有界模型步骤、schema 校验、journal 与显式续跑
 ├── cron/             # CronProducer 定时生产、时间规则、待交付状态与工作区持久化
 ├── session/          # SessionRuntime(单消费者、历史、记忆时机、服务关闭) / SessionInbox / SessionEvent
 └── agent/            # AgentExecutor(模型请求、工具批次、压缩步骤及嵌套结果)
@@ -198,6 +199,37 @@ Leader 和常驻队友各自按需连接；一次性子代理暂不接入 MCP。
 第一版只支持 stdio、文本工具，不支持 HTTP/OAuth、resources/prompts、sampling、elicitation、热更新或非文本结果。
 工程记录见 [s14 任务单](docs/jobs/s14/mcp-fetch.md)，源码阅读见 [s14 指南](docs/notes/s14/mcp-fetch-review.md)。
 
+## Workflow
+
+s16 新增 `Workflow` 工具：模型选择宿主登记的流程名称与参数，Java 代码负责固定编排。
+当前内置 `review-changes`，对传入变更做正确性／安全／性能／风格四维审查，再逐条模型复核并汇总排序。
+步骤只分析输入文本，无文件/Shell 工具；模型复核不等于实际编译、测试或问题复现。
+
+在 `./jade` 中可要求：
+
+```text
+使用 review-changes Workflow 审查我提供的变更文本，把文本传入 args.changes。
+只分析这段内容，不修改项目文件、不安装依赖。返回 run_id 和最终结果。
+```
+
+模型工具参数为 `name`、可选对象 `args`、可选 `resume_from_run_id`，不接受可执行代码。
+`review-changes` 的 args 要求非空 changes 字符串（最多 128000 字符），可选正整数 budget。
+得到真实 run_id 后可要求恢复同一流程并省略 args；原输入、流程版本、模型端点/名称、输出额度和思考设置必须保持一致。
+
+工具同步等待整体结果，内部默认最多 8 个并发模型尝试、1000 个步骤／真实请求，含结构修正与一层嵌套。
+每步输出额度取正式额度与 2000 的较小值，仍遵守已知模型上限；结构不合法最多修正一次，截断和网络错误不按格式错误自动重放。
+使用明确支持的 JSON Schema 子集进行宿主校验，不是服务端强制生成或完整 JSON Schema 引擎。
+
+运行文件放在 `.jadecode/workflows/<run_id>/`，包含 snapshot.json、journal.jsonl、output.json 与 run.lock。
+只有已成功落盘的步骤可以复用；恢复缓存命中不再次调用该步骤模型，主会话选择工具和汇总仍可能产生请求。
+工具结果 usage 统计本次执行，缺失或仍在途的用量明确标记；budget 是本次执行按报告检查的观察预算，
+并行请求可能超额，多次恢复也会重新计数，不是绝对账单上限。总体会话用量另在 WORKFLOW 分类持续记录。
+关闭会话会取消所属 Workflow，不自动恢复；崩溃在请求完成与 journal 落盘之间时仍可能重调。
+已完成 run 的恢复失败会保留旧成功产物，并返回 output_preserved=true，不能把旧 output_file 当成本次成功。
+
+工程证据见 [s16 任务单](docs/jobs/s16/workflow-runtime.md)，阅读顺序、问题和用户独立真机步骤见
+[s16 指南](docs/notes/s16/workflow-runtime-review.md)。
+
 ## 运行
 
 ```sh
@@ -335,7 +367,8 @@ REPL 默认新建并保存主会话。`/resume` 打开可筛选选择器，
 - [ ] s13:独立 Session Team、文件邮箱与结果提交已接入；工程验证见任务单，用户学习与真机验收待完成
 - [ ] s14:真实 MCP stdio、动态工具与 Fetch 已接入；工程证据见任务单，用户理解与独立真机验收待完成
 - [ ] s15:主体集成已具备，整体核对、截断保护与阅读指南已交付；用户理解与独立真机验收待完成
-- [ ] s16–s17:逐章实现(见映射表)
+- [ ] s16:Workflow 工具、可信预设、编排、结构校验、运行记录与续跑已接入；工程验证与指南已交付，用户理解和独立真机验收待完成
+- [ ] s17:待后续逐章实现(见映射表)
 
 s15 从现有装配、会话事件、工具批次与结束判断串联前面各章，不重复建设主循环。
 课程差异、验证与边界见 [s15 任务单](docs/jobs/s15/integrated-harness.md)，
