@@ -86,6 +86,36 @@ class WorkflowIntegrationTest {
         }
     }
 
+    /** 真实工具目录能发现新预设；无发现的审查复用四个缓存步骤，主历史和用量仍隔离。 */
+    @Test void factoryDiscoversRunsAndResumesCodeReview() throws Exception {
+        AtomicInteger formal = new AtomicInteger(), steps = new AtomicInteger();
+        try (var runtime = session(request -> {
+            if (request.tools().isEmpty()) {
+                steps.incrementAndGet();
+                String prompt = request.messages().getFirst().extractText();
+                assertTrue(prompt.startsWith("Review supplied code")); assertTrue(prompt.contains("Service.java"));
+                assertFalse(prompt.contains("ROOT_ONLY_CONTEXT"));
+                return reply(new TextBlock("{\"findings\":[],\"questions\":[]}"));
+            }
+            var tool = request.tools().stream().filter(t -> t.name().equals("Workflow")).findFirst().orElseThrow();
+            assertTrue(tool.description().contains("code-review")); assertTrue(tool.description().contains("args.files"));
+            int turn = formal.getAndIncrement();
+            if (turn == 0) return call("review", json("""
+                    {"name":"code-review","args":{"files":[{"path":"Service.java","content":"class Service {}"}],"context":"Review this module."}}
+                    """));
+            ToolResultBlock block = request.messages().getLast().blocksOfType(ToolResultBlock.class).getFirst();
+            assertFalse(block.isError()); ObjectNode out = json(block.content()); assertEquals("completed", out.path("status").asText());
+            assertTrue(out.path("result").path("analysis_only").asBoolean()); assertTrue(out.path("result").path("confirmed").isEmpty());
+            if (turn == 1) return call("resume-review", json("{\"name\":\"code-review\"}").put("resume_from_run_id", out.path("run_id").asText()));
+            assertEquals(0, out.path("usage").path("requests").asInt()); assertEquals(4, out.path("usage").path("cached_steps").asInt());
+            return reply(new TextBlock("reviewed"));
+        }, PermissionState.defaults(), ExecutionObserver.NONE)) {
+            runtime.run(new ArrayList<>(List.of(Message.userText("ROOT_ONLY_CONTEXT"))));
+            assertEquals(4, steps.get()); assertEquals(3, formal.get());
+            assertEquals(4, runtime.display().usage().byPurpose().get("WORKFLOW").reportedRequests());
+        }
+    }
+
     /** 已登记内部工具仍受显式 deny 管理；拒绝时既不调用步骤模型，也不建立运行目录。 */
     @Test void explicitDenyPreventsWorkflowSideEffects() throws Exception {
         var rule = new PermissionRule("deny-workflow", PermissionRule.Effect.DENY, PermissionRule.Kind.TOOL,

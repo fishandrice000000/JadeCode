@@ -20,10 +20,12 @@ public final class WorkflowTool implements Tool {
     public WorkflowTool(WorkflowRuntime runtime) { this.runtime = java.util.Objects.requireNonNull(runtime); }
     /** 与课程工具名一致；不是允许模型执行任意 Java/Python 的入口。 */
     @Override public String name() { return "Workflow"; }
-    /** 目录来自宿主，首个预设必须由主模型提供实际变更文本，不能假称内部步骤会自己读文件。 */
+    /** 目录来自宿主；变更和完整代码分别提供文本输入，不能假称内部步骤会自己读文件。 */
     @Override public String description() {
         return "Run a saved workflow synchronously, with bounded parallel model steps. " + runtime.catalog()
                 + " For review-changes, supply actual change text in args.changes; optional args.budget is an observed token budget."
+                + " For code-review, supply 1-16 complete files as args.files=[{path,content}], optionally args.context for requirements/callers."
+                + " Code review returns source-anchored model-confirmed findings and unconfirmed questions; it does not prove correctness."
                 + " Steps cannot read files or use tools. To resume the same input/settings, pass resume_from_run_id and omit args.";
     }
     /** 参数是平铺外壳，具体 args 契约由可信定义校验。 */

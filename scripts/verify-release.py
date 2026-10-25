@@ -65,6 +65,12 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
             workflow_args = {"name": "review-changes", "args": {"changes": "return 1;"}} if not results else {
                 "name": "review-changes", "resume_from_run_id": json.loads(results[-1]["content"])["run_id"]}
             requested = ("Workflow", workflow_args)
+        if "JADE_VERIFY_CODE_REVIEW" in text and body.get("tools") and len(results) < 2:
+            workflow_args = {"name": "code-review", "args": {
+                "files": [{"path": "Service.java", "content": "class Service {\n  String trim(String name) { return name.trim(); }\n}"}],
+                "context": "Callers may pass null; report findings, do not execute code."}} if not results else {
+                    "name": "code-review", "resume_from_run_id": json.loads(results[-1]["content"])["run_id"]}
+            requested = ("Workflow", workflow_args)
         if "JADE_VERIFY_GOAL" in text and body.get("tools") and "Goal continuation from harness" in text and not results:
             # 先让主模型空口结束，再按独立判断理由读取真实夹具文件，验证同一循环确实继续。
             requested = ("read_file", {"path": "proof.txt"})
@@ -84,7 +90,16 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
                     answer = "INVALID_GOAL_JUDGMENT" if self.server.scenario == "goal-error" else json.dumps({
                         "ok": evidence, "reason": "GOAL_EVIDENCE_PRESENT" if evidence else "GOAL_NEEDS_EVIDENCE: read proof.txt", "impossible": False})
                 elif "You are a focused workflow agent." in json.dumps(body.get("system", "")):
-                    answer = '{"findings":[]}'  # 独立 Workflow 请求必须满足实际输出 schema，不与 Memory 混同。
+                    prompt = "\n".join(block.get("text", "") for block in messages[0].get("content", []) if isinstance(block, dict))
+                    if prompt.startswith("Review supplied code"):
+                        findings = [{"title": "null input fails", "severity": "high", "path": "Service.java",
+                                     "start_line": 2, "end_line": 2, "evidence": "return name.trim();", "trigger": "name is null",
+                                     "impact": "throws instead of handling null", "suggestion": "handle null according to contract"}] if "for correctness." in prompt else []
+                        answer = json.dumps({"findings": findings, "questions": []})
+                    elif prompt.startswith("Verify code-review finding"):
+                        answer = json.dumps({"verdict": "confirmed", "reason": "null permitted by supplied contract", "needed_context": ""})
+                    else:
+                        answer = '{"findings":[]}'  # 原 review-changes 的协议保持不变。
                 else:
                     answer = "[]"  # Memory 辅助请求返回合法空候选，避免把 JSON 错误当成功证据。
                     self.server.aux_requests += 1
@@ -349,7 +364,7 @@ def verify(case, name):
         data["mcp"]["servers"]["fixture"] = {"command": sys.executable,
             "args": [str(REPO / "scripts/mcp-fixture.py"), str(case.directory / "mcp.pid")], "readOnlyTools": ["echo"]}
         config.write_text(json.dumps(data))
-    prompt = "JADE_VERIFY_WORKFLOW" if name == "workflow" else "JADE_VERIFY_MCP" if name == "mcp" else "JADE_VERIFY_TEAM" if name == "team" else "JADE_VERIFY_TOOL" if name.startswith("approval") else "JADE_VERIFY_LONG" if name == "long-output" else ""
+    prompt = "JADE_VERIFY_CODE_REVIEW" if name == "code-review" else "JADE_VERIFY_WORKFLOW" if name == "workflow" else "JADE_VERIFY_MCP" if name == "mcp" else "JADE_VERIFY_TEAM" if name == "team" else "JADE_VERIFY_TOOL" if name.startswith("approval") else "JADE_VERIFY_LONG" if name == "long-output" else ""
     case.start("JADE_VERIFY_LONG" if name == "regular-approval" else "JADE_VERIFY_TEXT" if name in ("copy", "retry", "model-error", "output-limit") else prompt,
                shell=name == "approval-suspend", mode="regular" if name in ("regular", "regular-approval") else "fullscreen")
     if name in ("goal", "goal-error"):
@@ -485,6 +500,21 @@ def verify(case, name):
         assert payload["status"] == "completed" and payload["usage"]["requests"] == 0 and payload["usage"]["cached_steps"] == 4
         case.finish()
         return {"exit": 0, "workflowRequests": len(steps), "formalRequests": len(formal), "resumeCachedSteps": 4, "progressVisible": True}
+    if name == "code-review":
+        case.until("JADE_VERIFY_DONE"); case.until("task_notification: code-review")
+        formal = [call for call in case.server.calls if call.get("tools")]
+        steps = [call for call in case.server.calls if "You are a focused workflow agent." in json.dumps(call.get("system", ""))]
+        assert len(formal) == 3 and len(steps) == 5, "code review did not verify/resume with cached steps"
+        result = formal[-1]["messages"][-1]["content"][0]
+        assert result["type"] == "tool_result" and not result.get("is_error", False)
+        payload = json.loads(result["content"])
+        assert payload["status"] == "completed" and payload["usage"]["requests"] == 0 and payload["usage"]["cached_steps"] == 5
+        report = payload["result"]
+        assert report["analysis_only"] and len(report["confirmed"]) == 1 and not report["unconfirmed"]
+        assert report["confirmed"][0]["path"] == "Service.java" and report["confirmed"][0]["start_line"] == 2
+        assert report["confirmed"][0]["evidence"] == "return name.trim();"
+        case.finish()
+        return {"exit": 0, "workflowRequests": 5, "formalRequests": 3, "resumeCachedSteps": 5, "sourceAnchored": True}
     if name in ("mcp", "team"):
         case.until("JADE_VERIFY_DONE")
         results = [block for call in case.server.calls for msg in call.get("messages", [])
@@ -634,7 +664,7 @@ def verify(case, name):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--release", type=Path, default=REPO / "dist/jadecode")
-    parser.add_argument("--scenario", action="append", choices=["java-only", "smoke", "input-routing", "commands", "regular", "regular-approval", "copy", "retry", "model-error", "output-limit", "headless", "headless-read-only", "headless-full-access", "headless-workspace", "headless-auto-review", "memory-delay", "mcp", "team", "workflow", "goal", "goal-error", "goal-headless", "resume", "long-output", "approval-resize", "approval-small", "approval-mouse", "approval-suspend", "approval-deny", "full-access", "sighup", "sigint", "sigterm", "java-exit", "node-exit"])
+    parser.add_argument("--scenario", action="append", choices=["java-only", "smoke", "input-routing", "commands", "regular", "regular-approval", "copy", "retry", "model-error", "output-limit", "headless", "headless-read-only", "headless-full-access", "headless-workspace", "headless-auto-review", "memory-delay", "mcp", "team", "workflow", "code-review", "goal", "goal-error", "goal-headless", "resume", "long-output", "approval-resize", "approval-small", "approval-mouse", "approval-suspend", "approval-deny", "full-access", "sighup", "sigint", "sigterm", "java-exit", "node-exit"])
     parser.add_argument("--report", type=Path, default=REPO / "target/tui-release-verification.json")
     options = parser.parse_args()
     release = options.release.resolve()
@@ -657,7 +687,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="jade-release-verify-") as directory:
         root = Path(directory)
         shutil.copytree(release, root / "release", symlinks=True)
-        for name in options.scenario or ["java-only", "smoke", "input-routing", "commands", "regular", "regular-approval", "copy", "retry", "model-error", "output-limit", "headless", "headless-read-only", "headless-full-access", "headless-workspace", "headless-auto-review", "memory-delay", "mcp", "team", "workflow", "goal", "goal-error", "goal-headless", "resume", "long-output", "approval-resize", "approval-small", "approval-mouse", "approval-suspend", "approval-deny", "full-access", "sighup", "sigint", "sigterm", "java-exit", "node-exit"]:
+        for name in options.scenario or ["java-only", "smoke", "input-routing", "commands", "regular", "regular-approval", "copy", "retry", "model-error", "output-limit", "headless", "headless-read-only", "headless-full-access", "headless-workspace", "headless-auto-review", "memory-delay", "mcp", "team", "workflow", "code-review", "goal", "goal-error", "goal-headless", "resume", "long-output", "approval-resize", "approval-small", "approval-mouse", "approval-suspend", "approval-deny", "full-access", "sighup", "sigint", "sigterm", "java-exit", "node-exit"]:
             case = Case(root, root / "release", shutil.which("node"), name)
             try:
                 result = {"name": name, "status": "pass", **verify(case, name)}

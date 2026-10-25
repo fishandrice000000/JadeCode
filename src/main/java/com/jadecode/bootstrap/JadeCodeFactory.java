@@ -361,7 +361,8 @@ public final class JadeCodeFactory {
         // 每次运行开始才快照思考设置；步骤输出独立封顶 2000，同时尊重用户更小的显式正式额度。
         var workflowClient = tracked(client, config.model(), actor, com.jadecode.llm.UsageRecord.Purpose.WORKFLOW, usage, null);
         var workflows = new com.jadecode.workflow.WorkflowRuntime(cwd,
-                com.jadecode.workflow.WorkflowDefinition.registry(List.of(com.jadecode.workflow.ReviewChangesWorkflow.definition())),
+                com.jadecode.workflow.WorkflowDefinition.registry(List.of(com.jadecode.workflow.ReviewChangesWorkflow.definition(),
+                        com.jadecode.workflow.CodeReviewWorkflow.definition())),
                 () -> new com.jadecode.workflow.WorkflowAgentRunner(workflowClient, config.baseUrl() + "|" + config.model(),
                         Math.min(formalMaxTokens, 2000), thinking.get()),
                 com.jadecode.workflow.WorkflowRuntime.Limits.defaults(),
