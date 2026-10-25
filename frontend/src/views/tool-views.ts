@@ -4,6 +4,7 @@ import type { ResolvedTheme } from "../theme/theme-resolver.ts";
 import { clipLine, display, singleLine, visibleEscapes } from "../presentation/text-safety.ts";
 import { formatDuration } from "../presentation/format.ts";
 import { statusLabel } from "./message-views.ts";
+import { headingDetail, headingPart, statusRole } from "./card-heading.ts";
 
 /**
  * 工具卡渲染：可信身份选择 renderer，预览 ≠ 执行，完整结果始终保留。
@@ -65,19 +66,25 @@ export class ToolCard {
 		const wrapped = preview.flatMap((line) => wrapTextWithAnsi(line, Math.max(1, width - 2)));
 		const visible = this.entry.expanded ? wrapped : wrapped.slice(0, 10);
 		if (visible.length < wrapped.length) visible.push(`… ${wrapped.length - visible.length} more input lines`);
-		return visible.map((line) => "  " + this.theme.style("muted", line));
+		return visible.map((line) => {
+			// 编辑预览仍是请求片段；只用红/绿标出旧/新行，不据此声称编辑成功。
+			const role = name === "edit_file" && line.startsWith("+ ") ? "toolDiffAdded"
+				: name === "edit_file" && line.startsWith("- ") ? "toolDiffRemoved" : "muted";
+			return "  " + this.theme.style(role, line);
+		});
 	}
 
 	private header(width: number): string[] {
-		const actor = this.teamActive && this.entry.actor ? `${this.entry.actor} · ` : "";
-		const elapsed = this.entry.elapsedMs !== null && this.entry.elapsedMs > 0 ? ` · ${formatDuration(this.entry.elapsedMs)}` : "";
-		const text = `◍ ${actor}${this.entry.title} · ${statusLabel(this.entry.status)}${elapsed}`;
-		const role = this.entry.status === "ERROR" || this.entry.status === "INTERRUPTED"
-			? "error" : this.entry.status === "BLOCKED" || this.entry.status === "NOT_RUN" ? "warning"
-				: this.entry.status === "PREVIEW" || this.entry.status === "QUEUED" || this.entry.status === "RUNNING"
-					? "dim" : "toolTitle";
+		const theme = this.theme;
+		const actor = this.teamActive && this.entry.actor ? headingPart(theme, "muted", `${this.entry.actor} · `) : "";
+		const elapsed = this.entry.elapsedMs !== null && this.entry.elapsedMs > 0
+			? headingDetail(theme, "dim", formatDuration(this.entry.elapsedMs)) : "";
+		// 工具名与结果独立：保留原始状态词，不把 Returned 或历史记录改名为成功。
+		const role = this.entry.status === "ERROR" || this.entry.status === "INTERRUPTED" ? "error" : "toolTitle";
+		const text = headingPart(theme, role, "◍ ") + actor + headingPart(theme, role, this.entry.title, true)
+			+ headingDetail(theme, statusRole(this.entry.status), statusLabel(this.entry.status)) + elapsed;
 		const hint = this.entry.body && !this.entry.expanded ? " · Ctrl+O expand" : "";
-		return [this.theme.style(role, clipLine(singleLine(text), Math.max(0, width - hint.length)) + this.theme.style("dim", hint))];
+		return [clipLine(text, Math.max(0, width - hint.length)) + theme.style("dim", hint)];
 	}
 
 	private resultLines(result: string, width: number): string[] {
@@ -98,7 +105,7 @@ export class ToolCard {
 		return lines.map((line) => {
 			if (isDiff && line.startsWith("+")) return "  " + this.theme.style("toolDiffAdded", line);
 			if (isDiff && line.startsWith("-")) return "  " + this.theme.style("toolDiffRemoved", line);
-			return "  " + this.theme.style("toolOutput", line);
+			return "  " + this.theme.style(this.entry.expanded ? "text" : "toolOutput", line);
 		});
 	}
 }

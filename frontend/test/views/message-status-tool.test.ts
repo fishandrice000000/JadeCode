@@ -6,6 +6,7 @@ import { ToolCard } from "../../src/views/tool-views.ts";
 import type { Entry } from "../../src/state/transcript-store.ts";
 import { parseThemeDocument } from "../../src/theme/theme-document.ts";
 import { resolveTheme } from "../../src/theme/theme-resolver.ts";
+import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 
 const theme = resolveTheme(parseThemeDocument(readFileSync(new URL("../../../assets/themes/jadecode.json", import.meta.url), "utf8")), "dark", {
 	mode: "256color", noColor: true,
@@ -46,4 +47,29 @@ test("fallback tools show ten lines collapsed and all lines expanded; outputPad 
 	assert.match(expanded, /l-13/);
 	const padded = new ToolCard(tool("custom_tool", "one", false), theme, 1, false).render(80);
 	assert.ok(padded.every((line) => line.startsWith(" ")), "outputPad must add a left margin");
+});
+
+test("card titles separate status, time and errors without changing safe text or width", () => {
+	const document = parseThemeDocument(readFileSync(new URL("../../../assets/themes/jadecode.json", import.meta.url), "utf8"));
+	for (const variant of ["dark", "light"]) {
+		for (const noColor of [false, true]) {
+			const palette = resolveTheme(document, variant, { mode: "truecolor", noColor });
+			for (const [status, role, label] of [["RUNNING", "accent", "Running"], ["RETURNED", "success", "Returned"],
+				["BLOCKED", "warning", "Blocked"], ["ERROR", "error", "Error"], ["HISTORICAL", "dim", "Historical"]] as const) {
+				const entry = { ...tool("Workflow", "正文", false), status, elapsedMs: 13400 };
+				const card = new ToolCard(entry, palette, 1, false);
+				const title = card.render(100)[0]!;
+				assert.ok(title.includes(palette.style(role, label)));
+				assert.ok(stripTerminalSequences(title).includes(`Workflow · ${label} · 13.4s`));
+				for (const width of [1, 8, 24, 80]) {
+					for (const line of card.render(width)) assert.ok(visibleWidth(line) <= width);
+				}
+				if (noColor) assert.doesNotMatch(card.render(80).join("\n"), /\x1b/);
+			}
+			const error = { ...reply("ERROR", null), kind: "NOTICE" as const, title: "Error\x1b[32m", body: "保存失败\x1b[32m" };
+			const lines = new MessageCard(error, palette, factory as never, "  ", true, false, (a) => a).render(80);
+			assert.ok(lines[1]!.includes(palette.style("error", "保存失败")));
+			assert.equal(lines.map(stripTerminalSequences).join("\n"), "◆ Error · Error\n  保存失败");
+		}
+	}
 });

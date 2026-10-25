@@ -2,8 +2,9 @@ import { wrapTextWithAnsi, visibleWidth } from "@earendil-works/pi-tui";
 import type { Entry } from "../state/transcript-store.ts";
 import type { ResolvedTheme } from "../theme/theme-resolver.ts";
 import type { MarkdownFactory } from "../markdown/markdown-factory.ts";
-import { clipLine, display, singleLine } from "../presentation/text-safety.ts";
+import { clipLine, display } from "../presentation/text-safety.ts";
 import { formatDuration } from "../presentation/format.ts";
+import { headingDetail, headingPart, statusRole } from "./card-heading.ts";
 
 /**
  * 消息卡：Request / Reply / Thinking / Notice。
@@ -45,13 +46,18 @@ export class MessageCard {
 
 	private title(width: number): string {
 		const theme = this.theme;
-		const actor = this.teamActive && this.entry.actor ? `${this.actorName(this.entry.actor)} · ` : "";
-		const status = this.entry.status && this.entry.status !== "STREAMING" ? ` · ${statusLabel(this.entry.status)}` : "";
-		const elapsed = this.entry.elapsedMs !== null && this.entry.elapsedMs > 0 ? ` · ${formatDuration(this.entry.elapsedMs)}` : "";
+		// 标题说明“谁/什么”，状态说明“结果如何”，分别取色才能快速扫描故障。
+		const actor = this.teamActive && this.entry.actor ? headingPart(theme, "muted", `${this.actorName(this.entry.actor)} · `) : "";
+		const status = this.entry.status && this.entry.status !== "STREAMING"
+			? headingDetail(theme, statusRole(this.entry.status), statusLabel(this.entry.status)) : "";
+		const elapsed = this.entry.elapsedMs !== null && this.entry.elapsedMs > 0
+			? headingDetail(theme, "dim", formatDuration(this.entry.elapsedMs)) : "";
 		const icon = this.entry.kind === "USER" ? "◆" : this.entry.kind === "THINKING" ? "◇" : this.entry.kind === "TOOL" ? "◍" : "◆";
-		const role = this.entry.kind === "USER" ? "requestTitle" : this.entry.kind === "THINKING" ? "thinkingTitle" : "replyTitle";
-		const text = `${icon} ${actor}${this.entry.title}${status}${elapsed}`;
-		return theme.style(role, clipLine(singleLine(text), Math.max(0, width)));
+		const role = this.entry.status === "ERROR" || this.entry.status === "HISTORICAL ERROR" ? "error"
+			: this.entry.kind === "USER" ? "requestTitle" : this.entry.kind === "THINKING" ? "thinkingTitle"
+				: this.entry.kind === "NOTICE" ? "customMessageLabel" : "replyTitle";
+		const text = headingPart(theme, role, `${icon} `) + actor + headingPart(theme, role, this.entry.title, true) + status + elapsed;
+		return clipLine(text, Math.max(0, width));
 	}
 
 	private body(width: number): string[] {
@@ -73,7 +79,8 @@ export class MessageCard {
 			return this.boxed(display(this.entry.body), width, "userMessageBg", "userMessageText");
 		}
 		const prefix = "  ";
-		const role = "muted";
+		// 错误正文也需要醒目；普通通知使用当前主题正文色，不再整块压成灰色。
+		const role = this.entry.status === "ERROR" || this.entry.status === "HISTORICAL ERROR" ? "error" : "customMessageText";
 		return wrapTextWithAnsi(display(this.entry.body), Math.max(1, width - prefix.length))
 			.map((line) => prefix + theme.style(role, line));
 	}
