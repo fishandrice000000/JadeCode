@@ -166,6 +166,7 @@ class Case:
             self.send(shlex.join(args) + "\n")
         self.until("Enter submit")
         self.drain(.4)
+        assert b"[jade] Node frontend" not in self.output, "startup PID diagnostic leaked to the product terminal"
         self.owned_node_pid = self.node_pid()
 
     def send(self, value):
@@ -194,9 +195,22 @@ class Case:
         fcntl.ioctl(self.slave, termios.TIOCSWINSZ, struct.pack("HHHH", rows, columns, 0, 0))
 
     def node_pid(self):
-        matches = re.findall(rb"\(pid (\d+)\)", self.output)
-        assert matches, "Node PID was not reported"
-        return int(matches[-1])
+        # 只沿本夹具拥有的 Java/bash 子树定位 Node，不依赖向产品终端打印测试 PID。
+        pending = [self.process.pid]
+        seen = set()
+        while pending:
+            pid = pending.pop()
+            if pid in seen: continue
+            seen.add(pid)
+            try:
+                command = Path(f"/proc/{pid}/cmdline").read_bytes()
+                if str(self.release / "lib/frontend/dist/main.js").encode() in command: return pid
+                # ProcessBuilder 可能在 Java 虚拟线程的载体线程 fork，子进程不一定列在主线程名下。
+                for children in Path(f"/proc/{pid}/task").glob("*/children"):
+                    try: pending.extend(int(value) for value in children.read_text().split())
+                    except (FileNotFoundError, ProcessLookupError): pass
+            except (FileNotFoundError, ProcessLookupError): pass
+        raise AssertionError("Node child was not found in the owned process tree")
 
     def snapshot(self, name, columns=120, rows=40):
         """保存连续字节段；屏幕解析器依次应用各阶段尺寸，检查实际帧而非原始 ANSI 长度。"""

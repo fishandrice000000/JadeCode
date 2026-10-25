@@ -145,10 +145,8 @@ public final class InteractiveLauncher {
         environment.put("JADE_BRIDGE_BUILD_ID", distribution.buildId());
         environment.put("JADE_BRIDGE_PROTOCOL_VERSION", Integer.toString(distribution.protocolVersion()));
         environment.put("JADE_PROJECT_VERSION", distribution.projectVersion());
-        Process process = builder.start();
-        // 诊断：只写 pid 与 entry，不含凭据。
-        System.err.println("[jade] Node frontend " + distribution.buildId() + " started (pid " + process.pid() + ")");
-        return process;
+        // 正常启动保持终端安静；只有真实启动/退出失败才由调用方输出诊断。
+        return builder.start();
     }
 
     /** @return 打印版本信息（不加载 Node/配置/模型）。 */
