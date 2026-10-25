@@ -62,7 +62,7 @@ test("result cards have styled hierarchy, bounded safe previews and a plain narr
 	}
 });
 
-test("Application places one noncapturing result above the editor without adding transcript entries", (t) => {
+test("Application anchors a compact noncapturing result at top right without adding transcript entries", (t) => {
 	t.mock.timers.enable({ apis: ["setTimeout"] });
 	const app = new Application();
 	const fields = app as unknown as Record<string, any>;
@@ -81,11 +81,16 @@ test("Application places one noncapturing result above the editor without adding
 		answered(data, 0);
 		assert.equal(fields.transcript.entries().length, 0);
 		assert.equal(overlays[0]!.options.nonCapturing, true);
-		assert.equal(overlays[0]!.options.row + overlays[0]!.component.height(overlays[0]!.options.width), 18);
+		assert.equal(overlays[0]!.options.anchor, "top-right");
+		assert.equal(overlays[0]!.options.margin, 1);
+		assert.equal(overlays[0]!.options.width, 56);
+		assert.equal(overlays[0]!.options.row, undefined);
 		assert.equal(overlays[0]!.options.visible(), true);
 		fields.dockOriginY = 12;
-		assert.equal(overlays[0]!.options.row, 7, "overlay follows multiline editor geometry");
-		fields.dockOriginY = 2;
+		assert.equal(overlays[0]!.options.anchor, "top-right", "multiline drafts do not move the popup");
+		fields.host.terminal.columns = 30;
+		assert.equal(overlays[0]!.options.width, 28, "popup follows terminal width without overflowing");
+		fields.dockOriginY = 1;
 		assert.equal(overlays[0]!.options.visible(), false, "small screen cannot move the result over the editor");
 		fields.dockOriginY = 18;
 		fields.pages.push({} as never);

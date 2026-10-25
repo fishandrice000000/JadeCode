@@ -649,7 +649,8 @@ def verify(case, name):
             lines = shown.splitlines()
             result_y = next(index for index, line in enumerate(lines) if label in line)
             draft_y = next(index for index, line in enumerate(lines) if "DRAFT_AFTER_APPROVAL" in line)
-            assert result_y < draft_y, "result overlay did not sit above the editor"
+            assert result_y == 2 and result_y < draft_y, "result overlay was not at the top of the viewport"
+            assert {"row": 1, "column": screens[-2]["columns"] - 2, "glyph": "╮"} in screens[-2]["corners"], "popup was not anchored to the right margin"
             assert label not in expired and "DRAFT_AFTER_APPROVAL" in expired, "result persisted or consumed the draft"
             assert "Approval ·" not in expired, "approval result accumulated in transcript"
             assert len(case.server.calls) == calls_before_typing, "typing after approval unexpectedly submitted a request"

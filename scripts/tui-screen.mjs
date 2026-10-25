@@ -14,7 +14,16 @@ for (const stage of stages) {
 	await new Promise((resolve) => terminal.write(fs.readFileSync(path.join(directory, `${stage.name}.bin`)), resolve));
 	const buffer = terminal.buffer.active;
 	const lines = Array.from({ length: terminal.rows }, (_, y) => buffer.getLine(buffer.baseY + y)?.translateToString(true) ?? "");
-	frames.push({ name: stage.name, columns: terminal.cols, rows: terminal.rows, text: lines.join("\n") });
+	// 文本下标不是终端列号：右上角弹窗前面可能保留中文等双列字符。记录真实格坐标用于定位断言。
+	const corners = [];
+	for (let row = 0; row < terminal.rows; row++) {
+		const line = buffer.getLine(buffer.baseY + row);
+		for (let column = 0; column < terminal.cols; column++) {
+			const glyph = line?.getCell(column)?.getChars();
+			if (glyph === "╭" || glyph === "╮" || glyph === "╰" || glyph === "╯") corners.push({ row, column, glyph });
+		}
+	}
+	frames.push({ name: stage.name, columns: terminal.cols, rows: terminal.rows, text: lines.join("\n"), corners });
 }
 terminal.dispose();
 process.stdout.write(JSON.stringify(frames));

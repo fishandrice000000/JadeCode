@@ -1231,22 +1231,22 @@ export class Application {
 	}
 
 	/**
-	 * 结果是屏幕相对浮层，覆盖对话末尾而不增加文档行，也不改变焦点/审批按钮几何。
-	 * row/width 每帧读取最新布局，跟随多行草稿和 resize；空间不足时隐藏，绝不盖住输入栏。
+	 * 结果固定在当前终端视口右上角，不增加文档行，也不改变焦点/审批按钮几何。
+	 * 宽度每帧跟随 resize，最多 56 列，四周留一格；高度空间不足时隐藏，避免覆盖输入栏。
 	 */
 	private installApprovalResultOverlay(): void {
 		this.approvalResultOverlay?.hide();
 		const screen = this.host?.tui();
 		if (!screen) return;
 		const app = this;
-		const overlayWidth = (): number => Math.max(1, Math.min(76, app.host.terminal.columns - 2));
+		const overlayWidth = (): number => Math.max(1, Math.min(56, app.host.terminal.columns - 2));
 		this.approvalResultOverlay = screen.showOverlay(this.approvalResult, {
 			get width() { return overlayWidth(); },
-			get row() { return app.dockOriginY - app.approvalResult.height(overlayWidth()); },
-			col: 1,
+			anchor: "top-right",
+			margin: 1,
 			nonCapturing: true,
 			visible: () => app.approvalResult.hasResult() && !app.closing && !app.approval.hasPending() && !app.pages.current()
-				&& app.dockOriginY >= app.approvalResult.height(overlayWidth()),
+				&& app.dockOriginY >= 1 + app.approvalResult.height(overlayWidth()),
 		});
 	}
 
