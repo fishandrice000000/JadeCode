@@ -221,22 +221,22 @@ write 显示前 10 行并标 `Preview · not executed`，edit 显示片段 diff 
 整轮计时来自执行线程的单调时钟：审批等待暂停，结束后冻结；真实耗时显示为 `29.0s`。状态栏 spinner 每 80ms 更新。
 页脚显示目录/分支/会话名、真实 token/R/W 缓存/context 估计/权限与模型；token 使用大写 K，例如 100000→`100K`，不把缺报告当 0，也不显示无来源的费用/订阅。
 
-全屏模式支持应用滚轮、PageUp/Down、Ctrl+Home/End、选区复制和搜索（Ctrl+F；Enter/Shift+Enter 前后匹配，Esc 关闭）。
-`Ctrl+O` 同时展开工具卡与欢迎资源；`Ctrl+G` 外部编辑器；`Ctrl+V` 读取文字或图片剪贴板（图片保存为临时文件并插入路径，仍只是文本输入）；
+全屏模式支持应用滚轮、PageUp/Down、Ctrl+Home/End、选区复制和搜索（Ctrl+Shift+F；Ctrl+G/Shift+Enter 前后匹配，Enter 跳转关闭，Esc 关闭）。
+`Ctrl+O` 在空欢迎页展开资源，在对话中展开/收起工具卡；`Ctrl+G` 外部编辑器；`Ctrl+V` 读取文字或图片剪贴板（图片保存为临时文件并插入路径，仍只是文本输入）；
 `Ctrl+X` 复制选区或最近助手回复；`Ctrl+Z` 暂退到 shell，`fg` 后重绘；`Ctrl+C` 清草稿，500ms 内再按退出；空编辑器 Ctrl+D 退出。
-Esc 只关闭本地菜单/搜索/候选，不是 Agent 单轮取消。regular 模式不捕获鼠标，滚轮/拖选交给终端。
+Esc 关闭本地菜单/搜索/候选；审批时拒绝当前申请，不是 Agent 单轮取消。regular 模式不捕获鼠标，滚轮/拖选交给终端。
 退出时恢复终端并打印一次 Session/ID/Resume；fullscreen 默认把最终转录重放到主屏，`tui.fullscreenExitOutput=resume-hint` 时只保留恢复提示。
 
 命令只列真实后端：`/settings /name /session /hotkeys /copy /new /resume /quit /model /thinking /permission /mcp`。
 旧 `/help`、`/exit`、`/usage`、`/theme`、`/rename` 别名已移除；未知 slash 留在本地报英文错误并保留草稿，不发给模型。
 `/model` 只读；`/mcp` 只读服务/工具清单，无连接/配置/OAuth 按钮；缺取消/树/分叉/模型热切换/扩展管理等后端的入口统一隐藏。
-审批以“仅本次/允许此类/拒绝”接管 dock，完整显示理由、真实参数和长期范围；默认无选择，窗口无法安全显示审阅区时不发布批准动作。
-Esc/空 Enter/普通文字不答复审批；旧画面、旧输入水位、resize 或 revision 变化都会使旧批准失效。
+审批以“仅本次/允许此类/拒绝”接管 dock，显示完整真实参数和长期范围，不显示内部 reason；默认无选择，窗口无法安全显示审阅区时不发布批准动作。
+新鲜 Esc 拒绝当前审批；未选择时 Enter 和普通文字不批准；旧画面、旧输入水位、resize 或 revision 变化都会使旧批准失效。
 
 颜色尊重 `NO_COLOR`/`TERM=dumb`；只有受信编码器能输出 SGR/OSC8/终端协议，模型与工具正文先净化。
 全屏退出/窗口宽度变化可能清空并重放 scrollback，这是终端可寻址边界的正常行为。
 Markdown/高亮/Mermaid 由固定 Pi 的 Node 前端渲染；Java 只发送原始正文，不再保留旧 Java/Graal 解析与排版实现。
-真实 SSH/IME/图片终端/模型流仍需人工验收。详细限制见 `docs/tui-pi-replication/05-handover/design-deviations.md` 与 `acceptance-results.md`。
+真实 SSH/IME/图片终端/模型流仍需人工验收。详细限制见 [当前工程收尾报告](docs/tui-pi-replication/10-node-frontend-migration/handover/finalization-report.md) 与 [逐项台账](docs/tui-pi-replication/10-node-frontend-migration/handover/final-acceptance-matrix.md)。
 
 架构、验证与未验证范围见 [TUI 任务单](docs/jobs/s13/pi-tui.md)，阅读入口见 [TUI 指南](docs/notes/s13/pi-tui-review.md)。
 
