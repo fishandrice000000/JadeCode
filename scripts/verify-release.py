@@ -71,6 +71,8 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
                 "context": "Callers may pass null; report findings, do not execute code."}} if not results else {
                     "name": "code-review", "resume_from_run_id": json.loads(results[-1]["content"])["run_id"]}
             requested = ("Workflow", workflow_args)
+        if "JADE_VERIFY_LIMITED_REVIEW" in text and body.get("tools") and not results:
+            requested = ("Workflow", {"name": "code-review", "args": {"files": [{"path": "A.java", "content": "class A {}"}]}})
         if "JADE_VERIFY_GOAL" in text and body.get("tools") and "Goal continuation from harness" in text and not results:
             # 先让主模型空口结束，再按独立判断理由读取真实夹具文件，验证同一循环确实继续。
             requested = ("read_file", {"path": "proof.txt"})
@@ -91,7 +93,9 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
                         "ok": evidence, "reason": "GOAL_EVIDENCE_PRESENT" if evidence else "GOAL_NEEDS_EVIDENCE: read proof.txt", "impossible": False})
                 elif "You are a focused workflow agent." in json.dumps(body.get("system", "")):
                     prompt = "\n".join(block.get("text", "") for block in messages[0].get("content", []) if isinstance(block, dict))
-                    if prompt.startswith("Review supplied code"):
+                    if self.server.scenario == "workflow-limit":
+                        answer = "INCOMPLETE_REVIEW"  # 故意截断：不能修 JSON、不能缓存、不能锁死会话。
+                    elif prompt.startswith("Review supplied code"):
                         findings = [{"title": "null input fails", "severity": "high", "path": "Service.java",
                                      "start_line": 2, "end_line": 2, "evidence": "return name.trim();", "trigger": "name is null",
                                      "impact": "throws instead of handling null", "suggestion": "handle null according to contract"}] if "for correctness." in prompt else []
@@ -108,9 +112,10 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
             if "JADE_VERIFY_LONG" in text and "JADE_VERIFY_TOOL" not in text:
                 answer = "\n".join(f"ROW_{i:03} 中文 body" for i in range(120)) + "\nLONG_END"
             content = [{"type": "text", "text": answer}]
+        workflow_limit = self.server.scenario == "workflow-limit" and "You are a focused workflow agent." in json.dumps(body.get("system", ""))
         message = {"id": "msg-verify", "type": "message", "role": "assistant", "model": "verify-local",
-                   "content": content, "stop_reason": "tool_use" if tool else "max_tokens" if self.server.scenario == "output-limit" and body.get("tools") else "end_turn",
-                   "stop_sequence": None, "usage": {"input_tokens": 20, "output_tokens": 10}}
+                   "content": content, "stop_reason": "tool_use" if tool else "max_tokens" if workflow_limit or self.server.scenario == "output-limit" and body.get("tools") else "end_turn",
+                   "stop_sequence": None, "usage": {"input_tokens": 20, "output_tokens": int(body["max_tokens"]) if workflow_limit else 10}}
         self.send_response(200)
         if not body.get("stream"):
             encoded = json.dumps(message).encode()
@@ -364,7 +369,7 @@ def verify(case, name):
         data["mcp"]["servers"]["fixture"] = {"command": sys.executable,
             "args": [str(REPO / "scripts/mcp-fixture.py"), str(case.directory / "mcp.pid")], "readOnlyTools": ["echo"]}
         config.write_text(json.dumps(data))
-    prompt = "JADE_VERIFY_CODE_REVIEW" if name == "code-review" else "JADE_VERIFY_WORKFLOW" if name == "workflow" else "JADE_VERIFY_MCP" if name == "mcp" else "JADE_VERIFY_TEAM" if name == "team" else "JADE_VERIFY_TOOL" if name.startswith("approval") else "JADE_VERIFY_LONG" if name == "long-output" else ""
+    prompt = "JADE_VERIFY_LIMITED_REVIEW" if name == "workflow-limit" else "JADE_VERIFY_CODE_REVIEW" if name == "code-review" else "JADE_VERIFY_WORKFLOW" if name == "workflow" else "JADE_VERIFY_MCP" if name == "mcp" else "JADE_VERIFY_TEAM" if name == "team" else "JADE_VERIFY_TOOL" if name.startswith("approval") else "JADE_VERIFY_LONG" if name == "long-output" else ""
     case.start("JADE_VERIFY_LONG" if name == "regular-approval" else "JADE_VERIFY_TEXT" if name in ("copy", "retry", "model-error", "output-limit") else prompt,
                shell=name == "approval-suspend", mode="regular" if name in ("regular", "regular-approval") else "fullscreen")
     if name in ("goal", "goal-error"):
@@ -515,6 +520,29 @@ def verify(case, name):
         assert report["confirmed"][0]["evidence"] == "return name.trim();"
         case.finish()
         return {"exit": 0, "workflowRequests": 5, "formalRequests": 3, "resumeCachedSteps": 5, "sourceAnchored": True}
+    if name == "workflow-limit":
+        case.until("JADE_VERIFY_DONE")
+        formal = [call for call in case.server.calls if call.get("tools")]
+        steps = [call for call in case.server.calls if "You are a focused workflow agent." in json.dumps(call.get("system", ""))]
+        assert steps and all(call["max_tokens"] == formal[0]["max_tokens"] for call in steps), "workflow used an artificial output cap"
+        results = [block for call in formal for msg in call["messages"] for block in msg.get("content", [])
+                   if isinstance(block, dict) and block.get("type") == "tool_result"]
+        assert results and results[-1].get("is_error"), "truncated workflow was presented as a success"
+        failed = json.loads(results[-1]["content"])
+        assert failed["status"] == "failed" and "max_tokens" in failed["result"]["error"] and "not cached" in failed["result"]["error"]
+        case.send("HELLO_AFTER_WORKFLOW\r")
+        deadline = time.monotonic() + 10
+        while len([call for call in case.server.calls if call.get("tools")]) < 3 and time.monotonic() < deadline:
+            case.drain(.04)
+        assert len([call for call in case.server.calls if call.get("tools")]) == 3, "session stopped accepting input after workflow failure"
+        # 等到第二轮持久化收尾，防止只看到 HTTP 到达却没发现稍后记账失败。
+        journal = next(case.workspace.rglob("events.jsonl"))
+        while journal.read_text().count('"kind":"TURN_FINISHED"') < 2 and time.monotonic() < deadline:
+            case.drain(.04)
+        assert journal.read_text().count('"kind":"TURN_FINISHED"') == 2
+        assert "Failed to save session usage" not in ANSI.sub(b"", bytes(case.output)).decode("utf8", "replace")
+        case.finish()
+        return {"exit": 0, "truncationReported": True, "sessionContinues": True, "workflowOutputBudget": steps[0]["max_tokens"]}
     if name in ("mcp", "team"):
         case.until("JADE_VERIFY_DONE")
         results = [block for call in case.server.calls for msg in call.get("messages", [])
@@ -664,7 +692,7 @@ def verify(case, name):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--release", type=Path, default=REPO / "dist/jadecode")
-    parser.add_argument("--scenario", action="append", choices=["java-only", "smoke", "input-routing", "commands", "regular", "regular-approval", "copy", "retry", "model-error", "output-limit", "headless", "headless-read-only", "headless-full-access", "headless-workspace", "headless-auto-review", "memory-delay", "mcp", "team", "workflow", "code-review", "goal", "goal-error", "goal-headless", "resume", "long-output", "approval-resize", "approval-small", "approval-mouse", "approval-suspend", "approval-deny", "full-access", "sighup", "sigint", "sigterm", "java-exit", "node-exit"])
+    parser.add_argument("--scenario", action="append", choices=["java-only", "smoke", "input-routing", "commands", "regular", "regular-approval", "copy", "retry", "model-error", "output-limit", "headless", "headless-read-only", "headless-full-access", "headless-workspace", "headless-auto-review", "memory-delay", "mcp", "team", "workflow", "code-review", "workflow-limit", "goal", "goal-error", "goal-headless", "resume", "long-output", "approval-resize", "approval-small", "approval-mouse", "approval-suspend", "approval-deny", "full-access", "sighup", "sigint", "sigterm", "java-exit", "node-exit"])
     parser.add_argument("--report", type=Path, default=REPO / "target/tui-release-verification.json")
     options = parser.parse_args()
     release = options.release.resolve()
@@ -687,7 +715,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="jade-release-verify-") as directory:
         root = Path(directory)
         shutil.copytree(release, root / "release", symlinks=True)
-        for name in options.scenario or ["java-only", "smoke", "input-routing", "commands", "regular", "regular-approval", "copy", "retry", "model-error", "output-limit", "headless", "headless-read-only", "headless-full-access", "headless-workspace", "headless-auto-review", "memory-delay", "mcp", "team", "workflow", "code-review", "goal", "goal-error", "goal-headless", "resume", "long-output", "approval-resize", "approval-small", "approval-mouse", "approval-suspend", "approval-deny", "full-access", "sighup", "sigint", "sigterm", "java-exit", "node-exit"]:
+        for name in options.scenario or ["java-only", "smoke", "input-routing", "commands", "regular", "regular-approval", "copy", "retry", "model-error", "output-limit", "headless", "headless-read-only", "headless-full-access", "headless-workspace", "headless-auto-review", "memory-delay", "mcp", "team", "workflow", "code-review", "workflow-limit", "goal", "goal-error", "goal-headless", "resume", "long-output", "approval-resize", "approval-small", "approval-mouse", "approval-suspend", "approval-deny", "full-access", "sighup", "sigint", "sigterm", "java-exit", "node-exit"]:
             case = Case(root, root / "release", shutil.which("node"), name)
             try:
                 result = {"name": name, "status": "pass", **verify(case, name)}

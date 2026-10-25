@@ -125,7 +125,7 @@ public final class WorkflowRuntime implements AutoCloseable {
         return "Workflow step failed: " + failure.getClass().getSimpleName();
     }
 
-    /** 关闭只取消本 Runtime 拥有的运行；有限等待，不宣称第三方网络都能响应中断。 */
+    /** 关闭只取消本 Runtime 拥有的运行；已开始的 journal 提交先完成，不保证文件 IO 或网络立即返回。 */
     @Override public void close() {
         synchronized (active) { closed = true; active.forEach(Run::cancel); }
     }
@@ -209,10 +209,10 @@ public final class WorkflowRuntime implements AutoCloseable {
             catch (RuntimeException ignored) { /* 展示不是执行或批准通道。 */ }
         }
 
-        /** 中断本轮拥有的工作，不等待不可控网络；迟到线程仍会被 check/record 挡住。 */
-        void cancel() { cancelled = true; workers.shutdownNow(); }
+        /** 与 record 共用锁，已开始的落盘先完成再中断工作；迟到线程仍被 check/record 挡住。 */
+        synchronized void cancel() { cancelled = true; workers.shutdownNow(); }
 
         /** 分支失败只停止兄弟工作，不能把原本的业务失败误标成用户取消。 */
-        void abort() { aborted = true; workers.shutdownNow(); }
+        synchronized void abort() { aborted = true; workers.shutdownNow(); }
     }
 }

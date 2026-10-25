@@ -38,11 +38,16 @@ class WorkflowIntegrationTest {
 
     /** 真工厂可注入的设置关闭 Memory/MCP 外部入口，不改变 Workflow 本身的生产接线。 */
     private SessionRuntime session(LlmClient client, PermissionState permissions, ExecutionObserver observer) {
+        return session(client, permissions, observer, 1234);
+    }
+
+    /** 注入正式输出额度，验证 Workflow 沿用实际解析值，不被另一个固定 2000 上限截断。 */
+    private SessionRuntime session(LlmClient client, PermissionState permissions, ExecutionObserver observer, int maxTokens) {
         var defaults = JadeSettings.defaults();
         var settings = new JadeSettings(defaults.tui(), defaults.compaction(), defaults.limits(),
                 new JadeSettings.Memory(false, 100, 100, 100, 1000, 1000), defaults.modelMetadata(), defaults.thinking(),
                 defaults.permissions(), new JadeSettings.Mcp(Map.of()));
-        return JadeCodeFactory.create(new AppConfig("offline", "http://127.0.0.1:9", "fixture", 1234), workspace, client,
+        return JadeCodeFactory.create(new AppConfig("offline", "http://127.0.0.1:9", "fixture", maxTokens), workspace, client,
                 ignored -> { }, ignored -> { }, (hooks, cwd, out) -> { }, () -> ResponseStream.NONE,
                 observer, settings, permissions);
     }
@@ -113,6 +118,53 @@ class WorkflowIntegrationTest {
             runtime.run(new ArrayList<>(List.of(Message.userText("ROOT_ONLY_CONTEXT"))));
             assertEquals(4, steps.get()); assertEquals(3, formal.get());
             assertEquals(4, runtime.display().usage().byPurpose().get("WORKFLOW").reportedRequests());
+        }
+    }
+
+    /** 真实持久化会话：一个分支截断并取消三个兄弟后，费用事实可保存，主模型和下一条输入仍可继续。 */
+    @Test void truncatedParallelWorkflowKeepsPersistentSessionUsable() throws Exception {
+        var allStarted = new CountDownLatch(4); var cancelled = new CountDownLatch(3);
+        AtomicInteger formal = new AtomicInteger();
+        var paths = new WorkspacePaths(workspace);
+        try (var host = new com.jadecode.cli.SessionHost(paths, generation -> session(request -> {
+            assertEquals(8192, request.maxTokens(), "Workflow must use the configured effective formal budget");
+            if (request.tools().isEmpty()) {
+                allStarted.countDown();
+                try {
+                    if (!allStarted.await(3, TimeUnit.SECONDS)) throw new LlmException("fixture branches did not start");
+                    if (request.messages().getFirst().extractText().contains("for correctness."))
+                        return new ModelResponse(reply(new TextBlock("{\"findings\":[],\"questions\":[]}")).message(), new ModelResponse.Usage(20, 8192), "max_tokens");
+                    new CountDownLatch(1).await(); throw new AssertionError("Expected branch cancellation");
+                } catch (InterruptedException stopped) {
+                    Thread.currentThread().interrupt(); cancelled.countDown();
+                    throw new LlmException("fixture branch cancelled", stopped);
+                }
+            }
+            int turn = formal.getAndIncrement();
+            if (turn == 0) return call("limit", json("{\"name\":\"code-review\",\"args\":{\"files\":[{\"path\":\"A.java\",\"content\":\"class A {}\"}]}}"));
+            if (turn == 1) {
+                try { assertTrue(cancelled.await(3, TimeUnit.SECONDS)); }
+                catch (InterruptedException stopped) { Thread.currentThread().interrupt(); throw new LlmException("fixture wait interrupted", stopped); }
+                var result = json(request.messages().getLast().blocksOfType(ToolResultBlock.class).getFirst().content());
+                assertEquals("failed", result.path("status").asText());
+                assertTrue(result.path("result").path("error").asText().contains("max_tokens (limit=8192)"));
+            }
+            return reply(new TextBlock(turn == 1 ? "workflow failure handled" : "still alive"));
+        }, PermissionState.defaults(), ExecutionObserver.NONE, 8192), ignored -> { })) {
+            var opened = host.open(null);
+            assertEquals("workflow failure handled", host.startWithInitial(opened.generation(), "review", null, false).get(5, TimeUnit.SECONDS));
+            // 主 Future 先完成也不表示兄弟分支都记完账；等三个取消请求的缺报告事实进入共享账本。
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (host.current().display().usage().total().missingRequests() < 3 && System.nanoTime() < deadline) Thread.sleep(5);
+            assertEquals(3, host.current().display().usage().total().missingRequests());
+            assertEquals("still alive", host.current().submit("hello", null).get(5, TimeUnit.SECONDS));
+            var flowUsage = host.current().display().usage().byPurpose().get("WORKFLOW");
+            assertEquals(1, flowUsage.reportedRequests()); assertEquals(3, flowUsage.missingRequests());
+        }
+        var store = new com.jadecode.session.history.SessionStore(paths, ignored -> { });
+        try (var restored = store.open(store.list().getFirst().id())) {
+            assertTrue(restored.restored().warnings().isEmpty());
+            assertEquals(4, restored.restored().entries().stream().filter(e -> e.usage() != null && e.usage().purpose() == UsageRecord.Purpose.WORKFLOW).count());
         }
     }
 

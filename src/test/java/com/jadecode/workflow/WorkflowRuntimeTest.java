@@ -116,6 +116,8 @@ class WorkflowRuntimeTest {
         try (var runtime = runtime(List.of(definition), req -> new ModelResponse(reply("partial").message(), new ModelResponse.Usage(2, 3), "max_tokens"))) {
             var out = runtime.run("cut", null, null, origin());
             assertEquals("failed", out.path("status").asText()); assertEquals(1, out.path("usage").path("requests").asInt());
+            assertTrue(out.path("result").path("error").asText().contains("max_tokens (limit=2000)"));
+            assertTrue(out.path("result").path("error").asText().contains("not cached"));
             assertEquals(5, out.path("usage").path("reported_tokens").asInt());
             assertEquals("", Files.readString(Path.of(out.path("output_file").asText()).resolveSibling("journal.jsonl")));
         }

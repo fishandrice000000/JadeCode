@@ -231,7 +231,8 @@ s16 新增 `Workflow` 工具：模型选择宿主登记的流程名称与参数�
 得到真实 run_id 后可要求恢复同一流程并省略 args；原输入、流程版本、模型端点/名称、输出额度和思考设置必须保持一致。
 
 工具同步等待整体结果，内部默认最多 8 个并发模型尝试、1000 个步骤／真实请求，含结构修正与一层嵌套。
-每步输出额度取正式额度与 2000 的较小值，仍遵守已知模型上限；结构不合法最多修正一次，截断和网络错误不按格式错误自动重放。
+每步沿用已解析的正式输出额度（含模型上限），不再额外压到 2000；思考也可能消耗输出额度。
+结构不合法最多修正一次；截断明确报告步骤/max_tokens/有效额度且不缓存，不按格式错误自动重放，普通 Workflow 失败不封锁会话。
 使用明确支持的 JSON Schema 子集进行宿主校验，不是服务端强制生成或完整 JSON Schema 引擎。
 
 运行文件放在 `.jadecode/workflows/<run_id>/`，包含 snapshot.json、journal.jsonl、output.json 与 run.lock。
@@ -243,6 +244,7 @@ s16 新增 `Workflow` 工具：模型选择宿主登记的流程名称与参数�
 
 工程证据见 [s16 任务单](docs/jobs/s16/workflow-runtime.md)，阅读顺序、问题和用户独立真机步骤见
 [s16 指南](docs/notes/s16/workflow-runtime-review.md)。
+并行取消/共享日志修复与旧会话恢复步骤见 [Workflow 故障恢复](docs/notes/s16/workflow-failure-recovery.md)。
 
 ## Goal Loop
 

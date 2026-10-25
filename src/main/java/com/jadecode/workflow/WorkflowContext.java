@@ -69,8 +69,12 @@ public final class WorkflowContext {
             JsonNode value = null;
             for (int attempt = 0; attempt < 2; attempt++) {
                 var response = run.call(prompt + (attempt == 0 ? "" : "\nYour prior result did not match the required JSON structure. Return valid JSON only."), contract);
+                // 截断与坏 JSON 不同，不能拿半份输出做格式修正；报告具体步骤和有效额度供用户定位。
+                if (response.stopReason().equals("max_tokens"))
+                    throw new IllegalArgumentException("Workflow agent " + label + " output reached max_tokens (limit="
+                            + run.runner.maxTokens() + "); response incomplete and not cached");
                 if (response.message().role() != Role.ASSISTANT || !response.message().blocksOfType(ToolUseBlock.class).isEmpty()
-                        || response.stopReason().equals("max_tokens") || response.stopReason().equals("refusal"))
+                        || response.stopReason().equals("refusal"))
                     throw new IllegalArgumentException("Workflow agent returned an incomplete or unsupported action response");
                 String text = response.message().extractText();
                 if (text.length() > 256_000) throw new IllegalArgumentException("Workflow agent output exceeds size limit");
@@ -102,7 +106,8 @@ public final class WorkflowContext {
             for (var future : futures) results.add(future.get());
             run.check(); return Collections.unmodifiableList(results);
         } catch (Exception failure) {
-            futures.forEach(future -> future.cancel(true)); run.abort();
+            // 先与 Run.record 的提交边界互斥，再中断分支；不能在步骤 journal 的 force 中关掉通道。
+            run.abort(); futures.forEach(future -> future.cancel(true));
             if (failure instanceof InterruptedException) Thread.currentThread().interrupt();
             throw failure instanceof ExecutionException error ? cause(error) : failure;
         }
