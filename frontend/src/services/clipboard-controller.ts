@@ -7,11 +7,12 @@ import { getNativeClipboard } from "@earendil-works/pi-tui";
  * 剪贴板：复制文本/读取图片路径。
  *
  * - 复制：优先真实桌面剪贴板；不可用时发 OSC 52（只表示“已发出”，不伪造客户端 ACK），
- *   内部状态区分 DESKTOP/OSC52_SENT/FAILED；成功显示 Copied! 约 1 秒。
+ *   内部状态区分 DESKTOP/OSC52_SENT/FAILED；只有桌面后端确认成功才能显示 Copied!。
  * - 图片：只显式读取剪贴板图片，保存到本进程拥有的临时文件并把**路径**插入草稿；
  *   JadeCode 没有 vision 能力，这不是图像消息，也不自动读取文件内容。
  */
 export type CopyStatus = "DESKTOP" | "OSC52_SENT" | "FAILED";
+export const OSC52_SENT_MESSAGE = "OSC52 sent; clipboard confirmation unavailable";
 
 export class ClipboardController {
 	private readonly owned = new Set<string>();
@@ -20,12 +21,14 @@ export class ClipboardController {
 	constructor(private readonly native = getNativeClipboard,
 		private readonly writeOsc = (value: string): Promise<void> => new Promise((resolve, reject) => {
 			process.stdout.write(value, (error) => error ? reject(error) : resolve());
-		})) {}
+		}),
+		// 远端桌面的 setText 成功不等于用户客户端已复制；SSH/tmux 始终交由外层终端处理。
+		private readonly remote = () => Boolean(process.env.SSH_CONNECTION || process.env.SSH_TTY || process.env.SSH_CLIENT || process.env.TMUX)) {}
 
 	/** @returns 真实复制状态；失败时 error 为可显示原因。 */
 	async copy(text: string): Promise<{ status: CopyStatus; error?: string }> {
 		if (!text) return { status: "FAILED", error: "Nothing to copy" };
-		const clipboard = this.native();
+		const clipboard = this.remote() ? undefined : this.native();
 		if (clipboard?.setText) {
 			try {
 				await clipboard.setText(text);

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Application } from "../../src/app/Application.ts";
+import { OSC52_SENT_MESSAGE } from "../../src/services/clipboard-controller.ts";
 
 function harness(result: { status: string; error?: string }): {
 	app: Application; notices: Array<[string, boolean]>;
@@ -23,7 +24,7 @@ test("copy feedback distinguishes desktop/OSC success from a failed copy", async
 	assert.deepEqual(desktop.notices, [["Copied!", false]]);
 	const osc = harness({ status: "OSC52_SENT" });
 	await copy(osc.app);
-	assert.deepEqual(osc.notices, [["Copied!", false]]);
+	assert.deepEqual(osc.notices, [[OSC52_SENT_MESSAGE, true]], "sending OSC52 must not claim the client clipboard changed");
 	const failed = harness({ status: "FAILED", error: "clipboard unavailable" });
 	await copy(failed.app);
 	assert.deepEqual(failed.notices, [["clipboard unavailable", true]]);

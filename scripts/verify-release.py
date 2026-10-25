@@ -383,12 +383,12 @@ def verify(case, name):
         case.until("JADE_VERIFY_DONE")
         case.drain(.2)
         case.send("/copy\r")
-        case.until("Copied!")
+        case.until("OSC52 sent;")
         assert b"\x1b]52;c;" in case.output, "headless desktop environment must use OSC52 fallback"
-        case.drain(1.2)
+        case.drain(5.2)
         before = len(case.output)
         case.finish()
-        assert "Copied!" not in ANSI.sub(b"", bytes(case.output[before:])).decode(), "copy feedback leaked into exit transcript"
+        assert "OSC52 sent;" not in ANSI.sub(b"", bytes(case.output[before:])).decode(), "copy feedback leaked into exit transcript"
         return {"exit": 0, "osc52": "sent", "feedback": "transient"}
     if name == "regular-approval":
         case.until("LONG_END"); case.drain(.2)

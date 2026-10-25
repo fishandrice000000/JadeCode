@@ -6,6 +6,19 @@ import { dirname, join } from "node:path";
 import { ClipboardController } from "../../src/services/clipboard-controller.ts";
 import { ExternalEditor } from "../../src/services/external-editor.ts";
 
+test("remote copy never mistakes the remote desktop clipboard for the client clipboard", async () => {
+	let desktopWrites = 0;
+	let sent = "";
+	const native = () => ({ setText: async () => { desktopWrites++; } });
+	const remote = new ClipboardController(native as never, async (value) => { sent = value; }, () => true);
+	assert.equal((await remote.copy("remote")).status, "OSC52_SENT");
+	assert.equal(desktopWrites, 0);
+	assert.ok(sent.startsWith("\x1b]52;c;"));
+	const local = new ClipboardController(native as never, async () => {}, () => false);
+	assert.equal((await local.copy("local")).status, "DESKTOP");
+	assert.equal(desktopWrites, 1);
+});
+
 test("clipboard OSC fallback reports actual write failure and cleans only owned image directories", async () => {
 	let osc = "";
 	const backend = () => ({ getImage: async () => new Uint8Array([1, 2, 3]) });
