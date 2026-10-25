@@ -28,6 +28,7 @@ function harness(): Harness {
 		requestRender: () => { state.renders += 1; },
 		tui: () => ({}),
 		mode: () => "fullscreen",
+		terminal: { flushOutput: async () => {} },
 		suspendTerminal: () => { state.suspends += 1; },
 		resumeTerminal: () => { state.resumes += 1; },
 	};
@@ -68,10 +69,28 @@ test("Ctrl+C repeat and release never reach the global quit branch", () => {
 	assert.equal(state.quits, 0);
 });
 
+test("repeated submit stays blocked while repeated editor navigation remains available", () => {
+	const { app, state } = harness();
+	assert.deepEqual(route(app, "\x1b[13;1:2u"), { consume: true });
+	assert.equal(route(app, "\x1b[1;1:2A"), undefined);
+	assert.equal(state.draft, "draft");
+});
+
 test("a later fresh Ctrl+C PRESS still follows the normal clear-then-exit behavior", async () => {
 	const { app, state } = harness();
 	route(app, "\x1b[99;5u"); // 清空草稿
 	route(app, "\x1b[99;5u"); // 空草稿再次 PRESS：进入退出
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.equal(state.quits, 1);
+});
+
+test("an expired Ctrl+C window cannot turn a later isolated press into an exit", async () => {
+	const { app, state } = harness();
+	state.draft = "";
+	(app as unknown as { lastClearAt: number }).lastClearAt = Date.now() - 1000;
+	route(app, "\x1b[99;5u");
+	assert.equal(state.quits, 0);
+	route(app, "\x1b[99;5u");
 	await new Promise((resolve) => setTimeout(resolve, 0));
 	assert.equal(state.quits, 1);
 });

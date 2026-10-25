@@ -8,7 +8,7 @@ import { KeymapAdapter } from "../../src/editor/keymap-adapter.ts";
 import { InputEvidence } from "../../src/terminal/input-evidence.ts";
 import { parseThemeDocument } from "../../src/theme/theme-document.ts";
 import { resolveTheme } from "../../src/theme/theme-resolver.ts";
-import type { BackendClient } from "../../src/bridge/client.ts";
+import type { BackendClient, CommandResult } from "../../src/bridge/client.ts";
 
 const theme = resolveTheme(parseThemeDocument(readFileSync(new URL("../../../assets/themes/jadecode.json", import.meta.url), "utf8")), "dark", {
 	mode: "256color", noColor: true,
@@ -91,4 +91,26 @@ test("FullAccess second step uses the overridden select keys and ignores the rep
 	assert.match(value.render(80).join("\n"), /▸ \[ Confirm Full Access \]/);
 	value.handleInput("\x1b[B"); // replaced Down must not toggle
 	assert.match(value.render(80).join("\n"), /▸ \[ Confirm Full Access \]/);
+});
+
+test("a delayed FullAccess presented ACK cannot authorize after a terminal epoch change", async () => {
+	const { page, commands } = setup();
+	const value = page("runtime");
+	const context = (value as unknown as { context: PageContext }).context;
+	let frame = context.lastFrame()!;
+	context.lastFrame = () => frame;
+	const original = context.client()!;
+	let acknowledge!: (result: CommandResult) => void;
+	context.client = () => ({ command: (type: string, payload: Record<string, unknown>, identity: unknown) => {
+		if (type === "permission.presented") return new Promise((resolve) => { acknowledge = resolve; });
+		return original.command(type, payload, identity as never);
+	} }) as BackendClient;
+	value.handleInput("\x1b[B"); value.handleInput("\x1b[B"); value.handleInput("\r");
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	value.render(80);
+	value.handleInput("\x1b[B"); value.handleInput("\r");
+	frame = { ...frame, epoch: frame.epoch + 1 };
+	acknowledge({ ok: true, type: "command.result", payload: {} });
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.equal(commands.some((command) => command.type === "permission.select"), false);
 });

@@ -277,3 +277,15 @@ test("SearchPage never lets the internal Input fallback jump/close on replaced E
 	assert.equal(jumps, 1);
 	assert.equal(closed, 1);
 });
+
+
+test("search jumps to the selected result and keeps results past ten visible", () => {
+	const matches = Array.from({ length: 15 }, (_, index) => ({ id: String(index), offset: index * 20, snippet: `match-${index}` }));
+	const offsets: number[] = [];
+	const page = new SearchPage({ ...pageContext(new KeymapAdapter({})), jumpToMatch: (_query, offset) => { offsets.push(offset!); } }, () => matches);
+	page.handleInput("match");
+	for (let index = 0; index < 12; index++) page.handleInput("\x1b[B");
+	assert.match(page.render(80).join("\n"), /▸ match-12/);
+	page.handleInput("\r");
+	assert.deepEqual(offsets, [240]);
+});

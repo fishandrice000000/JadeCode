@@ -34,6 +34,8 @@ export interface ApprovalCallbacks {
 	keymap: () => KeymapAdapter;
 	teamActive: () => boolean;
 	actorName: (actor: string) => string;
+	/** 后端接受答复后保留显示记录；不会把本地选择冒充已经批准。 */
+	onAnswered?: (data: ApprovalDisplayData, choice: number) => void;
 }
 
 export interface ApprovalDisplayData {
@@ -90,7 +92,7 @@ export class ApprovalController {
 
 	setTheme(theme: ResolvedTheme): void {
 		this.theme = theme;
-		this.current?.view.setTheme(theme);
+		for (const item of [this.current, ...this.queue]) item?.view.setTheme(theme);
 	}
 
 	active(): ApprovalView | undefined { return this.current?.view; }
@@ -411,6 +413,8 @@ export class ApprovalController {
 		}, this.callbacks.identity()).then((result) => {
 			item.confirming = false;
 			if (result.ok) {
+				this.callbacks.onAnswered?.({ requestId: item.requestId, tool: item.tool, scope: item.scope,
+					parameters: item.parameters, actor: item.actor, loading: false }, choice);
 				// 真正移除由 approval.removed 事件完成；此处不请求重绘，避免确认回执再触发呈现循环。
 				return;
 			}

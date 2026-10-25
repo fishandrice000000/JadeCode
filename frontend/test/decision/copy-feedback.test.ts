@@ -9,7 +9,7 @@ function harness(result: { status: string; error?: string }): {
 	const notices: Array<[string, boolean]> = [];
 	const fields = app as unknown as { [key: string]: unknown };
 	fields["clipboard"] = { copy: async () => result };
-	fields["notify"] = (message: string, error = false) => { notices.push([message, error]); };
+	fields["flash"] = (message: string, error = false) => { notices.push([message, error]); };
 	return { app, notices };
 }
 

@@ -1,4 +1,6 @@
-import type { Component } from "@earendil-works/pi-tui";
+import { AltScreenSearchIndex } from "@earendil-works/pi-tui/dist/alt-screen-search.js";
+import { clipLine, singleLine } from "../presentation/text-safety.ts";
+import { sliceByColumn, stripTerminalSequences, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import type { Entry, TranscriptStore } from "../state/transcript-store.ts";
 import type { ResolvedTheme } from "../theme/theme-resolver.ts";
 import type { MarkdownFactory } from "../markdown/markdown-factory.ts";
@@ -25,6 +27,21 @@ export class ConversationView implements Component {
 	private cachedRevision = -1;
 	private cachedKey = "";
 	private viewportRows = 24;
+	private resourcesExpanded = false;
+	private readonly searchIndex = new AltScreenSearchIndex();
+	private searchQuery = "";
+	private searchSelected = 0;
+
+	setSearchQuery(query: string, selected: number): void { this.searchQuery = query; this.searchSelected = selected; }
+
+	/** 查找完整渲染文档；直接使用固定 Pi 的 Unicode/跨行索引，不只扫描当前视口。 */
+	search(query: string, width: number): Array<{ id: string; offset: number; snippet: string }> {
+		const lines = this.renderDocument(width);
+		return this.searchIndex.search(lines, query).matches.map((match, index) => ({
+			id: `match-${index}`, offset: match.segments[0]!.row,
+			snippet: stripTerminalSequences(lines[match.segments[0]!.row] ?? ""),
+		}));
+	}
 	private readonly offsets = new Map<string, number>();
 
 	constructor(
@@ -39,13 +56,33 @@ export class ConversationView implements Component {
 	}
 
 	render(width: number): string[] {
+		const lines = this.renderDocument(width);
+		if (!this.searchQuery) return lines;
+		const result = [...lines];
+		const theme = this.currentTheme();
+		const matches = this.searchIndex.search(lines, this.searchQuery).matches;
+		// 从右向左按列拼回样式，保持其它字素/ANSI 几何不变；索引与切片均由 Pi 负责。
+		for (let index = matches.length - 1; index >= 0; index--) {
+			for (const segment of [...matches[index]!.segments].reverse()) {
+				const line = result[segment.row] ?? "";
+				const before = sliceByColumn(line, 0, segment.startCol, true);
+				const hit = stripTerminalSequences(sliceByColumn(line, segment.startCol, segment.endCol - segment.startCol, true));
+				const after = sliceByColumn(line, segment.endCol, Math.max(0, visibleWidth(line) - segment.endCol), true);
+				const marked = theme.withBackground("searchMatchText", "searchMatchBg", hit);
+				result[segment.row] = before + (index === this.searchSelected ? theme.bold(marked) : marked) + after;
+			}
+		}
+		return result;
+	}
+
+	private renderDocument(width: number): string[] {
 		const theme = this.session.snapshot() ? this.currentTheme() : undefined;
 		if (!theme) return [];
 		const settings = this.session.settings();
 		// transcript.revision() 在任何条目新增/更新/替换时递增；必须参与顶层缓存键。
 		const key = `${width}:${this.viewportRows}:${this.transcript.revision()}:${theme.name}:${theme.mode}:${theme.noColor ? 1 : 0}:` +
 			`${settings?.thinkingVisible}:${settings?.outputPad}:${settings?.codeBlockIndent}:${this.session.teamActive()}:` +
-			`${settings?.quietStartup}:${this.session.bootstrap()?.projectVersion ?? ""}`;
+			`${settings?.quietStartup}:${this.resourcesExpanded}:${this.session.bootstrap()?.projectVersion ?? ""}`;
 		if (this.cachedLines && this.cachedRevision === this.transcript.revision() && this.cachedKey === key) {
 			return this.cachedLines;
 		}
@@ -62,6 +99,13 @@ export class ConversationView implements Component {
 			lines.push("");
 			if (!settings?.quietStartup) {
 				lines.push(theme.style("dim", `Workspace: ${this.session.snapshot()?.workspace ?? ""}`));
+			}
+			if (this.resourcesExpanded) {
+				const snapshot = this.session.snapshot();
+				for (const value of [snapshot?.model ? `Model · ${snapshot.model}` : "", snapshot?.workspace ? `Workspace · ${snapshot.workspace}` : "",
+					snapshot?.permission ? `Permission · ${snapshot.permission.profile}` : ""]) {
+					if (value) lines.push(theme.style("muted", clipLine(singleLine(value), width)));
+				}
 			}
 			this.offsets.set("__welcome__", 0);
 			this.cachedLines = lines;
@@ -93,6 +137,9 @@ export class ConversationView implements Component {
 		return lines;
 	}
 
+	/** 空欢迎区的 Ctrl+O 只展开已有快照值，不伪造未提供的技能/资源清单。 */
+	toggleWelcomeResources(): void { this.resourcesExpanded = !this.resourcesExpanded; this.cachedLines = undefined; }
+
 	invalidate(): void {
 		this.cards.clear();
 		this.cachedLines = undefined;
@@ -102,6 +149,16 @@ export class ConversationView implements Component {
 	/** @returns 条目在文档中的起始行（搜索跳转用），未知返回 null。 */
 	entryOffset(id: string): number | null {
 		return this.offsets.get(id) ?? null;
+	}
+
+	/** 只命中标题行；正文仍留给 Pi 拖选，避免点击正文破坏复制。 */
+	toggleHeaderAt(documentRow: number): boolean {
+		for (const entry of this.transcript.entries()) {
+			if (this.offsets.get(entry.id) !== documentRow || (entry.kind !== "TOOL" && entry.kind !== "THINKING")) continue;
+			this.transcript.toggleExpanded(entry.id);
+			return true;
+		}
+		return false;
 	}
 
 	/** 供搜索跳转：第一个包含查询文本的条目偏移。 */

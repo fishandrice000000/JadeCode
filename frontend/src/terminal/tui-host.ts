@@ -6,6 +6,7 @@ import {
 	type TuiInputListener,
 	type TuiMouseEvent,
 	type WheelScrollLines,
+	type ScrollView,
 } from "@earendil-works/pi-tui";
 import { JadeTerminal } from "./terminal-adapter.ts";
 
@@ -53,10 +54,13 @@ export class TuiHost {
 	private readonly options: TuiHostOptions;
 	private screen: JadeScreen | undefined;
 	private root: Component | undefined;
+	private fullscreenRoot: Component | undefined;
+	private fullscreenScroll: ScrollView | undefined;
 	private modeValue: UiMode;
 	private readonly priorityListeners = new Set<TuiInputListener>();
 	private mouseHandler: ((event: TuiMouseEvent) => boolean) | undefined;
 	private focusTarget: Component | null = null;
+	private clearOnShrink = false;
 
 	constructor(options: TuiHostOptions) {
 		this.options = options;
@@ -79,6 +83,13 @@ export class TuiHost {
 	/** 设置根组件；切换模式后自动安装到新 renderer。 */
 	setRoot(root: Component): void {
 		this.root = root;
+	}
+
+	/** 全屏使用独立 Pi 布局树，regular 仍把完整文档写入原生 scrollback。 */
+	setFullscreenLayout(root: Component, scroll: ScrollView): void {
+		this.fullscreenRoot = root;
+		this.fullscreenScroll = scroll;
+		scroll.setScrollbar(this.options.scrollbar);
 	}
 
 	/** @returns Pi 的 TUI 实例；未启动前为 undefined。 */
@@ -149,6 +160,7 @@ export class TuiHost {
 	}
 
 	setClearOnShrink(enabled: boolean): void {
+		this.clearOnShrink = enabled;
 		this.screen?.setClearOnShrink(enabled);
 	}
 
@@ -160,6 +172,7 @@ export class TuiHost {
 
 	setScrollbar(scrollbar: "auto" | "always" | "hidden"): void {
 		this.options.scrollbar = scrollbar;
+		this.fullscreenScroll?.setScrollbar(scrollbar);
 		if (this.screen instanceof TuiAltScreen) this.screen.setScrollbar?.(scrollbar);
 	}
 
@@ -238,11 +251,12 @@ export class TuiHost {
 				copySelection: this.options.copySelection,
 				onFrame,
 			});
-			alt.setLayoutRoot(root);
+			alt.setLayoutRoot(this.fullscreenRoot ?? root);
 			screen = alt as unknown as JadeScreen;
 		}
 		// 每次新建 screen 都重新挂优先级监听/鼠标处理；旧 screen 已 stop，不会重复消费输入。
 		for (const listener of this.priorityListeners) screen.addPriorityInputListener(listener);
+		screen.setClearOnShrink(this.clearOnShrink);
 		screen.mousePriorityHandler = this.mouseHandler;
 		screen.setFocus(this.focusTarget ?? root);
 		return screen;

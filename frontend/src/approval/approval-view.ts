@@ -1,4 +1,4 @@
-import { visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { visibleWidth, wrapTextWithAnsi, truncateToWidth } from "@earendil-works/pi-tui";
 import type { ResolvedTheme } from "../theme/theme-resolver.ts";
 import { approvalPalette } from "../theme/theme-adapters.ts";
 import { visibleEscapes } from "../presentation/text-safety.ts";
@@ -96,7 +96,16 @@ export class ApprovalView {
 	 * @param originY 本卡片第一行在视口中的屏幕行（0 基）
 	 * @param rows 终端行数
 	 */
-	render(input: ApprovalRenderInput, width: number, originY: number, rows: number, columns: number): string[] {
+	render(input: ApprovalRenderInput, width: number, originY: number, rows: number, columns: number,
+		availableRows = rows - originY): string[] {
+		const budget = Math.max(0, Math.min(availableRows, rows - originY));
+		// 太小的窗口不画可命中的批准按钮；参数/选项必须在同一可见卡片中才能发布证据。
+		const tooSmall = (): string[] => {
+			this.layout = { rects: [], digest: digest([]), columns, rows };
+			return ["Approval pending", "Resize terminal to read and answer."].slice(0, Math.max(1, budget))
+				.map((line) => truncateToWidth(line, Math.max(1, width), ""));
+		};
+		if (width < 30 || budget < 2) return tooSmall();
 		const theme = this.theme;
 		const palette = approvalPalette(theme);
 		const margin = width >= 44 ? 2 : width >= 30 ? 1 : 0;
@@ -114,14 +123,24 @@ export class ApprovalView {
 			lines.push(border("│") + " " + theme.withBackground("text", "panelBg", padded) + " " + border("│"));
 		};
 
-		const headerLines = 1 + (input.teamActive && input.actor ? 1 : 0) + 2 + (input.loading ? 1 : 0);
+		const pushWrapped = (value: string): void => {
+			for (const line of wrapTextWithAnsi(value, innerWidth)) pushLine(line);
+		};
+		if (input.teamActive && input.actor) pushWrapped(theme.style("muted", `Actor: ${visibleEscapes(input.actorName(input.actor))}`));
+		pushWrapped(theme.style("muted", `Tool: ${visibleEscapes(input.tool)}`));
+		pushWrapped(theme.style("muted", `Scope: ${visibleEscapes(input.scope || "(this request only)")}`));
+		pushLine(theme.bold(theme.style("muted", "Parameters")));
+		if (input.loading) pushLine(theme.style("dim", "Loading the complete parameters…"));
+		const headerLines = lines.length;
 		// 底部：空行 + 三个选项 + 下边框；预留后剩余行数给参数窗口。
 		const reserved = headerLines + 1 + this.choices.length + 1;
-		const baseCapacity = Math.max(3, rows - Math.max(0, originY) - reserved);
+		if (budget <= reserved) return tooSmall();
+		const baseCapacity = budget - reserved;
 		const parameterLines = wrapTextWithAnsi(visibleEscapes(input.parameters), innerWidth);
 		const overflow = parameterLines.length > baseCapacity;
+		if (overflow && baseCapacity < 2) return tooSmall();
 		// 提示行单独占一行预算，绝不用它覆盖最后一个真实参数行。
-		const capacity = overflow ? Math.max(2, baseCapacity - 1) : baseCapacity;
+		const capacity = overflow ? Math.max(1, baseCapacity - 1) : baseCapacity;
 		const maxScroll = Math.max(0, parameterLines.length - capacity);
 		this.scroll = Math.max(0, Math.min(this.scroll, maxScroll));
 		const windowed = parameterLines.slice(this.scroll, this.scroll + capacity);
@@ -129,16 +148,11 @@ export class ApprovalView {
 			? theme.style("dim", `… ${this.scroll + 1}-${this.scroll + windowed.length} of ${parameterLines.length} · PgUp/PgDn`)
 			: "";
 
-		if (input.teamActive && input.actor) pushLine(theme.style("muted", `Actor: ${input.actorName(input.actor)}`));
-		pushLine(theme.style("muted", `Tool: ${input.tool}`));
-		pushLine(theme.style("muted", `Scope: ${input.scope || "(this request only)"}`));
-		pushLine(theme.bold(theme.style("muted", "Parameters")));
-		if (input.loading) pushLine(theme.style("dim", "Loading the complete parameters…"));
 		for (const line of windowed) pushLine(theme.style("text", line));
 		if (hint) pushLine(hint);
 		pushLine("");
 
-		const buttonX = margin + 3;
+		const buttonX = margin + 4;
 		const buttonWidth = Math.max(8, boxWidth - 6);
 		const rects: ApprovalLayout["rects"] = [];
 		for (const choice of this.choices) {
@@ -151,12 +165,11 @@ export class ApprovalView {
 					: choice.index === 1 ? palette.similar(` ${label} `) : palette.deny(` ${label} `);
 			} else text = `[ ${label} ]`;
 			const marker = isSelected ? "▸ " : "  ";
-			const padding = " ".repeat(Math.max(0, innerWidth - visibleWidth(marker + `[ ${label} ]`)));
 			const lineIndex = lines.length;
-			pushLine("  " + marker + text + padding);
+			pushLine("  " + marker + text);
 			if (choice.enabled) {
 				// 每个按钮绑定自己真实的行号；禁用项仍占行，但不会让后续选项的矩形错位。
-				rects.push({ x: buttonX, y: originY + lineIndex, width: Math.min(buttonWidth, visibleWidth(` ${label} `) + 2), height: 1, choice: choice.index });
+				rects.push({ x: buttonX, y: originY + lineIndex, width: Math.min(buttonWidth, visibleWidth(`[ ${label} ]`) + 2), height: 1, choice: choice.index });
 			}
 		}
 		lines.push(border("╰" + "─".repeat(Math.max(0, boxWidth - 2)) + "╯"));

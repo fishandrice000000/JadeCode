@@ -24,6 +24,7 @@ async function main(): Promise<number> {
 		exit: (code) => process.exit(code),
 		setExitCode: (code) => { process.exitCode = code; },
 		writeStderr: (text) => process.stderr.write(text),
+		writeStdout: (text) => process.stdout.write(text),
 	});
 }
 

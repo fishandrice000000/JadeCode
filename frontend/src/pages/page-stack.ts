@@ -36,7 +36,8 @@ export interface PageContext {
 	cancelTheme(): void;
 	sessionTheme(): string;
 	setDraft(text: string): void;
-	jumpToMatch(query: string): void;
+	jumpToMatch(query: string, offset?: number): void;
+	setSearchHighlight?(query: string, selected: number): void;
 	lastFrame(): { frameId: number; epoch: number; rawWatermark: number; decodedWatermark: number; columns: number; rows: number } | null;
 	/** 停靠区第一行在视口中的屏幕行（frame 顶边框之前）。 */
 	dockOriginY(): number;
@@ -49,6 +50,11 @@ export interface Page {
 	readonly title: string;
 	hint(): string;
 	render(width: number): string[];
+	/** 页框裁剪后通知安全敏感页；不可见的确认控件不能发布命中。 */
+	setBodyWindow?(start: number, capacity: number): void;
+	bodyScrollOffset?(): number;
+	/** 只选择正文行；确认/保存仍走显式按键路径。 */
+	handleBodyPress?(row: number, column: number): boolean;
 	handleInput(data: string): boolean;
 	invalidate(): void;
 	theme(): ResolvedTheme;

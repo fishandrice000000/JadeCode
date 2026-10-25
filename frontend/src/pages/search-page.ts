@@ -1,4 +1,5 @@
-import { Input, matchesKey } from "@earendil-works/pi-tui";
+import { clipLine } from "../presentation/text-safety.ts";
+import { Input, truncateToWidth } from "@earendil-works/pi-tui";
 import type { Page, PageContext } from "./page-stack.ts";
 import type { ResolvedTheme } from "../theme/theme-resolver.ts";
 
@@ -34,17 +35,23 @@ export class SearchPage implements Page {
 
 	render(width: number): string[] {
 		const theme = this.context.theme();
+		// resize/流式追加会改变文档行号；渲染前采用当前 Pi 索引，不沿用旧宽度的偏移。
+		this.matches = this.query.trim() ? this.search(this.query) : [];
+		this.selected = Math.max(0, Math.min(this.selected, this.matches.length - 1));
+		this.context.setSearchHighlight?.(this.query, this.selected);
 		const lines: string[] = [];
 		for (const line of this.input.render(Math.max(1, width))) lines.push(line);
 		lines.push(theme.style("dim", `${this.matches.length} match(es)${this.query ? ` for "${this.query}"` : ""}`));
-		const visible = this.matches.slice(0, 10);
+		// 选中项跨过第十条时移动窗口，跳转使用该项真实文档行号。
+		const start = Math.max(0, this.selected - 9);
+		const visible = this.matches.slice(start, start + 10);
 		for (const [index, match] of visible.entries()) {
-			const marker = index === this.selected ? "▸ " : "  ";
+			const marker = index + start === this.selected ? "▸ " : "  ";
 			const line = `${marker}${match.snippet}`;
-			lines.push(index === this.selected ? theme.bold(theme.style("accent", line)) : theme.style("text", line));
+			lines.push(index + start === this.selected ? theme.bold(theme.style("accent", line)) : theme.style("text", line));
 		}
 		if (this.matches.length > visible.length) lines.push(theme.style("dim", `… ${this.matches.length - visible.length} more`));
-		return lines.map((line) => line.slice(0, Math.max(0, width)));
+		return lines.map((line) => clipLine(line, Math.max(0, width)));
 	}
 
 	handleInput(data: string): boolean {
@@ -90,7 +97,7 @@ export class SearchPage implements Page {
 	private jump(): void {
 		const match = this.matches[this.selected];
 		if (!match) return;
-		this.context.jumpToMatch(this.query);
+		this.context.jumpToMatch(this.query, match.offset);
 		this.context.closePage();
 	}
 }

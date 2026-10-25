@@ -1,3 +1,5 @@
+import { visibleWidth } from "@earendil-works/pi-tui";
+import { clipLine, singleLine } from "../presentation/text-safety.ts";
 import type { ResolvedTheme } from "../theme/theme-resolver.ts";
 import type { SessionStore } from "../state/session-store.ts";
 import { formatDuration, formatPercent, formatTokens } from "../presentation/format.ts";
@@ -20,25 +22,31 @@ export class StatusView {
 		if (elapsed !== null && elapsed > 0) parts.push(`⏱ ${formatDuration(elapsed)}`);
 		const usage = snapshot.usage;
 		parts.push(`in ${formatTokens(usage.inputTokens)} · out ${formatTokens(usage.outputTokens)}`);
-		if (usage.cacheReadTokens) parts.push(`cache ${formatTokens(usage.cacheReadTokens)}`);
-		if (snapshot.context) parts.push(`ctx ${formatPercent(snapshot.context.remainingPercent)}`);
+		if (usage.cacheReadTokens !== null) parts.push(`R ${formatTokens(usage.cacheReadTokens)}`);
+		if (usage.cacheWriteTokens !== null) parts.push(`W ${formatTokens(usage.cacheWriteTokens)}`);
+		// 桥接目前只有累计值，没有最近请求的 CH 分母；不能用累计输入伪造命中率。
+		if (snapshot.context) parts.push(`ctx ~${formatTokens(snapshot.context.occupiedTokens)}/${formatTokens(snapshot.context.windowTokens)} · ${formatPercent(snapshot.context.remainingPercent)} left`);
 		if (snapshot.permission) parts.push(`perm ${snapshot.permission.profile}`);
-		if (snapshot.model) parts.push(snapshot.model);
+
 		if (snapshot.bufferSummary) parts.push(`buffer: ${snapshot.bufferSummary}`);
 		if (Object.keys(snapshot.background).length > 0) parts.push(`bg ${Object.keys(snapshot.background).length}`);
-		const line = parts.join(" · ");
-		const lines = [theme.style("dim", line.slice(0, Math.max(0, width)))];
+		const model = clipLine(singleLine(snapshot.model), Math.max(1, Math.floor(width / 3)));
+		const stats = clipLine(singleLine(parts.join(" · ")), Math.max(0, width - visibleWidth(model) - (model ? 1 : 0)));
+		const line = model ? stats + " ".repeat(Math.max(0, width - visibleWidth(stats) - visibleWidth(model))) + model : stats;
+		const identity = `${snapshot.workspace ?? ""}${snapshot.gitBranch ? ` (${snapshot.gitBranch})` : ""} · ${snapshot.title ?? ""}`;
+		const lines = [theme.style("dim", clipLine(singleLine(identity), width)),
+			theme.style("dim", clipLine(singleLine(line), Math.max(0, width)))];
 		if (snapshot.actors.length > 1 || snapshot.teamActive) {
 			const actors = snapshot.actors
 				.filter((actor) => actor.id !== "leader" || snapshot.teamActive)
 				.map((actor) => `${this.session.displayActor(actor.id) || actor.id}:${actor.state}`);
-			if (actors.length > 0) lines.push(theme.style("dim", actors.join(" · ").slice(0, Math.max(0, width))));
+			if (actors.length > 0) lines.push(theme.style("dim", clipLine(singleLine(actors.join(" · ")), Math.max(0, width))));
 		}
 		const hints: string[] = [];
 		if (settings.mode === "fullscreen") hints.push("PgUp/PgDn scroll", "Ctrl+Shift+F search");
 		else hints.push("native scroll");
 		hints.push("Enter submit", "Shift+Enter newline", "Ctrl+O tools", "/settings");
-		lines.push(theme.style("dim", hints.join(" · ").slice(0, Math.max(0, width))));
+		lines.push(theme.style("dim", clipLine(hints.join(" · "), Math.max(0, width))));
 		return lines;
 	}
 }

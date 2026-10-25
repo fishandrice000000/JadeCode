@@ -1,3 +1,4 @@
+import { clipLine, singleLine } from "../presentation/text-safety.ts";
 import { matchesKey } from "@earendil-works/pi-tui";
 import type { Page, PageContext } from "./page-stack.ts";
 import type { ResolvedTheme } from "../theme/theme-resolver.ts";
@@ -12,6 +13,16 @@ import { formatPercent, formatTokens } from "../presentation/format.ts";
  * 不补假 0 或假 online。Hotkeys 默认 Common ≤8，Tab/左右切换分类并各自记住位置。
  */
 abstract class InformationPage implements Page {
+	private readonly scrollOffsets = new Map<string, number>();
+	protected scrollGroup(): string { return "main"; }
+	bodyScrollOffset(): number { return this.scrollOffsets.get(this.scrollGroup()) ?? 0; }
+	setBodyWindow(start: number): void { this.scrollOffsets.set(this.scrollGroup(), start); }
+	/** 信息正文没有选择光标，使用共享翻页动作显式移动阅读窗口。 */
+	protected scrollInput(data: string): boolean {
+		if (this.context.keymap.matches("tui.select.pageDown", data)) { this.setBodyWindow(this.bodyScrollOffset() + 8); return true; }
+		if (this.context.keymap.matches("tui.select.pageUp", data)) { this.setBodyWindow(Math.max(0, this.bodyScrollOffset() - 8)); return true; }
+		return false;
+	}
 	protected readonly context: PageContext;
 	readonly title: string;
 	protected constructor(context: PageContext, title: string) {
@@ -29,13 +40,14 @@ abstract class InformationPage implements Page {
 export class HotkeysPage extends InformationPage {
 	private readonly keymap: KeymapAdapter;
 	private category = 0;
+	protected override scrollGroup(): string { return String(this.category); }
 
 	constructor(context: PageContext, keymap: KeymapAdapter) {
 		super(context, "Keys and commands");
 		this.keymap = keymap;
 	}
 
-	hint(): string { return "Tab/Left/Right switch category · Esc close"; }
+	hint(): string { return "Tab/Left/Right category · PgUp/PgDn scroll · Esc close"; }
 
 	render(width: number): string[] {
 		const theme = this.context.theme();
@@ -59,10 +71,11 @@ export class HotkeysPage extends InformationPage {
 				lines.push(`${theme.style("accent", keys)}  ${theme.style("text", label)}`);
 			}
 		}
-		return lines.map((line) => line.slice(0, Math.max(0, width)));
+		return lines.map((line) => clipLine(line, Math.max(0, width)));
 	}
 
 	handleInput(data: string): boolean {
+		if (this.scrollInput(data)) return true;
 		if (this.context.keymap.matches("tui.select.cancel", data)) { this.context.closePage(); return true; }
 		const groups = this.keymap.groups();
 		if (this.context.keymap.matches("tui.select.down", data) || matchesKey(data, "tab") || matchesKey(data, "right")) {
@@ -88,16 +101,17 @@ export class ModelPage extends InformationPage {
 		const snapshot = this.context.state.snapshot();
 		if (!snapshot) return [theme.style("dim", "Waiting for backend state…")];
 		const lines: string[] = [];
-		lines.push(theme.style("text", `Model: ${snapshot.model || "?"}`));
-		lines.push(theme.style("text", `Thinking: ${snapshot.thinkingLabel || snapshot.thinking || "default"}`));
+		lines.push(theme.style("text", `Model: ${singleLine(snapshot.model || "?")}`));
+		lines.push(theme.style("text", `Thinking: ${singleLine(snapshot.thinkingLabel || snapshot.thinking || "default")}`));
 		lines.push(theme.style("text", `Context window: ${snapshot.contextWindowTokens ?? "unknown"}`));
 		lines.push(theme.style("text", `Max input: ${snapshot.maxInputTokens ?? "unknown"}`));
 		lines.push(theme.style("text", `Max output: ${snapshot.maxOutputTokens ?? "unknown"}`));
-		if (snapshot.modelSource) lines.push(theme.style("dim", snapshot.modelSource));
-		return lines.map((line) => line.slice(0, Math.max(0, width)));
+		if (snapshot.modelSource) lines.push(theme.style("dim", singleLine(snapshot.modelSource)));
+		return lines.map((line) => clipLine(line, Math.max(0, width)));
 	}
 
 	handleInput(data: string): boolean {
+		if (this.scrollInput(data)) return true;
 		if (this.context.keymap.matches("tui.select.cancel", data)) { this.context.closePage(); return true; }
 		return false;
 	}
@@ -114,17 +128,23 @@ export class SessionPage extends InformationPage {
 		const snapshot = this.context.state.snapshot();
 		if (!snapshot) return [theme.style("dim", "Waiting for backend state…")];
 		const lines: string[] = [];
-		lines.push(theme.style("text", `Title: ${snapshot.title || "New session"}`));
+		lines.push(theme.style("text", `Title: ${singleLine(snapshot.title || "New session")}`));
 		lines.push(theme.style("text", `ID: ${snapshot.sessionId}`));
 		lines.push(theme.style("text", `Generation: ${snapshot.generation}`));
-		lines.push(theme.style("text", `Workspace: ${snapshot.workspace}${snapshot.gitBranch ? ` (${snapshot.gitBranch})` : ""}`));
+		lines.push(theme.style("text", `Workspace: ${singleLine(snapshot.workspace)}${snapshot.gitBranch ? ` (${snapshot.gitBranch})` : ""}`));
 		lines.push(theme.style("text", `Permission: ${snapshot.permission?.profile ?? "?"} (rev ${snapshot.permission?.revision ?? "?"})`));
 		lines.push(theme.style("text", `Usage: in ${formatTokens(snapshot.usage.inputTokens)} · out ${formatTokens(snapshot.usage.outputTokens)} · cache ${formatTokens(snapshot.usage.cacheReadTokens)}`));
+		lines.push(theme.style("text", `Requests: ${snapshot.usage.reportedRequests ?? "?"} reported · ${snapshot.usage.missingRequests ?? "?"} missing`));
+		for (const [label, group] of [["Actor", snapshot.usage.byActor], ["Purpose", snapshot.usage.byPurpose], ["Model", snapshot.usage.byModel]] as const) {
+			for (const [name, usage] of Object.entries(group ?? {})) lines.push(theme.style("text",
+				`${label} ${singleLine(name)} · in ${formatTokens(usage.inputTokens)} · out ${formatTokens(usage.outputTokens)} · missing ${usage.missingRequests ?? "?"}`));
+		}
 		lines.push(theme.style("text", `Context remaining: ${formatPercent(snapshot.context?.remainingPercent ?? null)}`));
-		return lines.map((line) => line.slice(0, Math.max(0, width)));
+		return lines.map((line) => clipLine(line, Math.max(0, width)));
 	}
 
 	handleInput(data: string): boolean {
+		if (this.scrollInput(data)) return true;
 		if (this.context.keymap.matches("tui.select.cancel", data)) { this.context.closePage(); return true; }
 		return false;
 	}
@@ -147,13 +167,14 @@ export class McpPage extends InformationPage {
 		}
 		for (const server of snapshot.mcp) {
 			const state = !server.enabled ? "disabled" : server.connected ? "connected" : "configured";
-			lines.push(theme.style("text", `${server.name} · ${state}`));
-			for (const tool of server.tools) lines.push(theme.style("dim", `  ${tool}`));
+			lines.push(theme.style("text", `${singleLine(server.name)} · ${state}`));
+			for (const tool of server.tools) lines.push(theme.style("dim", `  ${singleLine(tool)}`));
 		}
-		return lines.map((line) => line.slice(0, Math.max(0, width)));
+		return lines.map((line) => clipLine(line, Math.max(0, width)));
 	}
 
 	handleInput(data: string): boolean {
+		if (this.scrollInput(data)) return true;
 		if (this.context.keymap.matches("tui.select.cancel", data)) { this.context.closePage(); return true; }
 		return false;
 	}

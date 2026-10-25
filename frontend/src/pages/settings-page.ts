@@ -1,4 +1,4 @@
-import { matchesKey } from "@earendil-works/pi-tui";
+import { Input, matchesKey } from "@earendil-works/pi-tui";
 import type { Page, PageContext } from "./page-stack.ts";
 import type { ResolvedTheme } from "../theme/theme-resolver.ts";
 import { ThemePage } from "./theme-page.ts";
@@ -55,13 +55,25 @@ export class SettingsPage implements Page {
 	private readonly context: PageContext;
 	private selected = 0;
 	private offset = 0;
+	private readonly input = new Input();
+	private readonly rowFields = new Map<number, number>();
+	private fields(): Field[] {
+		const query = this.input.getValue().toLowerCase().trim();
+		return FIELDS.filter((field) => !query || `${field.label} ${field.id}`.toLowerCase().includes(query));
+	}
+	/** 鼠标只改变选择，不直接保存设置；列由页面实际投影预算约束。 */
+	handleBodyPress(row: number): boolean {
+		const selected = this.rowFields.get(row);
+		if (selected !== undefined) this.selected = selected;
+		return true;
+	}
 
 	constructor(context: PageContext) { this.context = context; }
 
 	theme(): ResolvedTheme { return this.context.theme(); }
 
 	hint(): string {
-		return "Up/Down select · Left/Right change · Enter open · Esc back";
+		return "Type to filter · Up/Down select · Left/Right change · Enter open · Esc back";
 	}
 
 	invalidate(): void {}
@@ -70,38 +82,50 @@ export class SettingsPage implements Page {
 		const theme = this.context.theme();
 		const settings = this.context.settings();
 		if (!settings) return [theme.style("dim", "Waiting for backend settings…")];
-		const rows: string[] = [];
-		const visible = Math.max(6, Math.min(FIELDS.length, 14));
+		const rows: string[] = this.input.render(Math.max(1, width));
+		const fields = this.fields();
+		this.selected = Math.min(this.selected, Math.max(0, fields.length - 1));
+		this.rowFields.clear();
+		if (fields.length === 0) return [...rows, theme.style("dim", "No matching settings")];
+		const visible = Math.max(6, Math.min(fields.length, 14));
 		if (this.selected < this.offset) this.offset = this.selected;
 		if (this.selected >= this.offset + visible) this.offset = this.selected - visible + 1;
-		for (let index = this.offset; index < Math.min(FIELDS.length, this.offset + visible); index++) {
-			const field = FIELDS[index]!;
+		for (let index = this.offset; index < Math.min(fields.length, this.offset + visible); index++) {
+			const field = fields[index]!;
+			this.rowFields.set(rows.length, index);
 			const value = displayValue(settings, field.id);
 			const marker = index === this.selected ? "▸ " : "  ";
 			const label = `${marker}${field.label}`.padEnd(Math.min(34, Math.max(12, width / 2)));
 			const line = `${label} ${value}`;
 			rows.push(index === this.selected ? theme.bold(theme.style("accent", line)) : theme.style("text", line));
 		}
-		if (this.offset > 0) rows.unshift(theme.style("dim", "  ↑ more"));
-		if (this.offset + visible < FIELDS.length) rows.push(theme.style("dim", "  ↓ more"));
+
+		if (this.offset + visible < fields.length) rows.push(theme.style("dim", "  ↓ more"));
 		return rows;
 	}
 
 	handleInput(data: string): boolean {
 		const keymap = this.context.keymap;
+		const fields = this.fields();
 		if (keymap.matches("tui.select.cancel", data)) { this.context.closePage(); return true; }
-		if (keymap.matches("tui.select.up", data)) { this.selected = (this.selected - 1 + FIELDS.length) % FIELDS.length; return true; }
-		if (keymap.matches("tui.select.down", data)) { this.selected = (this.selected + 1) % FIELDS.length; return true; }
-		if (keymap.matches("tui.select.pageUp", data)) { this.selected = (this.selected - 10 + FIELDS.length) % FIELDS.length; return true; }
-		if (keymap.matches("tui.select.pageDown", data)) { this.selected = (this.selected + 10) % FIELDS.length; return true; }
-		const field = FIELDS[this.selected]!;
+		if (keymap.matches("tui.select.up", data)) { this.selected = (this.selected - 1 + Math.max(1, fields.length)) % Math.max(1, fields.length); return true; }
+		if (keymap.matches("tui.select.down", data)) { this.selected = (this.selected + 1) % Math.max(1, fields.length); return true; }
+		if (keymap.matches("tui.select.pageUp", data)) { this.selected = (this.selected - 10 + Math.max(1, fields.length)) % Math.max(1, fields.length); return true; }
+		if (keymap.matches("tui.select.pageDown", data)) { this.selected = (this.selected + 10) % Math.max(1, fields.length); return true; }
+		const field = fields[this.selected];
+		if (!field) { this.input.handleInput(data); this.selected = this.offset = 0; return true; }
 		if (keymap.matches("tui.select.confirm", data)) {
 			if (field.kind === "theme") {
 				this.context.pushPage(new ThemePage(this.context, field.id as "theme" | "lightTheme" | "darkTheme"));
 			}
 			return true;
 		}
-		if (!matchesKey(data, "left") && !matchesKey(data, "right")) return false;
+		if (!matchesKey(data, "left") && !matchesKey(data, "right") && !(data === " " && !this.input.getValue() && field.kind === "bool")) {
+			const before = this.input.getValue();
+			this.input.handleInput(data);
+			if (this.input.getValue() !== before) this.selected = this.offset = 0;
+			return true;
+		}
 		const direction = matchesKey(data, "right") ? 1 : -1;
 		const settings = this.context.settings();
 		if (!settings) return true;

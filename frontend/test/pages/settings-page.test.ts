@@ -59,6 +59,18 @@ test("a custom wheel value stays in the cycle between 5 and 10", () => {
 	assert.deepEqual(patches.map((patch) => patch.fullscreenWheelScrollLines), [10, 0]);
 });
 
+test("filtering settings keeps the selected field and mouse rows refer to the filtered projection", () => {
+	const { value, patches } = page(0);
+	value.handleInput("Wheel");
+	const lines = value.render(80);
+	assert.match(lines.join("\n"), /▸ Wheel scroll lines/);
+	assert.doesNotMatch(lines.join("\n"), /Hardware cursor/);
+	const row = lines.findIndex((line) => line.includes("Wheel scroll lines"));
+	value.handleBodyPress(row);
+	value.handleInput("\x1b[C");
+	assert.deepEqual(patches, [{ fullscreenWheelScrollLines: 1 }]);
+});
+
 
 test("one theme confirmation sends exactly one save", () => {
 	const { value } = page(0);

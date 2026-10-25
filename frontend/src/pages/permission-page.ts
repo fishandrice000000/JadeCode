@@ -1,3 +1,4 @@
+import { clipLine } from "../presentation/text-safety.ts";
 import { matchesKey } from "@earendil-works/pi-tui";
 import { isConfirmationPress } from "../terminal/input-kind.ts";
 import type { Page, PageContext } from "./page-stack.ts";
@@ -25,15 +26,16 @@ export class PermissionPage implements Page {
 	private confirmingFullAccess = false;
 	private confirmationId = "";
 	private error = "";
+	private answerPending = false;
 	private confirmSelected = 0; // 0 = Cancel, 1 = Confirm (默认 Cancel)
 
 	private readonly intent: "runtime" | "default";
 	private rects: Array<{ x: number; y: number; width: number; height: number; choice: number }> = [];
 
-	constructor(context: PageContext, intent: "runtime" | "default" = "runtime") {
+	constructor(context: PageContext, intent: "runtime" | "default" = "runtime", initialProfile?: string) {
 		this.context = context;
 		this.intent = intent;
-		const current = context.state.snapshot()?.permission?.profile ?? "workspace";
+		const current = initialProfile ?? context.state.snapshot()?.permission?.profile ?? "workspace";
 		this.selected = Math.max(0, PROFILES.indexOf(current as (typeof PROFILES)[number]));
 	}
 
@@ -46,6 +48,12 @@ export class PermissionPage implements Page {
 	}
 
 	invalidate(): void {}
+	/** 鼠标只选档位/按钮，绝不单击直接进入 Full Access。 */
+	handleBodyPress(row: number): boolean {
+		if (!this.confirmingFullAccess && row >= 0 && row < PROFILES.length) this.selected = row;
+		if (this.confirmingFullAccess && (row === 3 || row === 4)) this.confirmSelected = row - 3;
+		return true;
+	}
 
 	render(width: number): string[] {
 		const theme = this.context.theme();
@@ -64,10 +72,10 @@ export class PermissionPage implements Page {
 			const frame = this.context.lastFrame();
 			const origin = this.context.dockOriginY() + 1;
 			const y = origin + confirmLine;
-			this.rects = frame && y >= 0 && y < frame.rows
+			this.rects = frame && width >= 30 && y >= 0 && y < frame.rows
 				? [{ x: 2, y, width: Math.max(8, Math.min(30, width - 4)), height: 1, choice: 1 }]
 				: [];
-			return lines.map((line) => line.slice(0, Math.max(0, width)));
+			return lines.map((line) => clipLine(line, Math.max(0, width)));
 		}
 		this.rects = [];
 		for (const [index, profile] of PROFILES.entries()) {
@@ -76,7 +84,12 @@ export class PermissionPage implements Page {
 			lines.push(index === this.selected ? theme.bold(theme.style("accent", line)) : theme.style("text", line));
 		}
 		if (this.error) lines.push(theme.style("error", this.error));
-		return lines.map((line) => line.slice(0, Math.max(0, width)));
+		return lines.map((line) => clipLine(line, Math.max(0, width)));
+	}
+
+	/** 二次确认必须连同警告与两个选项完整可见；窗口裁掉上部时拒绝发证据。 */
+	setBodyWindow(start: number, capacity: number): void {
+		if (start !== 0 || capacity < 5) this.rects = [];
 	}
 
 	handleInput(data: string): boolean {
@@ -127,6 +140,7 @@ export class PermissionPage implements Page {
 			const client = this.context.client();
 			if (client) void client.command("permission.cancelFullAccess", { confirmationId: this.confirmationId }, this.context.identity());
 			this.confirmingFullAccess = false;
+			this.confirmationId = "";
 			this.context.closePage();
 			return true;
 		}
@@ -144,6 +158,7 @@ export class PermissionPage implements Page {
 			const client = this.context.client();
 			if (client) void client.command("permission.cancelFullAccess", { confirmationId: this.confirmationId }, this.context.identity());
 			this.confirmingFullAccess = false;
+			this.confirmationId = "";
 			this.context.closePage();
 			return true;
 		}
@@ -154,7 +169,7 @@ export class PermissionPage implements Page {
 			this.error = "The permission confirmation needs a committed frame; press Enter again.";
 			return true;
 		}
-		this.context.requestRender();
+		if (this.answerPending) return true;
 		const revision = Number(snapshot?.permission?.revision ?? 0);
 		const evidence = this.context.evidence();
 		if (!evidence || this.rects.length === 0) {
@@ -162,6 +177,10 @@ export class PermissionPage implements Page {
 			return true;
 		}
 		const expectedConfig = Number(snapshot?.configRevision ?? 0);
+		// 固定本次身份与几何；ACK 在 resize/取消后到达时不能继续发授权命令。
+		const confirmationId = this.confirmationId;
+		const rectDigest = JSON.stringify(this.rects);
+		this.answerPending = true;
 		void client.command("permission.presented", {
 			confirmationId: this.confirmationId,
 			intent: this.intent,
@@ -174,6 +193,10 @@ export class PermissionPage implements Page {
 			rawReceiptWatermark: frame.rawWatermark,
 			decodedWatermark: frame.decodedWatermark,
 		}, this.context.identity()).then((presented) => {
+			const current = this.context.lastFrame();
+			if (!this.confirmingFullAccess || this.confirmationId !== confirmationId || !current ||
+				current.epoch !== frame.epoch || current.columns !== frame.columns || current.rows !== frame.rows ||
+				JSON.stringify(this.rects) !== rectDigest) return;
 			if (!presented.ok) {
 				this.error = presented.message ?? "Could not record the confirmation layout";
 				this.context.requestRender();
@@ -207,7 +230,8 @@ export class PermissionPage implements Page {
 				this.confirmingFullAccess = false;
 				this.context.closePage();
 			});
-		});
+		}).catch((error: Error) => { this.error = error.message; this.context.requestRender(); })
+			.finally(() => { this.answerPending = false; });
 		return true;
 	}
 }

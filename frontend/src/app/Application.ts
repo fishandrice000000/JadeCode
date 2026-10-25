@@ -8,6 +8,7 @@ import {
 	type Component,
 	type TUI,
 	type TuiMouseEvent,
+	type TerminalColors,
 } from "@earendil-works/pi-tui";
 import { BackendClient } from "../bridge/client.ts";
 import { PayloadAssembler } from "../bridge/payload-assembler.ts";
@@ -26,6 +27,7 @@ import { MarkdownFactory } from "../markdown/markdown-factory.ts";
 import { ConversationView } from "../views/conversation-view.ts";
 import { StatusView } from "../views/status-view.ts";
 import { DockView } from "../views/dock-view.ts";
+import { FullscreenLayout } from "../views/fullscreen-layout.ts";
 import { KeymapAdapter } from "../editor/keymap-adapter.ts";
 import { JadeCompletionProvider } from "../editor/completion-provider.ts";
 import { EditorController } from "../editor/editor-controller.ts";
@@ -39,7 +41,7 @@ import { SearchPage } from "../pages/search-page.ts";
 import { ClipboardController } from "../services/clipboard-controller.ts";
 import { ExternalEditor } from "../services/external-editor.ts";
 import { suspendToShell } from "../services/job-control.ts";
-import { display } from "../presentation/text-safety.ts";
+import { clipLine, display, singleLine, visibleEscapes } from "../presentation/text-safety.ts";
 
 /**
  * Application：唯一 Node 事件循环中的装配与协调者。
@@ -56,7 +58,11 @@ export class Application {
 	private readonly transcript = new TranscriptStore();
 	private readonly assembler = new PayloadAssembler();
 	private readonly evidence = new InputEvidence();
-	private readonly clipboard = new ClipboardController();
+	private readonly clipboard = new ClipboardController(undefined, async (value) => {
+		// OSC52 与普通帧共用唯一写队列，不能越过尚未完成的屏幕输出。
+		this.host.terminal.write(value);
+		await this.host.terminal.flushOutput();
+	});
 	private readonly externalEditor = new ExternalEditor();
 	private readonly pages = new PageStack();
 	private readonly markdown = new MarkdownFactory();
@@ -81,6 +87,7 @@ export class Application {
 	private readonly uiBarrier = new UiEventBarrier<WireMessage>();
 	private stoppedReceived = false;
 	private closingAt = 0;
+	private lastClearAt = 0;
 	/** 用户退出后等待后端收尾的有界预算；超时保留错误而非当作成功。 */
 	private static readonly EXIT_GRACE_MS = 10_000;
 	/** 最近 64 条协议元数据；只在失败时输出，不倾倒 payload。 */
@@ -101,6 +108,11 @@ export class Application {
 			keymap: () => this.keymap,
 			teamActive: () => this.session.teamActive(),
 			actorName: (actor) => this.session.displayActor(actor) || actor,
+			onAnswered: (data, choice) => {
+				const label = choice === 0 ? "Allow once" : choice === 1 ? "Allow similar" : "Deny";
+				this.transcript.notice(data.actor, `Approval · ${label}`,
+					`Tool: ${data.tool}\nScope: ${data.scope}\n${visibleEscapes(data.parameters)}`);
+			},
 		});
 		const layout = this;
 		this.root = {
@@ -155,7 +167,7 @@ export class Application {
 			this.dumpTrace();
 			return 1;
 		} finally {
-			this.shutdown();
+			await this.shutdown();
 			if (this.exitMessage) this.dumpTrace();
 		}
 	}
@@ -185,7 +197,7 @@ export class Application {
 			},
 			save: (patch) => this.saveSettings(patch),
 			onError: (message) => this.notify(message, true),
-			onChange: () => this.host?.requestRender(true),
+			onChange: () => this.onThemeChanged(),
 		});
 		this.conversation.setThemeAccessor(() => this.theme.snapshot());
 		// 审批呈现由 afterFrame 回调统一处理；这里不再重复通知，避免同一帧两次 presented。
@@ -231,7 +243,7 @@ export class Application {
 			copySelection: async (value) => {
 				const result = await this.clipboard.copy(value);
 				if (result.status === "FAILED") return result.error ?? false;
-				this.notify("Copied!", false);
+				// Pi 的选区复制路径负责一次限时 flash；不要再追加永久 Notice 卡。
 				return true;
 			},
 			showHardwareCursor: settings.showHardwareCursor,
@@ -249,7 +261,35 @@ export class Application {
 			onScreenReady: () => this.installScreenListeners(),
 		});
 		this.host.setRoot(this.root);
-		this.host.setMousePriorityHandler((event) => this.approval.handleMouse(event));
+		// Pi 叶子组件只裁剪、不滚动；全屏必须显式挂载转录 ScrollView 与固定底部布局。
+		const fullscreen = new FullscreenLayout({
+			size: () => ({ columns: this.host.terminal.columns, rows: this.host.terminal.rows }),
+			scrollbarTrackStyle: (value) => this.theme.snapshot().style("scrollbarTrack", value),
+			scrollbarThumbStyle: (value) => this.theme.snapshot().style("scrollbarThumb", value),
+			conversation: {
+				render: (width) => {
+					this.conversation.setViewportRows(this.host.terminal.rows);
+					return this.conversation.render(width);
+				},
+				invalidate: () => this.conversation.invalidate(),
+			},
+			renderFooter: (width) => this.renderFooter(width),
+			renderDock: (width, bottom, origin) => this.renderFullscreenDock(width, bottom, origin),
+		});
+		this.host.setFullscreenLayout(fullscreen, fullscreen.scroll);
+		this.host.setMousePriorityHandler((event) => {
+			if (this.approval.hasPending()) return this.approval.handleMouse(event);
+			if (this.pages.current()) {
+				if (event.type === "press" && event.button === "left") {
+					this.dock.handlePagePress(event.y - this.dockOriginY, event.x); this.host.requestRender();
+				}
+				return true;
+			}
+			if (event.type !== "press" || event.button !== "left" || event.y >= this.dockOriginY) return false;
+			const changed = this.conversation.toggleHeaderAt(event.y + this.host.viewportTop());
+			if (changed) this.host.requestRender();
+			return changed;
+		});
 		this.host.setFocus(this.editor.editor);
 		this.transcript.install([]);
 		this.syncTranscriptHistoryMessage();
@@ -265,8 +305,14 @@ export class Application {
 	private installScreenListeners(): void {
 		const tui = this.host.tui();
 		if (!tui) return;
+		this.installTerminalColors();
 		this.priorityDisposer?.();
 		this.priorityDisposer = this.host.addPriorityInputListener((data) => {
+			// SGR 鼠标交给 Pi 解码，再由 mousePriorityHandler 做审批命中。
+			// 若先交给审批键盘分支，其“吞掉未知文字”规则会让所有真实鼠标事件永远到不了按钮。
+			if (data.startsWith("\x1b[<")) return undefined;
+			// 暂停是终端交接动作，审批/页面打开时也必须能交回 shell；仍只接收新 PRESS。
+			if (isGlobalActionPress(data) && this.keymap.matches("app.suspend", data)) return this.onGlobalInput(data);
 			if (this.approval.hasPending()) {
 				return this.approval.handleInput(data) ? { consume: true } : undefined;
 			}
@@ -278,11 +324,53 @@ export class Application {
 		this.host.setFocus(this.pages.current() || this.approval.hasPending() ? this.root : this.editor.editor);
 	}
 
+	/** 同名主题内容改变时也必须刷新卡片、补全、审批，不能只重画旧缓存。 */
+	private onThemeChanged(): void {
+		if (!this.theme) return; // ThemeController 构造中的首次通知早于字段赋值。
+		const theme = this.theme.snapshot();
+		this.conversation.invalidate();
+		this.editor?.setTheme(theme);
+		this.approval.setTheme(theme);
+		this.onTerminalInvalidate("theme");
+		this.host?.requestRender(true);
+	}
+
+	private colorDisposer: (() => void) | undefined;
+	private colorTicket = 0;
+	private installTerminalColors(): void {
+		const screen = this.host.tui();
+		if (!screen) return;
+		this.colorDisposer?.();
+		const ticket = ++this.colorTicket;
+		const receive = (colors: TerminalColors): void => {
+			if (ticket !== this.colorTicket || this.closing || this.host.tui() !== screen) return;
+			const rgb = (color: TerminalColors["foreground"]) => color ? { kind: "rgb" as const, ...color } : undefined;
+			if (colors.background) {
+				const { r, g, b } = colors.background;
+				this.theme.setScheme(0.2126 * r + 0.7152 * g + 0.0722 * b < 128);
+			}
+			this.theme.setTerminalColors(rgb(colors.foreground), rgb(colors.background));
+		};
+		this.colorDisposer = screen.onTerminalColorSchemeChange((scheme) => {
+			this.theme.setScheme(scheme === "dark");
+			void screen.queryTerminalColors({ timeoutMs: 100, onLateReply: receive }).then(receive);
+		});
+		screen.setTerminalColorSchemeNotifications(true);
+		void screen.queryTerminalColors({ timeoutMs: 100, onLateReply: receive }).then(receive);
+	}
+
 	private offscreenDisposer: (() => void) | undefined;
 	private priorityDisposer: (() => void) | undefined;
 
 	/** 全局输入：页面优先，然后 97 动作；编辑器自身处理文本/Enter。 */
 	private onGlobalInput(data: string): { consume?: boolean; data?: string } | undefined {
+		if (isGlobalActionPress(data) && this.keymap.matches("app.suspend", data)) {
+			suspendToShell({
+				beforeSuspend: async () => { this.onTerminalInvalidate("suspend"); this.host.suspendTerminal(); await this.host.terminal.flushOutput(); },
+				afterResume: () => { this.onTerminalInvalidate("resume"); this.host.resumeTerminal(); this.theme.reload(); },
+			});
+			return { consume: true };
+		}
 		// 审批/权限页自行拒绝 release/repeat/paste；编辑器的长按重复键不能被全局吞掉。
 		if (this.pages.current()) {
 			if (this.pages.handleInput(data)) {
@@ -294,7 +382,10 @@ export class Application {
 		}
 		if (this.approval.hasPending()) return { consume: true };
 		// repeat/release 交回编辑器（长按输入），但不得触发全局退出/复制等动作。
-		if (!isGlobalActionPress(data)) return undefined;
+		if (!isGlobalActionPress(data)) {
+			// 重复方向/退格仍交给编辑器；提交也会发起业务请求，必须由新 PRESS 触发。
+			return this.keymap.matches("tui.input.submit", data) ? { consume: true } : undefined;
+		}
 		if (this.keymap.matches("app.interrupt", data)) {
 			this.editor.focus(this.host.tui()!);
 			return { consume: true };
@@ -306,9 +397,13 @@ export class Application {
 			}
 			if (this.editor.draft().length > 0) {
 				this.editor.setDraft("");
+				this.lastClearAt = Date.now();
 				return { consume: true };
 			}
-			void this.quit();
+			const now = Date.now();
+			if (this.lastClearAt > 0 && now - this.lastClearAt <= 500) void this.quit();
+			else this.flash("Press Ctrl+C again to exit");
+			this.lastClearAt = now;
 			return { consume: true };
 		}
 		if (this.keymap.matches("app.exit", data)) {
@@ -319,15 +414,19 @@ export class Application {
 			return undefined;
 		}
 		if (this.keymap.matches("app.message.copy", data)) {
+			if (this.host.hasSelection()) { void this.host.copyActiveSelection(); return { consume: true }; }
 			const value = this.transcript.lastReplyText();
 			if (!value) this.notify("No assistant reply to copy", true);
 			else void this.copy(value);
 			return { consume: true };
 		}
 		if (this.keymap.matches("app.tools.expand", data)) {
-			const expanded = !(this.session.settings()?.toolsExpanded ?? false);
+			if (this.conversation && this.transcript.entries().length === 0) {
+				this.conversation.toggleWelcomeResources(); this.host.requestRender(); return { consume: true };
+			}
+			const expanded = !this.transcript.entries().filter((entry) => entry.kind === "TOOL").some((entry) => entry.expanded);
 			this.transcript.setToolsExpanded(expanded);
-			this.notify(expanded ? "Tools expanded" : "Tools collapsed", false);
+			this.host.requestRender();
 			return { consume: true };
 		}
 		if (this.keymap.matches("app.thinking.toggle", data)) {
@@ -341,13 +440,6 @@ export class Application {
 		}
 		if (this.keymap.matches("app.clipboard.pasteImage", data)) {
 			void this.pasteClipboard();
-			return { consume: true };
-		}
-		if (this.keymap.matches("app.suspend", data)) {
-			suspendToShell({
-				beforeSuspend: async () => { this.onTerminalInvalidate("suspend"); this.host.suspendTerminal(); },
-				afterResume: () => { this.onTerminalInvalidate("resume"); this.host.resumeTerminal(); this.theme.reload(); },
-			});
 			return { consume: true };
 		}
 		if (this.keymap.matches("app.thinking.cycle", data)) {
@@ -390,42 +482,35 @@ export class Application {
 
 	private dockOriginY = 0;
 
-	private renderRoot(width: number): string[] {
-		const settings = this.session.settings();
-		// 欢迎区必须使用真实终端高度，低窗口才能降档；缓存键也包含它。
-		this.conversation.setViewportRows(this.host.terminal.rows);
-		const conversation = this.conversation.render(width);
-		const lines = [...conversation];
-		const approvalView = this.approval.active();
-		const page = this.pages.current();
-		this.dock.setContent(approvalView ? { approval: approvalView } : page ? { page } : { editor: this.editor?.editor });
-		if (approvalView && this.theme) {
-			const snapshot = this.session.snapshot();
-			const rows = this.host.terminal.rows;
-			const viewportTop = this.host.mode() === "fullscreen" ? this.host.viewportTop() : 0;
-			const origin = Math.max(0, conversation.length - viewportTop);
-			this.dockOriginY = origin;
+	/** 全屏停靠区只使用已预算的屏幕行，审批几何不再随历史长度漂出视口。 */
+	private renderFullscreenDock(width: number, bottom: number, origin: number): string[] {
+		this.dockOriginY = origin;
+		const approval = this.approval.active();
+		if (approval) {
 			const current = this.approval.currentData();
-			const approvalLines = approvalView.render({
-				title: "Approval required",
-				tool: current?.tool ?? "",
-				scope: current?.scope ?? "",
-				parameters: current?.parameters ?? "",
-				actor: current?.actor ?? "",
-				loading: current?.loading ?? true,
-				teamActive: snapshot?.teamActive === true,
+			return approval.render({
+				title: "Approval required", tool: current?.tool ?? "", scope: current?.scope ?? "",
+				parameters: current?.parameters ?? "", actor: current?.actor ?? "", loading: current?.loading ?? true,
+				teamActive: this.session.snapshot()?.teamActive === true,
 				actorName: (actor) => this.session.displayActor(actor) || actor,
-			}, width, origin, rows, width);
-			lines.push(...approvalLines);
-		} else {
-			this.dockOriginY = Math.max(0, conversation.length - (this.host.mode() === "fullscreen" ? this.host.viewportTop() : 0));
-			const dockLines = this.dock.render(width);
-			lines.push(...dockLines);
+			}, width, origin, this.host.terminal.rows, width, bottom - origin);
 		}
-		lines.push(...this.status.render(this.theme.snapshot(), width));
-		return lines;
+		this.dock.setContent({ page: this.pages.current(), editor: this.editor?.editor, maxRows: bottom });
+		return this.dock.render(width);
 	}
 
+	private renderRoot(width: number): string[] {
+		this.conversation.setViewportRows(this.host.terminal.rows);
+		const conversation = this.conversation.render(width);
+		const footer = this.renderFooter(width);
+		const available = Math.max(1, this.host.terminal.rows - footer.length);
+		const measured = this.renderFullscreenDock(width, available, 0);
+		// regular 把完整文档写进 scrollback，但按钮坐标属于当前屏幕的文档尾部。
+		// 不能拿 conversation.length 当屏幕行号，否则超过一屏后审批永远无可见按钮。
+		const origin = Math.min(conversation.length, Math.max(0, available - measured.length));
+		const dock = this.renderFullscreenDock(width, available, origin);
+		return [...conversation, ...dock, ...footer];
+	}
 
 	private identity(): { sessionId: string; generation: string } {
 		return { sessionId: this.session.sessionId(), generation: this.session.generation() };
@@ -555,6 +640,9 @@ export class Application {
 				this.taskFinished(message.payload, true);
 				return;
 			case "approval.requested":
+				if (this.pages.current()) {
+					this.theme.cancel(); this.conversation.setSearchQuery("", 0); this.pages.clear(); this.host.setFocus(this.editor.editor);
+				}
 				this.approval.requested(message.payload, (ref) => this.assembler.resolve(ref));
 				return;
 			case "approval.removed":
@@ -564,7 +652,6 @@ export class Application {
 				const saved = this.pendingSettings.shift();
 				if (saved?.theme) this.theme.commitSucceededFor(saved.theme);
 				this.session.applySettingsSaved(message.payload);
-				this.theme.settingsChanged();
 				this.applyLiveSettings();
 				return;
 			}
@@ -760,7 +847,10 @@ export class Application {
 		});
 	}
 
+	private lastTerminalTitle = "";
 	private onSessionStateChanged(): void {
+		const title = singleLine(`JadeCode · ${this.session.snapshot()?.title ?? ""}`);
+		if (title !== this.lastTerminalTitle) { this.lastTerminalTitle = title; this.host?.terminal?.setTitle(title); }
 		this.applyLiveSettings();
 		this.armTimer();
 		this.host?.requestRender();
@@ -769,6 +859,10 @@ export class Application {
 	private applyLiveSettings(): void {
 		const settings = this.session.settings();
 		if (!settings || !this.host) return;
+		this.armProgress();
+		const signature = JSON.stringify(settings);
+		if (signature === this.lastSettingsSignature) return;
+		this.lastSettingsSignature = signature;
 		this.host.setHardwareCursor(settings.showHardwareCursor);
 		this.host.setClearOnShrink(settings.clearOnShrink);
 		this.host.setWheelScrollLines(settings.fullscreenWheelScrollLines === 0 ? "auto" : settings.fullscreenWheelScrollLines);
@@ -776,10 +870,18 @@ export class Application {
 		this.host.setCopyOnSelect(settings.fullscreenCopyOnSelect);
 		this.host.setMode(settings.mode as UiMode);
 		this.editor.applySettings(settings);
-		this.theme.settingsChanged();
+		if (this.lastToolsExpanded !== settings.toolsExpanded) {
+			this.lastToolsExpanded = settings.toolsExpanded;
+			this.transcript.setToolsExpanded(settings.toolsExpanded);
+		}
+		const themeConfig = JSON.stringify([settings.theme, settings.lightTheme, settings.darkTheme]);
+		if (themeConfig !== this.lastThemeConfig) { this.lastThemeConfig = themeConfig; this.theme.settingsChanged(); }
 		this.armProgress();
 	}
 
+	private lastSettingsSignature = "";
+	private lastThemeConfig = "";
+	private lastToolsExpanded: boolean | undefined;
 	private progressActive = false;
 
 	/** terminal progress 只在真实活动任务且配置启用时登记；结束/空闲清除。 */
@@ -810,6 +912,7 @@ export class Application {
 	private onTerminalInvalidate(reason: string): void {
 		if (!this.presented) return;
 		const epoch = this.presented.invalidate();
+		this.presentedFrame = undefined;
 		this.approval.invalidate();
 		const client = this.client;
 		if (client) {
@@ -831,19 +934,8 @@ export class Application {
 	}
 
 	private openSearchPage(): void {
-		this.pages.push(new SearchPage(this.pageContext(), (query) => {
-			const needle = query.toLowerCase();
-			const matches: Array<{ id: string; offset: number; snippet: string }> = [];
-			for (const entry of this.transcript.entries()) {
-				const haystack = `${entry.title}\n${entry.arguments}\n${entry.body}`;
-				if (!haystack.toLowerCase().includes(needle)) continue;
-				const offset = this.conversation.entryOffset(entry.id);
-				if (offset === null) continue;
-				const index = haystack.toLowerCase().indexOf(needle);
-				matches.push({ id: entry.id, offset, snippet: haystack.slice(Math.max(0, index - 20), index + 60).replace(/\n/g, " ") });
-			}
-			return matches;
-		}));
+		this.pages.push(new SearchPage(this.pageContext(), (query) =>
+			this.conversation.search(query, Math.max(1, this.host.terminal.columns - (this.session.settings()?.fullscreenScrollbar === "always" ? 1 : 0)))));
 		this.host.setFocus(this.root);
 		this.host.requestRender();
 	}
@@ -856,7 +948,7 @@ export class Application {
 			client: () => this.client ?? null,
 			identity: () => this.identity(),
 			closePage: () => {
-				this.pages.pop();
+				if (this.pages.pop() instanceof SearchPage) this.conversation.setSearchQuery("", 0);
 				this.editor.focus(this.host.tui()!);
 				this.host.requestRender();
 			},
@@ -879,8 +971,9 @@ export class Application {
 			cancelTheme: () => this.theme.cancel(),
 			sessionTheme: () => this.session.settings()?.theme ?? "system",
 			setDraft: (value) => this.editor.setDraft(value),
-			jumpToMatch: (query) => {
-				const offset = this.conversation.findOffset(query);
+			setSearchHighlight: (query, selected) => this.conversation.setSearchQuery(query, selected),
+			jumpToMatch: (query, selectedOffset) => {
+				const offset = selectedOffset ?? this.conversation.findOffset(query);
 				if (offset === null) return;
 				this.host.scrollToTop();
 				this.host.scrollBy(offset);
@@ -947,8 +1040,12 @@ export class Application {
 			const hash = createHash("sha256").update(bytes).digest("hex");
 			client.send("payload.begin", { id, kind: "prompt", totalBytes: bytes.length, sha256: hash }, this.identity());
 			let index = 0;
-			for (let offset = 0; offset < value.length; offset += 8192) {
-				client.send("payload.chunk", { id, index: index++, text: value.slice(offset, offset + 8192) }, this.identity());
+			for (let offset = 0; offset < value.length;) {
+				let end = Math.min(value.length, offset + 8192);
+				// Java 按 UTF-8 校验 blob；不能把一个 emoji 的 UTF-16 代理对拆到两块。
+				if (end < value.length && /[\uD800-\uDBFF]/.test(value[end - 1]!)) end--;
+				client.send("payload.chunk", { id, index: index++, text: value.slice(offset, end) }, this.identity());
+				offset = end;
 			}
 			client.send("payload.end", { id, count: index, sha256: hash }, this.identity());
 			void client.command("session.submit", { textBlobRef: id, clientSubmissionId: submissionId }, this.identity());
@@ -972,8 +1069,16 @@ export class Application {
 			case "/session": this.pages.push(new SessionPage(this.pageContext())); this.host.requestRender(); return true;
 			case "/mcp": this.pages.push(new McpPage(this.pageContext())); this.host.requestRender(); return true;
 			case "/permission": {
-				const intent = argument.trim() === "default" ? "default" : "runtime";
-				this.pages.push(new PermissionPage(this.pageContext(), intent));
+				const parts = argument.trim().split(/\s+/).filter(Boolean);
+				const intent = parts[0] === "default" ? "default" : "runtime";
+				const profile = parts[intent === "default" ? 1 : 0];
+				if (profile && !["read-only", "workspace", "auto-review", "full-access"].includes(profile)) {
+					this.notify(`Unknown permission profile: ${profile}. The draft was kept.`, true); return false;
+				}
+				const page = new PermissionPage(this.pageContext(), intent, profile);
+				this.pages.push(page);
+				// 命令中的档位已是明确意图；Full Access 仍只 prepare，必须再过可见的二次确认。
+				if (profile) page.handleInput("\r");
 				this.host.requestRender();
 				return true;
 			}
@@ -1051,10 +1156,27 @@ export class Application {
 		return arrayValue(result.payload, "sessions") as SessionItem[];
 	}
 
+	/** 复制反馈只短暂显示，不写进持久转录；regular 通过页脚承载。 */
+	private toast = "";
+	private toastTimer: ReturnType<typeof setTimeout> | undefined;
+	private flash(message: string, error = false): void {
+		this.toast = message;
+		if (this.toastTimer) clearTimeout(this.toastTimer);
+		this.toastTimer = setTimeout(() => { this.toast = ""; this.host?.requestRender(); }, error ? 5000 : 1000);
+		this.toastTimer.unref?.();
+		this.host?.requestRender();
+	}
+
+	private renderFooter(width: number): string[] {
+		const lines = this.status.render(this.theme.snapshot(), width);
+		if (this.toast) lines[0] = clipLine(singleLine(visibleEscapes(this.toast)), width);
+		return lines;
+	}
+
 	private async copy(value: string): Promise<void> {
 		const result = await this.clipboard.copy(value);
-		if (result.status === "FAILED") this.notify(result.error ?? "Copy failed", true);
-		else this.notify("Copied!", false);
+		if (result.status === "FAILED") this.flash(result.error ?? "Copy failed", true);
+		else this.flash("Copied!", false);
 	}
 
 	private async pasteClipboard(): Promise<void> {
@@ -1088,13 +1210,14 @@ export class Application {
 			suspend: async () => {
 				this.onTerminalInvalidate("external-editor");
 				this.host.suspendTerminal();
+				await this.host.terminal.flushOutput();
 			},
 			resume: () => {
 				this.host.resumeTerminal();
 				this.onTerminalInvalidate("external-editor-return");
 			},
 		});
-		if (result) {
+		if (result && this.editor.draft() === draft) {
 			this.editor.setDraft(result.text);
 			this.host.requestRender(true);
 		}
@@ -1151,13 +1274,18 @@ export class Application {
 		if (!this.stoppedReceived) this.exitMessage = `The backend closed before server.stopped: ${reason}`;
 	}
 
-	private shutdown(): void {
+	private async shutdown(): Promise<void> {
 		if (this.timer) clearTimeout(this.timer);
+		if (this.toastTimer) clearTimeout(this.toastTimer);
+		this.colorTicket++; this.colorDisposer?.();
 		this.timer = undefined;
-		try { this.host?.stop(); } catch { /* 终端已恢复。 */ }
+		try {
+			this.host?.stop();
+			if (this.host) await this.host.terminal.flushOutput();
+		} catch (error) { this.reportFailure("Terminal restoration failed", error); }
 		try { this.theme?.close(); } catch { /* 无 watch。 */ }
-		this.clipboard.cleanup();
-		this.client?.close();
+		try { this.clipboard.cleanup(); } catch (error) { this.reportFailure("Temporary clipboard cleanup failed", error); }
+		finally { this.client?.close(); }
 	}
 
 	/** 失败时输出协议元数据环形缓冲（无正文/凭据），便于区分双方先后顺序。 */
@@ -1176,7 +1304,18 @@ export class Application {
 		try { this.host?.stop(); } catch { /* 终端可能已恢复。 */ }
 	}
 
-	/** 退出时只打印真实结果/回放提示一次；不重复 farewell。 */
+	/** 终端恢复后由入口输出一次。regular 已进入 scrollback，不重复回放。 */
+	normalExitOutput(): string {
+		const snapshot = this.session.snapshot();
+		const settings = this.session.settings();
+		if (!snapshot || !settings || this.exitMessage) return "";
+		const replay = settings.mode === "fullscreen" && settings.fullscreenExitOutput === "transcript"
+			? this.conversation.render(this.host.terminal.columns).join("\n") + "\n" : "";
+		const title = singleLine(visibleEscapes(snapshot.title));
+		return `${replay}\nSession: ${title || "Untitled"}\nID: ${snapshot.sessionId}\nResume: jade --resume=${snapshot.sessionId}\nGoodbye!\n`;
+	}
+
+	/** 退出失败原因由入口输出一次。 */
 	exitOutput(): string {
 		return this.exitMessage;
 	}
@@ -1209,7 +1348,7 @@ function parseEntry(value: unknown): Entry | null {
 			hostReadOnly: (toolNode as Payload).hostReadOnly === true,
 		} : null,
 		revision: 0,
-		expanded: false,
+		expanded: kind === "THINKING",
 	};
 }
 

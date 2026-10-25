@@ -21,7 +21,7 @@ test("Application global routing executes the overridden key", () => {
 	const calls: string[] = [];
 	fields["keymap"] = new KeymapAdapter({ "app.tools.expand": ["ctrl+p"] });
 	fields["transcript"] = {
-		setToolsExpanded: (value: boolean) => { calls.push(`expand:${value}`); },
+		entries: () => [{ kind: "TOOL", expanded: false }], setToolsExpanded: (value: boolean) => { calls.push(`expand:${value}`); },
 		notice: () => {},
 	};
 	fields["host"] = { hasSelection: () => false, requestRender: () => {}, tui: () => ({}), mode: () => "fullscreen" };

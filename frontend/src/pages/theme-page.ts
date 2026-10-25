@@ -1,3 +1,4 @@
+import { clipLine } from "../presentation/text-safety.ts";
 import { matchesKey } from "@earendil-works/pi-tui";
 import type { Page, PageContext } from "./page-stack.ts";
 import type { ResolvedTheme } from "../theme/theme-resolver.ts";
@@ -20,7 +21,8 @@ export class ThemePage implements Page {
 		this.context = context;
 		this.target = target;
 		this.names = context.themeNames();
-		this.selected = Math.max(0, this.names.indexOf(context.sessionTheme()));
+		const selectedName = target === "theme" ? context.sessionTheme() : context.settings()?.[target] ?? context.sessionTheme();
+		this.selected = Math.max(0, this.names.indexOf(selectedName));
 		this.title = target === "theme" ? "Theme" : target === "lightTheme" ? "Light theme" : "Dark theme";
 	}
 
@@ -29,6 +31,12 @@ export class ThemePage implements Page {
 	hint(): string { return "Up/Down preview · Enter save · Esc cancel"; }
 
 	invalidate(): void {}
+	handleBodyPress(row: number): boolean {
+		if (row >= 0 && row < this.names.length) {
+			this.selected = row; this.context.previewTheme(this.names[row]!);
+		}
+		return true;
+	}
 
 	render(width: number): string[] {
 		const theme = this.context.theme();
@@ -42,7 +50,7 @@ export class ThemePage implements Page {
 		}
 		lines.push("");
 		lines.push(theme.style("dim", `Effective: ${theme.name} (${theme.appearance})`));
-		if (width < 20) return lines.map((line) => line.slice(0, width));
+		if (width < 20) return lines.map((line) => clipLine(line, width));
 		return lines;
 	}
 

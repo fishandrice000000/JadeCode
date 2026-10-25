@@ -83,6 +83,7 @@ export class ThemeController {
 
 	/** 终端普通前景/背景；system 主题绑定它们，但强调色仍来自 Jade 主题。 */
 	setTerminalColors(foreground: Color | undefined, background: Color | undefined): void {
+		if (JSON.stringify([foreground, background]) === JSON.stringify([this.terminalForeground, this.terminalBackground])) return;
 		this.terminalForeground = foreground;
 		this.terminalBackground = background;
 		if (this.effectiveName() === "system") this.rebuild("system");

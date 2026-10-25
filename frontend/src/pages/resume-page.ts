@@ -1,3 +1,4 @@
+import { clipLine } from "../presentation/text-safety.ts";
 import { matchesKey } from "@earendil-works/pi-tui";
 import type { Page, PageContext, SessionItem } from "./page-stack.ts";
 import type { ResolvedTheme } from "../theme/theme-resolver.ts";
@@ -14,6 +15,12 @@ export class ResumePage implements Page {
 	private readonly context: PageContext;
 	private sessions: SessionItem[] = [];
 	private selected = 0;
+	private readonly rowSessions = new Map<number, number>();
+	handleBodyPress(row: number): boolean {
+		const selected = this.rowSessions.get(row);
+		if (selected !== undefined) this.selected = selected;
+		return true;
+	}
 	private filter = "";
 	private namedOnly = false;
 	private sortRecent = true;
@@ -37,6 +44,7 @@ export class ResumePage implements Page {
 	render(width: number): string[] {
 		const theme = this.context.theme();
 		const lines: string[] = [];
+		this.rowSessions.clear();
 		const filterLine = `Filter: ${this.filter}${this.filter ? "▏" : ""}`;
 		lines.push(theme.style("text", filterLine));
 		if (this.loading) {
@@ -52,6 +60,7 @@ export class ResumePage implements Page {
 		if (this.selected >= filtered.length) this.selected = filtered.length - 1;
 		for (let index = 0; index < filtered.length; index++) {
 			const session = filtered[index]!;
+			this.rowSessions.set(lines.length, index);
 			const marker = index === this.selected ? "▸ " : "  ";
 			const age = relativeTime(session.updatedAt);
 			let line = `${marker}${session.title || session.id} · ${age}`;
@@ -63,7 +72,7 @@ export class ResumePage implements Page {
 			}
 		}
 		lines.push(theme.style("dim", `${filtered.length} session(s) · named only: ${this.namedOnly ? "on" : "off"} · sort: ${this.sortRecent ? "recent" : "title"}`));
-		return lines.map((line) => line.slice(0, Math.max(0, width)));
+		return lines.map((line) => clipLine(line, Math.max(0, width)));
 	}
 
 	handleInput(data: string): boolean {
