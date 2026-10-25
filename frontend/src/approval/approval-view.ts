@@ -108,7 +108,7 @@ export class ApprovalView {
 		if (width < 30 || budget < 2) return tooSmall();
 		const theme = this.theme;
 		const palette = approvalPalette(theme);
-		const margin = width >= 44 ? 2 : width >= 30 ? 1 : 0;
+		const margin = 0; // 与输入栏共用终端左右边界，卡内仍保留一列 padding。
 		const boxWidth = Math.max(8, width - margin * 2);
 		const innerWidth = Math.max(4, boxWidth - 4);
 		const border = (text: string) => theme.style("border", text);

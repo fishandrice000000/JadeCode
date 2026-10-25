@@ -67,6 +67,20 @@ function dispatch(evidence: InputEvidence, data: string, chunk: number): void {
 
 function end(evidence: InputEvidence): void { evidence.endDispatch(); }
 
+test("the first mouse press only selects; another press on that option confirms with fresh evidence", async () => {
+	const { fake, approval, evidence } = setup();
+	request(approval); render(approval); approval.onFrame(frame(1, 0));
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	const rect = approval.active()!.lastLayout()!.rects[0]!;
+	const press = { type: "press", button: "left", x: rect.x, y: rect.y } as const;
+	dispatch(evidence, "mouse1", 1); approval.handleMouse(press as never); end(evidence);
+	assert.equal(approval.active()!.choice(), 0);
+	assert.equal(fake.commands.filter((item) => item.type === "approval.answer").length, 0);
+	dispatch(evidence, "mouse2", 2); approval.handleMouse(press as never); end(evidence);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.equal(fake.commands.filter((item) => item.type === "approval.answer").length, 1);
+});
+
 test("selection change keeps the valid geometry, so Down+Enter confirms immediately", async () => {
 	const { fake, approval, evidence } = setup();
 	request(approval);

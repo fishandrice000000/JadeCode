@@ -9,7 +9,7 @@ import type { Editor } from "@earendil-works/pi-tui";
  * 底部停靠区：审批 > 完整页 > 编辑器（与 PageStack 优先级一致）。
  *
  * 完整页使用 Pi 风格上下横线、右上标题，替换编辑器但保留草稿；审批是独立闭合卡片，左右各
- * 2 列留白（窄屏 1/0），由 ApprovalView 自己画框。这里只决定“现在轮到谁”，不实现页面算法。
+ * 卡内留白，由 ApprovalView 自己按输入栏全宽画框。这里只决定“现在轮到谁”，不实现页面算法。
  */
 export interface DockContent {
 	approval?: ApprovalView;

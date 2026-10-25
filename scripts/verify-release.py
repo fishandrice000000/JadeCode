@@ -475,6 +475,10 @@ def verify(case, name):
             case.drain(.15)
             assert not case.target.exists(), "right-click or drag approved an action"
             case.send(f"\x1b[<0;{x+1};{y+1}M")
+            case.drain(.2)
+            assert not case.target.exists(), "the first left click approved instead of only selecting"
+            case.send(f"\x1b[<0;{x+1};{y+1}m")
+            case.send(f"\x1b[<0;{x+1};{y+1}M")
         else:
             case.send("\x1b" if name == "approval-deny" else "\x1b[B\r")
         case.until("JADE_VERIFY_DONE")

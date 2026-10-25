@@ -4,6 +4,7 @@ import { test } from "node:test";
 import { ApprovalView, type ApprovalChoice } from "../../src/approval/approval-view.ts";
 import { parseThemeDocument } from "../../src/theme/theme-document.ts";
 import { resolveTheme } from "../../src/theme/theme-resolver.ts";
+import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 
 const theme = resolveTheme(parseThemeDocument(readFileSync(new URL("../../../assets/themes/jadecode.json", import.meta.url), "utf8")), "dark", {
 	mode: "256color",
@@ -25,6 +26,9 @@ function input(parameters: string) {
 test("button rectangles point at the rendered option lines, not at shifted rows", () => {
 	const view = new ApprovalView(theme, choices(false));
 	const lines = view.render(input("{}"), 80, 0, 24, 80);
+	assert.equal(visibleWidth(lines[0]!), 80, "approval uses the same full width as the editor");
+	assert.ok(stripTerminalSequences(lines[0]!).startsWith("╭"));
+	assert.ok(stripTerminalSequences(lines.at(-1)!).endsWith("╯"));
 	const allowLine = lines.findIndex((line) => line.includes("Allow once"));
 	const denyLine = lines.findIndex((line) => line.includes("Deny"));
 	assert.ok(allowLine >= 0 && denyLine >= allowLine);

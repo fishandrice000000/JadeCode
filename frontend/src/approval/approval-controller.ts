@@ -348,14 +348,18 @@ export class ApprovalController {
 		return true;
 	}
 
-	/** 鼠标：只接受新鲜左键按下命中同帧按钮（Pi 已解码坐标）。 */
+	/** 鼠标：首次命中只选中；再次新鲜左键按下同一选项才答复，键盘 Enter 也可确认已选项。 */
 	handleMouse(event: TuiMouseEvent): boolean {
 		const item = this.current;
 		if (!item) return false;
 		if (event.type !== "press" || event.button !== "left") return false;
 		const choice = item.view.hit(event.x, event.y);
 		if (choice < 0) return false;
-		item.view.setChoice(choice);
+		if (item.view.choice() !== choice) {
+			item.view.setChoice(choice);
+			this.callbacks.requestRender();
+			return true;
+		}
 		this.answer(choice, {
 			keyAction: "",
 			mouse: { type: "press", button: "left", x: event.x, y: event.y },
