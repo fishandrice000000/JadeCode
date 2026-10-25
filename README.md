@@ -1,5 +1,7 @@
 # JadeCode
 
+当前版本：**1.0.0**。本轮TUI真机验收已由用户确认通过；图片粘贴按批准范围暂缓。详见[1.0.0交付记录](docs/tui-pi-replication/10-node-frontend-migration/handover/release-1.0.0.md)。
+
 个人 CLI coding agent — Java 21 重写 [learn-claude-code](https://github.com/shareAI-lab/learn-claude-code) 课程(s01–s17)。
 
 **Agency 来自模型,harness 让 agency 落地。** 本项目跟随课程逐章实现 harness 机制:agent loop、工具分发、权限、hooks、todo、子代理、技能、上下文压缩、记忆、任务系统、后台任务、cron、团队协作、MCP、集成、workflow、goal loop。
