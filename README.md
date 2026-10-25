@@ -278,6 +278,17 @@ CLI 首轮与无界面模式同样支持，例如 `./jade --headless "/goal 阅�
 工程证据见 [s17 任务单](docs/jobs/s17/goal-loop.md)，完整阅读顺序、问题与真机步骤见
 [s17 指南](docs/notes/s17/goal-loop-review.md)。
 
+## 持续集成（CI）
+
+[GitHub Actions 工作流](.github/workflows/ci.yml) 在所有分支 push、PR 和手动触发时检查源码，使用两个独立的 Ubuntu 24.04 作业：
+
+- **Java 21 / Maven**：配置 Temurin JDK 21 与 Maven Toolchain，运行 `mvn --batch-mode --no-transfer-progress clean verify`，完成编译、JUnit 测试和 JAR 打包。
+- **Node 24 / Frontend**：在 `frontend/` 按顺序运行 `npm ci --no-audit --no-fund`、`npm run build`、`npm run typecheck`、`npm test`，检查 Pi vendor、前端类型与 Node 测试。
+
+推送后到仓库 **Actions → CI** 查看两个作业及每步日志；PR 页面也显示检查结果。手动入口需要工作流先进入默认分支。同一分支/PR 的新运行会取消同事件类型的旧运行。测试不需要真实模型 API Key；依赖缓存只加速下载，不跳过检查。
+
+本阶段只做 CI，尚未发布发行包、部署或配置强制合并规则；Java-only 打包也不代表成套交互发行验收通过。首次 GitHub runner 结果须在实际推送后确认，本地验证记录见 [CI 任务单](docs/jobs/engineering/ci.md)，学习入口见 [CI 阅读指南](docs/notes/engineering/ci-review.md)。
+
 ## 运行
 
 ```sh

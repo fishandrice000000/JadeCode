@@ -1,0 +1,82 @@
+# CI 在干净的 Linux 环境检查后端与终端前端；两个 job 各自安装依赖、独立报告结果。
+# 本阶段只验证源码，不发布成套发行包，也不调用真实模型。
+name: CI
+
+on:
+  # 所有分支的推送均检查；只匹配 branches，因此版本 tag 不触发这条规则。
+  push:
+    branches: ['**']
+  pull_request:
+  # 工作流进入默认分支后，可在 Actions 页面手动重新运行。
+  workflow_dispatch:
+
+# 构建只需要读取仓库，令牌不授予写入权限；模型凭据不传入工作流。
+permissions:
+  contents: read
+
+# 同一分支或 PR 更新后取消旧运行，优先检查新代码；push 与 PR 的运行互不取消。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  java:
+    name: Java 21 / Maven
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      # 固定官方 action 的提交，旁边保留版本号方便查阅和升级。
+      - name: Checkout source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK 21 and Maven cache
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          # setup-java 同时生成 Toolchain，满足 pom.xml 对 JDK 21 的要求。
+          cache: maven
+          cache-dependency-path: pom.xml
+
+      # clean 排除旧输出；verify 包含编译、JUnit 测试与 JAR 打包，任一步失败都会使 job 失败。
+      # 首次 runner 可能没有依赖，所以不用本机发行脚本中的 Maven 离线参数 -o。
+      - name: Compile, test and package Java
+        run: mvn --batch-mode --no-transfer-progress clean verify
+
+  frontend:
+    name: Node 24 / Frontend
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node 24 and npm cache
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+          # uses 步骤不受上面的 run 工作目录影响；这里从仓库根指定锁文件。
+          cache-dependency-path: frontend/package-lock.json
+
+      # npm ci 按已提交的锁文件安装；缓存只用于加速下载，不能代替安装。
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+
+      # 前端依赖本地 Pi vendor 的 dist 类型与实现；先构建，后续检查才能在干净环境运行。
+      - name: Build Pi vendor and frontend
+        run: npm run build
+
+      - name: Check frontend types
+        run: npm run typecheck
+
+      # npm test 自动先运行 pretest：编译测试并复制资源，然后运行 Node 测试。
+      - name: Run frontend tests
+        run: npm test
