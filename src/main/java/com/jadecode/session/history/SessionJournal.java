@@ -10,6 +10,11 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.time.Instant;
 import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.function.Consumer;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.jadecode.messages.Message;
@@ -21,6 +26,10 @@ import com.jadecode.util.Json;
  * <p>每条记录包含换行，并在允许下一步执行前 force 到本地文件。这样可恢复的事实
  * 不依赖 UI 是否已经显示文本。文件系统/硬件仍可能失效，工具副作用与日志也不是事务。
  * 清单只是列表索引，更新失败会告警；完整日志写入失败则锁定本写者，禁止继续追加。</p>
+ *
+ * <p>模型/Workflow 线程可能被取消。NIO 会因调用线程中断而关闭 FileChannel，不能让这些线程
+ * 直接操作共享通道。因此文件操作交给本会话独占的 I/O 线程，调用者同步等到提交结束；
+ * 等待期间的中断在返回时恢复，不取消已提交的日志事实。此线程不执行模型或业务任务。</p>
  */
 public final class SessionJournal implements AutoCloseable {
     private final Path directory;
@@ -28,6 +37,9 @@ public final class SessionJournal implements AutoCloseable {
     private final FileLock lock;
     private final Consumer<String> warnings;
     private final Runnable releaseLocal;
+    /** 公共方法持本对象锁直到 IO 完成，故至多一个文件操作在途，不积压另一份业务队列。 */
+    private final ExecutorService ioOwner = Executors.newSingleThreadExecutor(Thread.ofPlatform()
+            .name("jade-session-journal-io").daemon(true).inheritInheritableThreadLocals(false).factory());
     private volatile SessionMetadata metadata;
     private long sequence;
     private boolean closed, failed, indexWarning;
@@ -75,9 +87,20 @@ public final class SessionJournal implements AutoCloseable {
                 JournalEntry.Kind.GOAL, List.of(), null, "goal", null, null, null, value));
     }
 
-    /** 所有生产者经过同一把锁写完整行；只有历史事件才保存 Todo，避免队友覆盖主会话计划。 */
+    /**
+     * 所有生产者持同一把锁同步提交。调用线程中断不会触碰文件通道；磁盘/通道真实失败仍封住后续写入。
+     * 清单告警回到调用线程处理，不能让 IO 线程执行可能回调会话的显示函数而形成跨线程锁等待。
+     */
     private void write(JournalEntry record) throws IOException {
         if (closed || failed) throw new IOException("Session journal is closed or a write has failed");
+        boolean warn;
+        try { warn = onIo(() -> writeRecord(record)); }
+        catch (IOException failure) { failed = true; throw failure; }
+        if (warn) warnings.accept("Session list index was not updated, but the journal was saved; resume by UUID.");
+    }
+
+    /** 只由 ioOwner 操作通道、序号和清单；完成 future 后变更才对等待调用者可见。 */
+    private boolean writeRecord(JournalEntry record) throws IOException {
         try {
             ByteBuffer bytes = ByteBuffer.wrap((Json.mapper().writeValueAsString(record) + "\n").getBytes(StandardCharsets.UTF_8));
             if (events.position() + bytes.remaining() > 256_000_000)
@@ -98,9 +121,33 @@ public final class SessionJournal implements AutoCloseable {
         // 索引失败不否定刚才已可靠写出的日志，不得为了更新标题重试工具或主请求。
         try { saveMetadata(directory, metadata); }
         catch (IOException error) {
-            if (!indexWarning) warnings.accept("Session list index was not updated, but the journal was saved; resume by UUID.");
+            boolean warn = !indexWarning;
             indexWarning = true;
+            return warn;
         }
+        return false;
+    }
+
+    /**
+     * 把一段文件提交交给不受分支取消影响的线程，并等待确定结果。
+     * InterruptedException 只中断了等待，没有撤销已经发生的 IO；不能取消 future 或提前放开日志锁。
+     * 无论成功/失败，都恢复调用者中断标志，让其后续执行边界照常响应取消。
+     */
+    private <T> T onIo(Callable<T> operation) throws IOException {
+        Future<T> pending;
+        try { pending = ioOwner.submit(operation); }
+        catch (java.util.concurrent.RejectedExecutionException unavailable) { throw new IOException("Session journal IO is unavailable", unavailable); }
+        boolean interrupted = false;
+        try {
+            while (true) {
+                try { return pending.get(); }
+                catch (InterruptedException cancelled) { interrupted = true; }
+                catch (ExecutionException failure) {
+                    if (failure.getCause() instanceof IOException io) throw io;
+                    throw new IOException("Session journal IO failed", failure.getCause());
+                }
+            }
+        } finally { if (interrupted) Thread.currentThread().interrupt(); }
     }
 
     /** 原子更新可重建的清单，不原地截断旧文件；临时文件也留在会话目录中。 */
@@ -126,8 +173,12 @@ public final class SessionJournal implements AutoCloseable {
         if (closed) return;
         closed = true;
         try {
-            try { events.close(); }
-            finally { try { lock.release(); } finally { lockChannel.close(); } }
-        } finally { releaseLocal.run(); }
+            // close 与写入同样由 IO 所有者执行；不能 shutdownNow 打断最后一次 force 或锁释放。
+            onIo(() -> {
+                try { events.close(); }
+                finally { try { lock.release(); } finally { lockChannel.close(); } }
+                return null;
+            });
+        } finally { ioOwner.shutdown(); releaseLocal.run(); }
     }
 }

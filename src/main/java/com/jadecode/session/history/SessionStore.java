@@ -100,6 +100,7 @@ public final class SessionStore {
         FileChannel lockChannel = null;
         FileLock lock = null;
         FileChannel events = null;
+        SessionJournal journal = null;
         try {
             lockChannel = FileChannel.open(lockFile, StandardOpenOption.CREATE, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS);
             lock = lockChannel.tryLock();
@@ -113,7 +114,7 @@ public final class SessionStore {
                 events.truncate(restored.validBytes()); events.force(true);
             }
             events.position(events.size());
-            var journal = new SessionJournal(directory, restored.metadata(), restored.sequence(), events, lockChannel, lock, warnings,
+            journal = new SessionJournal(directory, restored.metadata(), restored.sequence(), events, lockChannel, lock, warnings,
                     () -> OPEN.remove(identity));
             if (restored.repairedHistory()) journal.append(JournalEntry.Kind.REPLACE_HISTORY, restored.history(), restored.todos(), "recovery");
             if (!metadata.equals(restored.metadata())) {
@@ -123,10 +124,15 @@ public final class SessionStore {
             return new Opened(journal, restored);
         } catch (IOException | RuntimeException error) {
             // 清理异常不能盖住首次损坏/锁定错误；每个资源仍须独立尝试关闭。
-            if (events != null) try { events.close(); } catch (IOException cleanup) { error.addSuppressed(cleanup); }
-            if (lock != null) try { lock.release(); } catch (IOException cleanup) { error.addSuppressed(cleanup); }
-            if (lockChannel != null) try { lockChannel.close(); } catch (IOException cleanup) { error.addSuppressed(cleanup); }
-            OPEN.remove(identity);
+            if (journal != null) {
+                // 已移交给 Journal 后由它关闭 IO 所有者/通道/锁；不能再移除可能已被新写者取得的 OPEN 项。
+                try { journal.close(); } catch (IOException cleanup) { error.addSuppressed(cleanup); }
+            } else {
+                if (events != null) try { events.close(); } catch (IOException cleanup) { error.addSuppressed(cleanup); }
+                if (lock != null) try { lock.release(); } catch (IOException cleanup) { error.addSuppressed(cleanup); }
+                if (lockChannel != null) try { lockChannel.close(); } catch (IOException cleanup) { error.addSuppressed(cleanup); }
+                OPEN.remove(identity);
+            }
             throw new IOException("Cannot resume session " + id + ": " + error.getMessage(), error);
         }
     }
