@@ -15,6 +15,19 @@ function page(title: string, body: string[], hint = ""): never {
 	} as never;
 }
 
+test("internal dock widgets are limited to ten rows per side and yield to a small page", () => {
+	const dock = new DockView();
+	const widget = (prefix: string) => ({ render: () => Array.from({ length: 14 }, (_, i) => `${prefix}${i}`), invalidate: () => {} });
+	dock.setWidgets([widget("A")], [widget("B")]);
+	dock.setContent({ page: page("P", ["MAIN"]), maxRows: 30 });
+	const lines = dock.render(20);
+	assert.equal(lines.filter((line) => /^A\d/.test(line)).length, 10);
+	assert.equal(lines.filter((line) => /^B\d/.test(line)).length, 10);
+	assert.ok(lines.includes("MAIN"));
+	dock.setContent({ page: page("P", ["MAIN"]), maxRows: 5 });
+	assert.deepEqual(dock.render(20), ["─".repeat(17) + " P ", "MAIN", "─".repeat(20)]);
+});
+
 test("a page frame keeps the title on the right and every line inside the width budget", () => {
 	const lines = framePage(page("Settings", ["  field one", "  field two"], "enter save"), 20);
 	assert.equal(visibleWidth(lines[0]!), 20);

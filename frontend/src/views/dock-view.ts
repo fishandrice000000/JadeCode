@@ -23,9 +23,18 @@ export class DockView implements Component {
 	private content: DockContent = {};
 	private bodyStart = 0;
 	private bodyLength = 0;
+	private above: readonly Component[] = [];
+	private below: readonly Component[] = [];
+	private aboveRows = 0;
+
+	/** 应用内部 widget 插槽；不是插件执行宿主。每侧最多十行，小屏优先保留主交互区。 */
+	setWidgets(above: readonly Component[], below: readonly Component[]): void {
+		this.above = [...above]; this.below = [...below];
+	}
 
 	/** 屏幕行先减页框，再映射回实际正文窗口；边框/提示不能命中候选。 */
 	handlePagePress(row: number, column: number): boolean {
+		row -= this.aboveRows;
 		if (row < 1 || row > this.bodyLength) return true;
 		return this.content.page?.handleBodyPress?.(this.bodyStart + row - 1, column) ?? true;
 	}
@@ -39,12 +48,19 @@ export class DockView implements Component {
 		const { approval, page, editor } = this.content;
 		// 审批卡需要视口原点/行数，由 AppLayout 直接渲染；这里不应收到 approval。
 		if (approval) return [];
-		if (page) return framePage(page, width, this.content.maxRows, (start, length) => { this.bodyStart = start; this.bodyLength = length; });
-		if (editor) return editor.render(width);
-		return [];
+		const budget = this.content.maxRows;
+		const slotBudget = budget === undefined ? 20 : Math.max(0, budget - 8);
+		const above = this.above.flatMap((widget) => widget.render(width)).slice(0, Math.min(10, slotBudget));
+		const below = this.below.flatMap((widget) => widget.render(width)).slice(0, Math.min(10, slotBudget - above.length));
+		this.aboveRows = above.length;
+		const bodyBudget = budget === undefined ? undefined : Math.max(0, budget - above.length - below.length);
+		const body = page ? framePage(page, width, bodyBudget, (start, length) => { this.bodyStart = start; this.bodyLength = length; })
+			: editor?.render(width) ?? [];
+		return [...above, ...body, ...below].map((line) => clipLine(line, width));
 	}
 
 	invalidate(): void {
+		for (const widget of [...this.above, ...this.below]) widget.invalidate();
 		this.content.approval?.invalidate();
 		this.content.page?.invalidate();
 		this.content.editor?.invalidate();
