@@ -44,9 +44,9 @@ export class StatusView {
 			if (actors.length > 0) lines.push(theme.style("dim", clipLine(singleLine(actors.join(" · ")), Math.max(0, width))));
 		}
 		const hints: string[] = [];
-		if (settings.mode === "fullscreen") hints.push("PgUp/PgDn scroll", "Ctrl+Shift+F search");
+		if (settings.mode === "fullscreen") hints.push("PgUp/PgDn scroll", "Ctrl+R search");
 		else hints.push("native scroll");
-		hints.push("Enter submit", "Shift+Enter newline", "Ctrl+O tools", "/settings");
+		hints.push("Enter submit", "Ctrl+J newline", "Ctrl+O tools", "/settings");
 		lines.push(theme.style("dim", clipLine(hints.join(" · "), Math.max(0, width))));
 		return lines;
 	}

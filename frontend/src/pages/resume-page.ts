@@ -1,5 +1,5 @@
 import { clipLine } from "../presentation/text-safety.ts";
-import { matchesKey } from "@earendil-works/pi-tui";
+import { Input } from "@earendil-works/pi-tui";
 import type { Page, PageContext, SessionItem } from "./page-stack.ts";
 import type { ResolvedTheme } from "../theme/theme-resolver.ts";
 import { relativeTime } from "../presentation/format.ts";
@@ -21,7 +21,9 @@ export class ResumePage implements Page {
 		if (selected !== undefined) this.selected = selected;
 		return true;
 	}
-	private filter = "";
+	// 与设置/搜索页共用 Pi 的输入解码和字素编辑，不能只接收单字节 legacy 字符。
+	private readonly filterInput = new Input();
+	private get filter(): string { return this.filterInput.getValue(); }
 	private namedOnly = false;
 	private sortRecent = true;
 	private showPath = false;
@@ -97,13 +99,10 @@ export class ResumePage implements Page {
 			this.context.closePage();
 			return true;
 		}
-		if (matchesKey(data, "backspace")) { this.filter = this.filter.slice(0, -1); this.selected = 0; return true; }
-		if (data.length === 1 && data >= " " && data !== "\x7f") {
-			this.filter += data;
-			this.selected = 0;
-			return true;
-		}
-		return false;
+		const before = this.filter;
+		this.filterInput.handleInput(data);
+		if (before !== this.filter) this.selected = 0;
+		return true;
 	}
 
 	private visible(): SessionItem[] {

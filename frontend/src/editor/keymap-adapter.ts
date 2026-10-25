@@ -67,7 +67,7 @@ const ACTIONS: ActionDefinition[] = [
 	...alt("tui.altScreen.lineDown", "Scroll line down", []),
 	...hiddenAction("tui.altScreen.previousPrompt", "Previous prompt", "ALT_SCREEN"),
 	...hiddenAction("tui.altScreen.nextPrompt", "Next prompt", "ALT_SCREEN"),
-	...alt("tui.altScreen.search", "Search transcript", ["ctrl+shift+f"]),
+	...alt("tui.altScreen.search", "Search transcript", ["ctrl+r", "ctrl+shift+f"]),
 	...search("tui.altScreen.searchNext", "Next search match", ["enter", "ctrl+g"]),
 	...search("tui.altScreen.searchPrevious", "Previous search match", ["shift+enter", "ctrl+shift+g"]),
 	...search("tui.altScreen.searchClose", "Close search", ["escape"]),

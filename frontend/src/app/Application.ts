@@ -5,6 +5,7 @@ import {
 	TUI_KEYBINDINGS,
 	matchesKey,
 	setKeybindings,
+	isKeyRelease,
 	type Component,
 	type TUI,
 	type TuiMouseEvent,
@@ -316,6 +317,9 @@ export class Application {
 			if (this.approval.hasPending()) {
 				return this.approval.handleInput(data) ? { consume: true } : undefined;
 			}
+			// 页面由应用统一消费，先于 Pi 自身的视口翻页/搜索分支，避免局部键穿透。
+			if (this.pages.current()) return this.onGlobalInput(data);
+			if (isGlobalActionPress(data) && this.keymap.matches("tui.altScreen.search", data)) return this.onGlobalInput(data);
 			return undefined;
 		});
 		this.offscreenDisposer?.();
@@ -373,6 +377,9 @@ export class Application {
 		}
 		// 审批/权限页自行拒绝 release/repeat/paste；编辑器的长按重复键不能被全局吞掉。
 		if (this.pages.current()) {
+			// Pi 只在 focusedComponent 分支过滤 release；我们在 listener 中接管页面，必须自行过滤。
+			// 否则 Kitty 的一次 press + release 会让方向移动和可打印字符各执行两遍。
+			if (isKeyRelease(data)) return { consume: true };
 			if (this.pages.handleInput(data)) {
 				this.host.requestRender();
 				return { consume: true };
@@ -398,6 +405,7 @@ export class Application {
 			if (this.editor.draft().length > 0) {
 				this.editor.setDraft("");
 				this.lastClearAt = Date.now();
+				this.host.requestRender(); // 消费输入后 Pi 不会再走 focusedComponent 的自动重绘。
 				return { consume: true };
 			}
 			const now = Date.now();

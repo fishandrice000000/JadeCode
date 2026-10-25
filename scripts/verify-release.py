@@ -305,6 +305,43 @@ def verify(case, name):
     prompt = "JADE_VERIFY_MCP" if name == "mcp" else "JADE_VERIFY_TEAM" if name == "team" else "JADE_VERIFY_TOOL" if name.startswith("approval") else "JADE_VERIFY_LONG" if name == "long-output" else ""
     case.start("JADE_VERIFY_LONG" if name == "regular-approval" else "JADE_VERIFY_TEXT" if name in ("copy", "retry", "model-error", "output-limit") else prompt,
                shell=name == "approval-suspend", mode="regular" if name in ("regular", "regular-approval") else "fullscreen")
+    if name == "input-routing":
+        def screen(label):
+            case.snapshot(label)
+            parsed = subprocess.run([shutil.which("node"), str(REPO / "scripts/tui-screen.mjs"), str(case.directory)],
+                                    capture_output=True, text=True, check=True)
+            return json.loads(parsed.stdout)[-1]["text"]
+        case.send("DRAFT_CLEAR_NOW"); case.drain(.15)
+        assert "DRAFT_CLEAR_NOW" in screen("draft")
+        case.send("\x03"); case.drain(.15)
+        assert "DRAFT_CLEAR_NOW" not in screen("cleared"), "Ctrl+C needed another key to repaint"
+        case.send("/settings\r"); case.until("Settings"); case.drain(.15)
+        case.send("\x1b[1;1B\x1b[1;1:3B"); case.drain(.15)
+        assert "▸ Light theme" in screen("one-step"), "one Down press/release moved twice"
+        for ch in "wheel": case.send(f"\x1b[{ord(ch)}u\x1b[{ord(ch)};1:3u")
+        case.drain(.15)
+        assert "Wheel scroll lines" in screen("filter"), "printable release duplicated the filter"
+        case.send("\x1b"); case.drain(.15)
+        # /resume 在没有其它会话时会直接提示后返回；先准备真实候选，再验证其过滤输入。
+        case.send("/name ROUTING_ORIGINAL\r"); case.until("ROUTING_ORIGINAL"); case.drain(.15)
+        case.send("/new\r")
+        deadline = time.monotonic() + 5
+        while len(list(case.workspace.rglob("session.json"))) < 2 and time.monotonic() < deadline: case.drain(.04)
+        assert len(list(case.workspace.rglob("session.json"))) == 2, "could not prepare a resume candidate"
+        case.drain(.3)
+        resume_start = len(case.output)
+        case.send("/resume\r"); case.until("ROUTING_ORIGINAL", resume_start); case.drain(.15)
+        case.send("\x1b[120u\x1b[120;1:3u"); case.drain(.15)
+        current = screen("resume-filter")
+        assert "Filter: x" in current and "Filter: xx" not in current, "resume duplicated the printable release"
+        case.send("\x1b"); case.drain(.15)
+        case.send("first\x1b[13;2usecond\nthird"); case.drain(.15)
+        assert not case.server.calls, "newline submitted the draft"
+        case.send("\x03"); case.drain(.15)
+        case.send("\x12"); case.until("Search"); case.drain(.15)
+        case.send("\x1b"); case.drain(.1)
+        case.finish()
+        return {"exit": 0, "draftRepaint": True, "pageReleaseFiltered": True, "newlinePreserved": True, "searchKey": "ctrl+r"}
     if name == "commands":
         # 所有命令均经过实际编辑器/slash 路由；页面不能误调用模型。
         for command, label in [("/settings", "Settings"), ("/session", "Generation:"),
@@ -488,7 +525,7 @@ def verify(case, name):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--release", type=Path, default=REPO / "dist/jadecode")
-    parser.add_argument("--scenario", action="append", choices=["java-only", "smoke", "commands", "regular", "regular-approval", "copy", "retry", "model-error", "output-limit", "headless", "headless-read-only", "headless-full-access", "headless-workspace", "headless-auto-review", "memory-delay", "mcp", "team", "resume", "long-output", "approval-resize", "approval-small", "approval-mouse", "approval-suspend", "approval-deny", "full-access", "sighup", "sigint", "sigterm", "java-exit", "node-exit"])
+    parser.add_argument("--scenario", action="append", choices=["java-only", "smoke", "input-routing", "commands", "regular", "regular-approval", "copy", "retry", "model-error", "output-limit", "headless", "headless-read-only", "headless-full-access", "headless-workspace", "headless-auto-review", "memory-delay", "mcp", "team", "resume", "long-output", "approval-resize", "approval-small", "approval-mouse", "approval-suspend", "approval-deny", "full-access", "sighup", "sigint", "sigterm", "java-exit", "node-exit"])
     parser.add_argument("--report", type=Path, default=REPO / "target/tui-release-verification.json")
     options = parser.parse_args()
     release = options.release.resolve()
@@ -511,7 +548,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="jade-release-verify-") as directory:
         root = Path(directory)
         shutil.copytree(release, root / "release", symlinks=True)
-        for name in options.scenario or ["java-only", "smoke", "commands", "regular", "regular-approval", "copy", "retry", "model-error", "output-limit", "headless", "headless-read-only", "headless-full-access", "headless-workspace", "headless-auto-review", "memory-delay", "mcp", "team", "resume", "long-output", "approval-resize", "approval-small", "approval-mouse", "approval-suspend", "approval-deny", "full-access", "sighup", "sigint", "sigterm", "java-exit", "node-exit"]:
+        for name in options.scenario or ["java-only", "smoke", "input-routing", "commands", "regular", "regular-approval", "copy", "retry", "model-error", "output-limit", "headless", "headless-read-only", "headless-full-access", "headless-workspace", "headless-auto-review", "memory-delay", "mcp", "team", "resume", "long-output", "approval-resize", "approval-small", "approval-mouse", "approval-suspend", "approval-deny", "full-access", "sighup", "sigint", "sigterm", "java-exit", "node-exit"]:
             case = Case(root, root / "release", shutil.which("node"), name)
             try:
                 result = {"name": name, "status": "pass", **verify(case, name)}

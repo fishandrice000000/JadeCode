@@ -28,6 +28,21 @@ const theme = resolveTheme(parseThemeDocument(readFileSync(new URL("../../../ass
 	mode: "256color", noColor: true,
 });
 
+test("explicit Shift+Enter and Ctrl+J insert newlines while ordinary Enter still submits", () => {
+	setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
+	const editor = new Editor({ terminal: { rows: 24 }, requestRender: () => {} } as unknown as TUI, {
+		borderColor: (v) => v, selectList: { selectedPrefix: (v) => v, selectedText: (v) => v,
+			description: (v) => v, scrollInfo: (v) => v, noMatch: (v) => v },
+	});
+	const submissions: string[] = [];
+	editor.onSubmit = (value) => { submissions.push(value); };
+	editor.handleInput("one"); editor.handleInput("\x1b[13;2u");
+	editor.handleInput("two"); editor.handleInput("\n"); editor.handleInput("three");
+	assert.equal(editor.getText(), "one\ntwo\nthree"); assert.deepEqual(submissions, []);
+	editor.handleInput("\r");
+	assert.deepEqual(submissions, ["one\ntwo\nthree"]);
+});
+
 function session(): SessionStore {
 	const store = new SessionStore();
 	store.applyBootstrap({ buildId: "b", protocolVersion: 1, projectVersion: "t", workspace: "/tmp", themeDirectory: "/tmp",

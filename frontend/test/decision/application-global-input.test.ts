@@ -52,6 +52,15 @@ test("a new Ctrl+C PRESS clears the draft without quitting", () => {
 	route(app, "\x1b[99;5u");
 	assert.equal(state.draft, "");
 	assert.equal(state.quits, 0);
+	assert.equal(state.renders, 1, "clearing a consumed Ctrl+C must schedule a frame immediately");
+});
+
+test("page press/release pairs dispatch a printable character and navigation only once", () => {
+	const { app } = harness();
+	const inputs: string[] = [];
+	(app as unknown as Record<string, unknown>)["pages"] = { current: () => ({}), handleInput: (data: string) => { inputs.push(data); return true; } };
+	for (const data of ["\x1b[1;1B", "\x1b[1;1:3B", "\x1b[97u", "\x1b[97;1:3u"]) route(app, data);
+	assert.deepEqual(inputs, ["\x1b[1;1B", "\x1b[97u"]);
 });
 
 test("Ctrl+C repeat and release never reach the global quit branch", () => {
