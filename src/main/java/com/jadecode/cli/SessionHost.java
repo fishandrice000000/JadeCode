@@ -48,8 +48,27 @@ public final class SessionHost implements AutoCloseable {
         return store.list().stream().filter(item -> !item.id().equals(id)).toList();
     }
 
-    /** 只读取清单，名称重复时由前端展示全部候选，不能替用户猜中某个 UUID。 */
-    public List<SessionMetadata> find(String name) throws IOException { return store.find(name); }
+    /**
+     * 查找 /resume 的输入：标准 UUID 先按身份匹配，未命中再按标题匹配。
+     *
+     * <p>UUID 仅接受 8-4-4-4-12 个十六进制字符的完整形式（大小写均可）；不能直接用
+     * UUID.fromString 判断格式，因为它也接受部分短写。普通文字直接交给标题查找，
+     * 保留精确标题优先、否则部分标题、重名全部返回的规则。这里只读取当前工作区清单，
+     * 不把输入拼接成路径，不打开日志或启动模型，也不修改输入或会话。</p>
+     *
+     * @param name 用户输入的 UUID 或标题；首尾空白忽略，空白标题由存储层拒绝
+     * @return ID 命中时的唯一清单，否则为标题候选（可能为空或重名）
+     * @throws IOException 清单无法读取
+     */
+    public List<SessionMetadata> find(String name) throws IOException {
+        String query = name == null ? null : name.trim();
+        if (query != null && query.matches("(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")) {
+            // 同名标题不能覆盖真实 ID；只有不存在这个 ID 时才退回标题语义。
+            var exactId = store.list().stream().filter(item -> item.id().equalsIgnoreCase(query)).toList();
+            if (!exactId.isEmpty()) return exactId;
+        }
+        return store.find(query);
+    }
 
     /** 本地元数据操作仍落在当前运行时；与切换互斥，不把改名写入稍后打开的别的会话。 */
     public synchronized void rename(String expectedId, String title) throws IOException {
