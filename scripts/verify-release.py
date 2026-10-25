@@ -65,6 +65,9 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
             workflow_args = {"name": "review-changes", "args": {"changes": "return 1;"}} if not results else {
                 "name": "review-changes", "resume_from_run_id": json.loads(results[-1]["content"])["run_id"]}
             requested = ("Workflow", workflow_args)
+        if "JADE_VERIFY_GOAL" in text and body.get("tools") and "Goal continuation from harness" in text and not results:
+            # 先让主模型空口结束，再按独立判断理由读取真实夹具文件，验证同一循环确实继续。
+            requested = ("read_file", {"path": "proof.txt"})
         tool = tool or requested is not None
         if tool:
             content = [{"type": "tool_use", "id": "verify-write", "name": "write_file",
@@ -75,7 +78,12 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
         else:
             answer = "PARTIAL_LIMIT_TEXT" if self.server.scenario == "output-limit" and body.get("tools") else "JADE_VERIFY_DONE"
             if not body.get("tools"):
-                if "You are a focused workflow agent." in json.dumps(body.get("system", "")):
+                if "You are an independent goal completion evaluator." in json.dumps(body.get("system", "")):
+                    self.server.goal_judgments = getattr(self.server, "goal_judgments", 0) + 1
+                    evidence = "GOAL_PROOF" in text
+                    answer = "INVALID_GOAL_JUDGMENT" if self.server.scenario == "goal-error" else json.dumps({
+                        "ok": evidence, "reason": "GOAL_EVIDENCE_PRESENT" if evidence else "GOAL_NEEDS_EVIDENCE: read proof.txt", "impossible": False})
+                elif "You are a focused workflow agent." in json.dumps(body.get("system", "")):
                     answer = '{"findings":[]}'  # 独立 Workflow 请求必须满足实际输出 schema，不与 Memory 混同。
                 else:
                     answer = "[]"  # Memory 辅助请求返回合法空候选，避免把 JSON 错误当成功证据。
@@ -278,6 +286,18 @@ class Case:
 
 def verify(case, name):
     """场景断言直接观察真实副作用/进程/屏幕；每项最多等待明确预算。"""
+    if name in ("goal", "goal-error", "goal-headless"):
+        (case.workspace / "proof.txt").write_text("GOAL_PROOF")
+    if name == "goal-headless":
+        answer = subprocess.run([str(case.release / "jade"), "--headless", "/goal JADE_VERIFY_GOAL read proof.txt and report evidence"],
+                                cwd=case.workspace, env=case.env, capture_output=True, timeout=20)
+        assert answer.returncode == 0, answer.stderr.decode("utf8", "replace")
+        assert answer.stdout.decode().strip() == "JADE_VERIFY_DONE", "goal headless printed a candidate or evaluator output"
+        formal = [call for call in case.server.calls if call.get("tools")]
+        assert len(formal) == 3 and case.server.goal_judgments == 2
+        journal = next(case.workspace.rglob("events.jsonl")).read_text()
+        assert '"status":"ACHIEVED"' in journal and '"purpose":"GOAL"' in journal
+        return {"exit": 0, "formalRequests": 3, "goalRequests": 2, "stdout": "final answer only"}
     if name == "java-only":
         directory = case.directory / "no-node-bin"
         directory.mkdir()
@@ -332,6 +352,26 @@ def verify(case, name):
     prompt = "JADE_VERIFY_WORKFLOW" if name == "workflow" else "JADE_VERIFY_MCP" if name == "mcp" else "JADE_VERIFY_TEAM" if name == "team" else "JADE_VERIFY_TOOL" if name.startswith("approval") else "JADE_VERIFY_LONG" if name == "long-output" else ""
     case.start("JADE_VERIFY_LONG" if name == "regular-approval" else "JADE_VERIFY_TEXT" if name in ("copy", "retry", "model-error", "output-limit") else prompt,
                shell=name == "approval-suspend", mode="regular" if name in ("regular", "regular-approval") else "fullscreen")
+    if name in ("goal", "goal-error"):
+        # 键盘 slash → Node 目录 → Java 用户入口；不是直接调用 Controller 的替代测试。
+        case.send("/goal JADE_VERIFY_GOAL read proof.txt and report evidence\r")
+        case.until("ACHIEVED" if name == "goal" else "Goal evaluation failed")
+        before_calls = len(case.server.calls)
+        before = len(case.output); case.send("/goal\r"); case.until("Goal ACHIEVED" if name == "goal" else "Goal ACTIVE", before)
+        assert len(case.server.calls) == before_calls, "local goal status made a model call"
+        formal = [call for call in case.server.calls if call.get("tools")]
+        assert len(formal) == (3 if name == "goal" else 1)
+        assert case.server.goal_judgments == (2 if name == "goal" else 1), "bad evaluation was retried or evidence was not checked"
+        if name == "goal-error":
+            before = len(case.output); case.send("/goal clear\r"); case.until("CLEARED", before)
+            assert len(case.server.calls) == before_calls, "clearing a goal made a model call"
+        journal = next(case.workspace.rglob("events.jsonl")).read_text()
+        assert '"purpose":"GOAL"' in journal
+        assert ('"status":"ACHIEVED"' in journal) == (name == "goal")
+        assert "Goal · Historical" not in ANSI.sub(b"", bytes(case.output)).decode("utf8", "replace")
+        case.finish()
+        return {"exit": 0, "formalRequests": len(formal), "goalRequests": case.server.goal_judgments,
+                "localStatus": True, "clearedAfterError": name == "goal-error"}
     if name == "input-routing":
         def screen(label):
             case.snapshot(label)
@@ -594,7 +634,7 @@ def verify(case, name):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--release", type=Path, default=REPO / "dist/jadecode")
-    parser.add_argument("--scenario", action="append", choices=["java-only", "smoke", "input-routing", "commands", "regular", "regular-approval", "copy", "retry", "model-error", "output-limit", "headless", "headless-read-only", "headless-full-access", "headless-workspace", "headless-auto-review", "memory-delay", "mcp", "team", "workflow", "resume", "long-output", "approval-resize", "approval-small", "approval-mouse", "approval-suspend", "approval-deny", "full-access", "sighup", "sigint", "sigterm", "java-exit", "node-exit"])
+    parser.add_argument("--scenario", action="append", choices=["java-only", "smoke", "input-routing", "commands", "regular", "regular-approval", "copy", "retry", "model-error", "output-limit", "headless", "headless-read-only", "headless-full-access", "headless-workspace", "headless-auto-review", "memory-delay", "mcp", "team", "workflow", "goal", "goal-error", "goal-headless", "resume", "long-output", "approval-resize", "approval-small", "approval-mouse", "approval-suspend", "approval-deny", "full-access", "sighup", "sigint", "sigterm", "java-exit", "node-exit"])
     parser.add_argument("--report", type=Path, default=REPO / "target/tui-release-verification.json")
     options = parser.parse_args()
     release = options.release.resolve()
@@ -617,7 +657,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="jade-release-verify-") as directory:
         root = Path(directory)
         shutil.copytree(release, root / "release", symlinks=True)
-        for name in options.scenario or ["java-only", "smoke", "input-routing", "commands", "regular", "regular-approval", "copy", "retry", "model-error", "output-limit", "headless", "headless-read-only", "headless-full-access", "headless-workspace", "headless-auto-review", "memory-delay", "mcp", "team", "workflow", "resume", "long-output", "approval-resize", "approval-small", "approval-mouse", "approval-suspend", "approval-deny", "full-access", "sighup", "sigint", "sigterm", "java-exit", "node-exit"]:
+        for name in options.scenario or ["java-only", "smoke", "input-routing", "commands", "regular", "regular-approval", "copy", "retry", "model-error", "output-limit", "headless", "headless-read-only", "headless-full-access", "headless-workspace", "headless-auto-review", "memory-delay", "mcp", "team", "workflow", "goal", "goal-error", "goal-headless", "resume", "long-output", "approval-resize", "approval-small", "approval-mouse", "approval-suspend", "approval-deny", "full-access", "sighup", "sigint", "sigterm", "java-exit", "node-exit"]:
             case = Case(root, root / "release", shutil.which("node"), name)
             try:
                 result = {"name": name, "status": "pass", **verify(case, name)}

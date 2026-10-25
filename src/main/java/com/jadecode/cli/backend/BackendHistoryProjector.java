@@ -87,9 +87,14 @@ public final class BackendHistoryProjector {
                 switch (entry.kind()) {
                     case TURN_STARTED -> turnMark = entries.size();
                     case TURN_FINISHED, TURN_FAILED, USAGE, RENAMED, THINKING -> { }
+                    case GOAL -> notice("System", "Goal", entry.goal().status() + ": " + entry.goal().condition()
+                            + "\n" + entry.goal().reason(), entry.goal().status() == com.jadecode.goal.GoalState.Status.IMPOSSIBLE);
                     case APPEND -> {
                         lastModel = entry.messages().getFirst();
-                        lastUser = message(lastModel, lastUser);
+                        // 自动继续虽使用 USER wire role，来源仍是宿主，不能污染用户输入历史。
+                        if (entry.reason().equals("goal_continue")) {
+                            notice("System", "Goal", lastModel.extractText(), false); lastUser = null;
+                        } else lastUser = message(lastModel, lastUser);
                     }
                     case REPLACE_LAST -> {
                         Message replacement = entry.messages().getFirst();

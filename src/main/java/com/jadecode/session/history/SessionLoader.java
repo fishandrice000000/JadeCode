@@ -44,6 +44,14 @@ public final class SessionLoader {
                 com.fasterxml.jackson.databind.JsonNode node = Json.mapper().reader().with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS).readTree(line);
                 if (node == null || !node.path("sequence").isIntegralNumber() || !node.path("version").isInt())
                     throw new IllegalArgumentException("Journal sequence or version is not an integer");
+                if (node.path("kind").asText().equals("GOAL")) {
+                    // Jackson 默认会把字符串/小数转成部分 Java 标量；目标日志不能靠这种宽松转换过关。
+                    var goal = node.path("goal");
+                    if (!goal.isObject() || !goal.path("evaluations").isIntegralNumber() || !goal.path("evaluations").canConvertToInt())
+                        throw new IllegalArgumentException("Goal metadata requires an integer evaluation count");
+                    for (String field : List.of("id", "condition", "status", "startedAt", "reason"))
+                        if (!goal.path(field).isTextual()) throw new IllegalArgumentException("Goal metadata requires text " + field);
+                }
                 JournalEntry entry = Json.mapper().readerFor(JournalEntry.class)
                         .with(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES).readValue(line);
                 if (!entry.sessionId().equals(metadata.id()) || entry.sequence() != sequence + 1)
@@ -62,6 +70,8 @@ public final class SessionLoader {
                     case USAGE -> usage.record(entry.usage());
                     case RENAMED -> rebuilt = rebuilt.renamed(entry.title());
                     case THINKING -> rebuilt = rebuilt.withThinking(entry.thinking());
+                    // 状态由 Session.restore 采用；重放历史时不将条件变成新请求，也不自动执行。
+                    case GOAL -> { }
                 }
                 if (!entry.metadataOnly()) todos = entry.todos();
                 rebuilt = rebuilt.updated(entry.reason().equals("request") && !entry.messages().isEmpty()

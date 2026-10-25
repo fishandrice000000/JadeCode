@@ -12,8 +12,9 @@ import com.jadecode.messages.Message;
  * 不可变 Ticket 防止清除/替换后采用迟到结果；先成功保存，再发布内存状态。
  */
 public final class GoalController {
-    public record Limits(int workerRequests, int consecutiveBlocks) {
-        public Limits { if (workerRequests < 1 || consecutiveBlocks < 1) throw new IllegalArgumentException("Invalid goal limits"); }
+    /** workerTurns 数主循环步骤，不含 SDK 内部重试；consecutiveBlocks 数同一大轮次允许的自动继续次数。 */
+    public record Limits(int workerTurns, int consecutiveBlocks) {
+        public Limits { if (workerTurns < 1 || consecutiveBlocks < 1) throw new IllegalArgumentException("Invalid goal limits"); }
         public static Limits defaults() { return new Limits(100, 8); }
     }
     /** state 必须仍是当前对象才可采用结果；相同条件重新注册也产生新身份。 */
@@ -75,7 +76,9 @@ public final class GoalController {
         GoalState current = state;
         if (current == null) return "No goal set";
         return "Goal " + current.status() + ": " + current.condition() + "\nEvaluations: " + current.evaluations()
-                + "\nStarted: " + current.startedAt() + "\nReason: " + current.reason();
+                + "\nStarted: " + current.startedAt()
+                + (current.active() ? "\nElapsed seconds: " + Math.max(0, java.time.Duration.between(Instant.parse(current.startedAt()), Instant.now()).getSeconds()) : "")
+                + "\nReason: " + current.reason();
     }
     /** 保存失败不能覆盖内存旧状态；调用者负责按现有持久化失败路径停止会话。 */
     private void publish(GoalState next) { save.accept(next); state = next; }

@@ -12,7 +12,7 @@ import com.jadecode.session.SessionUsage;
 public record SessionMetadata(int version, String id, String workspace, String title,
         String createdAt, String updatedAt, String model, boolean customTitle, SessionUsage.Totals usage,
         ThinkingSettings thinking) {
-    public static final int VERSION = 2;
+    public static final int VERSION = 3;
 
     /** 兼容旧创建代码和版本 1 文件；旧文件没有用量，并不代表真实花费为零。 */
     public SessionMetadata(int version, String id, String workspace, String title, String createdAt, String updatedAt, String model) {

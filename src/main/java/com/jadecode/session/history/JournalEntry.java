@@ -12,8 +12,15 @@ import com.jadecode.llm.UsageRecord;
  * messages 的含义由 kind 决定；todos 是当时真正生效的计划，不是工具调用建议。
  */
 public record JournalEntry(int version, String sessionId, long sequence, String time, Kind kind,
-        List<Message> messages, ArrayNode todos, String reason, UsageRecord usage, String title, ThinkingSettings thinking) {
-    public enum Kind { APPEND, REPLACE_LAST, REPLACE_HISTORY, TURN_STARTED, TURN_FINISHED, TURN_FAILED, USAGE, RENAMED, THINKING }
+        List<Message> messages, ArrayNode todos, String reason, UsageRecord usage, String title, ThinkingSettings thinking,
+        com.jadecode.goal.GoalState goal) {
+    public enum Kind { APPEND, REPLACE_LAST, REPLACE_HISTORY, TURN_STARTED, TURN_FINISHED, TURN_FAILED, USAGE, RENAMED, THINKING, GOAL }
+
+    /** 版本 1/2 的调用者没有目标字段；保留旧构造，恢复旧记录时新增字段为 null。 */
+    public JournalEntry(int version, String sessionId, long sequence, String time, Kind kind,
+            List<Message> messages, ArrayNode todos, String reason, UsageRecord usage, String title, ThinkingSettings thinking) {
+        this(version, sessionId, sequence, time, kind, messages, todos, reason, usage, title, thinking, null);
+    }
 
     /** 原有历史事件没有额外元数据。版本 1 JSON 的新增可空字段也会按 null 读取。 */
     public JournalEntry(int version, String sessionId, long sequence, String time, Kind kind,
@@ -22,19 +29,21 @@ public record JournalEntry(int version, String sessionId, long sequence, String 
     }
 
     /** 元数据事件不会覆盖模型历史和 Todo，更不会在恢复时成为 USER 消息。 */
-    public boolean metadataOnly() { return kind == Kind.USAGE || kind == Kind.RENAMED || kind == Kind.THINKING; }
+    public boolean metadataOnly() { return kind == Kind.USAGE || kind == Kind.RENAMED || kind == Kind.THINKING || kind == Kind.GOAL; }
 
     /** 检查日志操作本身的形状；历史中的工具配对在全部重放后检查。 */
     public JournalEntry {
         SessionMetadata.requireId(sessionId);
         if (version < 1 || version > SessionMetadata.VERSION || sequence < 1 || kind == null || reason == null)
             throw new IllegalArgumentException("Invalid session journal fields");
-        boolean metadataOnly = kind == Kind.USAGE || kind == Kind.RENAMED || kind == Kind.THINKING;
+        boolean metadataOnly = kind == Kind.USAGE || kind == Kind.RENAMED || kind == Kind.THINKING || kind == Kind.GOAL;
         if (metadataOnly && version < 2) throw new IllegalArgumentException("Version 1 does not contain metadata events");
+        if (kind == Kind.GOAL && version < 3) throw new IllegalArgumentException("Goal events require journal version 3");
         if (!metadataOnly && todos == null || metadataOnly && todos != null)
             throw new IllegalArgumentException("History events require Todo; metadata events cannot carry Todo");
         if ((kind == Kind.USAGE) != (usage != null) || (kind == Kind.RENAMED) != (title != null)
-                || (kind == Kind.THINKING) != (thinking != null)) throw new IllegalArgumentException("Metadata event body does not match");
+                || (kind == Kind.THINKING) != (thinking != null) || (kind == Kind.GOAL) != (goal != null))
+            throw new IllegalArgumentException("Metadata event body does not match");
         if (title != null) title = SessionMetadata.validTitle(title);
         java.time.Instant.parse(time);
         messages = List.copyOf(messages);

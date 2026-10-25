@@ -1,5 +1,5 @@
 /**
- * 12 个会话内 slash 命令的唯一目录（名称/参数/说明/是否接受参数）。
+ * 会话内 slash 命令的唯一目录（名称/参数/说明/是否接受参数）。
  *
  * 与 CLI 的根参数不同：这些命令只在编辑器里解析。未知 slash 留在本地草稿并报错，绝不发给
  * 模型；CLI 首轮 prompt 直接作为任务，不经过这里。旧别名（/help、/theme、/models 等）不回加。
@@ -24,6 +24,7 @@ export const COMMANDS: CommandDefinition[] = [
 	{ name: "/thinking", arguments: "[level]", description: "Change the thinking level for this session", takesArguments: true },
 	{ name: "/permission", arguments: "[profile]", description: "Change permission profile", takesArguments: true },
 	{ name: "/mcp", arguments: "", description: "Show MCP servers and tools (read-only)", takesArguments: false },
+	{ name: "/goal", arguments: "[condition|clear]", description: "Set, inspect or clear a completion goal", takesArguments: true },
 ];
 
 /** 解析一行命令；未知命令返回 null（调用方保留草稿并报错）。 */

@@ -9,7 +9,12 @@ import java.util.UUID;
  * 保存的是墙上时间，恢复不恢复线程/授权；重新开始计数由 Controller.restore 决定。
  */
 public record GoalState(String id, String condition, Status status, int evaluations, String startedAt, String reason) {
-    public enum Status { ACTIVE, ACHIEVED, IMPOSSIBLE, CLEARED }
+    public enum Status {
+        /** 未满足，或遇到额度/判断错误后等待用户继续。 */ ACTIVE,
+        /** 独立判断器认为条件已由当前证据满足；仍不保证模型绝对正确。 */ ACHIEVED,
+        /** 判断器认为无法完成的失败终态，不自动恢复成活跃目标。 */ IMPOSSIBLE,
+        /** 用户主动清除，只停目标推动，不撤销已开始的工具。 */ CLEARED
+    }
 
     /** 日志与新输入使用同一校验；null、空条件和非法状态不能悄悄恢复成活跃目标。 */
     public GoalState {

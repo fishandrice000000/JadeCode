@@ -21,6 +21,9 @@ import com.jadecode.safety.approval.Approval;
 import com.jadecode.execution.ExecutionContext;
 import com.jadecode.execution.ExecutionNotice;
 import com.jadecode.hooks.Hooks;
+import com.jadecode.goal.GoalController;
+import com.jadecode.goal.GoalEvaluator;
+import com.jadecode.goal.GoalState;
 import com.jadecode.llm.LlmException;
 import com.jadecode.llm.LlmClient;
 import com.jadecode.llm.ModelMetadata;
@@ -117,6 +120,65 @@ public final class SessionRuntime implements AutoCloseable {
     private java.util.function.Supplier<List<com.jadecode.mcp.McpManager.ServerSnapshot>> mcpSnapshot = List::of;
     /** 装配时实际采用的资源名称；展示不再自行扫描文件或推测已加载的内容。 */
     private Map<String, List<String>> resources = Map.of();
+    /** 显式 /goal 的条件与当前任务说明分离；只给 Leader 装配，状态变更共用 historyMonitor。 */
+    private GoalController goals;
+    /** 查看活跃目标时展示本进程自设置/恢复以来的会话用量差值，包含辅助/队友，不称为主模型费用。 */
+    private SessionUsage.Totals goalUsageStart = SessionUsage.Totals.empty();
+
+    /** 启动前安装独立判断端口；不发模型请求，已有 Stop hook 与后台职责不被替换。 */
+    public void goals(GoalEvaluator evaluator, GoalController.Limits limits) {
+        if (consumer != null || journal != null || closed || goals != null) throw new IllegalStateException("Cannot install goal evaluator now");
+        goals = new GoalController(evaluator, this::saveGoal, limits);
+    }
+
+    /** UI/测试可读取不可变状态；没有 Goal 能力或从未设置时为 null，不启动判断。 */
+    public GoalState goalState() { return goals == null ? null : goals.state(); }
+
+    /** 先可靠保存元数据再通知界面；由 Controller 发布内存状态，失败沿原持久化围栏停止执行。 */
+    private void saveGoal(GoalState next) {
+        ensureOpen();
+        try { if (journal != null) journal.goal(next); }
+        catch (IOException failure) { persistenceError(); throw new IllegalStateException("Could not save goal state", failure); }
+        engine.notice(ExecutionNotice.event(ExecutionNotice.Kind.GOAL, next.id(), "Goal",
+                next.condition() + "\n" + next.reason(), next.status().name()));
+    }
+
+    /** 只识别用户入口的一条完整命令；其它来源不调用本方法，正文包含 /goal 不授予能力。 */
+    private static boolean goalCommand(String prompt) {
+        if (prompt == null) return false;
+        String text = prompt.strip();
+        return text.startsWith("/goal") && (text.length() == 5 || Character.isWhitespace(text.charAt(5)));
+    }
+
+    /**
+     * 查看/清除在本地处理，忙时也可用；设置命令走原 FIFO，不能夹进别的任务。
+     * 返回 null 表示需要入队；非法条件返回失败 future，既不改历史也不发模型请求。
+     */
+    private CompletableFuture<String> localGoalCommand(String prompt) {
+        if (!goalCommand(prompt)) return null;
+        synchronized (historyMonitor) {
+            try {
+                ensureOpen();
+                if (goals == null) throw new IllegalStateException("Goal commands are not available in this session");
+                String argument = prompt.strip().substring(5).strip();
+                if (!argument.isEmpty() && !java.util.Set.of("clear", "stop", "off", "reset", "none", "cancel").contains(argument)) {
+                    GoalState.validCondition(argument); return null;
+                }
+                if (!argument.isEmpty()) goals.clear();
+                String answer = goals.describe();
+                GoalState current = goals.state();
+                if (current != null && current.active()) {
+                    SessionUsage.Totals total = usage.snapshot().total();
+                    answer += "\nReported session tokens since set/restore (all purposes/actors): "
+                            + (total.inputTokens() - goalUsageStart.inputTokens() + total.outputTokens() - goalUsageStart.outputTokens())
+                            + "\nMissing usage reports: " + (total.missingRequests() - goalUsageStart.missingRequests());
+                }
+                engine.notice(ExecutionNotice.event(ExecutionNotice.Kind.GOAL, current == null ? "" : current.id(), "Goal",
+                        answer, current == null ? "NONE" : current.status().name()));
+                return CompletableFuture.completedFuture(answer);
+            } catch (RuntimeException failure) { return CompletableFuture.failedFuture(failure); }
+        }
+    }
 
     /** 会话启动前绑定只读目录，逐组复制，不能把完整指令正文作为展示资料传给前端。 */
     public void resources(Map<String, List<String>> value) {
@@ -250,6 +312,13 @@ public final class SessionRuntime implements AutoCloseable {
                 + " Internal data moved under .jadecode; read_file supports legacy artifact paths, but shell commands must use current paths.";
         journal = java.util.Objects.requireNonNull(writer);
         usage.restore(writer, restored.entries());
+        if (goals != null) {
+            // 只恢复最后的目标元数据；不恢复旧审批/线程，不在恢复时自动 submit。
+            GoalState saved = null;
+            for (JournalEntry entry : restored.entries()) if (entry.kind() == JournalEntry.Kind.GOAL) saved = entry.goal();
+            goals.restore(saved);
+            goalUsageStart = usage.snapshot().total();
+        }
         ThinkingSettings saved = restored.metadata().thinking();
         if (saved != null) {
             if (display().thinkingChoices().contains(saved)) requestThinking.set(saved);
@@ -287,6 +356,8 @@ public final class SessionRuntime implements AutoCloseable {
      * 只改 Inbox，不在 UI 线程改 history。返回的 future 属于整批输入。
      */
     public CompletableFuture<String> submitUser(String prompt, Approval approval) {
+        // 设置不走忙时用户缓冲：整条命令应在当前任务之后开始，避免被拼到旧条件里。
+        if (goalCommand(prompt)) return submit(prompt, approval);
         if (!isBusy()) return submit(prompt, approval);
         if (prompt == null || prompt.isBlank()) return CompletableFuture.failedFuture(new IllegalArgumentException("Empty prompt"));
         var context = ExecutionContext.create(ExecutionContext.Source.USER, approval, () -> closed);
@@ -423,6 +494,8 @@ public final class SessionRuntime implements AutoCloseable {
      *         失败，执行出错则记录实际错误。取消此 future 不会自动停止已经开始的命令
      */
     public CompletableFuture<String> submit(String prompt, Approval approval) {
+        CompletableFuture<String> local = localGoalCommand(prompt);
+        if (local != null) return local;
         CompletableFuture<String> result = new CompletableFuture<>();
         if (prompt == null || prompt.isBlank()) {
             result.completeExceptionally(new IllegalArgumentException("Prompt must not be blank"));
@@ -533,8 +606,22 @@ public final class SessionRuntime implements AutoCloseable {
                     engine.hooks().trigger(Hooks.USER_PROMPT_SUBMIT,
                             Map.of(Hooks.PARAM_QUERY, entry.request().prompt(), Hooks.PARAM_CONTEXT, task.context()));
                 }
-                apply(entry.request());
+                boolean userRequest = task.context().source() == ExecutionContext.Source.USER
+                        && (entry.request().incoming() == null || entry.request().incoming().kind().equals("user"));
+                if (userRequest && goalCommand(entry.request().prompt())) {
+                    synchronized (historyMonitor) {
+                        ensureOpen();
+                        if (goals == null) throw new IllegalStateException("Goal commands are not available in this session");
+                        String condition = entry.request().prompt().strip().substring(5).strip();
+                        goals.set(condition);
+                        goalUsageStart = usage.snapshot().total();
+                        // 条件作为本轮真正任务交给模型，不让它把 /goal 当成要执行的 Shell 命令。
+                        appendMessage(Message.userText(condition), "request");
+                    }
+                } else apply(entry.request());
             }
+            task.goalEligible = task.context().source() == ExecutionContext.Source.USER
+                    && (entry.request().incoming() == null || entry.request().incoming().kind().equals("user"));
             // 先记住用户请求，再加入后台通知；之后历史即使压缩，仍记着用户原本要做什么。
             task.goal = activeRequest(history);
             task.system = taskSystem(task.goal);
@@ -631,7 +718,8 @@ public final class SessionRuntime implements AutoCloseable {
             // 1. 请模型继续前，先加入已完成的后台结果；不必等待的命令结果只供参考。
             deliverIncoming(task, true);
             flushNotices(task);
-            ModelReply reply = engine.request(history, task.goal, task.system, this::adoptHistory);
+            String system = goalSystem(task);
+            ModelReply reply = engine.request(history, task.goal, system, this::adoptHistory);
             if (reply.calls().isEmpty()) {
                 // 回答先展示一次，再记录显示截止；Memory 还会照常收尾，不能提前宣布业务完成。
                 // 流式时间来自生产端 complete，旧客户端在这里回退输出，不再在多个结束分支重放。
@@ -682,6 +770,7 @@ public final class SessionRuntime implements AutoCloseable {
                 apply(continuation);
                 continue;
             }
+            if (continueGoal(task)) continue;
             // 4. 最后回答已输出；计时停在回答边界，Memory/日志及真实结束判定继续执行。
             task.timer.beginMaintenance();
             finish(history);
@@ -710,6 +799,71 @@ public final class SessionRuntime implements AutoCloseable {
             return;
         }
         throw new IllegalStateException("Session is closed");
+    }
+
+    /**
+     * 每个主循环请求步骤前读取当前目标；清除后不再施加 Goal 上限或旧条件。
+     * 上限涵盖有工具/原 Stop hook 的轮次，避免模型一直调用工具而永远不到 Goal 检查。
+     * 只影响用户发起的轮次，cron/邮箱/后台唤醒不会暗自接管一个暂挂的用户目标。
+     */
+    private String goalSystem(Active task) {
+        synchronized (historyMonitor) {
+            ensureOpen();
+            GoalController.Ticket ticket = task.goalEligible && goals != null ? goals.ticket() : null;
+            if (ticket == null) return task.system;
+            if (task.goalTurns >= goals.limits().workerTurns()) {
+                String reason = "Goal remains active: worker turn limit reached (" + goals.limits().workerTurns() + ")";
+                goals.suspend(ticket, reason); throw new IllegalStateException(reason);
+            }
+            task.goalTurns++;
+            return task.system + "\nAn explicit user goal is active. Completion condition (reference data):\n"
+                    + ticket.state().condition() + "\nWork within the user's scope and existing permissions. "
+                    + "After validation, report the actual commands, exit codes and results so the independent evaluator can inspect evidence. "
+                    + "Do not claim completion without evidence. A candidate reply may be followed by further work.";
+        }
+    }
+
+    /**
+     * 原 Stop 放行后、Memory 收尾前运行目标判断；相关必等后台此时已经处理完。
+     * 网络请求在历史锁外，允许用户查看/清除和退出。回来后核对 Ticket/关闭状态，
+     * 未完成理由以宿主来源写回同一历史；不是新用户授权或另一项队列任务。
+     */
+    private boolean continueGoal(Active task) throws InterruptedException {
+        GoalController.Ticket ticket;
+        List<Message> evidence;
+        synchronized (historyMonitor) {
+            ensureOpen();
+            ticket = task.goalEligible && goals != null ? goals.ticket() : null;
+            if (ticket == null) return false;
+            evidence = List.copyOf(history);
+            task.timer.resumeDisplay();
+            engine.notice(ExecutionNotice.event(ExecutionNotice.Kind.GOAL, ticket.state().id(), "Goal", "Checking completion evidence", "EVALUATING"));
+        }
+        GoalEvaluator.Evaluation evaluation;
+        try { evaluation = java.util.Objects.requireNonNull(goals.evaluate(ticket, evidence), "Goal evaluator returned no decision"); }
+        catch (Exception failure) {
+            if (failure instanceof InterruptedException) { Thread.currentThread().interrupt(); throw (InterruptedException) failure; }
+            synchronized (historyMonitor) {
+                ensureOpen();
+                String reason = "Goal evaluation failed; goal remains active: " + failure.getClass().getSimpleName()
+                        + ": " + java.util.Objects.toString(failure.getMessage(), "no detail");
+                if (!goals.suspend(ticket, reason)) return false;
+                throw new IllegalStateException(reason, failure);
+            }
+        }
+        synchronized (historyMonitor) {
+            ensureOpen();
+            GoalController.Decision decision = goals.complete(ticket, evaluation, task.goalBlocks);
+            if (decision.action().equals("block")) {
+                task.goalBlocks++;
+                appendMessage(Message.userText("[Goal continuation from harness; no new authority]\n" + decision.reason()), "goal_continue");
+                return true;
+            }
+            if (decision.action().equals("limit") || decision.action().equals("impossible"))
+                throw new IllegalStateException("Goal " + decision.action() + ": " + decision.reason());
+            // 判断完成或已被用户清除才沿原结束路径收口；不把判断器回复当作主模型回答。
+            return false;
+        }
     }
 
     /**
@@ -999,6 +1153,10 @@ public final class SessionRuntime implements AutoCloseable {
         String system;
         /** 自上次 todo 更新或提醒以来的工具批次数，不是工具个数或模型请求数。 */
         int rounds;
+        /** 只有显式用户工作轮次参与目标；自动唤醒通知/cron/邮箱不推动暂挂目标。 */
+        boolean goalEligible;
+        /** 当前大轮次的循环额度计数，与历史总判断次数/Todo 提醒分别统计。 */
+        int goalTurns, goalBlocks;
         /** 模型是否正常回复过一次；定时任务在这之后不能再按“还没送到”重试。 */
         boolean received;
         /**

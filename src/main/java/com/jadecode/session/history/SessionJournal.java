@@ -69,6 +69,12 @@ public final class SessionJournal implements AutoCloseable {
                 JournalEntry.Kind.THINKING, List.of(), null, "thinking", null, null, value));
     }
 
+    /** 目标状态只作为会话元数据持久化，不放进模型历史、不覆盖 Todo 或保存审批能力。 */
+    public synchronized void goal(com.jadecode.goal.GoalState value) throws IOException {
+        write(new JournalEntry(SessionMetadata.VERSION, metadata.id(), sequence + 1, Instant.now().toString(),
+                JournalEntry.Kind.GOAL, List.of(), null, "goal", null, null, null, value));
+    }
+
     /** 所有生产者经过同一把锁写完整行；只有历史事件才保存 Todo，避免队友覆盖主会话计划。 */
     private void write(JournalEntry record) throws IOException {
         if (closed || failed) throw new IOException("Session journal is closed or a write has failed");

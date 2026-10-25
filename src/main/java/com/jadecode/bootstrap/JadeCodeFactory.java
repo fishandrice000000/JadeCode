@@ -402,6 +402,13 @@ public final class JadeCodeFactory {
         runtime.permissions(permissions);
         runtime.historyState(manager, config.model(), isLeader ? team::hasLiveMembers : () -> false);
         runtime.telemetry(usage, isLeader, formalClient, thinking);
+        if (isLeader) {
+            // 完成判断是独立无工具的辅助调用；不替换主模型、不修改 provider 或思考配置。
+            // 只有用户 Leader 会话开放 /goal，队友/一次性子任务仍按其原任务结束契约运行。
+            runtime.goals(new com.jadecode.goal.PromptGoalEvaluator(
+                    tracked(client, config.model(), actor, com.jadecode.llm.UsageRecord.Purpose.GOAL, usage, null),
+                    Math.min(formalMaxTokens, 512)), com.jadecode.goal.GoalController.Limits.defaults());
+        }
         return runtime;
     }
 

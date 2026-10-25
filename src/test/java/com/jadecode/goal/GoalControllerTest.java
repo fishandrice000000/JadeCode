@@ -76,7 +76,7 @@ class GoalControllerTest {
 
     /** 截断、拒绝和工具行动不能被当作有效完成证据，也不会自动多请求一次。 */
     @Test void evaluatorFailsClosedWithoutRetry() {
-        for (String stop : List.of("max_tokens", "refusal", "tool_use")) {
+        for (String stop : List.of("", "max_tokens", "refusal", "tool_use")) {
             AtomicInteger calls = new AtomicInteger();
             var evaluator = new PromptGoalEvaluator(request -> {
                 calls.incrementAndGet(); return new ModelResponse(text("{\"ok\":true,\"reason\":\"yes\",\"impossible\":false}"), null, stop);

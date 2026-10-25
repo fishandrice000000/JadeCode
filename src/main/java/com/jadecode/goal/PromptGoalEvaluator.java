@@ -44,7 +44,7 @@ public final class PromptGoalEvaluator implements GoalEvaluator {
         var response = client.complete(new CompleteRequest(SYSTEM, List.of(Message.userText(payload.toString())), maxTokens, List.of()));
         if (response == null || response.message() == null || response.message().role() != Role.ASSISTANT
                 || !response.message().hasOnlyTextAndThinking()
-                || !List.of("", "end_turn", "stop_sequence").contains(response.stopReason()))
+                || !List.of("end_turn", "stop_sequence").contains(response.stopReason()))
             throw new IOException("Goal evaluator did not return a complete, tool-free answer");
         return parse(response.message().extractText());
     }

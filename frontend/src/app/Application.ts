@@ -750,6 +750,13 @@ export class Application {
 				this.transcript.notice(actor, "Subagent", detail, false);
 				break;
 
+			case "GOAL": {
+				// 判断结果来自宿主独立调用；显示状态不授予权限，也不把模型自述升级为验收。
+				const failed = state === "IMPOSSIBLE";
+				const entry = this.transcript.notice(actor, "Goal", `${state}: ${detail}`, failed);
+				this.transcript.update(entry.id, (current) => ({ ...current, status: failed ? "ERROR" : "" }));
+				break;
+			}
 			case "WORKFLOW": {
 				// 进度只显示宿主事件，不变成用户指令；最终成功与否仍由工具结果和任务状态决定。
 				const failed = state === "failed" || state === "cancelled";
@@ -1115,6 +1122,8 @@ export class Application {
 			case "/model": this.pages.push(new ModelPage(this.pageContext())); this.host.requestRender(); return true;
 			case "/session": this.pages.push(new SessionPage(this.pageContext())); this.host.requestRender(); return true;
 			case "/mcp": this.pages.push(new McpPage(this.pageContext())); this.host.requestRender(); return true;
+			// 使用既有用户提交协议；只有后端用户入口解析命令，工具结果/模型正文不能设置目标。
+			case "/goal": return this.submitPrompt(raw);
 			case "/permission": {
 				const parts = argument.trim().split(/\s+/).filter(Boolean);
 				const intent = parts[0] === "default" ? "default" : "runtime";
