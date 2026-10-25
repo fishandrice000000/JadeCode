@@ -221,7 +221,7 @@ write 显示前 10 行并标 `Preview · not executed`，edit 显示片段 diff 
 整轮计时来自执行线程的单调时钟：审批等待暂停，结束后冻结；真实耗时显示为 `29.0s`。状态栏 spinner 每 80ms 更新。
 页脚显示目录/分支/会话名、真实 token/R/W 缓存/context 估计/权限与模型；token 使用大写 K，例如 100000→`100K`，不把缺报告当 0，也不显示无来源的费用/订阅。
 
-全屏模式支持应用滚轮、PageUp/Down、Ctrl+Home/End、选区复制和搜索（Ctrl+R，兼容Ctrl+Shift+F；Ctrl+G/Shift+Enter 前后匹配，Enter 跳转关闭，Esc 关闭）。
+全屏模式支持应用滚轮、PageUp/Down、Ctrl+Home/End、选区复制和右上角浮层搜索（Ctrl+R，兼容Ctrl+Shift+F；Ctrl+G/Shift+Enter 前后匹配，Enter 跳转关闭，Esc 关闭）。
 `Ctrl+O` 在空欢迎页展开资源，在对话中展开/收起工具卡；`Ctrl+G` 外部编辑器；`Ctrl+V` 读取文字或图片剪贴板（图片保存为临时文件并插入路径，仍只是文本输入）；
 `Ctrl+J` 可在不区分 Shift+Enter 的终端换行；`Ctrl+X` 复制选区或最近助手回复；`Ctrl+Z` 暂退到 shell，`fg` 后重绘；`Ctrl+C` 清草稿，500ms 内再按退出；空编辑器 Ctrl+D 退出。
 Esc 关闭本地菜单/搜索/候选；审批时拒绝当前申请，不是 Agent 单轮取消。regular 模式不捕获鼠标，滚轮/拖选交给终端。
@@ -238,7 +238,7 @@ Esc 关闭本地菜单/搜索/候选；审批时拒绝当前申请，不是 Agen
 Markdown/高亮/Mermaid 由固定 Pi 的 Node 前端渲染；Java 只发送原始正文，不再保留旧 Java/Graal 解析与排版实现。
 真实 SSH/IME/图片终端/模型流仍需人工验收。详细限制见 [当前工程收尾报告](docs/tui-pi-replication/10-node-frontend-migration/handover/finalization-report.md) 与 [逐项台账](docs/tui-pi-replication/10-node-frontend-migration/handover/final-acceptance-matrix.md)。
 
-Windows Terminal/VS Code 的 Shift+Enter 与 tmux OSC52 接线见 [终端接线说明](docs/tui-pi-replication/10-node-frontend-migration/handover/terminal-integration.md)。SSH/tmux复制只报告请求已发送，不能保证客户端已写入剪贴板。
+Windows Terminal/VS Code 的 Shift+Enter 与 tmux OSC52 接线见 [终端接线说明](docs/tui-pi-replication/10-node-frontend-migration/handover/terminal-integration.md)。SSH使用OSC52，tmux使用load-buffer -w向当前会话客户端发送；成功写出显示短暂Copied!，客户端最终接收仍取决于终端支持。
 
 架构、验证与未验证范围见 [TUI 任务单](docs/jobs/s13/pi-tui.md)，阅读入口见 [TUI 指南](docs/notes/s13/pi-tui-review.md)。
 
