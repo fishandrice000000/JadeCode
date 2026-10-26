@@ -2,6 +2,7 @@ package com.jadecode.messages;
 
 import java.util.ArrayList;
 import java.util.List;
+import com.fasterxml.jackson.annotation.JsonInclude;
 
 /**
  * Message -- 会话中的一条消息的记录
@@ -18,8 +19,31 @@ import java.util.List;
  * 
  * @param role    一条消息的发送者角色
  * @param content 该条消息的内容 (可能有多轮工具调用的结果, 因此是数组)
+ * @param source 可选宿主来源，仅供内部日志、提取与显示使用，不传给模型服务商
  */
-public record Message(Role role, List<ContentBlock> content) {
+public record Message(Role role, List<ContentBlock> content,
+        @JsonInclude(JsonInclude.Include.NON_NULL) Source source) {
+
+    /** 标识宿主注入的召回资料，不表示用户授权，也不由正文标签推断。 */
+    public enum Source { MEMORY_REFERENCE }
+
+    /** 普通消息与旧日志没有来源字段；保持既有构造方式和 JSON 形状。 */
+    public Message(Role role, List<ContentBlock> content) { this(role, content, null); }
+
+    /** 已标记参考消息必须是非空 USER 文本，不能伪装工具调用、结果或模型回答。 */
+    public Message {
+        if (source == Source.MEMORY_REFERENCE && (role != Role.USER || content == null || content.size() != 1
+                || !(content.getFirst() instanceof TextBlock text) || text.text() == null || text.text().isBlank()))
+            throw new IllegalArgumentException("Memory reference must be a nonempty USER text message");
+    }
+
+    /**
+     * 生成独立的宿主参考消息；来源随内部日志保存，SDK 仅发送标准 role/content。
+     * 不改变旧消息、不授予权限；null 或空白正文明确拒绝。
+     */
+    public static Message memoryReference(String text) {
+        return new Message(Role.USER, List.of(new TextBlock(text)), Source.MEMORY_REFERENCE);
+    }
 
     /**
      * @param text 用户发来的纯文本
@@ -47,7 +71,7 @@ public record Message(Role role, List<ContentBlock> content) {
     }
 
     /**
-     * @return 返回当前消息记录中所有 LLM 生成的对话文本
+     * @return 本消息所有 TextBlock 按顺序拼成的正文；不根据角色或来源过滤
      */
     public String extractText() {
         List<String> texts = new ArrayList<>();

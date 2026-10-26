@@ -534,6 +534,7 @@ public final class ContextCompactor {
      * <ul>
      * <li>列表非 null、非空，最后一条不是 null；</li>
      * <li>最后一条是 {@link Role#USER}；</li>
+     * <li>最后一条没有宿主召回参考来源标记；</li>
      * <li>最后一条不含 {@link ToolResultBlock}（即使它同时还带有文字，那也是工具回灌，不算请求）；</li>
      * <li>最后一条至少有一个非空白 {@link TextBlock}（只含空格、制表符或换行的不算）。</li>
      * </ul>
@@ -566,6 +567,10 @@ public final class ContextCompactor {
         }
         if (last.role() != Role.USER) {
             throw new IllegalArgumentException("The last request must be a USER message, but was " + last.role());
+        }
+        // USER 是协议角色；宿主召回资料不是用户新指令，不能成为压缩时的当前请求。
+        if (last.source() == Message.Source.MEMORY_REFERENCE) {
+            throw new IllegalArgumentException("A recalled memory reference is not a user request");
         }
         if (last.content() == null) {
             throw new IllegalArgumentException("The last request content cannot be null");

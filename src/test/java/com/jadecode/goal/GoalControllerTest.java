@@ -92,6 +92,10 @@ class GoalControllerTest {
         var history = List.of(Message.userText("old".repeat(100)), text("recent"));
         String selected = PromptGoalEvaluator.transcript(history, 150);
         assertFalse(selected.contains("oldold")); assertTrue(selected.contains("recent"));
+        // 召回资料迁入历史后仍不是完成证据，也不能挤掉最近的实际回答。
+        selected = PromptGoalEvaluator.transcript(List.of(text("actual result"),
+                Message.memoryReference("OLD_MEMORY_COMPLETION_CLAIM".repeat(100))), 150);
+        assertTrue(selected.contains("actual result")); assertFalse(selected.contains("OLD_MEMORY_COMPLETION_CLAIM"));
         String longText = "HEAD" + "x".repeat(1000) + "TAIL";
         selected = PromptGoalEvaluator.transcript(List.of(Message.userText(longText)), 200);
         assertEquals(200, selected.length()); assertTrue(selected.contains("HEAD")); assertTrue(selected.contains("TAIL"));

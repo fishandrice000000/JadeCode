@@ -12,7 +12,8 @@ import com.jadecode.session.SessionUsage;
 public record SessionMetadata(int version, String id, String workspace, String title,
         String createdAt, String updatedAt, String model, boolean customTitle, SessionUsage.Totals usage,
         ThinkingSettings thinking) {
-    public static final int VERSION = 3;
+    /** 版本 4 增加可选消息来源；仍读取版本 1–3，旧读取器不得写回新日志。 */
+    public static final int VERSION = 4;
 
     /** 兼容旧创建代码和版本 1 文件；旧文件没有用量，并不代表真实花费为零。 */
     public SessionMetadata(int version, String id, String workspace, String title, String createdAt, String updatedAt, String model) {

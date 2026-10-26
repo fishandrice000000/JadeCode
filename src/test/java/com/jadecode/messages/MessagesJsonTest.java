@@ -14,6 +14,17 @@ class MessagesJsonTest {
 
     private static final ObjectMapper M = Json.mapper();
 
+    /** 内部来源可随日志往返；普通用户文字即使像参考标签，也不会自动获得宿主来源。 */
+    @Test void recalledReferenceSourceRoundTripsWithoutChangingOrdinaryMessages() throws Exception {
+        Message reference = Message.memoryReference("reference data");
+        assertEquals(reference, M.readValue(M.writeValueAsString(reference), Message.class));
+        assertFalse(M.readTree(M.writeValueAsString(Message.userText("reference data"))).has("source"));
+        assertNull(Message.userText("Recalled memory reference data: reference data").source());
+        assertThrows(IllegalArgumentException.class, () -> Message.memoryReference(" "));
+        assertThrows(IllegalArgumentException.class, () -> new Message(Role.ASSISTANT,
+                List.of(new TextBlock("reference")), Message.Source.MEMORY_REFERENCE));
+    }
+
     /** ① 三种块序列化往返:线上字段名(尤其 tool_use_id)与值都保持一致 */
     @Test
     void roundTripAllThreeBlockTypes() throws Exception {

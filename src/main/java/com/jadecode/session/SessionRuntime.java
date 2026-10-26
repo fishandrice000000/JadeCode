@@ -624,7 +624,7 @@ public final class SessionRuntime implements AutoCloseable {
                     && (entry.request().incoming() == null || entry.request().incoming().kind().equals("user"));
             // 先记住用户请求，再加入后台通知；之后历史即使压缩，仍记着用户原本要做什么。
             task.goal = activeRequest(history);
-            task.system = taskSystem(task.goal);
+            task.system = prepareTaskSystem(task.goal);
             if (entry.request().incoming() != null) {
                 output.accept(entry.request().incoming().kind().equals("background")
                         ? "[Background] 1 command result received" : "[Incoming] " + entry.request().incoming().summary());
@@ -665,19 +665,25 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 在开始一项任务时查一次长期记忆，把查到的内容放进基础 system 提示词。
+     * 开始任务时准备稳定 system，并把召回资料追加到本轮历史末尾。
      *
      * <p>没有记忆功能就直接返回原 system。后面即使运行多批工具、等后台或 Stop 要求继续，
-     * 也复用这次返回的字符串，不每次都查记忆。查记忆可能读文件和请求辅助模型，
-     * 失败时怎么处理由 MemoryManager 负责；不把辅助模型的回答加入主对话。</p>
+     * 也复用这次返回的字符串，不每次都查记忆。调用前已捕获 task.goal，新增参考消息不会
+     * 变成压缩/目标判断的请求；旧历史不改写。普通召回故障由 MemoryManager 告警降级，
+     * 追加日志失败仍停止任务，不能假装资料已经保存。</p>
      * @param activeRequest 用户最初的请求，启用记忆时应已由 activeRequest 方法检查
-     * @return 这项任务接下来一直使用的 system 提示词，不修改消息列表
+     * @return 本任务复用的稳定提示；可能追加参考消息并同步写日志
      * @throws IllegalStateException 会话或执行器已退出
      */
-    private String taskSystem(String activeRequest) {
+    private String prepareTaskSystem(String activeRequest) {
         ensureOpen();
         String base = engine.system() + resumeContext;
-        return memory == null ? base : memory.prepareSystem(base, activeRequest);
+        if (memory == null) return base;
+        String system = memory.prepareSystem(base);
+        String reference = memory.recallReference(activeRequest);
+        // 来源存在内部字段，不靠正文前缀判断；只追加，不替换上一轮已发出的内容。
+        if (!reference.isEmpty()) appendMessage(Message.memoryReference(reference), "memory_reference");
+        return system;
     }
 
     /**
@@ -1039,7 +1045,9 @@ public final class SessionRuntime implements AutoCloseable {
                 case SessionEvent.Notifications notifications -> {
                     // 末条 USER 可能是请求或工具结果。新建 Message，旧日志记录和内容块不被原地修改。
                     List<ContentBlock> content = new ArrayList<>();
-                    boolean merge = !history.isEmpty() && history.getLast().role() == Role.USER;
+                    // 召回资料保持独立，避免通知合并后丢失来源或让提取误收旧记忆。
+                    boolean merge = !history.isEmpty() && history.getLast().role() == Role.USER
+                            && history.getLast().source() != Message.Source.MEMORY_REFERENCE;
                     if (merge) content.addAll(history.getLast().content());
                     notifications.texts().forEach(text -> content.add(new TextBlock(text)));
                     Message message = Message.userBlocks(List.copyOf(content));
@@ -1149,7 +1157,7 @@ public final class SessionRuntime implements AutoCloseable {
         int toolCalls;
         /** 用户最初要做的事，不能被工具结果、后台通知或 Stop 提示换掉。 */
         String goal;
-        /** 基础 system 提示加上这项任务查到的记忆，后面继续用同一份。 */
+        /** 基础 system 与固定记忆边界；召回正文在历史里，续跑不重新拼接。 */
         String system;
         /** 自上次 todo 更新或提醒以来的工具批次数，不是工具个数或模型请求数。 */
         int rounds;

@@ -84,7 +84,7 @@ public final class MemoryExtractionService {
      * <p>文件系统失败不归入模型失败，IOException 向上报告，保存层尝试清理本批新文件。
      * 当前不吞掉已有主任务结果或改写输入历史；接线时调用方仍须明确如何向用户报告辅助失败。</p>
      *
-     * @param messages 本轮结束时的历史，不能为 null；最多采样最近十二条消息的纯文本
+     * @param messages 本轮结束时的历史，不能为 null；排除召回参考后最多采样最近十二条消息的纯文本
      * @return 状态、实际新增数与跳过候选数；成功不代表模型语义判断绝对正确
      * @throws IOException 记忆库读取、记录写入或索引更新失败
      * @throws IllegalArgumentException 内部消息形状非法，属于调用方错误，不降级成“没有记忆”
@@ -167,19 +167,22 @@ public final class MemoryExtractionService {
     }
 
     /**
-     * 从最近十二条消息拼接 user / assistant 的 TextBlock，超过预算时取最新尾部。
+     * 排除明确标记的宿主召回参考消息，再从最近十二条候选消息拼接 TextBlock。
      *
      * <p>这不是把最近十二个工具结果存成记忆；非文本块不会进入提取输入。
-     * 角色标签帮助模型区分用户表述与助手表述，但仍可能出现摘要 / synthetic user 等来源不明内容，
-     * 本章没有新增消息来源标记，不能声称只凭 role 就证明是人类的长期意愿。</p>
+     * 来源字段排除召回资料，避免把旧记忆当成新证据；正文标签不参与判断。
+     * 其它摘要 / synthetic user 仍可能来源不明，不能声称只凭 role 就证明人类长期意愿。</p>
      */
     private static String dialogueText(List<Message> messages) {
         if (messages == null) {
             throw new IllegalArgumentException("messages cannot be null");
         }
+        // 先排除再取窗口，避免参考消息挤掉原本可见的文本；null 留给原有形状检查报错。
+        List<Message> candidates = messages.stream()
+                .filter(message -> message == null || message.source() != Message.Source.MEMORY_REFERENCE).toList();
         StringBuilder text = new StringBuilder();
-        for (int i = Math.max(0, messages.size() - RECENT_MESSAGES); i < messages.size(); i++) {
-            Message message = messages.get(i);
+        for (int i = Math.max(0, candidates.size() - RECENT_MESSAGES); i < candidates.size(); i++) {
+            Message message = candidates.get(i);
             if (message == null || message.role() == null || message.content() == null) {
                 throw new IllegalArgumentException("Extraction input messages have an invalid shape");
             }

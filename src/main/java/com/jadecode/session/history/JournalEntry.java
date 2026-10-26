@@ -54,6 +54,8 @@ public record JournalEntry(int version, String sessionId, long sequence, String 
         if (kind.name().startsWith("TURN_") && !messages.isEmpty())
             throw new IllegalArgumentException("Turn records cannot carry messages");
         for (Message message : messages) {
+            if (message.source() != null && version < 4)
+                throw new IllegalArgumentException("Message source metadata requires journal version 4");
             if (message.role() == null || message.content() == null || message.content().stream().anyMatch(java.util.Objects::isNull))
                 throw new IllegalArgumentException("Invalid history message content");
             for (var block : message.content()) {

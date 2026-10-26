@@ -67,7 +67,8 @@ public final class PromptGoalEvaluator implements GoalEvaluator {
 
     /**
      * 由后往前选择最近完整消息，保留角色、tool_use/result 和错误标记；不只取 assistant 总结。
-     * 单条最新消息超过额度时保留首尾并显式标截断。只读，不改原历史或填补被压缩/裁去的证据。
+     * 排除宿主召回参考，避免把旧知识当成本次完成证据。单条最新消息超额时保留首尾并标截断。
+     * 只读，不改原历史或填补被压缩/裁去的证据。
      */
     static String transcript(List<Message> messages, int limit) throws IOException {
         if (limit < 100) throw new IllegalArgumentException("Transcript limit is too small");
@@ -75,6 +76,8 @@ public final class PromptGoalEvaluator implements GoalEvaluator {
         int used = 0;
         for (int index = messages.size() - 1; index >= 0; index--) {
             Message original = messages.get(index);
+            // 迁出 system 的旧记忆仍只是背景，不能因此升级为目标已经完成的证据。
+            if (original.source() == Message.Source.MEMORY_REFERENCE) continue;
             // 思考正文/签名不是验证结果，既不送给判断器，也不拿来弥补缺失工具证据。
             Message evidence = new Message(original.role(), original.content().stream()
                     .filter(block -> block instanceof TextBlock || block instanceof ToolUseBlock || block instanceof ToolResultBlock).toList());

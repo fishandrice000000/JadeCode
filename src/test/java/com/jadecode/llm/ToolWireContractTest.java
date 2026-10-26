@@ -16,6 +16,18 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /** 检查外部工具所需的线上契约；假模型与参数转换不连接任何真实模型服务。 */
 class ToolWireContractTest {
+    /** 来源只属于内部历史，SDK 应发标准 USER 文本，不向兼容端点泄漏内部字段。 */
+    @Test void sdkOmitsInternalMemorySource() throws Exception {
+        var client = new AnthropicSdkLlmClient(new AppConfig("offline", "http://127.0.0.1:1", "offline", 100));
+        var method = AnthropicSdkLlmClient.class.getDeclaredMethod("toParams", CompleteRequest.class);
+        method.setAccessible(true);
+        var params = (com.anthropic.models.messages.MessageCreateParams) method.invoke(client,
+                new CompleteRequest("fixed boundary", List.of(Message.memoryReference("reference text")), 100, List.of()));
+        var json = com.anthropic.core.ObjectMappers.jsonMapper().valueToTree(params.messages());
+        assertEquals("user", json.get(0).get("role").asText());
+        assertEquals("reference text", json.get(0).get("content").get(0).get("text").asText());
+        assertFalse(json.get(0).has("source"));
+    }
     /** 旧日志缺省非错误；新日志以及替换正文后的结果都保留明确失败标志。 */
     @Test void oldAndNewHistoryKeepErrorSemantics() throws Exception {
         var old = Json.mapper().readValue("{\"type\":\"tool_result\",\"tool_use_id\":\"x\",\"content\":\"Error: ordinary text\"}", ContentBlock.class);

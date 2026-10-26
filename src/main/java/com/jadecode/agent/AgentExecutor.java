@@ -45,7 +45,7 @@ public class AgentExecutor implements AutoCloseable {
     private final LlmClient client;
     /** 内置与动态工具来源；每次请求固定一个快照，本批执行不重新取目录。 */
     private final com.jadecode.tools.ToolCatalog tools;
-    /** 基础 system 提示词，会话可在任务入口加上查到的记忆。 */
+    /** 基础 system 提示词；会话只加固定参考边界，召回正文作为独立消息追加。 */
     private final String system;
     /** 模型一次回答最多生成多少 token，不是历史消息允许的字符数。 */
     private final int maxTokens;

@@ -94,6 +94,9 @@ public final class BackendHistoryProjector {
                         // 自动继续虽使用 USER wire role，来源仍是宿主，不能污染用户输入历史。
                         if (entry.reason().equals("goal_continue")) {
                             notice("System", "Goal", lastModel.extractText(), false); lastUser = null;
+                        } else if (entry.reason().equals("notification")) {
+                            // 参考消息保持独立后，首条通知可能是 APPEND；按宿主通知显示。
+                            notice("System", "Incoming", lastModel.extractText(), false);
                         } else lastUser = message(lastModel, lastUser);
                     }
                     case REPLACE_LAST -> {
@@ -148,6 +151,8 @@ public final class BackendHistoryProjector {
 
     /** 把一条模型消息展开成用户文字、回答、思考与工具卡；返回当前用户条目下标。 */
     private Integer message(Message message, Integer lastUser) {
+        // 召回资料是模型上下文，恢复时不伪装成用户输入，也不进入输入历史。
+        if (message.source() == Message.Source.MEMORY_REFERENCE) return null;
         Integer user = null;
         if (message.role() == Role.USER) {
             String text = message.extractText();
