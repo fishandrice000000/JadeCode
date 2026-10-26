@@ -88,11 +88,19 @@ class CodeReviewWorkflowTest {
         }
         // 八次请求（四个维度、两种阶段）都应完整复用相同资料，再追加各自指令。
         String auditPrompt = prompts.stream().filter(p -> p.contains("\nReview supplied code for ")).findFirst().orElseThrow();
-        String shared = auditPrompt.substring(0, auditPrompt.indexOf("\nReview supplied code for ") + 1);
+        String shared = auditPrompt.substring(0, auditPrompt.indexOf("Report up to 3 concrete issues"));
         assertTrue(shared.contains("Caller.java")); assertTrue(shared.contains("service(null);"));
         assertTrue(shared.contains("2:   return name.trim();"));
         assertEquals(8, prompts.size());
         prompts.forEach(prompt -> assertTrue(prompt.startsWith(shared), "完整源资料必须位于维度/候选变化之前"));
+        // 两个阶段各自复用固定审查规则和完整 schema，维度及候选只出现在其后。
+        for (String marker : List.of("\nReview supplied code for ", "\nVerify code-review finding for ")) {
+            var phasePrompts = prompts.stream().filter(p -> p.contains(marker)).toList();
+            assertEquals(4, phasePrompts.size());
+            String prefix = phasePrompts.getFirst().substring(0, phasePrompts.getFirst().indexOf(marker));
+            assertTrue(prefix.contains("Return only one JSON value matching this schema:"));
+            phasePrompts.forEach(prompt -> assertTrue(prompt.startsWith(prefix + marker)));
+        }
         try (var runtime = runtime(client)) {
             var restored = runtime.run("code-review", null, first.path("run_id").asText(), ExecutionContext.create(ExecutionContext.Source.USER, null));
             assertEquals("completed", restored.path("status").asText()); assertEquals(first.path("result"), restored.path("result"));

@@ -38,12 +38,39 @@ public final class WorkflowContext {
      * 不修改 prompt/schema，返回缓存副本；相同 key 的并发调用只实际请求一次。
      */
     public JsonNode agent(String prompt, JsonNode schema, String label) throws Exception {
+        return agentRequest(prompt, null, schema, label);
+    }
+
+    /**
+     * 用公共资料/规则、输出 schema、本次任务的顺序请求模型，便于同阶段分支共享完整前缀。
+     * 三参数入口仍保持原有请求和缓存身份；此入口把 task 也纳入 key，绝不跨任务复用结果。
+     * @param commonPrefix 同阶段共用的参考资料和固定规则，不能为空
+     * @param task 本次维度、候选等变化内容，不能为空；格式修正也只追加在此段末尾
+     * @param schema 可为 null；非 null 时仍由宿主严格校验，而非依赖模型遵守提示
+     * @param label 稳定步骤标签，沿用原有长度限制和进度显示
+     * @return 通过校验且成功落盘的结果副本；不修改任何输入
+     * @throws Exception 请求、校验、预算、取消或落盘失败；仅格式失败最多修正一次
+     */
+    public JsonNode agent(String commonPrefix, String task, JsonNode schema, String label) throws Exception {
+        if (task == null) throw new IllegalArgumentException("Workflow task is missing");
+        return agentRequest(commonPrefix, task, schema, label);
+    }
+
+    /**
+     * 两个公开入口共用的执行路径：检查输入 → 查盘/并发去重 → 有界请求与校验 → 成功落盘。
+     * prompt 与 task 只用于构造请求和缓存身份，不修改输入；task=null 专指旧入口的排列。
+     * 返回独立结果副本。缓存 IO、模型失败、预算耗尽和取消都向上传递，不产生假成功缓存。
+     */
+    private JsonNode agentRequest(String prompt, String task, JsonNode schema, String label) throws Exception {
         run.step();
-        if (prompt == null || prompt.isBlank() || prompt.length() > 256_000 || label == null || label.isBlank() || label.length() > 512)
+        // 两段输入共同受原 prompt 的字符上限约束；转 long 避免极长字符串相加溢出。
+        if (prompt == null || prompt.isBlank() || (task != null && task.isBlank())
+                || (long) prompt.length() + (task == null ? 0 : task.length()) > 256_000
+                || label == null || label.isBlank() || label.length() > 512)
             throw new IllegalArgumentException("Workflow prompt or label is invalid/too large");
         if (schema != null) WorkflowSchema.checkSchema(schema);
         JsonNode contract = schema == null ? null : schema.deepCopy();
-        String key = key(label, prompt, contract);
+        String key = key(label, prompt, contract, task);
         JsonNode cached = run.store.cached(key);
         if (cached != null) {
             if (contract != null) WorkflowSchema.validate(cached, contract);
@@ -68,7 +95,10 @@ public final class WorkflowContext {
             run.event("agent", label + (phase.isEmpty() ? "" : " · " + phase), "running");
             JsonNode value = null;
             for (int attempt = 0; attempt < 2; attempt++) {
-                var response = run.call(prompt + (attempt == 0 ? "" : "\nYour prior result did not match the required JSON structure. Return valid JSON only."), contract);
+                String correction = attempt == 0 ? "" : "\nYour prior result did not match the required JSON structure. Return valid JSON only.";
+                // 新入口的 schema 前缀在修正时仍完整保留；旧入口保持此前 prompt+修正+schema 的顺序。
+                var response = run.call(task == null ? prompt + correction : prompt, contract,
+                        task == null ? null : task + correction);
                 // 截断与坏 JSON 不同，不能拿半份输出做格式修正；报告具体步骤和有效额度供用户定位。
                 if (response.stopReason().equals("max_tokens"))
                     throw new IllegalArgumentException("Workflow agent " + label + " output reached max_tokens (limit="
@@ -151,11 +181,15 @@ public final class WorkflowContext {
         return definition.script().run(child, input);
     }
 
-    /** 稳定 SHA-256 使用完整语义输入；schema 排序，数组顺序保留，避免并行计数器或短哈希碰撞。 */
-    private String key(String label, String prompt, JsonNode schema) throws Exception {
+    /**
+     * 用完整语义输入计算 SHA-256，无 IO；schema 对象排序、数组顺序保留，不修改原节点。
+     * 仅新入口加入 task 字段，保留旧入口已经落盘的 key；不同任务即使 label 相同也不会混用结果。
+     */
+    private String key(String label, String prompt, JsonNode schema, String task) throws Exception {
         ObjectNode basis = Json.mapper().createObjectNode().put("scope", scope).put("runner", run.runner.identity())
                 .put("label", label).put("prompt", prompt);
         basis.set("schema", schema == null ? Json.mapper().nullNode() : WorkflowSchema.canonical(schema));
+        if (task != null) basis.put("task", task);
         return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(basis.toString().getBytes(StandardCharsets.UTF_8)));
     }
 

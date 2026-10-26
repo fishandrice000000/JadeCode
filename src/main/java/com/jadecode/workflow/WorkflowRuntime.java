@@ -175,8 +175,9 @@ public final class WorkflowRuntime implements AutoCloseable {
         /**
          * 每次真实尝试（含格式重试）都占一个并发名额和请求额度。
          * 预算按返回报告累计；并发中的已发请求可能超额，不能假称精确预扣或绝对费用上限。
+         * prompt/schema/task 原样交给 runner 排列，task=null 表示旧入口；这里不修改资料或共享历史。
          */
-        ModelResponse call(String prompt, JsonNode schema) throws Exception {
+        ModelResponse call(String prompt, JsonNode schema, String task) throws Exception {
             check(); permits.acquire();
             try {
                 synchronized (this) {
@@ -186,7 +187,7 @@ public final class WorkflowRuntime implements AutoCloseable {
                     attempts++; inFlightRequests++;
                 }
                 ModelResponse reply;
-                try { reply = runner.call(prompt, schema); }
+                try { reply = runner.call(prompt, schema, task); }
                 catch (Exception failure) { synchronized (this) { inFlightRequests--; unknownUsage++; } throw failure; }
                 synchronized (this) {
                     inFlightRequests--;

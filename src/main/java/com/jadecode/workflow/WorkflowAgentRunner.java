@@ -34,7 +34,17 @@ public record WorkflowAgentRunner(LlmClient client, String model, int maxTokens,
      * 返回完整响应和真实用量，不把 schema 失败吞掉；调用者保证每次修正也经过并发/预算检查。
      */
     ModelResponse call(String prompt, JsonNode schema) throws LlmException {
-        String request = prompt + (schema == null ? "" : "\nReturn only one JSON value matching this schema:\n" + schema);
+        return call(prompt, schema, null);
+    }
+
+    /**
+     * 公共规则之后先放 schema，再放变化任务；task=null 保持原入口的字节顺序。
+     * schema=null 时不插入格式约束。只组装本次请求，不保存历史或改变调用预算。
+     * 输入不被修改，返回模型原响应和用量；网络/模型异常向上传递，结构校验仍归 Context。
+     */
+    ModelResponse call(String commonPrefix, JsonNode schema, String task) throws LlmException {
+        String request = commonPrefix + (schema == null ? "" : "\nReturn only one JSON value matching this schema:\n" + schema)
+                + (task == null ? "" : "\n" + task);
         return client.complete(new CompleteRequest(SYSTEM, List.of(Message.userText(request)), maxTokens, List.of(), thinking));
     }
 }

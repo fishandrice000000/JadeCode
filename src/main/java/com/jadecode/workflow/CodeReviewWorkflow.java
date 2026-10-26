@@ -19,11 +19,11 @@ public final class CodeReviewWorkflow {
 
     /**
      * 登记名字、版本、输入与固定脚本；文件名只是资料标签，不在注册或执行时读盘。
-     * 版本 2 调整提示词前缀；旧 run 明确拒绝续跑，避免旧步骤缓存失效后意外重新请求模型。
+     * 版本 3 把固定规则/schema 前移到动态任务之前；旧 run 明确拒绝续跑，避免意外重新计费。
      */
     public static WorkflowDefinition definition() {
         return new WorkflowDefinition("code-review", "Review supplied complete files/modules; cite source lines, verify findings, and separate missing-context questions.",
-                "2", List.of("Review", "Verify", "Report"), schema("""
+                "3", List.of("Review", "Verify", "Report"), schema("""
                 {"type":"object","required":["files"],"additionalProperties":false,"properties":{
                   "files":{"type":"array","minItems":1,"maxItems":16,"items":{"type":"object",
                     "required":["path","content"],"additionalProperties":false,"properties":{
@@ -57,12 +57,12 @@ public final class CodeReviewWorkflow {
         List<JsonNode> branches = context.pipeline(dimensions, List.of(
                 (branch, previous, dimension, index) -> {
                     branch.phase("Review");
-                    // 固定边界与完整资料排在前面；不同维度只改变资料之后的任务说明。
-                    return branch.agent(referencePrefix(input) + "Review supplied code for " + dimension.asText() + ". "
+                    // 同阶段固定规则及 schema 都在维度前面；完整来源仍由所有审查和复核共用。
+                    return branch.agent(referencePrefix(input)
                             + "Report up to 3 concrete issues supported by supplied source, with exact path, 1-based inclusive line range and a verbatim quote. "
                             + "State a trigger, impact and minimal fix for each. Do not invent files, execution, requirements or caller behavior. "
                             + "For missing context, ask a specific question instead of claiming a defect. Keep fields concise.",
-                            auditSchema, "code-audit:" + dimension.asText());
+                            "Review supplied code for " + dimension.asText() + ".", auditSchema, "code-audit:" + dimension.asText());
                 },
                 (branch, audit, dimension, index) -> verify(branch, input, dimension.asText(), audit, verdictSchema)));
         context.phase("Report");
@@ -135,12 +135,13 @@ public final class CodeReviewWorkflow {
                 continue;
             }
             candidates.add(finding);
-            // 与审查共用完整资料前缀；维度和单条候选在后，仍逐项独立复核。
-            jobs.add(() -> context.agent(referencePrefix(input) + "Verify code-review finding for " + dimension + ". "
+            // 先保留完整来源、复核固定规则和 schema；维度和单条候选随后追加，仍逐项独立复核。
+            jobs.add(() -> context.agent(referencePrefix(input)
                     + "Check the trigger and impact against ALL supplied files, requirements and caller protections. "
                     + "Use rejected for disproved issues, needs_context for insufficient evidence, confirmed only for a supported issue. "
-                    + "If confirmed/rejected, needed_context must be empty. Do not claim execution or reproduction.\n"
-                    + "Candidate:\n" + finding, verdictSchema, "code-verify:" + dimension + ":" + candidateIndex));
+                    + "If confirmed/rejected, needed_context must be empty. Do not claim execution or reproduction.",
+                    "Verify code-review finding for " + dimension + ".\nCandidate:\n" + finding,
+                    verdictSchema, "code-verify:" + dimension + ":" + candidateIndex));
         }
         List<JsonNode> verdicts = context.parallel(jobs);
         int rejected = 0;

@@ -16,7 +16,7 @@ public final class ReviewChangesWorkflow {
 
     /**
      * 返回完整可信定义；schema 的长度/数量限制控制单次审查成本与汇总大小。
-     * 版本 2 调整提示词前缀，旧 run 明确拒绝续跑，避免默默丢失步骤缓存后重新计费。
+     * 版本 3 前移固定规则/schema，旧 run 明确拒绝续跑，避免默默丢失步骤缓存后重新计费。
      */
     public static WorkflowDefinition definition() {
         ObjectNode input = schema("""
@@ -25,7 +25,7 @@ public final class ReviewChangesWorkflow {
               "budget":{"type":"integer","minimum":1,"maximum":10000000}}}
             """);
         return new WorkflowDefinition("review-changes", "Review supplied changes across correctness/security/performance/style, verify findings, then rank them.",
-                "2", List.of("Review", "Verify"), input, ReviewChangesWorkflow::review);
+                "3", List.of("Review", "Verify"), input, ReviewChangesWorkflow::review);
     }
 
     /**
@@ -53,8 +53,8 @@ public final class ReviewChangesWorkflow {
         List<JsonNode> reviewed = context.pipeline(dimensions, List.of(
             (branch, previous, dimension, index) -> {
                 branch.phase("Review");
-                return branch.agent(reference + "Review supplied changes for " + dimension.asText() + ". Only report text-supported issues.",
-                        findingSchema, "audit:" + dimension.asText());
+                return branch.agent(reference + "Only report text-supported issues.",
+                        "Review supplied changes for " + dimension.asText() + ".", findingSchema, "audit:" + dimension.asText());
             },
             (branch, previous, dimension, index) -> {
                 branch.phase("Verify");
@@ -62,8 +62,8 @@ public final class ReviewChangesWorkflow {
                 List<JsonNode> findings = new ArrayList<>(); previous.get("findings").forEach(findings::add);
                 for (int i = 0; i < findings.size(); i++) {
                     int findingIndex = i; JsonNode finding = findings.get(i);
-                    jobs.add(() -> branch.agent(reference + "Adversarially verify this " + dimension.asText()
-                            + " finding using only supplied changes; do not claim execution.\nFinding:\n" + finding,
+                    jobs.add(() -> branch.agent(reference + "Adversarially verify one finding using only supplied changes; do not claim execution.",
+                            "Adversarially verify this " + dimension.asText() + " finding.\nFinding:\n" + finding,
                             verdictSchema, "verify:" + dimension.asText() + ":" + findingIndex));
                 }
                 List<JsonNode> verdicts = branch.parallel(jobs);

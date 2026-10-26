@@ -69,14 +69,54 @@ class WorkflowRuntimeTest {
         }
         // 复核也复用完整改动前缀，不能在共用文本前插入审查维度或某条发现。
         String audit = prompts.stream().filter(p -> p.contains("\nReview supplied changes for ")).findFirst().orElseThrow();
-        String shared = audit.substring(0, audit.indexOf("\nReview supplied changes for ") + 1);
+        String shared = audit.substring(0, audit.indexOf("Only report text-supported issues."));
         assertTrue(shared.contains("example change")); assertEquals(8, prompts.size());
         prompts.forEach(prompt -> assertTrue(prompt.startsWith(shared)));
+        // 审查/复核的规则和 schema 不同；同阶段的四个维度应复用到 schema 结束，而非只复用改动资料。
+        for (String marker : List.of("\nReview supplied changes for ", "\nAdversarially verify this ")) {
+            var phasePrompts = prompts.stream().filter(p -> p.contains(marker)).toList();
+            assertEquals(4, phasePrompts.size());
+            String prefix = phasePrompts.getFirst().substring(0, phasePrompts.getFirst().indexOf(marker));
+            assertTrue(prefix.contains("Return only one JSON value matching this schema:"));
+            phasePrompts.forEach(prompt -> assertTrue(prompt.startsWith(prefix + marker)));
+        }
         try (var restored = runtime(List.of(ReviewChangesWorkflow.definition()), client)) {
             var second = restored.run("review-changes", null, first.path("run_id").asText(), origin());
             assertEquals(first.get("result"), second.get("result")); assertEquals(8, requests.get());
             assertEquals(8, second.path("usage").path("cached_steps").asInt());
             assertEquals(0, second.path("usage").path("requests").asInt());
+        }
+    }
+
+    /** 同标签的不同任务仍请求两份结果；只修正坏 JSON，恢复时两个 key 各自命中。 */
+    @Test void separatedTasksKeepSchemaPrefixAndDistinctRetryableCacheKeys() throws Exception {
+        var schema = object("{\"type\":\"string\"}");
+        var definition = flow("separated", (ctx, args) -> Json.mapper().valueToTree(ctx.parallel(List.of(
+                () -> ctx.agent("Common reference and fixed rules.", "TASK_A", schema, "same"),
+                () -> ctx.agent("Common reference and fixed rules.", "TASK_B", schema, "same")))));
+        var prompts = new CopyOnWriteArrayList<String>();
+        var firstA = new AtomicBoolean(true);
+        ObjectNode result;
+        try (var runtime = runtime(List.of(definition), request -> {
+            String prompt = request.messages().getFirst().extractText(); prompts.add(prompt);
+            if (prompt.contains("\nTASK_A") && firstA.getAndSet(false)) return reply("bad JSON");
+            return reply(prompt.contains("\nTASK_A") ? "\"A\"" : "\"B\"");
+        })) {
+            result = runtime.run("separated", null, null, origin());
+            assertEquals("completed", result.path("status").asText(), result.toString());
+            assertEquals(Json.mapper().readTree("[\"A\",\"B\"]"), result.path("result"));
+            assertEquals(3, result.path("usage").path("requests").asInt());
+        }
+        String common = "Common reference and fixed rules.\nReturn only one JSON value matching this schema:\n" + schema + "\n";
+        assertEquals(3, prompts.size()); prompts.forEach(prompt -> assertTrue(prompt.startsWith(common)));
+        assertEquals(1, prompts.stream().filter(p -> p.equals(common + "TASK_A")).count());
+        assertEquals(1, prompts.stream().filter(p -> p.equals(common + "TASK_B")).count());
+        assertTrue(prompts.stream().anyMatch(p -> p.startsWith(common + "TASK_A\nYour prior result")));
+        try (var restored = runtime(List.of(definition), request -> { fail("恢复不得重新请求模型"); return reply("unused"); })) {
+            var resumed = restored.run("separated", null, result.path("run_id").asText(), origin());
+            assertEquals("completed", resumed.path("status").asText()); assertEquals(result.path("result"), resumed.path("result"));
+            assertEquals(2, resumed.path("usage").path("cached_steps").asInt());
+            assertEquals(0, resumed.path("usage").path("requests").asInt());
         }
     }
 
