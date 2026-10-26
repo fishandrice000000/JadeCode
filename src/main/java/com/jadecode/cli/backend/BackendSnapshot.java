@@ -41,7 +41,7 @@ public record BackendSnapshot(String sessionId, String title, long generation, S
             Map<String, SessionUsage.Totals> byPurpose, Map<String, SessionUsage.Totals> byModel,
             Integer recentCacheHitPercent) { }
 
-    /** 最近一次响应的上下文占用；window 未知时整体为 null。 */
+    /** 当前投影的占用及估算来源；window 未知时整体为 null。 */
     public record Context(Long occupiedTokens, Integer windowTokens, Integer remainingPercent, Boolean estimated) {
         /** 旧离线快照仍表示服务端来源。 */
         public Context(Long occupiedTokens, Integer windowTokens, Integer remainingPercent) {

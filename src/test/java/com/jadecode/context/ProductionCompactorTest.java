@@ -30,10 +30,12 @@ class ProductionCompactorTest {
         return new ProductionCompactionSettings(true, 16384, keep, 32768, input, 50000, 2000);
     }
 
+    /** 每例使用独立临时目录；创建服务本身不摘要或建文件。 */
     private ContextCompactor compactor(Client client, ProductionCompactionSettings settings) {
         return ContextCompactor.production(client, dir.resolve("transcripts"), dir.resolve("results"), settings);
     }
 
+    /** 固定 system 和工具目录，令断言只比较本例改变的历史或设置。 */
     private CompleteRequest request(List<Message> messages) {
         return new CompleteRequest("stable system", messages, 393216,
                 List.of(new ToolDefinition("read_file", "read", Json.mapper().createObjectNode().put("type", "object"))));
@@ -41,6 +43,7 @@ class ProductionCompactorTest {
 
     private Message assistant(String value) { return Message.assistant(List.of(new TextBlock(value))); }
 
+    /** 普通输入、缓存和输出组成锚点；只估算新增参考消息，投影变化或显式清除后整份重估。 */
     @Test void reportedAnchorCountsCachesAndOutputOnceAndInvalidatesChangedProjection() {
         var tracker = new ContextTokenTracker();
         var original = request(List.of(Message.userText("goal")));
@@ -66,6 +69,7 @@ class ProductionCompactorTest {
         assertEquals(ContextTokenTracker.projected(request(history)), tracker.estimate(request(history)).tokens());
     }
 
+    /** 文本超过旧字符门槛但远未用完 1M 窗口时，生产不能付费摘要或建 transcript。 */
     @Test void largeTextBelowTokenWindowDoesNotTriggerOldCharacterThreshold() throws Exception {
         var client = new Client();
         var history = List.of(Message.userText("code ".repeat(80000)), assistant("done"));
@@ -74,6 +78,7 @@ class ProductionCompactorTest {
         assertFalse(Files.exists(dir.resolve("transcripts")));
     }
 
+    /** 构造可信 usage 锚点检查严格大于边界；最大输出只限制单次请求，不改变触发线。 */
     @Test void exactThresholdDoesNotCompactButOneMoreTokenDoes() throws Exception {
         var client = new Client(); var tracker = new ContextTokenTracker();
         var original = request(List.of(Message.userText("past")));
@@ -98,6 +103,7 @@ class ProductionCompactorTest {
         assertEquals(List.of(original.messages().getFirst(), answer), history);
     }
 
+    /** 零近期预算仍保护最新工具交换，摘要只能读取它之前的旧前缀。 */
     @Test void latestUnreadExchangeRemainsWholeEvenWithZeroRecentBudget() throws Exception {
         var client = new Client(); var history = new ArrayList<Message>();
         history.add(Message.userText("old goal")); history.add(assistant("old answer"));
@@ -109,6 +115,7 @@ class ProductionCompactorTest {
         assertEquals(history.subList(0, 2), client.requests.getFirst().messages().subList(0, 2));
     }
 
+    /** 小输入额度迫使分块；按顺序还原每块原文，证明没有丢中段或拆开调用与结果。 */
     @Test void overBudgetSummaryChunksCoverEveryMessageAndNeverSplitToolExchange() throws Exception {
         var client = new Client(); var history = new ArrayList<Message>();
         for (int i = 0; i < 8; i++) {
@@ -128,6 +135,7 @@ class ProductionCompactorTest {
         assertEquals(history.subList(0, 16), covered, "所有待压缩原文按原顺序覆盖，不省略中段");
     }
 
+    /** 摘要截断、空白或返回工具调用时只失败一次；检查原列表未变且归档已落盘。 */
     @Test void rejectedSummaryLeavesOriginalHistoryAndArchivesBeforeCalling() throws Exception {
         for (ModelResponse invalid : List.of(
                 new ModelResponse(assistant("cut off"), null, "max_tokens"),
@@ -143,6 +151,7 @@ class ProductionCompactorTest {
         try (var files = Files.list(dir.resolve("transcripts"))) { assertEquals(3, files.count()); }
     }
 
+    /** 未知窗口不猜自动阈值；手动摘要也必须先得到可解释的整份输入预算。 */
     @Test void unknownWindowSkipsAutomaticButManualRequiresKnownInputBudget() throws Exception {
         var client = new Client(); client.metadata = new ModelMetadata(ModelMetadata.Limits.unknown(), "test");
         var history = List.of(Message.userText("old"), assistant("recent"));

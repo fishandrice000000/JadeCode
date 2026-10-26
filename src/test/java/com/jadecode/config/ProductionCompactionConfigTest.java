@@ -11,6 +11,7 @@ import static org.junit.jupiter.api.Assertions.*;
 class ProductionCompactionConfigTest {
     @TempDir Path dir;
 
+    /** 缺省文件使用用户批准的 Token 参数，auto 以 null 表达，不能猜成固定字符上限。 */
     @Test void defaultsUseProductionTokenValues() throws Exception {
         var settings = new JadeConfigFile(dir.resolve("config.json")).load().contextCompaction();
         assertEquals(16384, settings.reserveTokens()); assertEquals(20000, settings.keepRecentTokens());
@@ -18,6 +19,7 @@ class ProductionCompactionConfigTest {
         assertEquals(50000, settings.largeResultCharLimit()); assertEquals(2000, settings.largeResultPreviewChars());
     }
 
+    /** 校验旧压缩段只迁移一次，完整原文备份和其它设置均保留。 */
     @Test void migratesOldLimitsOnceAndPreservesOtherSettingsAndOriginalBackup() throws Exception {
         Path path = dir.resolve("config.json");
         String old = """
@@ -42,6 +44,7 @@ class ProductionCompactionConfigTest {
         try (var files = Files.list(dir)) { assertEquals(2, files.count(), "重复读取不再次备份/重写"); }
     }
 
+    /** 负预算必须在写盘前失败；用户显式填写的新额度不能被默认值覆盖。 */
     @Test void invalidConfigurationIsNotRewrittenAndExplicitNewBudgetIsPreserved() throws Exception {
         Path path = dir.resolve("config.json");
         String invalid = "{\"compaction\":{\"snipEnabled\":true,\"reserveTokens\":-1}}";

@@ -6,7 +6,7 @@ import com.jadecode.llm.ModelResponse;
 /**
  * 当前请求投影的上下文占用，与整个会话累计花费分开保存。
  * 正式响应建立服务端输入（含缓存）加输出的锚点，新增内容只作启发式估算并标记 estimated。
- * 压缩后先显示未知，等下一次正式响应；未知模型窗口也不伪造百分比。
+ * 历史替换后先清空显示；后续估算不复用已失效锚点，未知模型窗口也不伪造百分比。
  */
 public record ContextUsage(long occupiedTokens, int windowTokens, boolean estimated) {
     /** 旧快照来自服务端响应，不改变已有构造的含义。 */
