@@ -306,6 +306,7 @@ public final class SessionRuntime implements AutoCloseable {
         if (consumer != null || closed || journal != null) throw new IllegalStateException("Cannot install history into a running session");
         if (todos != null) todos.restore(restored.todos());
         history = new ArrayList<>(restored.history());
+        engine.invalidateContext();
         if (!restored.entries().isEmpty()) resumeContext = "\nRestored conversation: previous background processes, teammates, inbox and approval grants were not restored."
                 + " Workspace files and persistent tasks, memory and cron reflect current disk state, not a rollback."
                 + " Do not replay old tool calls to reconstruct history. An unrecorded result does not prove the operation did not execute."
@@ -978,7 +979,7 @@ public final class SessionRuntime implements AutoCloseable {
     /** 采用执行器已验证的模型回复，写入历史，不在这里决定任务是否完成。 */
     private void apply(ModelReply reply) {
         appendMessage(reply.message(), "reply");
-        contextUsage = ContextUsage.measured(reply.usage(), display().metadata());
+        refreshContextUsage();
     }
 
     /** 整批采用工具结果，意外失败也先补齐 tool_result，再由执行流程抛出异常。 */
@@ -995,9 +996,14 @@ public final class SessionRuntime implements AutoCloseable {
     private void appendMessage(Message message, String reason) {
         synchronized (historyMonitor) {
             ensureOpen(); history.add(message);
-            if (!reason.equals("reply")) contextUsage = null;
+            if (!reason.equals("reply")) refreshContextUsage();
             record(JournalEntry.Kind.APPEND, List.of(message), reason);
         }
+    }
+
+    /** 只读模型限额，不在历史锁中构建包含资源清单的整个 display；没有 profile 就保持未知。 */
+    private void refreshContextUsage() {
+        contextUsage = profile == null ? null : ContextUsage.projected(engine.contextEstimate(history), profile.metadata());
     }
 
     /**
@@ -1040,6 +1046,7 @@ public final class SessionRuntime implements AutoCloseable {
                 case SessionEvent.HistoryPrepared prepared -> {
                     // 事件已经复制列表，clear 不会把候选一起清空；日志同样保存“替换”而非追加。
                     history.clear(); history.addAll(prepared.messages());
+                    // 真正摘要改变旧前缀后，tracker 比较投影会自动失效；只改新结果时保留已报告的锚点。
                     record(JournalEntry.Kind.REPLACE_HISTORY, history, "compaction");
                 }
                 case SessionEvent.Notifications notifications -> {
@@ -1053,6 +1060,7 @@ public final class SessionRuntime implements AutoCloseable {
                     Message message = Message.userBlocks(List.copyOf(content));
                     if (merge) history.set(history.size() - 1, message);
                     else history.add(message);
+                    refreshContextUsage();
                     record(merge ? JournalEntry.Kind.REPLACE_LAST : JournalEntry.Kind.APPEND, List.of(message), "notification");
                 }
                 case SessionEvent.Incoming incoming -> throw new IllegalArgumentException("Incoming must be queued first; history cannot be mutated across threads");
@@ -1079,6 +1087,7 @@ public final class SessionRuntime implements AutoCloseable {
                     // 与 close 共用锁，在锁内再检查，不能在退出后恢复旧列表。
                     if (!closed) {
                         history.clear(); history.addAll(task.snapshot);
+                        engine.invalidateContext();
                         contextUsage = null;
                         record(JournalEntry.Kind.REPLACE_HISTORY, history, "rollback");
                     }

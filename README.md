@@ -128,7 +128,8 @@ TUI 输入 `/model` 只显示当前模型、思考强度和已知的窗口／输
 手动值是用户提供的信息，不标成官方事实；不能扩大已经取得的官方上限。
 已知最大输出对正式、摘要、记忆及审批请求统一封顶；只有正式请求在 `MAX_TOKENS=auto` 时自动采用上限，
 显式额度与内部辅助请求不会被自动提高。
-上下文窗口单位是 token，压缩器目前仍按字符估算；本轮不把两者等同，仍保留原压缩阈值。
+上下文压缩与状态栏共用 Token 投影：优先采用本条历史的正式响应 usage，追加部分本地估算。
+状态栏 `ctx ~` 表示包含估算；没有 `~` 表示尚无新增内容的服务端锚点，窗口未知则不展示比例。
 
 旧 `tui.json` 的主题会先备份再迁入新文件；新主题优先，原文件保留但不再写入。
 主题通过 `/settings` 的 Theme 子流程选择；只保存 `tui` 白名单，不会清除压缩设置或用户其它字段。旧 `/theme` 命令别名已移除。
@@ -141,16 +142,40 @@ TUI 输入 `/model` 只显示当前模型、思考强度和已知的窗口／输
 当前适配 DeepSeek 官方端点的 `off / low / high / max`（default 对应官方默认 high），
 以及 Anthropic 官方 Claude Opus/Sonnet 4.6 的 `off / low / medium / high / max`。
 未适配模型或第三方兼容端点只保留 default，不猜参数支持情况。
-新队友和一次性子代理继承创建时设置，已有队友不随 Leader 改动；摘要和辅助审批保持默认。
+新队友和一次性子代理继承创建时设置，已有队友不随 Leader 改动；共享前缀摘要沿用该请求设置，辅助审批保持默认。
 记忆只需要结构化正文，后端已适配 OFF 时显式关闭思考，否则保持默认。
 
-默认压缩管线是**单条结果转存 → 超阈值摘要**：`largeResultEnabled` 与 `autoSummaryEnabled` 为 true，
-`batchBudgetEnabled`、`snipEnabled`、`microEnabled`、`fitEnabled`、`reactiveEnabled` 为 false。
-各开关与 `compaction.limits` 的全部阈值均可覆盖；关闭自动摘要不影响显式 `compact`。
-默认总门槛 300,000 字符、单结果 50,000 字符、摘要输入 400,000 字符、摘要最大输出 8,000 token。
-除最后一项外都按 Java 字符数计算，**不是精确 token 或模型窗口保证**，须按实际后端调整。
-默认开关参考指定 Claude Code 快照，不代表已复制其缓存共享、硬阻塞线或服务端上下文机制；
-当前 JadeCode 的 read_file 仍参与普通结果转存，没有引入 Claude Code 的专用读取例外。
+生产压缩管线是**新鲜单条大结果转存 → Token 检查 → 旧前缀摘要及近期原文 → 必要运行状态 → 正式请求**。
+`~/.jadecode/config/config.json` 的压缩设置为：
+
+```json
+"compaction": {
+  "autoSummaryEnabled": true,
+  "reserveTokens": 16384,
+  "keepRecentTokens": 20000,
+  "summaryMaxOutputTokens": 32768,
+  "summaryMaxInputTokens": "auto",
+  "largeResultCharLimit": 50000,
+  "largeResultPreviewChars": 2000
+}
+```
+
+严格超过 `模型窗口 − reserveTokens` 才自动摘要；模型最大输出不参与触发预留，
+正式请求输出另受实际剩余空间约束。未知窗口时提示自动压缩不可用，不回退到字符门槛。
+近期原文按完整消息保留约 20K Token，工具交换整体保留，最新未读交换受保护。
+手动 `compact` 复用同一管线；没有可安全摘要的旧前缀时不改历史。
+
+摘要输入 auto 预算为模型窗口减本次摘要输出和 1024 余量，并受已知最大输入封顶；
+例如 1048576 窗口、32768 摘要输出时为 **1014784 Token**，包括 system、工具、消息和摘要指令。
+优先共享正式请求的 system、工具和消息前缀；超过预算才按完整交换连续分块，覆盖全部待摘要材料。
+摘要工具调用、截断或空正文均失败，不采用半份历史，也不隐藏重试。近期原文加摘要若仍放不下则报错。
+压缩后携带当前目标、Todo 和待接收后台工作编号；工具/技能目录由当前请求提供，不批量重读文件。
+
+首次读取旧 `compaction.limits` 或课程开关时先校验、备份，再迁移成上述字段，保留其它配置；
+旧默认摘要输出 8000 升为 32768，其它显式输出值保留。原课程 snip/micro/fit/聚合预算及响应式实现
+保留作显式离线教学验证，不由生产配置启用。`read_file` 仍参与单条结果转存。
+本地估算不是精确 tokenizer，无法承诺服务端绝不拒绝；关闭自动摘要时仍检查已知输入/窗口限制。
+阅读入口见 [Token 上下文管理](docs/notes/s08/token-context-production-review.md)。
 
 ## MCP 与 Fetch
 

@@ -59,6 +59,25 @@ public class AgentExecutor implements AutoCloseable {
     private volatile boolean closed;
     /** 只在装配时安装；无前端的旧调用方保持空观察器。 */
     private ExecutionObserver observer = ExecutionObserver.NONE;
+    /** 主/队友各有自己的执行器；子代理另建局部锚点，不能把它放进共享压缩器。 */
+    private final com.jadecode.context.ContextTokenTracker contextTokens = new com.jadecode.context.ContextTokenTracker();
+    private Supplier<com.jadecode.llm.ThinkingSettings> contextThinking = () -> com.jadecode.llm.ThinkingSettings.DEFAULT;
+    private Supplier<String> rebuildState = () -> "";
+    private String lastTaskSystem;
+
+    /** 装配时绑定真实思考设置与宿主计划快照，摘要不能从工具参数伪造运行状态。 */
+    public void contextState(Supplier<com.jadecode.llm.ThinkingSettings> thinking, Supplier<String> state) {
+        contextThinking = java.util.Objects.requireNonNull(thinking); rebuildState = java.util.Objects.requireNonNull(state);
+    }
+
+    /** 当前投影的占用，与压缩使用相同锚点；无模型请求或 IO，不修改历史。 */
+    public com.jadecode.context.ContextTokenTracker.Estimate contextEstimate(List<Message> messages) {
+        return contextTokens.estimate(new CompleteRequest(lastTaskSystem == null ? system : lastTaskSystem,
+                messages, maxTokens, tools.snapshot().definitions(), contextThinking.get()));
+    }
+
+    /** 历史恢复或回滚不能继承此前的占用锚点。 */
+    public void invalidateContext() { contextTokens.invalidate(); }
 
     /** 安装快速、只读的显示接收者，不替换权限 hook。须在会话 start 前调用。 */
     public void observe(ExecutionObserver value) { observer = java.util.Objects.requireNonNull(value); }
@@ -172,9 +191,13 @@ public class AgentExecutor implements AutoCloseable {
         int retries = 0;
         while (true) {
             ensureOpen();
+            // 工具定义只固定一次，预算与真正请求使用同一投影；MCP 增删自然使旧锚点失效。
+            lastTaskSystem = taskSystem;
+            com.jadecode.tools.ToolCatalog.Snapshot snapshot = tools.snapshot();
+            CompleteRequest projection = new CompleteRequest(taskSystem, messages, maxTokens, snapshot.definitions(), contextThinking.get());
             if (compactor != null) {
                 // adoptHistory 会立即把压缩后的消息放回原列表，下面发给模型的就是更新后的历史。
-                List<Message> prepared = compactor.prepare(messages, activeRequest);
+                List<Message> prepared = compactor.prepare(projection, activeRequest, contextTokens, rebuildState.get());
                 if (prepared != messages) {
                     adoptHistory.accept(prepared);
                 }
@@ -206,9 +229,10 @@ public class AgentExecutor implements AutoCloseable {
             };
             try {
                 ensureOpen();
-                com.jadecode.tools.ToolCatalog.Snapshot snapshot = tools.snapshot();
-                CompleteRequest request = new CompleteRequest(taskSystem, messages, maxTokens,
-                        snapshot.definitions());
+                projection = new CompleteRequest(taskSystem, messages, maxTokens, snapshot.definitions(), contextThinking.get());
+                int outputBudget = compactor == null ? maxTokens : compactor.outputBudget(projection, contextTokens);
+                CompleteRequest request = new CompleteRequest(taskSystem, messages, outputBudget,
+                        snapshot.definitions(), contextThinking.get());
                 ModelResponse response = observed == ResponseStream.NONE ? client.complete(request)
                         : client.complete(request, observed);
                 stopReason = response.stopReason();
@@ -224,6 +248,7 @@ public class AgentExecutor implements AutoCloseable {
                 }
                 List<ToolUseBlock> calls = response.message().blocksOfType(ToolUseBlock.class);
                 ToolExchangeProtocol.requireDistinctCallIds(calls);
+                contextTokens.accepted(request, response);
                 display.complete(response.stopReason());
                 long displayCompletedNanos = System.nanoTime();
                 // 用量已由客户端包装统一保存；这里仅带回本次报告，供 Session 更新自己的占用快照。
@@ -384,7 +409,9 @@ public class AgentExecutor implements AutoCloseable {
             Consumer<List<Message>> adoptHistory) throws LlmException {
         if (!batch.compact()) return;
         ensureOpen();
-        List<Message> compacted = compactor.compactAfterBatch(batch.calls(), messages, activeRequest);
+        CompleteRequest request = new CompleteRequest(lastTaskSystem == null ? system : lastTaskSystem,
+                messages, maxTokens, tools.snapshot().definitions(), contextThinking.get());
+        List<Message> compacted = compactor.compactAfterBatch(batch.calls(), request, activeRequest, rebuildState.get());
         if (compacted != messages) adoptHistory.accept(compacted);
     }
 

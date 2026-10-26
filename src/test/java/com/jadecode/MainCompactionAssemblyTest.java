@@ -89,6 +89,16 @@ class MainCompactionAssemblyTest {
         return new AppConfig("fake-key", "http://localhost:1", "fake-model", 1234);
     }
 
+    /** 保留原课程“短历史也全部摘要”的集成断言；生产默认另测 Token 保留尾部的契约。 */
+    private SessionRuntime course(AppConfig config, LlmClient client) {
+        var defaults = com.jadecode.config.JadeSettings.defaults();
+        var settings = new com.jadecode.config.JadeSettings(defaults.tui(),
+                com.jadecode.context.CompactionPolicy.coursePipeline(), defaults.limits(), defaults.memory());
+        return JadeCodeFactory.create(config, ws, client, ignored -> { }, ignored -> { },
+                (hooks, path, output) -> { }, () -> com.jadecode.llm.ResponseStream.NONE,
+                com.jadecode.execution.ExecutionObserver.NONE, settings);
+    }
+
     /** 剧本化客户端:父 / 子各有正式请求剧本,摘要请求统一返回固定文本 */
     private static final class ScriptedClient implements LlmClient {
         private final List<Object> parentScript = new ArrayList<>();
@@ -109,7 +119,7 @@ class MainCompactionAssemblyTest {
             }
             CompleteRequest snapshot = new CompleteRequest(request.system(), List.copyOf(request.messages()),
                     request.maxTokens(), request.tools());
-            if (request.tools().isEmpty()) {
+            if (request.tools().isEmpty() || request.messages().getLast().extractText().startsWith("[Harness compaction request]")) {
                 events.add("summary");
                 summaries.add(snapshot);
                 return new ModelResponse(Message.assistant(List.of(new TextBlock("摘要文本"))),
@@ -238,6 +248,30 @@ class MainCompactionAssemblyTest {
 
     /* ---------------- 证据 2:父主动 compact ---------------- */
 
+    /** 真实默认装配采用 Token 管线，临近窗口才摘要；SUMMARY 与正式请求共享 system/tools 前缀。 */
+    @Test
+    void productionFactoryUsesReportedTokensAndPreservesLatestExchange() throws Exception {
+        ScriptedClient client = new ScriptedClient();
+        client.metadata = new ModelMetadata(new ModelMetadata.Limits(1048576, null, 393216), "test");
+        Files.writeString(ws.resolve("evidence.txt"), "fresh inspected evidence");
+        var call = toolReply("read", "read_file", "path", "evidence.txt").message();
+        client.parentScript.add(new ModelResponse(call, new ModelResponse.Usage(1048576 - 16384, 1)));
+        client.parentScript.add(textReply("done"));
+        List<Message> history = new ArrayList<>(List.of(Message.userText("historical evidence ".repeat(8000))));
+        try (SessionRuntime loop = JadeCodeFactory.create(config(), ws, client)) {
+            assertTrue(((ContextCompactor) readField(readField(loop, "engine"), "compactor")).productionMode());
+            loop.run(history);
+        }
+        assertEquals(List.of("parent", "summary", "parent"), client.events);
+        var summary = client.summaries.getFirst(); var first = client.formal.getFirst();
+        assertEquals(first.system(), summary.system()); assertEquals(first.tools(), summary.tools());
+        assertEquals(32768, summary.maxTokens());
+        var next = client.formal.getLast();
+        assertTrue(next.messages().getFirst().extractText().startsWith("[Compacted]"));
+        assertEquals(call, next.messages().get(1));
+        assertTrue(resultsOf(next.messages().get(2)).getFirst().content().contains("fresh inspected evidence"));
+    }
+
     /** auto 必须沿真实装配传到正式父子请求；共享客户端不能把摘要额度一并放大。 */
     @Test
     void automaticOutputBudgetReachesParentAndChildWhileSummaryKeepsItsBudget() throws Exception {
@@ -250,7 +284,7 @@ class MainCompactionAssemblyTest {
         AppConfig auto = new AppConfig("fake-key", "http://localhost:1", "fake-model", AppConfig.AUTO_MAX_TOKENS);
 
         // 调真实工厂，但客户端和工作区都是离线注入；close 保证本用例不留下后台服务。
-        try (SessionRuntime loop = JadeCodeFactory.create(auto, ws, client)) {
+        try (SessionRuntime loop = course(auto, client)) {
             loop.run(new ArrayList<>(List.of(Message.userText("Delegate the inspection"))));
         }
         assertEquals(List.of("parent", "child", "summary", "child", "parent"), client.events);
@@ -266,7 +300,7 @@ class MainCompactionAssemblyTest {
         ModelResponse compactReply = toolReply("c1", "compact");
         client.parentScript.add(compactReply);
         client.parentScript.add(textReply("完成"));
-        SessionRuntime loop = JadeCodeFactory.create(config(), ws, client);
+        SessionRuntime loop = course(config(), client);
 
         List<Message> messages = new ArrayList<>(List.of(Message.userText("阶段目标")));
         loop.run(messages);
@@ -318,7 +352,7 @@ class MainCompactionAssemblyTest {
         client.childScript.add(childCompact);
         client.childScript.add(textReply("子结论"));
 
-        SessionRuntime loop = JadeCodeFactory.create(config(), ws, client);
+        SessionRuntime loop = course(config(), client);
         List<String> starts = new ArrayList<>();
         List<Map<String, ?>> ends = new ArrayList<>();
         ((AgentExecutor) readField(loop, "engine")).hooks().register(Hooks.SUBAGENT_START, params -> {

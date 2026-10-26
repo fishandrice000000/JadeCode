@@ -17,8 +17,8 @@ import com.jadecode.messages.ToolUseBlock;
 /**
  * 上下文压缩的入口：把太长的消息历史整理短，再交给模型。
  *
- * <p>默认只进行单条超大结果转存与超阈值摘要。下面这些已有课程策略按固定顺序排列，
- * 但是否参与自动管线由 {@link CompactionPolicy} 决定，不是每一层都默认执行：
+ * <p>生产通过 {@link #production} 装配独立的 Token 管线，预算来自真实请求与每条历史的 usage 锚点。
+ * 普通构造保留下面的字符课程实现；这些层只供显式教学装配，不由生产配置启用：
  * <ol>
  * <li>{@link ToolResultBudgetCompactor}：单条结果太大时转存并保留路径与预览；
  * 最新批次的合计预算是另一个默认关闭的开关。</li>
@@ -44,6 +44,39 @@ import com.jadecode.messages.ToolUseBlock;
  * <p>本类不保存会话状态，父 Agent 和子代理可以安全地共用同一个实例。
  */
 public final class ContextCompactor {
+    /** 生产服务只在发布前设置；会话锚点由各历史拥有者保存，不在父子共享对象中存状态。 */
+    private ProductionCompactor production;
+
+    /** 生产唯一装配入口；旧构造与多层算法保留作显式课程验证，构造不产生 IO。 */
+    public static ContextCompactor production(LlmClient client, Path transcriptDir, Path toolResultsDir,
+            ProductionCompactionSettings settings) {
+        var facade = new ContextCompactor(client, transcriptDir, toolResultsDir, CompactionLimits.defaults(),
+                new CompactionPolicy(true, false, false, false, false, settings.autoSummaryEnabled(), false));
+        facade.production = new ProductionCompactor(client, transcriptDir, toolResultsDir, settings);
+        return facade;
+    }
+
+    /** @return 是否使用 Token 生产主干，供装配与验证区分课程路径。 */
+    public boolean productionMode() { return production != null; }
+
+    /** 固定一次实际请求投影，生产只判断 Token，课程继续使用显式教学阈值。 */
+    public List<Message> prepare(com.jadecode.llm.CompleteRequest request, String activeRequest,
+            ContextTokenTracker tracker, String runtimeState) throws LlmException {
+        return production == null ? prepare(request.messages(), activeRequest)
+                : production.prepare(request, activeRequest, tracker, runtimeState);
+    }
+
+    /** 主动 compact 复用生产摘要，不把课程清理层恢复到产品入口。 */
+    public List<Message> compactAfterBatch(List<ToolUseBlock> calls, com.jadecode.llm.CompleteRequest request,
+            String activeRequest, String runtimeState) throws LlmException {
+        return production == null ? compactAfterBatch(calls, request.messages(), activeRequest)
+                : production.force(request, activeRequest, runtimeState);
+    }
+
+    /** 剩余空间只适配这一次输出额度，不改固定预留或用户配置。 */
+    public int outputBudget(com.jadecode.llm.CompleteRequest request, ContextTokenTracker tracker) throws LlmException {
+        return production == null ? request.maxTokens() : production.outputBudget(request, tracker);
+    }
 
     /** 响应式补救的全局上限:同一次正式模型调用最多补救这么多次 */
     public static final int MAX_REACTIVE_RETRIES = 1;
@@ -94,7 +127,7 @@ public final class ContextCompactor {
     }
 
     /**
-     * 自定义阈值，仍使用生产默认开关；要启用其它课程层请使用同时传 policy 的重载。
+     * 自定义课程字符阈值；生产 Token 管线必须使用 production 工厂，不能由字符值猜模型窗口。
      *
      * @param client         LLM 客户端,仅摘要层使用
      * @param transcriptDir  transcript 归档目录
@@ -107,7 +140,7 @@ public final class ContextCompactor {
 
     /**
      * 同时注入阈值与管线选择；所有会话使用自己的历史，设置本身不可变。
-     * 明确的课程验证传 coursePipeline，生产装配传 config.json 解析出的快照。
+     * 本构造只装配显式课程验证；生产装配通过 production 工厂转入独立实现。
      * 构造不建目录、不摘要；真正选中某个需要 IO 的策略时才写文件或调用模型。
      */
     public ContextCompactor(LlmClient client, Path transcriptDir, Path toolResultsDir, CompactionLimits limits,
@@ -145,6 +178,7 @@ public final class ContextCompactor {
      * @throws LlmException 生成摘要失败，原样抛出，不装作压缩成功
      */
     public List<Message> prepare(List<Message> messages, String activeRequest) throws LlmException {
+        if (production != null) throw new IllegalStateException("Production compaction requires the actual request projection and history token tracker");
         // 1. 只处理新鲜批次，不遍历旧结果改写缓存前缀。两种预算开关在同一入口分开判断。
         List<Message> current = toolResultBudget(messages);
         if (policy.snipEnabled()) current = snipCompact(current);

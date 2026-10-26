@@ -29,6 +29,8 @@ import com.jadecode.execution.ExecutionContext;
 public final class BackgroundManager implements AutoCloseable {
     /** 运行中及未确认接收的结果都属于旧会话；切换会话前必须处理完。 */
     public synchronized boolean hasPending() { return !jobs.isEmpty(); }
+    /** 压缩后只恢复尚未确认接收的工作编号；不读取命令输出，也不暗示这些工作已经成功。 */
+    public synchronized List<String> pendingIds() { return List.copyOf(jobs.keySet()); }
     /** 独立的只读显示通道，不能覆盖用于向 Inbox 投递结果的 resultListener。 */
     private com.jadecode.execution.ExecutionObserver observer = com.jadecode.execution.ExecutionObserver.NONE;
     public void observe(com.jadecode.execution.ExecutionObserver value) { observer = value; }

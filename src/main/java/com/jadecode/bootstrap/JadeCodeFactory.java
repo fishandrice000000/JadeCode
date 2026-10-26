@@ -302,8 +302,13 @@ public final class JadeCodeFactory {
         // 每种用途直接包装同一个底层客户端，不把统计包装叠起来，避免同一次调用重复记账。
         LlmClient formalClient = tracked(client, config.model(), actor, com.jadecode.llm.UsageRecord.Purpose.FORMAL, usage, thinking::get);
         LlmClient summaryClient = tracked(client, config.model(), actor, com.jadecode.llm.UsageRecord.Purpose.SUMMARY, usage, null);
-        ContextCompactor compactor = new ContextCompactor(summaryClient,
-                workspacePaths.transcripts(), workspacePaths.toolResults(), settings.limits(), settings.compaction());
+        // 只有显式离线课程装配仍使用多层策略；配置文件不再开放这些课程开关。
+        var course = settings.compaction();
+        boolean coursePipeline = course.batchBudgetEnabled() || course.snipEnabled() || course.microEnabled()
+                || course.fitEnabled() || course.reactiveEnabled() || !course.largeResultEnabled();
+        ContextCompactor compactor = coursePipeline
+                ? new ContextCompactor(summaryClient, workspacePaths.transcripts(), workspacePaths.toolResults(), settings.limits(), course)
+                : ContextCompactor.production(summaryClient, workspacePaths.transcripts(), workspacePaths.toolResults(), settings.contextCompaction());
 
         // Memory 属于用户任务的跨会话知识；只给父循环接线，不让子任务临时猜测直接写入库。
         // 这里只保存目录，不创建记忆库或调用模型；开始处理任务时才查记忆。
@@ -403,6 +408,15 @@ public final class JadeCodeFactory {
                 hooks,
                 compactor, streams);
         engine.observe(observer);
+        engine.contextState(thinking::get, () -> {
+            // 只重建本 Agent 拥有的即时状态；技能目录和当前工具定义已由固定请求提供。
+            var state = Json.mapper().createObjectNode(); state.set("todos", manager.snapshot());
+            state.set("pending_background_ids", Json.mapper().valueToTree(background.pendingIds()));
+            return state.toString();
+        });
+        if (compactor.productionMode() && settings.contextCompaction().autoSummaryEnabled()
+                && client.metadata().limits().contextWindowTokens() == null)
+            errors.accept("[Warning] Model context window is unknown; automatic compaction is unavailable. Configure model limits to enable it.");
         observer.publish(com.jadecode.execution.ExecutionNotice.event(
                 com.jadecode.execution.ExecutionNotice.Kind.SESSION, "", role, config.model(), "IDLE"));
         // 所有权在这里交给 session；CLI 不再另外关闭 engine/background/cron。

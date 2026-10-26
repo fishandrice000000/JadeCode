@@ -22,3 +22,14 @@ test("wire resource names appear only when expanded and CH comes from the report
 	session.applySnapshot({ snapshot: { sessionId: "s", generation: "1", tui: {}, usage: { recentCacheHitPercent: null } } } as never);
 	assert.doesNotMatch(new StatusView(session).render(theme, 200).join("\n"), /CH /);
 });
+
+test("context marks local estimates and preserves reported occupancy without the estimate marker", () => {
+	const theme = resolveTheme(parseThemeDocument(JSON.stringify({ name: "t", colors: {} })), "dark", { mode: "256color", noColor: true });
+	const session = new SessionStore();
+	for (const estimated of [true, false]) {
+		session.applySnapshot({ snapshot: { sessionId: "s", generation: "1", tui: {}, usage: {},
+			context: { occupiedTokens: 2000, windowTokens: 10000, remainingPercent: 80, estimated } } } as never);
+		const rendered = new StatusView(session).render(theme, 200).join("\n");
+		assert.match(rendered, estimated ? /ctx ~2/ : /ctx 2/);
+	}
+});

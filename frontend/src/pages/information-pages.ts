@@ -139,7 +139,7 @@ export class SessionPage extends InformationPage {
 			for (const [name, usage] of Object.entries(group ?? {})) lines.push(theme.style("text",
 				`${label} ${singleLine(name)} · in ${formatTokens(usage.inputTokens)} · out ${formatTokens(usage.outputTokens)} · missing ${usage.missingRequests ?? "?"}`));
 		}
-		lines.push(theme.style("text", `Context remaining: ${formatPercent(snapshot.context?.remainingPercent ?? null)}`));
+		lines.push(theme.style("text", `Context remaining: ${snapshot.context?.estimated ? "~" : ""}${formatPercent(snapshot.context?.remainingPercent ?? null)}`));
 		return lines.map((line) => clipLine(line, Math.max(0, width)));
 	}
 

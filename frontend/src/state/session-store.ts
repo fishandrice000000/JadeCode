@@ -53,6 +53,8 @@ export interface ContextSnapshot {
 	occupiedTokens: number | null;
 	windowTokens: number | null;
 	remainingPercent: number | null;
+	/** 可选字段兼容旧快照；true 表示有效 usage 加新增消息估算或全量估算。 */
+	estimated?: boolean;
 }
 
 export interface PermissionSnapshot {
@@ -397,6 +399,7 @@ function parseSnapshot(node: Payload): BackendSnapshot {
 			occupiedTokens: nullableNumber(contextNode, "occupiedTokens"),
 			windowTokens: nullableNumber(contextNode, "windowTokens"),
 			remainingPercent: nullableNumber(contextNode, "remainingPercent"),
+			estimated: contextNode.estimated === true,
 		} : null,
 		permission: permissionNode ? {
 			profile: text(permissionNode, "profile"),

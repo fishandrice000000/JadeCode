@@ -204,6 +204,10 @@ public class SubagentRuntime {
         // 这次子任务要做的事就是 prompt；不用从父历史找，也不从之后的工具结果或 Stop 提示重取。
         // 只存在本次 run 的局部变量里，不放在对象字段上，避免下一次委派沿用旧任务。
         final String activeRequest = prompt;
+        // 一次委派的正式 usage 锚点随 run 创建；多次委派和父 Agent 不互相覆盖。
+        var contextTokens = new com.jadecode.context.ContextTokenTracker();
+        List<com.jadecode.llm.ToolDefinition> definitions = tools.values().stream().sorted(Comparator.comparing(Tool::name))
+                .map(Tool::definition).toList();
 
         // 触发事件 SUBAGENT_START(一次委派恰好一次)
         hooks.trigger(Hooks.SUBAGENT_START, Map.of());
@@ -220,7 +224,8 @@ public class SubagentRuntime {
                 if (compactor != null) {
                     List<Message> prepared;
                     try {
-                        prepared = compactor.prepare(messages, activeRequest);
+                        prepared = compactor.prepare(new CompleteRequest(system, messages, maxTokens, definitions, taskThinking),
+                                activeRequest, contextTokens, "");
                     } catch (IllegalStateException io) {
                         // 归档 / 落盘失败:子代理没法继续了,按失败收尾一次再原样抛(不是可恢复的超限)。
                         endFailed(io);
@@ -239,10 +244,9 @@ public class SubagentRuntime {
                 try {
                     checkSessionOpen(context);
                     // 子循环不经过父循环的 ToolCatalog，同样按名称固定定义顺序；执行仍使用原工具表。
-                    response = client
-                            .complete(new CompleteRequest(system, messages, maxTokens,
-                                    tools.values().stream().sorted(Comparator.comparing(Tool::name))
-                                            .map(Tool::definition).toList(), taskThinking));
+                    var projection = new CompleteRequest(system, messages, maxTokens, definitions, taskThinking);
+                    int output = compactor == null ? maxTokens : compactor.outputBudget(projection, contextTokens);
+                    response = client.complete(new CompleteRequest(system, messages, output, definitions, taskThinking));
                 } catch (LlmException error) {
                     // 如果用户在等模型时退出，即使现在才返回超限错误，也不要再调用摘要模型。
                     checkSessionOpen(context);
@@ -282,6 +286,8 @@ public class SubagentRuntime {
                 if ("max_tokens".equals(response.stopReason())) {
                     throw new LlmException("Model output reached max_tokens; the response is incomplete and its tool calls were not executed");
                 }
+                if (response.message().role() != com.jadecode.messages.Role.ASSISTANT)
+                    throw new LlmException("Subagent model response must be an assistant message");
                 reactiveRetries = 0;
                 turns++;
 
@@ -302,6 +308,7 @@ public class SubagentRuntime {
                 }
 
                 // 4. 追加 assistant 消息
+                contextTokens.accepted(new CompleteRequest(system, messages, maxTokens, definitions, taskThinking), response);
                 messages.add(response.message());
 
                 // 5. 没有 tool_use:先问 Stop hook(它可能强制再跑一轮),否则这就是最终答复
@@ -392,7 +399,8 @@ public class SubagentRuntime {
                     checkSessionOpen(context);
                     List<Message> compacted;
                     try {
-                        compacted = compactor.compactAfterBatch(toolCalls, messages, activeRequest);
+                        compacted = compactor.compactAfterBatch(toolCalls,
+                                new CompleteRequest(system, messages, maxTokens, definitions, taskThinking), activeRequest, "");
                     } catch (IllegalStateException io) {
                         endFailed(io);
                         throw io;

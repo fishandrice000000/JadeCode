@@ -10,7 +10,14 @@ import java.util.Map;
  * 模型、认证和 endpoint 继续由 AppConfig 管理，不因统一 UI／压缩设置而搬动凭据。
  */
 public record JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimits limits, Memory memory, Models modelMetadata,
-        com.jadecode.llm.ThinkingSettings thinking, Permissions permissions, Mcp mcp) {
+        com.jadecode.llm.ThinkingSettings thinking, Permissions permissions, Mcp mcp,
+        com.jadecode.context.ProductionCompactionSettings contextCompaction) {
+    /** 兼容显式离线装配，旧字符阈值不被解释成生产 Token 预算。 */
+    public JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimits limits, Memory memory, Models models,
+            com.jadecode.llm.ThinkingSettings thinking, Permissions permissions, Mcp mcp) {
+        this(tui, compaction, limits, memory, models, thinking, permissions, mcp,
+                com.jadecode.context.ProductionCompactionSettings.defaults().withAutomatic(compaction.autoSummaryEnabled()));
+    }
     /** 旧配置和离线装配同样提供默认 Fetch；只登记入口，不启动外部程序。 */
     public JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimits limits, Memory memory, Models models,
             com.jadecode.llm.ThinkingSettings thinking, Permissions permissions) {
@@ -28,6 +35,7 @@ public record JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimit
     public JadeSettings {
         java.util.Objects.requireNonNull(thinking, "thinking"); java.util.Objects.requireNonNull(permissions, "permissions");
         java.util.Objects.requireNonNull(mcp, "mcp");
+        java.util.Objects.requireNonNull(contextCompaction, "contextCompaction");
     }
 
     /** 非秘密服务配置；显式空表关闭所有 MCP 入口，不影响普通工具或 Java 构建。 */

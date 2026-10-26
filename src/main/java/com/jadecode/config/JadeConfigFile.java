@@ -36,6 +36,13 @@ public final class JadeConfigFile implements com.jadecode.safety.rules.Permissio
     public JadeSettings load() throws IOException {
         synchronized (WRITE_LOCK) {
             ObjectNode root = read(path);
+            // 先校验整份旧文件，再备份/迁移压缩段，避免坏配置也被覆盖成“看似正常”。
+            ObjectNode migrated = migrateCompaction(root);
+            if (migrated != root) {
+                parse(root); parse(migrated);
+                if (Files.exists(path)) backup(path);
+                write(migrated); root = migrated;
+            }
             Path legacy = path.resolveSibling("tui.json");
             if (!section(root, "tui").has("theme") && Files.exists(legacy)) {
                 String oldTheme = theme(read(legacy).get("theme"), "tui.json.theme");
@@ -153,8 +160,8 @@ public final class JadeConfigFile implements com.jadecode.safety.rules.Permissio
         ObjectNode permissions = root.putObject("permissions");
         permissions.put("defaultProfile", defaults.permissions().defaultProfile().value());
         permissions.putArray("rules"); permissions.putArray("disabledDefaults");
-        ObjectNode compact = Json.mapper().valueToTree(defaults.compaction());
-        compact.set("limits", Json.mapper().valueToTree(defaults.limits())); root.set("compaction", compact);
+        ObjectNode compact = Json.mapper().valueToTree(defaults.contextCompaction());
+        compact.put("summaryMaxInputTokens", "auto"); root.set("compaction", compact);
         return root;
     }
 
@@ -242,7 +249,43 @@ public final class JadeConfigFile implements com.jadecode.safety.rules.Permissio
                 number(memory, "consolidationMaxOutputTokens", d.memory().consolidationMaxOutputTokens(), 1, "config.memory"),
                 number(memory, "consolidationInputChars", d.memory().consolidationInputChars(), 1, "config.memory"),
                 number(memory, "extractionCatalogChars", d.memory().extractionCatalogChars(), 1, "config.memory"));
-        return new JadeSettings(tui, policy, limits, memorySettings, discovery, thinking, permissions(root), mcp(root));
+        var defaults = com.jadecode.context.ProductionCompactionSettings.defaults();
+        Integer summaryInput = null;
+        if (c.has("summaryMaxInputTokens") && !c.get("summaryMaxInputTokens").isNull()
+                && !(c.get("summaryMaxInputTokens").isTextual() && c.get("summaryMaxInputTokens").asText().equals("auto")))
+            summaryInput = number(c, "summaryMaxInputTokens", 1, 1, "config.compaction");
+        var production = new com.jadecode.context.ProductionCompactionSettings(
+                bool(c, "autoSummaryEnabled", true, "config.compaction"),
+                number(c, "reserveTokens", defaults.reserveTokens(), 0, "config.compaction"),
+                number(c, "keepRecentTokens", defaults.keepRecentTokens(), 0, "config.compaction"),
+                number(c, "summaryMaxOutputTokens", defaults.summaryMaxOutputTokens(), 1, "config.compaction"), summaryInput,
+                number(c, "largeResultCharLimit", defaults.largeResultCharLimit(), 1, "config.compaction"),
+                number(c, "largeResultPreviewChars", defaults.largeResultPreviewChars(), 0, "config.compaction"));
+        return new JadeSettings(tui, policy, limits, memorySettings, discovery, thinking, permissions(root), mcp(root), production);
+    }
+
+    /**
+     * 只迁移已识别的课程压缩字段，保留其它设置和未知扩展；返回原对象表示不需要写盘。
+     * 旧默认 8000 按用户批准升级为 32768，其它显式摘要输出值保留；字符阈值不猜成 Token。
+     * 备份和原子替换归 load，纯转换过程不修改输入。
+     */
+    private static ObjectNode migrateCompaction(ObjectNode root) throws IOException {
+        ObjectNode old = section(root, "compaction");
+        var removed = java.util.Set.of("largeResultEnabled", "batchBudgetEnabled", "snipEnabled", "microEnabled", "fitEnabled", "reactiveEnabled");
+        if (!old.has("limits") && removed.stream().noneMatch(old::has)) return root;
+        ObjectNode result = root.deepCopy(), compact = old.deepCopy(), legacy = section(old, "limits");
+        compact.remove("limits"); removed.forEach(compact::remove);
+        if (!compact.has("largeResultCharLimit") && legacy.has("largeResultCharLimit"))
+            compact.set("largeResultCharLimit", legacy.get("largeResultCharLimit"));
+        if (!compact.has("largeResultPreviewChars") && legacy.has("budgetPreviewChars"))
+            compact.set("largeResultPreviewChars", legacy.get("budgetPreviewChars"));
+        if (!compact.has("summaryMaxOutputTokens") && legacy.has("summaryMaxOutputTokens")
+                && legacy.get("summaryMaxOutputTokens").asInt() != 8000)
+            compact.set("summaryMaxOutputTokens", legacy.get("summaryMaxOutputTokens"));
+        ObjectNode defaults = Json.mapper().valueToTree(com.jadecode.context.ProductionCompactionSettings.defaults());
+        defaults.put("summaryMaxInputTokens", "auto");
+        defaults.fields().forEachRemaining(entry -> { if (!compact.has(entry.getKey())) compact.set(entry.getKey(), entry.getValue()); });
+        result.set("compaction", compact); return result;
     }
 
     /**

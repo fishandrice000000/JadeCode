@@ -4,11 +4,13 @@ import com.jadecode.llm.ModelMetadata;
 import com.jadecode.llm.ModelResponse;
 
 /**
- * 最近一次正式响应时的上下文占用估计，与整个会话累计花费分开保存。
- * 只用服务端输入（包括缓存）加本次输出计算，不拿字符数冒充 tokenizer。
- * 工具结果、用户消息或压缩改变历史后，调用方丢弃此快照，等下一份匹配报告。
+ * 当前请求投影的上下文占用，与整个会话累计花费分开保存。
+ * 正式响应建立服务端输入（含缓存）加输出的锚点，新增内容只作启发式估算并标记 estimated。
+ * 压缩后先显示未知，等下一次正式响应；未知模型窗口也不伪造百分比。
  */
-public record ContextUsage(long occupiedTokens, int windowTokens) {
+public record ContextUsage(long occupiedTokens, int windowTokens, boolean estimated) {
+    /** 旧快照来自服务端响应，不改变已有构造的含义。 */
+    public ContextUsage(long occupiedTokens, int windowTokens) { this(occupiedTokens, windowTokens, false); }
     public ContextUsage {
         if (occupiedTokens < 0 || windowTokens < 1) throw new IllegalArgumentException("Invalid context occupancy");
     }
@@ -18,6 +20,12 @@ public record ContextUsage(long occupiedTokens, int windowTokens) {
         Integer window = metadata.limits().contextWindowTokens();
         return usage == null || window == null ? null : new ContextUsage(
                 Math.addExact(usage.totalInputTokens(), usage.outputTokens()), window);
+    }
+
+    /** 与执行器预算共用投影；窗口未知时不伪造百分比，估算来源随快照展示。 */
+    public static ContextUsage projected(com.jadecode.context.ContextTokenTracker.Estimate value, ModelMetadata metadata) {
+        Integer window = metadata.limits().contextWindowTokens();
+        return window == null ? null : new ContextUsage(value.tokens(), window, value.estimated());
     }
 
     /** 这是最近响应后的估计，不是下一请求还能追加多少输入的精确保证。 */

@@ -26,7 +26,8 @@ export class StatusView {
 		if (usage.cacheWriteTokens !== null) parts.push(`W ${formatTokens(usage.cacheWriteTokens)}`);
 		// Java 使用同一次正式请求的真实分母；缺报隐藏，不能用累计输入伪造命中率。
 		if (usage.recentCacheHitPercent != null) parts.push(`CH ${usage.recentCacheHitPercent}%`);
-		if (snapshot.context) parts.push(`ctx ~${formatTokens(snapshot.context.occupiedTokens)}/${formatTokens(snapshot.context.windowTokens)} · ${formatPercent(snapshot.context.remainingPercent)} left`);
+		// 新增内容使用本地估算时才加 ~；无新增内容的服务端锚点与累计账单分开显示。
+		if (snapshot.context) parts.push(`ctx ${snapshot.context.estimated ? "~" : ""}${formatTokens(snapshot.context.occupiedTokens)}/${formatTokens(snapshot.context.windowTokens)} · ${formatPercent(snapshot.context.remainingPercent)} left`);
 		if (snapshot.permission) parts.push(`perm ${snapshot.permission.profile}`);
 
 		if (snapshot.bufferSummary) parts.push(`buffer: ${snapshot.bufferSummary}`);

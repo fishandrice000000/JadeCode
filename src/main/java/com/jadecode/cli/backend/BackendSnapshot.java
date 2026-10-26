@@ -42,7 +42,12 @@ public record BackendSnapshot(String sessionId, String title, long generation, S
             Integer recentCacheHitPercent) { }
 
     /** 最近一次响应的上下文占用；window 未知时整体为 null。 */
-    public record Context(Long occupiedTokens, Integer windowTokens, Integer remainingPercent) { }
+    public record Context(Long occupiedTokens, Integer windowTokens, Integer remainingPercent, Boolean estimated) {
+        /** 旧离线快照仍表示服务端来源。 */
+        public Context(Long occupiedTokens, Integer windowTokens, Integer remainingPercent) {
+            this(occupiedTokens, windowTokens, remainingPercent, false);
+        }
+    }
 
     /** 权限资料：档位、revision、默认档位与规则概要（不传完整规则/凭据）。 */
     public record Permission(String profile, String label, long revision, String defaultProfile,
@@ -135,7 +140,7 @@ public record BackendSnapshot(String sessionId, String title, long generation, S
     }
 
     private static Context context(ContextUsage value) {
-        return value == null ? null : new Context(value.occupiedTokens(), value.windowTokens(), value.remainingPercent());
+        return value == null ? null : new Context(value.occupiedTokens(), value.windowTokens(), value.remainingPercent(), value.estimated());
     }
 
     /** 组装 wire 载荷；字段名是版本化契约，重命名必须同步 schema 与 Node 校验。 */
@@ -174,6 +179,7 @@ public record BackendSnapshot(String sessionId, String title, long generation, S
             putNullable(contextNode, "occupiedTokens", context.occupiedTokens());
             putNullable(contextNode, "windowTokens", context.windowTokens());
             putNullable(contextNode, "remainingPercent", context.remainingPercent());
+            contextNode.put("estimated", Boolean.TRUE.equals(context.estimated()));
         }
         if (permission == null) node.putNull("permission");
         else {
