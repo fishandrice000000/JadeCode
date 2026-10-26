@@ -3,6 +3,7 @@ package com.jadecode.tools;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -24,6 +25,8 @@ public final class ToolSchema {
      *
      * <p>先做一致性校验:required 里的每个 key 必须已声明在 properties 里,否则是
      * 实现类自相矛盾(必填却无参数描述),立即抛错让开发期尽早暴露。</p>
+     * <p>属性名按自然顺序生成，避免调用方 Map 的遍历顺序改变发给模型的字段排列。
+     * required 数组保留调用方顺序；不修改传入的 Map 或 List，也不访问文件。</p>
      *
      * @param properties 属性名 → JSON Schema 类型名("string" / "integer" / ...)
      * @param required   required 数组要列的 key,必须是 properties 的子集
@@ -48,9 +51,9 @@ public final class ToolSchema {
         // 3. 放入 "type": "object"
         root.put("type", "object");
 
-        // 4. 构建 properties
+        // 4. 用排序副本构建 properties；不要原地修改工具自己的参数表。
         ObjectNode props = root.putObject("properties");
-        for (Map.Entry<String, String> e : properties.entrySet()) {
+        for (Map.Entry<String, String> e : new TreeMap<>(properties).entrySet()) {
             props.putObject(e.getKey()).put("type", e.getValue());
         }
 

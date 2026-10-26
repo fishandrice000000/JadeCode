@@ -31,9 +31,12 @@ public final class ToolCatalog {
     /**
      * 先合并并检查名字，再生成模型定义。定义列表和执行表来自同一批 Entry，不发布可变 Map。
      * schema 由 ToolDefinition 深复制；Tool 本身仍是执行对象，不能写入 CompleteRequest。
+     * 按工具名排序固定模型看到的数组顺序，避免 Map.copyOf 的跨进程遍历差异破坏请求前缀。
+     * 只整理当前快照，不改变内置工具、外部目录或执行路由；冲突仍明确失败。
      */
     public Snapshot snapshot() {
-        Map<String, Entry> entries = new LinkedHashMap<>();
+        // 两类来源一起按名称排序；外部服务返回顺序不同也不会重排同一组工具。
+        Map<String, Entry> entries = new TreeMap<>();
         builtins.forEach((name, tool) -> entries.put(name, new Entry(tool, ToolIdentity.builtin(name))));
         for (Entry entry : external.get()) {
             String name = entry.tool().name();

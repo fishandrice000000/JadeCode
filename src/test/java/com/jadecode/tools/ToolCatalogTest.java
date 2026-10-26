@@ -29,6 +29,30 @@ class ToolCatalogTest {
         };
     }
 
+    /** 来源注册顺序不影响模型定义数组；排序后仍按同名 Entry 路由，生成快照不执行工具。 */
+    @Test void sortsCombinedDefinitionsWithoutChangingRouting() {
+        var executed = new AtomicInteger();
+        Tool zeta = tool("zeta", () -> { executed.incrementAndGet(); return "z"; });
+        Tool alpha = tool("alpha", () -> { executed.incrementAndGet(); return "a"; });
+        Tool remoteZeta = tool("mcp__fixture__zeta", () -> "remote z");
+        Tool remoteAlpha = tool("mcp__fixture__alpha", () -> "remote a");
+        var zEntry = new ToolCatalog.Entry(remoteZeta, new ToolIdentity(ToolIdentity.Kind.MCP, "fixture", "zeta", true));
+        var aEntry = new ToolCatalog.Entry(remoteAlpha, new ToolIdentity(ToolIdentity.Kind.MCP, "fixture", "alpha", true));
+        var builtins = new java.util.LinkedHashMap<String, Tool>();
+        builtins.put(zeta.name(), zeta); builtins.put(alpha.name(), alpha);
+        var snapshot = new ToolCatalog(builtins, () -> List.of(zEntry, aEntry)).snapshot();
+        var reordered = new ToolCatalog(Map.of(alpha.name(), alpha, zeta.name(), zeta), () -> List.of(aEntry, zEntry)).snapshot();
+
+        assertEquals(List.of("alpha", "mcp__fixture__alpha", "mcp__fixture__zeta", "zeta"),
+                snapshot.definitions().stream().map(definition -> definition.name()).toList());
+        assertEquals(snapshot.definitions(), reordered.definitions());
+        assertSame(zeta, snapshot.entries().get("zeta").tool());
+        assertSame(remoteAlpha, snapshot.entries().get(remoteAlpha.name()).tool());
+        assertEquals(aEntry.identity(), snapshot.entries().get(remoteAlpha.name()).identity());
+        assertEquals(List.of("zeta", "alpha"), List.copyOf(builtins.keySet()));
+        assertEquals(0, executed.get());
+    }
+
     /** 本次回复故意猜测新工具；连接成功也不能改变它原先看到的快照，下一请求才可见。 */
     @Test void replyUsesOriginalSnapshotAfterConnect() throws Exception {
         AtomicBoolean connected = new AtomicBoolean(); AtomicInteger executed = new AtomicInteger();

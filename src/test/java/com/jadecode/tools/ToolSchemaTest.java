@@ -10,6 +10,22 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class ToolSchemaTest {
 
+    /** 同义参数表即使插入顺序相反，也生成相同 JSON 文本；保留必填数组与原输入顺序。 */
+    @Test void serializesPropertiesInStableOrderWithoutMutatingInputs() {
+        var properties = new java.util.LinkedHashMap<String, String>();
+        properties.put("zeta", "string"); properties.put("alpha", "integer");
+        List<String> required = List.of("zeta", "alpha");
+        ObjectNode first = ToolSchema.objectSchema(properties, required);
+        ObjectNode second = ToolSchema.objectSchema(Map.of("alpha", "integer", "zeta", "string"), required);
+
+        assertEquals(first.toString(), second.toString());
+        assertEquals(List.of("alpha", "zeta"), first.get("properties").properties().stream().map(Map.Entry::getKey).toList());
+        assertEquals("zeta", first.get("required").get(0).asText());
+        assertEquals("alpha", first.get("required").get(1).asText());
+        assertEquals(List.of("zeta", "alpha"), List.copyOf(properties.keySet()));
+        assertEquals(List.of("zeta", "alpha"), required);
+    }
+
     /** ① 基本形状:type/properties/required 三块齐全 */
     @Test
     void buildsBasicSchema() {
