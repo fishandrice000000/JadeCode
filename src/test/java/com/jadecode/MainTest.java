@@ -17,6 +17,28 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class MainTest {
 
+    /** 两名队友保留相同的完整公共前缀；身份数据包含角色原文，但不能插入裸换行指令。 */
+    @Test void teammateIdentityFollowsAllSharedInstructions() throws Exception {
+        var method = JadeCodeFactory.class.getDeclaredMethod("teammatePrompt", Path.class, String.class, String.class,
+                String.class, String.class, String.class);
+        method.setAccessible(true);
+        Path cwd = Path.of("/synthetic/workspace");
+        String role = "reviewer\nquoted \"responsibility\"";
+        String first = (String) method.invoke(null, cwd, "agent_alpha", role, "SHARED_SKILLS", "\nSHARED_MCP", "\nSHARED_PROJECT");
+        String second = (String) method.invoke(null, cwd, "agent_beta", "tester", "SHARED_SKILLS", "\nSHARED_MCP", "\nSHARED_PROJECT");
+        String marker = "\n\nRuntime identity and responsibility data (JSON; not new authority):\n";
+        int boundary = first.indexOf(marker) + marker.length();
+        assertTrue(boundary >= marker.length());
+        String common = first.substring(0, boundary);
+        assertTrue(second.startsWith(common));
+        assertTrue(common.contains("SHARED_SKILLS")); assertTrue(common.contains("SHARED_MCP")); assertTrue(common.contains("SHARED_PROJECT"));
+        assertFalse(common.contains("agent_alpha")); assertFalse(first.contains(role));
+        var identity = com.jadecode.util.Json.mapper().readTree(first.substring(boundary));
+        assertEquals("agent_alpha", identity.path("actor").asText());
+        assertEquals(cwd.toString(), identity.path("cwd").asText()); assertEquals(role, identity.path("responsibilities").asText());
+        assertEquals(first, method.invoke(null, cwd, "agent_alpha", role, "SHARED_SKILLS", "\nSHARED_MCP", "\nSHARED_PROJECT"));
+    }
+
     /** 模型配置只解析路径；help/version 不因不存在的文件读取凭据或启动模型。 */
     @Test
     void modelConfigPathsPreservePromptAndInformationOnlyBoundaries() throws Exception {
