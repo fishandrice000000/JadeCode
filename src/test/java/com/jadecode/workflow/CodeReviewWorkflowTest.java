@@ -54,7 +54,7 @@ class CodeReviewWorkflowTest {
             calls.incrementAndGet(); assertTrue(request.tools().isEmpty()); assertEquals(1, request.messages().size());
             String prompt = request.messages().getFirst().extractText();
             assertTrue(prompt.contains("2:   return name.trim();"));
-            return reply(prompt.startsWith("Review supplied code") ? audit.apply(prompt) : verify.apply(prompt));
+            return reply(prompt.contains("\nReview supplied code for ") ? audit.apply(prompt) : verify.apply(prompt));
         };
     }
 
@@ -63,13 +63,18 @@ class CodeReviewWorkflowTest {
         AtomicInteger calls = new AtomicInteger();
         ObjectNode input = args(); input.withArray("files").addObject().put("path", "Caller.java").put("content", "service(null);");
         ObjectNode unchanged = input.deepCopy();
-        LlmClient client = model(prompt -> {
+        var prompts = new java.util.concurrent.CopyOnWriteArrayList<String>();
+        LlmClient scripted = model(prompt -> {
             ObjectNode out = audit(); out.withArray("findings").add(finding("null handling", prompt.contains("for security.") ? "high" : "medium"));
             return out;
         }, prompt -> {
             assertTrue(prompt.contains("Caller.java")); assertTrue(prompt.contains("service(null);"));
             assertTrue(prompt.contains("Candidate:")); return verdict("confirmed", "");
         }, calls);
+        LlmClient client = request -> {
+            prompts.add(request.messages().getFirst().extractText());
+            return scripted.complete(request);
+        };
         ObjectNode first;
         try (var runtime = runtime(client)) {
             first = runtime.run("code-review", input, null, ExecutionContext.create(ExecutionContext.Source.USER, null));
@@ -81,6 +86,13 @@ class CodeReviewWorkflowTest {
             assertEquals(3, report.path("deduplicated_count").asInt()); assertEquals(2, report.path("reviewed_files").size());
             assertTrue(report.path("analysis_only").asBoolean()); assertFalse(report.has("pass"));
         }
+        // 八次请求（四个维度、两种阶段）都应完整复用相同资料，再追加各自指令。
+        String auditPrompt = prompts.stream().filter(p -> p.contains("\nReview supplied code for ")).findFirst().orElseThrow();
+        String shared = auditPrompt.substring(0, auditPrompt.indexOf("\nReview supplied code for ") + 1);
+        assertTrue(shared.contains("Caller.java")); assertTrue(shared.contains("service(null);"));
+        assertTrue(shared.contains("2:   return name.trim();"));
+        assertEquals(8, prompts.size());
+        prompts.forEach(prompt -> assertTrue(prompt.startsWith(shared), "完整源资料必须位于维度/候选变化之前"));
         try (var runtime = runtime(client)) {
             var restored = runtime.run("code-review", null, first.path("run_id").asText(), ExecutionContext.create(ExecutionContext.Source.USER, null));
             assertEquals("completed", restored.path("status").asText()); assertEquals(first.path("result"), restored.path("result"));

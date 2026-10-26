@@ -98,7 +98,7 @@ class WorkflowIntegrationTest {
             if (request.tools().isEmpty()) {
                 steps.incrementAndGet();
                 String prompt = request.messages().getFirst().extractText();
-                assertTrue(prompt.startsWith("Review supplied code")); assertTrue(prompt.contains("Service.java"));
+                assertTrue(prompt.contains("\nReview supplied code for ")); assertTrue(prompt.contains("Service.java"));
                 assertFalse(prompt.contains("ROOT_ONLY_CONTEXT"));
                 return reply(new TextBlock("{\"findings\":[],\"questions\":[]}"));
             }

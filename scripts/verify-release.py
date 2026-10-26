@@ -95,12 +95,12 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
                     prompt = "\n".join(block.get("text", "") for block in messages[0].get("content", []) if isinstance(block, dict))
                     if self.server.scenario == "workflow-limit":
                         answer = "INCOMPLETE_REVIEW"  # 故意截断：不能修 JSON、不能缓存、不能锁死会话。
-                    elif prompt.startswith("Review supplied code"):
+                    elif "\nReview supplied code for " in prompt:
                         findings = [{"title": "null input fails", "severity": "high", "path": "Service.java",
                                      "start_line": 2, "end_line": 2, "evidence": "return name.trim();", "trigger": "name is null",
                                      "impact": "throws instead of handling null", "suggestion": "handle null according to contract"}] if "for correctness." in prompt else []
                         answer = json.dumps({"findings": findings, "questions": []})
-                    elif prompt.startswith("Verify code-review finding"):
+                    elif "\nVerify code-review finding for " in prompt:
                         answer = json.dumps({"verdict": "confirmed", "reason": "null permitted by supplied contract", "needed_context": ""})
                     else:
                         answer = '{"findings":[]}'  # 原 review-changes 的协议保持不变。

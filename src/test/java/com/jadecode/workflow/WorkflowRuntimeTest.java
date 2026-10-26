@@ -52,9 +52,11 @@ class WorkflowRuntimeTest {
     /** 真实预设走四维 pipeline + 逐条 parallel；再次恢复不增加模型请求，汇总语义保持一致。 */
     @Test void reviewAndResumeReuseAllSuccessfulCalls() throws Exception {
         AtomicInteger requests = new AtomicInteger();
+        var prompts = new java.util.concurrent.CopyOnWriteArrayList<String>();
         LlmClient client = request -> {
             requests.incrementAndGet(); assertTrue(request.tools().isEmpty()); assertEquals(1, request.messages().size());
-            return reply(request.messages().getFirst().extractText().startsWith("Review supplied")
+            String prompt = request.messages().getFirst().extractText(); prompts.add(prompt);
+            return reply(prompt.contains("\nReview supplied changes for ")
                     ? "{\"findings\":[{\"title\":\"check\",\"severity\":\"high\"}]}"
                     : "{\"isReal\":true,\"reason\":\"supported by supplied text\"}");
         };
@@ -65,6 +67,11 @@ class WorkflowRuntimeTest {
             assertEquals(4, first.path("result").path("confirmed").size()); assertEquals(8, requests.get());
             assertEquals(40, first.path("usage").path("reported_tokens").asInt());
         }
+        // 复核也复用完整改动前缀，不能在共用文本前插入审查维度或某条发现。
+        String audit = prompts.stream().filter(p -> p.contains("\nReview supplied changes for ")).findFirst().orElseThrow();
+        String shared = audit.substring(0, audit.indexOf("\nReview supplied changes for ") + 1);
+        assertTrue(shared.contains("example change")); assertEquals(8, prompts.size());
+        prompts.forEach(prompt -> assertTrue(prompt.startsWith(shared)));
         try (var restored = runtime(List.of(ReviewChangesWorkflow.definition()), client)) {
             var second = restored.run("review-changes", null, first.path("run_id").asText(), origin());
             assertEquals(first.get("result"), second.get("result")); assertEquals(8, requests.get());
