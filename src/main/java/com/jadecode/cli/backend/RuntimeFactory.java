@@ -5,6 +5,9 @@ import java.util.function.Supplier;
 
 import com.jadecode.bootstrap.JadeCodeFactory;
 import com.jadecode.config.JadeSettings;
+import com.jadecode.config.AppConfig;
+import com.jadecode.config.ModelConfigLoader;
+import java.nio.file.Path;
 import com.jadecode.execution.ExecutionObserver;
 import com.jadecode.llm.ResponseStream;
 import com.jadecode.safety.PermissionState;
@@ -23,10 +26,17 @@ import com.jadecode.session.SessionRuntime;
 public final class RuntimeFactory {
     private final JadeSettings settings;
     private final PermissionState permissions;
+    private final AppConfig modelConfig;
 
-    public RuntimeFactory(JadeSettings settings, PermissionState permissions) {
+    /**
+     * 一次启动固定模型配置，恢复/切换会话不重新混入项目文件；不联网，不改变工作区。
+     * @param selectedModelConfig 显式选择的 JSON 路径，null 选全局默认；缺少全局文件时仅用进程环境
+     * @throws IllegalStateException 配置缺失、损坏或无效；诊断不包含凭据原文
+     */
+    public RuntimeFactory(JadeSettings settings, PermissionState permissions, Path selectedModelConfig) {
         this.settings = settings;
         this.permissions = permissions;
+        this.modelConfig = ModelConfigLoader.load(selectedModelConfig);
     }
 
     /** @return 本会话共享的设置快照（只读）。 */
@@ -45,6 +55,6 @@ public final class RuntimeFactory {
      */
     public SessionRuntime create(Consumer<String> output, Consumer<String> errors,
             Supplier<ResponseStream> streams, ExecutionObserver observer) {
-        return JadeCodeFactory.create((hooks, cwd, ignored) -> { }, output, errors, streams, observer, settings, permissions);
+        return JadeCodeFactory.create((hooks, cwd, ignored) -> { }, output, errors, streams, observer, settings, permissions, modelConfig);
     }
 }

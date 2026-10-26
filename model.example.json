@@ -1,0 +1,6 @@
+{
+  "apiKey": "replace-with-your-api-key",
+  "baseUrl": "https://api.deepseek.com/anthropic",
+  "model": "deepseek-v4-flash",
+  "maxTokens": "auto"
+}

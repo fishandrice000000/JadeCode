@@ -1,7 +1,7 @@
 package com.jadecode.config;
 
 /**
- * 运行期配置:从环境变量(经 {@link Env} 读取)解析出的 API key、端点、模型、输出上限。
+ * 运行期配置：由 {@link ModelConfigLoader} 合并 JSON/环境，或由离线调用方明确提供模型资料。
  *
  * <p>
  * 缺省值面向 DeepSeek:baseUrl 默认 {@code https://api.deepseek.com/anthropic},
@@ -16,6 +16,9 @@ package com.jadecode.config;
  *                  装配时必须先解析为真实正数，不能直接将 0 发送给模型
  */
 public record AppConfig(String apiKey, String baseUrl, String model, int maxTokens) {
+    /** 所有配置来源共享原来的后端/模型缺省值，新增 JSON 不改变默认服务。 */
+    public static final String DEFAULT_BASE_URL = "https://api.deepseek.com/anthropic";
+    public static final String DEFAULT_MODEL = "deepseek-v4-flash";
     /** 仅配置层使用的自动标记；模型未知时的回退值由 ModelMetadata 统一决定。 */
     public static final int AUTO_MAX_TOKENS = 0;
 
@@ -28,7 +31,7 @@ public record AppConfig(String apiKey, String baseUrl, String model, int maxToke
     /**
      * 从 Env 读出全部配置项,缺失项按各自缺省值补齐。
      *
-     * @param env 已加载的环境(.env 解析结果 + 系统环境变量回退)
+     * @param env 加载器已合并、校验的内存快照；不读文件或再次查询进程环境
      * @return 完整配置
      * @throws IllegalStateException ANTHROPIC_API_KEY 缺失,或 MAX_TOKENS 既非 auto 也非正整数
      */
@@ -41,7 +44,7 @@ public record AppConfig(String apiKey, String baseUrl, String model, int maxToke
         try {
             return env.required("ANTHROPIC_API_KEY");
         } catch (IllegalStateException e) {
-            System.err.println("Copy .env.example to .env and fill it in");
+            System.err.println("Configure ~/.jadecode/config/model.json, --model-config, or ANTHROPIC_API_KEY");
             throw e;
         }
     }
@@ -49,13 +52,13 @@ public record AppConfig(String apiKey, String baseUrl, String model, int maxToke
     /** 端点基址;缺省 DeepSeek 的 Anthropic 兼容端点 */
     private static String getBaseUrlFrom(Env env) {
         String s = env.get("ANTHROPIC_BASE_URL");
-        return s == null ? "https://api.deepseek.com/anthropic" : s;
+        return s == null ? DEFAULT_BASE_URL : s;
     }
 
     /** 模型 id;缺省 deepseek-v4-flash */
     private static String getModelFrom(Env env) {
         String s = env.get("MODEL_ID");
-        return s == null ? "deepseek-v4-flash" : s;
+        return s == null ? DEFAULT_MODEL : s;
     }
 
     /**
@@ -74,5 +77,11 @@ public record AppConfig(String apiKey, String baseUrl, String model, int maxToke
             throw new IllegalStateException("MAX_TOKENS must be auto or a positive integer; current value:" + s, e);
         }
         throw new IllegalStateException("MAX_TOKENS must be auto or a positive integer; current value:" + s);
+    }
+
+    /** 配置可能被用于诊断；覆盖 record 的默认打印，避免把 API Key 带进日志。 */
+    @Override
+    public String toString() {
+        return "AppConfig[apiKey=<redacted>, baseUrl=" + baseUrl + ", model=" + model + ", maxTokens=" + maxTokens + "]";
     }
 }

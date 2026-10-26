@@ -79,7 +79,7 @@ class HeadlessRunnerTest {
         assertThrows(LaunchOptions.UsageException.class,
                 () -> LaunchOptions.parse(new String[] { "--headless", "   " }));
         // 直接构造空任务也必须在启动会话前拒绝（不读配置、不建日志）。
-        assertEquals(2, runner.run(new LaunchOptions(LaunchOptions.Mode.HEADLESS, "", null, null)));
+        assertEquals(2, runner.run(new LaunchOptions(LaunchOptions.Mode.HEADLESS, "", null, null, null)));
         assertTrue(errBuffer.toString(StandardCharsets.UTF_8).contains("non-empty task"));
     }
 }

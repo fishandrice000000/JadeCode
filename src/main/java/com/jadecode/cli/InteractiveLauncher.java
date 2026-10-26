@@ -53,7 +53,7 @@ public final class InteractiveLauncher {
             node = spawn(distribution, server.socketPath(), credential);
             BackendSessionService.Startup startup = startup(options);
             BackendApplication.Options backendOptions = new BackendApplication.Options(
-                    JadeConfigFile.defaultPath(), options.permission(), startup);
+                    JadeConfigFile.defaultPath(), options.permission(), startup, options.modelConfig());
             int code;
             String backendFailure;
             try (LocalControlServer endpoint = server;
@@ -67,7 +67,7 @@ public final class InteractiveLauncher {
             if (code != 0 && exit != 129 && exit != 130 && exit != 143 && backendFailure != null && !backendFailure.isBlank())
                 System.err.println("Backend stopped: " + backendFailure);
             return exit;
-        } catch (IOException failure) {
+        } catch (IOException | RuntimeException failure) {
             System.err.println("Could not start the interactive UI: " + failure.getMessage());
             if (node != null) node.destroy();
             return 1;

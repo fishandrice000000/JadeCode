@@ -1,6 +1,8 @@
 package com.jadecode.cli;
 
 import com.jadecode.safety.PermissionProfile;
+import java.nio.file.InvalidPathException;
+import java.nio.file.Path;
 
 /**
  * 根 CLI 的不可变启动资料：模式、首轮任务、恢复目标与本次权限覆盖。
@@ -16,8 +18,9 @@ import com.jadecode.safety.PermissionProfile;
  * @param initialPrompt   首轮任务原文（多位置参数以单个空格连接）；无任务时为空串
  * @param resume          裸 {@code --resume} 为空串；带值时为 id/name；未指定为 null
  * @param permission      本次运行的权限覆盖；未指定为 null（保留已保存默认 / headless 缺省 auto-review）
+ * @param modelConfig     本次选用的模型 JSON 路径；null 表示全局默认，解析时不读文件
  */
-public record LaunchOptions(Mode mode, String initialPrompt, String resume, PermissionProfile permission) {
+public record LaunchOptions(Mode mode, String initialPrompt, String resume, PermissionProfile permission, Path modelConfig) {
     /** 根入口的四种结果。 */
     public enum Mode { INTERACTIVE, HEADLESS, HELP, VERSION }
 
@@ -45,6 +48,7 @@ public record LaunchOptions(Mode mode, String initialPrompt, String resume, Perm
         boolean version = false;
         String resume = null;
         PermissionProfile permission = null;
+        Path modelConfig = null;
         StringBuilder prompt = new StringBuilder();
         boolean literal = false;
         for (int i = 0; i < args.length; i++) {
@@ -53,6 +57,19 @@ public record LaunchOptions(Mode mode, String initialPrompt, String resume, Perm
             if (!literal && (arg.equals("--help") || arg.equals("-h"))) { help = true; continue; }
             if (!literal && (arg.equals("--version") || arg.equals("-V"))) { version = true; continue; }
             if (!literal && (arg.equals("--headless"))) { headless = true; continue; }
+            if (!literal && (arg.equals("--model-config") || arg.startsWith("--model-config="))) {
+                if (modelConfig != null) throw new UsageException("--model-config may only be specified once");
+                String value;
+                if (arg.equals("--model-config")) {
+                    if (i + 1 >= args.length || args[i + 1] == null || args[i + 1].startsWith("-"))
+                        throw new UsageException("--model-config requires a JSON file path");
+                    value = args[++i];
+                } else value = arg.substring("--model-config=".length());
+                if (value == null || value.isBlank()) throw new UsageException("--model-config requires a JSON file path");
+                try { modelConfig = Path.of(value); }
+                catch (InvalidPathException invalid) { throw new UsageException("Invalid --model-config path"); }
+                continue;
+            }
             if (!literal && arg.startsWith("--permission=")) {
                 permission = parsePermission(arg.substring("--permission=".length()));
                 continue;
@@ -81,8 +98,8 @@ public record LaunchOptions(Mode mode, String initialPrompt, String resume, Perm
             if (prompt.length() > 0) prompt.append(' ');
             prompt.append(arg);
         }
-        if (help) return new LaunchOptions(Mode.HELP, "", null, null);
-        if (version) return new LaunchOptions(Mode.VERSION, "", null, null);
+        if (help) return new LaunchOptions(Mode.HELP, "", null, null, null);
+        if (version) return new LaunchOptions(Mode.VERSION, "", null, null, null);
         String text = prompt.toString();
         if (headless && (text.isBlank())) throw new UsageException("--headless requires a non-empty task");
         if (!headless && !text.isEmpty() && text.isBlank())
@@ -91,7 +108,7 @@ public record LaunchOptions(Mode mode, String initialPrompt, String resume, Perm
             throw new UsageException("--resume cannot be combined with a new task prompt");
         if (resume != null && headless)
             throw new UsageException("--resume cannot be combined with --headless");
-        return new LaunchOptions(headless ? Mode.HEADLESS : Mode.INTERACTIVE, text, resume, permission);
+        return new LaunchOptions(headless ? Mode.HEADLESS : Mode.INTERACTIVE, text, resume, permission, modelConfig);
     }
 
     private static PermissionProfile parsePermission(String value) throws UsageException {
@@ -116,6 +133,8 @@ public record LaunchOptions(Mode mode, String initialPrompt, String resume, Perm
                   java -jar jadecode.jar <same arguments>
 
                 Options:
+                  --model-config <path>    Select a model JSON file (relative to the working directory)
+                                           Default: ~/.jadecode/config/model.json
                   --permission <profile>   read-only | workspace | auto-review | full-access
                                            Applies to this run only; never saved as the default.
                   --                       Treat the remaining arguments as a literal prompt

@@ -306,6 +306,54 @@ class Case:
 
 def verify(case, name):
     """场景断言直接观察真实副作用/进程/屏幕；每项最多等待明确预算。"""
+    if name in ("model-config", "model-config-explicit"):
+        # 认证仅使用本地夹具占位值；同时移除旧环境变量，避免 JSON 没接通却被环境兜底。
+        for variable in ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "MODEL_ID", "MAX_TOKENS"):
+            case.env.pop(variable, None)
+        config = case.home / ".jadecode/config/config.json"
+        settings = json.loads(config.read_text())
+        settings["memory"] = {"enabled": False}
+        config.write_text(json.dumps(settings))
+        global_file = config.with_name("model.json")
+        selected = case.directory / "profiles/selected.json" if name.endswith("explicit") else global_file
+        selected.parent.mkdir(parents=True, exist_ok=True)
+        selected.write_text(json.dumps({"apiKey": "dummy-json-fixture", "baseUrl": f"http://127.0.0.1:{case.server.server_port}",
+                                        "model": "verify-json", "maxTokens": 8192}))
+        selected.chmod(0o600)
+        if name.endswith("explicit"):
+            global_file.write_text("{invalid-global-json")
+        relative = os.path.relpath(selected, case.workspace)
+        headless_options = ["--model-config", relative] if name.endswith("explicit") else []
+        assert not (case.workspace / ".env").exists()
+        completed = subprocess.run([str(case.release / "jade"), *headless_options, "--headless", "JADE_VERIFY_TEXT"],
+                                   cwd=case.workspace, env=case.env, stdin=subprocess.DEVNULL, capture_output=True, timeout=20)
+        assert completed.returncode == 0, completed.stderr.decode("utf8", "replace")
+        assert completed.stdout.decode().strip() == "JADE_VERIFY_DONE"
+        assert any(case.workspace.rglob("events.jsonl")), "state was not persisted in the working directory"
+        # JSON 已选定后，项目 .env 不得把生成请求重定向到另一端点。
+        (case.workspace / ".env").write_text("ANTHROPIC_API_KEY=wrong-project-fixture\nANTHROPIC_BASE_URL=http://127.0.0.1:1\nMODEL_ID=wrong-project\n")
+        case.start("JADE_VERIFY_TEXT", extra=["--model-config=" + relative] if name.endswith("explicit") else [])
+        case.until("JADE_VERIFY_DONE")
+        case.finish()
+        formal = [call for call in case.server.calls if call.get("tools")]
+        assert len(formal) == 2 and all(call["model"] == "verify-json" and call["max_tokens"] == 8192 for call in formal)
+        # 指定文件损坏时明确失败，不向项目 .env/另一份 JSON 回退，stderr 不得泄漏 JSON。
+        secret = "DO_NOT_ECHO_JSON_FIXTURE_KEY"
+        selected.write_text('{"apiKey":"' + secret + '",')
+        failed = subprocess.run([str(case.release / "jade"), *headless_options, "--headless", "JADE_VERIFY_TEXT"],
+                                cwd=case.workspace, env=case.env, stdin=subprocess.DEVNULL, capture_output=True, timeout=20)
+        assert failed.returncode == 1 and secret not in failed.stderr.decode() and not failed.stdout
+        assert len(case.server.calls) == 2, "invalid configuration made a model request"
+        selected.unlink()
+        absent = subprocess.run([str(case.release / "jade"), *headless_options, "--headless", "JADE_VERIFY_TEXT"],
+                                cwd=case.workspace, env=case.env, stdin=subprocess.DEVNULL, capture_output=True, timeout=20)
+        assert absent.returncode == 1 and not absent.stdout
+        expected = "Cannot read model configuration JSON" if name.endswith("explicit") else "Missing apiKey"
+        assert expected in absent.stderr.decode(), "missing JSON unexpectedly used the project .env"
+        assert len(case.server.calls) == 2
+        return {"exit": 0, "source": "explicit JSON" if name.endswith("explicit") else "global JSON", "formalRequests": 2,
+                "headlessAndTui": True, "projectEnvIgnored": True, "badConfigFailedWithoutRequest": True,
+                "missingJsonNeverReadsDotenv": True}
     if name in ("goal", "goal-error", "goal-headless"):
         (case.workspace / "proof.txt").write_text("GOAL_PROOF")
     if name == "goal-headless":
@@ -717,7 +765,7 @@ def verify(case, name):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--release", type=Path, default=REPO / "dist/jadecode")
-    parser.add_argument("--scenario", action="append", choices=["java-only", "smoke", "input-routing", "commands", "regular", "regular-approval", "copy", "retry", "model-error", "output-limit", "headless", "headless-read-only", "headless-full-access", "headless-workspace", "headless-auto-review", "memory-delay", "mcp", "team", "workflow", "code-review", "workflow-limit", "goal", "goal-error", "goal-headless", "resume", "long-output", "approval-resize", "approval-small", "approval-mouse", "approval-suspend", "approval-deny", "full-access", "sighup", "sigint", "sigterm", "java-exit", "node-exit"])
+    parser.add_argument("--scenario", action="append", choices=["model-config", "model-config-explicit", "java-only", "smoke", "input-routing", "commands", "regular", "regular-approval", "copy", "retry", "model-error", "output-limit", "headless", "headless-read-only", "headless-full-access", "headless-workspace", "headless-auto-review", "memory-delay", "mcp", "team", "workflow", "code-review", "workflow-limit", "goal", "goal-error", "goal-headless", "resume", "long-output", "approval-resize", "approval-small", "approval-mouse", "approval-suspend", "approval-deny", "full-access", "sighup", "sigint", "sigterm", "java-exit", "node-exit"])
     parser.add_argument("--report", type=Path, default=REPO / "target/tui-release-verification.json")
     options = parser.parse_args()
     release = options.release.resolve()
@@ -740,7 +788,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="jade-release-verify-") as directory:
         root = Path(directory)
         shutil.copytree(release, root / "release", symlinks=True)
-        for name in options.scenario or ["java-only", "smoke", "input-routing", "commands", "regular", "regular-approval", "copy", "retry", "model-error", "output-limit", "headless", "headless-read-only", "headless-full-access", "headless-workspace", "headless-auto-review", "memory-delay", "mcp", "team", "workflow", "code-review", "workflow-limit", "goal", "goal-error", "goal-headless", "resume", "long-output", "approval-resize", "approval-small", "approval-mouse", "approval-suspend", "approval-deny", "full-access", "sighup", "sigint", "sigterm", "java-exit", "node-exit"]:
+        for name in options.scenario or ["model-config", "model-config-explicit", "java-only", "smoke", "input-routing", "commands", "regular", "regular-approval", "copy", "retry", "model-error", "output-limit", "headless", "headless-read-only", "headless-full-access", "headless-workspace", "headless-auto-review", "memory-delay", "mcp", "team", "workflow", "code-review", "workflow-limit", "goal", "goal-error", "goal-headless", "resume", "long-output", "approval-resize", "approval-small", "approval-mouse", "approval-suspend", "approval-deny", "full-access", "sighup", "sigint", "sigterm", "java-exit", "node-exit"]:
             case = Case(root, root / "release", shutil.which("node"), name)
             try:
                 result = {"name": name, "status": "pass", **verify(case, name)}

@@ -70,7 +70,7 @@ public final class HeadlessRunner {
             PermissionState permissions = settings.permissions().state(file);
             // 默认 auto-review，不读取已保存默认；显式覆盖只改本次内存状态，不落盘。
             permissions.select(headlessProfile(options.permission()));
-            RuntimeFactory factory = new RuntimeFactory(settings, permissions);
+            RuntimeFactory factory = new RuntimeFactory(settings, permissions, options.modelConfig());
             Path workspace = Path.of("").toAbsolutePath().normalize();
             HostFactory hostFactory = ignored -> new SessionHost(new WorkspacePaths(workspace),
                     generation -> factory.create(noOutput(), ignoredErr -> { }, () -> ResponseStream.NONE,

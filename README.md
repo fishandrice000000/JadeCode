@@ -78,21 +78,36 @@ src/main/java/com/jadecode/
 
 ## 配置
 
+默认从 `~/.jadecode/config/model.json` 读取模型配置，模板见 [model.example.json](model.example.json)。
+首次配置时在仓库根执行下面的命令，再编辑文件中的 apiKey、baseUrl、model；目标已存在时创建会失败，直接编辑已有文件即可：
+
 ```sh
-cp .env.example .env   # 填入 ANTHROPIC_API_KEY(DeepSeek key)
+mkdir -p ~/.jadecode/config
+(umask 077; set -C; cat model.example.json > ~/.jadecode/config/model.json)
 ```
 
-环境变量沿用课程命名:`ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` / `MODEL_ID` / `FALLBACK_MODEL_ID` / `MAX_TOKENS`。
+文件默认权限为 `600`（仅当前用户可读写）；加载器只读，不自动迁移 Key 或修改已有文件权限。
+JSON 字段为 `apiKey`、`baseUrl`、`model`、`maxTokens`，其中 `maxTokens` 接受 `"auto"` 或正整数。
+未设置模型与端点时沿用原默认值；文件可省略 apiKey 并通过进程环境提供，显式空白字段会报错。
+
+此后在任意项目目录调用 JadeCode 的启动脚本即可，工作区仍为当前目录。也可用
+`jade --model-config /path/to/model.json`（或 `--model-config=...`）选择另一份 JSON；支持交互、headless 和 resume。
+相对路径以启动目录为基准，显式文件取代全局文件，不跨文件补 Key。配置在启动时固定，修改后需重启。
+
+JSON 路径下，进程环境变量 `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` / `MODEL_ID` / `MAX_TOKENS` 覆盖文件，再补默认值。
+只改变端点时必须在同一环境覆盖中提供 Key，避免借用文件中另一服务的凭据。任何情况下都不读取 `.env`，也不查找项目或父目录中的旧配置。
+未指定文件且全局 JSON 不存在时，可仅使用进程环境变量；缺少认证则直接报错。指定文件缺失、JSON 无效或全局文件不可读时明确失败。
+详细优先级与验收见 [全局模型配置指南](docs/notes/s13/global-model-config-review.md)。
 
 `MAX_TOKENS` 缺失、为空或设为 `auto` 时，正式对话（包括队友、一次性子代理）使用已知的模型最大输出额度；
 未取得最大输出字段时明确回退到 8000 token，不能用上下文窗口代替输出上限。
 也可设置正整数作为显式额度，仍受已知模型最大输出限制；0、负数和其它文本会报错。
-旧 `.env` 中的 `MAX_TOKENS=8000` 继续视为显式设置，需要手动改为 `auto`（或删除该项）才启用自动策略；重启生效。
+JSON 中的 `maxTokens: 8000` 或进程环境中的 `MAX_TOKENS=8000` 都视为显式设置，改为 `auto`（或删除该项）才启用自动策略；重启生效。
 摘要、Memory、辅助审批保留各自独立预算，不随正式对话额度放大。
 
 界面与压缩设置统一放在 `~/.jadecode/config/config.json`，完整模板见
 [config.example.json](config.example.json)。缺失字段使用默认值，修改后重启生效，非法布尔值、数值或主题会明确报错。
-配置不包含 API Key，模型和认证仍走上面的环境配置。
+该 `config.json` 不包含 API Key，模型和认证只走独立的 `model.json` / 进程环境。
 
 `tui` 继续支持 `theme`/`thinkingVisible`/`toolsExpanded`/`commandSuggestions`，并新增 `mode`（fullscreen/regular）、fullscreen 滚动条/复制/滚轮、硬件光标、编辑器/输出间距、候选数量、主题配对、外部编辑器、键位覆盖等非秘密显示设置；旧字段和未知字段保留，保存只 patch TUI 子树。
 `modelMetadata` 控制启动时的官方参数查询：默认开启，缓存 24 小时，最多等待 2000ms。

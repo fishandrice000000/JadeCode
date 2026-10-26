@@ -11,7 +11,7 @@ import java.util.function.Supplier;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jadecode.agent.AgentExecutor;
 import com.jadecode.config.AppConfig;
-import com.jadecode.config.Env;
+import com.jadecode.config.ModelConfigLoader;
 import com.jadecode.config.JadeConfigFile;
 import com.jadecode.config.JadeSettings;
 import com.jadecode.context.ContextCompactor;
@@ -156,9 +156,19 @@ public final class JadeCodeFactory {
     /** TUI 在恢复会话时继续使用同一份权限状态，不从旧聊天中恢复临时授权。 */
     public static SessionRuntime create(Presentation presentation, Consumer<String> output, Consumer<String> errors,
             Supplier<ResponseStream> streams, ExecutionObserver observer, JadeSettings settings, PermissionState permissions) {
-        AppConfig config = AppConfig.fromEnv(Env.loadDotEnv());
+        return create(presentation, output, errors, streams, observer, settings, permissions, ModelConfigLoader.load(null));
+    }
+
+    /**
+     * 使用 RuntimeFactory 在启动时固定的模型快照，工作区仍取启动目录。
+     * 复用既有 settings/permissions，不修改传入配置；发现模型参数时可访问目录/缓存，
+     * 再创建尚未 start 的会话。此处不发生成请求，也不向 Node 传递凭据。
+     */
+    public static SessionRuntime create(Presentation presentation, Consumer<String> output, Consumer<String> errors,
+            Supplier<ResponseStream> streams, ExecutionObserver observer, JadeSettings settings, PermissionState permissions,
+            AppConfig config) {
         Path cwd = Path.of("").toAbsolutePath();
-        // 只在生产入口发现一次。可注入客户端的离线入口不会读用户缓存或自行联网。
+        // 本次生产装配统一发现模型参数；可注入客户端的离线入口不会读用户缓存或自行联网。
         var metadata = new ModelMetadataResolver(ModelMetadataResolver.defaultCacheDirectory()).resolve(config, settings.modelMetadata());
         observer.publish(com.jadecode.execution.ExecutionNotice.event(
                 com.jadecode.execution.ExecutionNotice.Kind.MODEL, "", config.model(), metadata.describe(), "READY").actor(TeamManager.LEADER));

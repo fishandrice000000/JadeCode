@@ -49,7 +49,7 @@ import com.jadecode.util.Json;
 public final class BackendApplication implements AutoCloseable {
     /** 一次交互启动的输入。 */
     public record Options(Path configPath, PermissionProfile permissionOverride,
-            BackendSessionService.Startup startup) { }
+            BackendSessionService.Startup startup, Path modelConfig) { }
 
     private static final long ACCEPT_TIMEOUT_MILLIS = 30_000;
 
@@ -90,7 +90,7 @@ public final class BackendApplication implements AutoCloseable {
         if (options.permissionOverride() != null) permissions.select(options.permissionOverride());
         Path themeDirectory = options.configPath().toAbsolutePath().getParent().resolve("themes");
         this.preLicense = new PreLicense(preferences, settings, permissions,
-                new RuntimeFactory(settings, permissions), themeDirectory.toString(),
+                new RuntimeFactory(settings, permissions, options.modelConfig()), themeDirectory.toString(),
                 projectVersion());
     }
 

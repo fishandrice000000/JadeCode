@@ -17,6 +17,24 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class MainTest {
 
+    /** 模型配置只解析路径；help/version 不因不存在的文件读取凭据或启动模型。 */
+    @Test
+    void modelConfigPathsPreservePromptAndInformationOnlyBoundaries() throws Exception {
+        for (String[] args : new String[][] {
+                {"--model-config", "profiles/model.json", "--headless", "hello"},
+                {"--model-config=profiles/model.json", "--headless", "hello"}}) {
+            LaunchOptions options = LaunchOptions.parse(args);
+            assertEquals(Path.of("profiles/model.json"), options.modelConfig());
+            assertEquals("hello", options.initialPrompt());
+        }
+        for (String[] args : new String[][] {{"--model-config"}, {"--model-config="},
+                {"--model-config", "--headless", "hello"}, {"--model-config=a", "--model-config=b"}})
+            assertThrows(LaunchOptions.UsageException.class, () -> LaunchOptions.parse(args));
+        assertEquals("--model-config=x", LaunchOptions.parse(new String[] {"--", "--model-config=x"}).initialPrompt());
+        assertEquals(0, Main.run(new String[] {"--model-config=missing.json", "--help"}));
+        assertEquals(0, Main.run(new String[] {"--model-config=missing.json", "--version"}));
+    }
+
     /**
      * 提示边界的期望文本:与 JadeCodeFactory 里的私有常量必须逐字一致。
      *
