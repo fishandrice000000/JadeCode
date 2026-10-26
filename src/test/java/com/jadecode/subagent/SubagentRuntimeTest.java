@@ -35,6 +35,27 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 class SubagentRuntimeTest {
 
+    /** 同一工具集合按不同顺序注册，子请求仍保持相同排列；生成定义不能执行工具。 */
+    @Test void toolDefinitionsHaveStableOrderAcrossRegistrationOrders() throws Exception {
+        var alpha = new FakeTool("alpha", "a"); var zeta = new FakeTool("zeta", "z");
+        var first = new java.util.LinkedHashMap<String, Tool>(); first.put("zeta", zeta); first.put("alpha", alpha);
+        var second = new java.util.LinkedHashMap<String, Tool>(); second.put("alpha", alpha); second.put("zeta", zeta);
+        var calls = new ArrayList<CompleteRequest>();
+        LlmClient client = request -> {
+            // 循环随后还会追加回复，测试证据必须快照，不能保留那份可变历史引用。
+            calls.add(new CompleteRequest(request.system(), List.copyOf(request.messages()), request.maxTokens(),
+                    request.tools(), request.thinking()));
+            return assistant(new TextBlock("done"));
+        };
+        runtime(client, first, new Hooks()).run("first child");
+        runtime(client, second, new Hooks()).run("second child");
+        assertEquals(List.of("alpha", "zeta"), calls.getFirst().tools().stream().map(ToolDefinition::name).toList());
+        assertEquals(calls.getFirst().tools(), calls.getLast().tools());
+        assertEquals(0, alpha.calls); assertEquals(0, zeta.calls);
+        assertEquals(List.of("zeta", "alpha"), List.copyOf(first.keySet()));
+        assertEquals(1, calls.getLast().messages().size(), "子代理仍从独立历史开始");
+    }
+
     /** 内存假工具:记录调用次数,返回预置输出(不碰真实文件系统) */
     private static final class FakeTool implements Tool {
         private final String name;

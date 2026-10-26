@@ -1,6 +1,7 @@
 package com.jadecode.subagent;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 
@@ -237,9 +238,11 @@ public class SubagentRuntime {
                 ModelResponse response;
                 try {
                     checkSessionOpen(context);
+                    // 子循环不经过父循环的 ToolCatalog，同样按名称固定定义顺序；执行仍使用原工具表。
                     response = client
                             .complete(new CompleteRequest(system, messages, maxTokens,
-                                    tools.values().stream().map(Tool::definition).toList(), taskThinking));
+                                    tools.values().stream().sorted(Comparator.comparing(Tool::name))
+                                            .map(Tool::definition).toList(), taskThinking));
                 } catch (LlmException error) {
                     // 如果用户在等模型时退出，即使现在才返回超限错误，也不要再调用摘要模型。
                     checkSessionOpen(context);
