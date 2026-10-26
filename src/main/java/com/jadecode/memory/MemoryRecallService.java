@@ -106,7 +106,10 @@ public final class MemoryRecallService {
                 visible.add(next++);
             }
             if (next == pageStart) { reason = MemoryReply.Reason.CATALOG_ITEM_TOO_LARGE; usedFallback = true; break; }
-            String selectionInput = Json.mapper().createObjectNode().put("current_request", query).set("catalog", catalog).toString();
+            // 同一页目录未变化时先保留可复用前缀，变化的当前请求放后；分页编号和选择含义不变。
+            var selectionData = Json.mapper().createObjectNode();
+            selectionData.set("catalog", catalog);
+            String selectionInput = selectionData.put("current_request", query).toString();
             try {
                 var response = client.complete(MemoryReply.request(client, SELECTION_SYSTEM, selectionInput, maxOutputTokens));
                 selected = selectedIndices(response, visible.size()).stream().map(visible::get).toList();

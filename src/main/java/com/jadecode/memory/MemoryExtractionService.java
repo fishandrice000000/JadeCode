@@ -102,7 +102,10 @@ public final class MemoryExtractionService {
             if (catalog.toString().length() > catalogChars)
                 return new ExtractionResult(Status.INVALID_RESPONSE, 0, 0, FailureReason.INPUT_LIMIT);
         }
-        String input = Json.mapper().createObjectNode().put("dialogue", dialogue).set("existing_catalog", catalog).toString();
+        // 完整已有目录先于本轮对话：库未变化时可共享前缀；目录变化仍自然产生新的请求内容。
+        var extractionData = Json.mapper().createObjectNode();
+        extractionData.set("existing_catalog", catalog);
+        String input = extractionData.put("dialogue", dialogue).toString();
 
         // 2. 这是一次无工具的候选生成，不是主 Agent 的新一轮，更不执行模型回复里的指令。
         ModelResponse response;

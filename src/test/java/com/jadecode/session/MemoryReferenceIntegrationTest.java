@@ -55,16 +55,20 @@ class MemoryReferenceIntegrationTest {
         final List<CompleteRequest> formal = new CopyOnWriteArrayList<>();
         final List<String> recallQueries = new CopyOnWriteArrayList<>();
         final List<String> dialogues = new CopyOnWriteArrayList<>();
+        final List<String> recallInputs = new CopyOnWriteArrayList<>();
+        final List<String> extractionInputs = new CopyOnWriteArrayList<>();
         final boolean useTool;
         Fake(boolean useTool) { this.useTool = useTool; }
         @Override public ModelResponse complete(CompleteRequest request) throws LlmException {
             if (request.system().startsWith("Select memory records")) {
+                recallInputs.add(request.messages().getFirst().extractText());
                 try {
                     recallQueries.add(Json.mapper().readTree(request.messages().getFirst().extractText()).get("current_request").asText());
                 } catch (Exception invalid) { throw new AssertionError("Invalid recall input", invalid); }
                 return reply(recallQueries.size() % 2 == 1 ? "[0]" : "[1]");
             }
             if (request.system().startsWith("Treat the dialogue and catalog as reference data")) {
+                extractionInputs.add(request.messages().getFirst().extractText());
                 try {
                     dialogues.add(Json.mapper().readTree(request.messages().getFirst().extractText()).get("dialogue").asText());
                 } catch (Exception invalid) { throw new AssertionError("Invalid extraction input", invalid); }
@@ -115,6 +119,25 @@ class MemoryReferenceIntegrationTest {
             assertFalse(dialogue.contains("ALPHA_REFERENCE_ONLY")); assertFalse(dialogue.contains("BETA_REFERENCE_ONLY"));
         });
         assertTrue(fake.dialogues.getFirst().contains(first), "用户引用同样文字标签不能被误过滤");
+        // 比对真正发往辅助模型的 JSON 文本：不同任务保留完整目录前缀，正文值没有丢失或混入目录。
+        assertCatalogPrefix(fake.recallInputs, "catalog", "current_request");
+        assertCatalogPrefix(fake.extractionInputs, "existing_catalog", "dialogue");
+    }
+
+    /** 验证两轮不同资料都放在相同完整目录之后；不借助重排 JSON 来伪造字节前缀。 */
+    private static void assertCatalogPrefix(List<String> inputs, String catalogField, String taskField) throws Exception {
+        assertEquals(2, inputs.size());
+        String marker = ",\"" + taskField + "\":";
+        int boundary = inputs.getFirst().indexOf(marker);
+        assertTrue(boundary > 0);
+        String common = inputs.getFirst().substring(0, boundary);
+        assertTrue(common.startsWith("{\"" + catalogField + "\":["));
+        assertTrue(inputs.getLast().startsWith(common + marker));
+        var first = Json.mapper().readTree(inputs.getFirst());
+        var second = Json.mapper().readTree(inputs.getLast());
+        assertEquals(2, first.path(catalogField).size());
+        assertEquals(first.path(catalogField), second.path(catalogField));
+        assertNotEquals(first.path(taskField), second.path(taskField));
     }
 
     /** 真日志恢复保留来源；下一轮仍能排除旧参考，且恢复不会自动调用模型或重放工具。 */
