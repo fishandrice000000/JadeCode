@@ -172,7 +172,7 @@ public final class JadeCodeFactory {
         var metadata = new ModelMetadataResolver(ModelMetadataResolver.defaultCacheDirectory()).resolve(config, settings.modelMetadata());
         observer.publish(com.jadecode.execution.ExecutionNotice.event(
                 com.jadecode.execution.ExecutionNotice.Kind.MODEL, "", config.model(), metadata.describe(), "READY").actor(TeamManager.LEADER));
-        return create(config, cwd, new AnthropicSdkLlmClient(config, metadata), output, errors, presentation, streams, observer, settings, permissions);
+        return create(config, cwd, new AnthropicSdkLlmClient(config, metadata), output, errors, presentation, streams, observer, settings, permissions, MemoryManager.defaultRoot());
     }
 
     /**
@@ -245,6 +245,17 @@ public final class JadeCodeFactory {
     public static SessionRuntime create(AppConfig config, Path cwd, LlmClient client,
             Consumer<String> output, Consumer<String> errors, Presentation presentation, Supplier<ResponseStream> streams,
             ExecutionObserver observer, JadeSettings settings, PermissionState permissions) {
+        // 显式课程兼容入口保留旧存储；生产与 v2 离线测试均调用下面的根目录重载。
+        return create(config, cwd, client, output, errors, presentation, streams, observer, settings, permissions, null);
+    }
+
+    /**
+     * v2 与生产共用装配；memoryRoot 显式注入，离线测试必须用临时目录以隔离 HOME。
+     * null 仅用于旧课程兼容；此方法不自行读取认证，也不发生成请求。
+     */
+    public static SessionRuntime create(AppConfig config, Path cwd, LlmClient client,
+            Consumer<String> output, Consumer<String> errors, Presentation presentation, Supplier<ResponseStream> streams,
+            ExecutionObserver observer, JadeSettings settings, PermissionState permissions, Path memoryRoot) {
         try {
             Path workspace = cwd.toRealPath();
             WorkspaceDataMigration.migrate(new com.jadecode.config.WorkspacePaths(workspace));
@@ -256,12 +267,12 @@ public final class JadeCodeFactory {
             SessionRuntime leader = assemble(config, workspace, client,
                     text -> output.accept("[Leader] " + text), text -> errors.accept("[Leader] " + text),
                     presentation, team, TeamManager.LEADER, "Leader", streams, observer.scoped(TeamManager.LEADER), settings,
-                    usage, new java.util.concurrent.atomic.AtomicReference<>(settings.thinking()), permissions);
+                    usage, new java.util.concurrent.atomic.AtomicReference<>(settings.thinking()), permissions, memoryRoot);
             team.bind(leader, (id, role) -> assemble(config, workspace, client,
                     text -> output.accept("[Teammate " + id + "] " + text),
                     text -> errors.accept("[Teammate " + id + "] " + text),
                     presentation, team, id, role, () -> ResponseStream.NONE, observer.scoped(id), settings, usage,
-                    new java.util.concurrent.atomic.AtomicReference<>(leader.thinking()), permissions));
+                    new java.util.concurrent.atomic.AtomicReference<>(leader.thinking()), permissions, memoryRoot));
             leader.onClose(team::close);
             return leader;
         } catch (IOException failure) {
@@ -278,7 +289,7 @@ public final class JadeCodeFactory {
             Consumer<String> output, Consumer<String> errors, Presentation presentation,
             TeamManager team, String actor, String role, Supplier<ResponseStream> streams, ExecutionObserver observer,
             JadeSettings settings, com.jadecode.session.SessionUsage usage,
-            java.util.concurrent.atomic.AtomicReference<com.jadecode.llm.ThinkingSettings> thinking, PermissionState permissions) {
+            java.util.concurrent.atomic.AtomicReference<com.jadecode.llm.ThinkingSettings> thinking, PermissionState permissions, Path memoryRoot) {
         boolean isLeader = actor.equals(TeamManager.LEADER);
         // 配置里的 0 只代表 auto：先按已发现的模型能力解析，执行器与 wire 始终收到正数。
         // 这份额度只交给正式父/子请求；下方摘要、Memory 和审批继续使用各自的独立预算。
@@ -317,9 +328,13 @@ public final class JadeCodeFactory {
         TaskStore tasks;
         CronScheduler cron;
         try {
-            memory = isLeader && settings.memory().enabled() ? new MemoryManager(tracked(client, config.model(), actor,
-                    com.jadecode.llm.UsageRecord.Purpose.MEMORY, usage, null), new MemoryStore(cwd, errors), settings.memory(),
-                    output, errors) : null;
+            LlmClient memoryClient = tracked(client, config.model(), actor, com.jadecode.llm.UsageRecord.Purpose.MEMORY, usage, null);
+            memory = !isLeader || !settings.memory().enabled() ? null : memoryRoot != null
+                    ? MemoryManager.v2(memoryClient, memoryRoot, cwd, settings.memory(), output, errors)
+                    : new MemoryManager(memoryClient, new MemoryStore(cwd, errors), settings.memory(), output, errors);
+            // 队友也受正式库写保护；只有 Leader 的窄只读入口获得默认读取权限。
+            if (memoryRoot != null && settings.memory().enabled())
+                gate.memoryAccess(memoryRoot, path -> memory != null && memory.readable(path));
             tasks = team.tasks();
             cron = isLeader ? new CronScheduler(cwd) : null;
         } catch (IOException failure) {
@@ -362,6 +377,7 @@ public final class JadeCodeFactory {
                 TASK_TOOL, new SubagentTool(subagentRuntime),
                 LOAD_SKILL_TOOL, new LoadSkillTool(skillLoader),
                 COMPACT_TOOL, new CompactTool()));
+        if (memory != null && memory.isV2()) registered.put("memory_note", new com.jadecode.tools.MemoryNoteTool(memory));
         for (Tool tool : TaskTools.forStore(tasks, isLeader ? "agent" : actor)) {
             if (isLeader || tool.name().equals("get_task") || tool.name().equals("list_tasks")) {
                 registered.put(tool.name(), tool);

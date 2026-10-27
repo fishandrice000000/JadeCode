@@ -26,13 +26,24 @@ public final class PermissionGate {
     private final PermissionRuleMatcher matcher = new PermissionRuleMatcher();
     private final DefaultPermissionRules defaults = new DefaultPermissionRules();
     // Workflow 仅分析传入文本并写宿主管理的运行记录，不获得文件/Shell 能力；显式 deny/ask 仍优先。
-    private static final Set<String> INTERNAL = Set.of("glob", "todo_write", "compact", "load_skill", "task", "Workflow",
+    private static final Set<String> INTERNAL = Set.of("glob", "todo_write", "compact", "load_skill", "task", "Workflow", "memory_note",
             "create_task", "get_task", "list_tasks", "update_task", "claim_task", "complete_task",
             "connect_mcp", "schedule_cron", "list_crons", "cancel_cron", "spawn_teammate", "list_teammates", "close_teammate",
             "shutdown_teammate", "assign_task", "send_message", "submit_task_result", "reopen_task", "retry_team_message");
-    private static final Set<String> ADMIN_WRITES = Set.of("create_task", "update_task", "claim_task", "complete_task",
+    private static final Set<String> ADMIN_WRITES = Set.of("memory_note", "create_task", "update_task", "claim_task", "complete_task",
             "schedule_cron", "cancel_cron", "spawn_teammate", "close_teammate", "shutdown_teammate", "assign_task", "send_message", "submit_task_result",
             "reopen_task", "retry_team_message");
+
+    private Path memoryRoot;
+    private java.util.function.Predicate<Path> memoryReadable = path -> false;
+
+    /**
+     * 工厂只为 v2 绑定受限只读入口；正文写入仍禁止，任意 Shell 不因此获得隔离保证。
+     * 不授予 ~/.jadecode 其它文件的权限，显式 deny/ask 与敏感文件保护仍优先。
+     */
+    public void memoryAccess(Path root, java.util.function.Predicate<Path> readable) {
+        memoryRoot = root.toAbsolutePath().normalize(); memoryReadable = readable;
+    }
 
     /** 工厂传入同一 CLI 的共享状态；coordinator 可以询问用户或辅助模型，本类不读终端。 */
     public PermissionGate(PathResolver resolver, PermissionState state, ApprovalCoordinator coordinator, String actor) {
@@ -119,6 +130,9 @@ public final class PermissionGate {
     /** 显式拒绝/询问优先；默认硬保护不能被普通 allow 推翻。 */
     public PermissionDecision evaluate(Analysis action, PermissionState.Snapshot snapshot) {
         if (!action.error().isEmpty()) return PermissionDecision.deny("input.invalid", action.error());
+        if (memoryRoot != null && action.resources().stream().anyMatch(r -> !r.operation().equals("READ")
+                && (r.path().startsWith(memoryRoot) || memoryRoot.startsWith(r.path()))))
+            return PermissionDecision.deny("memory.read-only", "Formal memory is read-only; propose changes with memory_note");
         var denied = matcher.first(snapshot.rules(), PermissionRule.Effect.DENY, action);
         if (denied != null) return PermissionDecision.deny(denied.id(), "Matched deny rule: " + denied.id());
         var asked = matcher.first(snapshot.rules(), PermissionRule.Effect.ASK, action);
@@ -128,6 +142,9 @@ public final class PermissionGate {
         // 尚未声明检查方式的新工具，不能因 Full Access 绕过集成时的显式确认。
         if (action.commands().isEmpty() && action.resources().isEmpty() && action.uncertain())
             return PermissionDecision.ask("tool.unknown", "This tool has not declared a permission check", true);
+        if (action.tool().equals("read_file") && !action.resources().isEmpty()
+                && action.resources().stream().allMatch(r -> r.operation().equals("READ") && memoryReadable.test(r.path())))
+            return PermissionDecision.allow();
         if (matcher.covers(snapshot.rules(), action)) return PermissionDecision.allow();
         return defaults.ordinary(action, snapshot);
     }
