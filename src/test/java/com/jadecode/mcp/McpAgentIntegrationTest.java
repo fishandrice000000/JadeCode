@@ -28,7 +28,7 @@ class McpAgentIntegrationTest {
                 List.of("-cp", System.getProperty("surefire.test.class.path", System.getProperty("java.class.path")),
                         McpFixtureServer.class.getName(), pidFile.toString()), "", 15, 5, 20_000, Set.of("echo"));
         var d = JadeSettings.defaults();
-        var settings = new JadeSettings(d.tui(), d.compaction(), d.limits(), new JadeSettings.Memory(false, 100, 100, 100, 1000, 1000),
+        var settings = new JadeSettings(d.tui(), d.compaction(), d.limits(), new JadeSettings.Memory(false, 100, 100, 1000),
                 d.modelMetadata(), d.thinking(), d.permissions(), new JadeSettings.Mcp(Map.of("fixture", server)));
         AtomicInteger requests = new AtomicInteger();
         LlmClient fake = request -> {

@@ -89,11 +89,24 @@ class MainCompactionAssemblyTest {
         return new AppConfig("fake-key", "http://localhost:1", "fake-model", 1234);
     }
 
+    /** 本类只验证压缩接线；显式关闭自动记忆，不让后台请求消费正式剧本或访问 HOME。 */
+    private static com.jadecode.config.JadeSettings.Memory disabledMemory() {
+        return new com.jadecode.config.JadeSettings.Memory(false, 8000, 16384, 128000);
+    }
+
+    /** 与生产共用装配，但关闭本测试无关的记忆能力。 */
+    private static SessionRuntime runtime(AppConfig config, Path workspace, LlmClient client) {
+        var defaults = com.jadecode.config.JadeSettings.defaults();
+        var settings = new com.jadecode.config.JadeSettings(defaults.tui(), defaults.compaction(), defaults.limits(), disabledMemory());
+        return JadeCodeFactory.create(config, workspace, client, ignored -> { }, ignored -> { }, (hooks, path, output) -> { },
+                () -> com.jadecode.llm.ResponseStream.NONE, com.jadecode.execution.ExecutionObserver.NONE, settings);
+    }
+
     /** 保留原课程“短历史也全部摘要”的集成断言；生产默认另测 Token 保留尾部的契约。 */
     private SessionRuntime course(AppConfig config, LlmClient client) {
         var defaults = com.jadecode.config.JadeSettings.defaults();
         var settings = new com.jadecode.config.JadeSettings(defaults.tui(),
-                com.jadecode.context.CompactionPolicy.coursePipeline(), defaults.limits(), defaults.memory());
+                com.jadecode.context.CompactionPolicy.coursePipeline(), defaults.limits(), disabledMemory());
         return JadeCodeFactory.create(config, ws, client, ignored -> { }, ignored -> { },
                 (hooks, path, output) -> { }, () -> com.jadecode.llm.ResponseStream.NONE,
                 com.jadecode.execution.ExecutionObserver.NONE, settings);
@@ -112,11 +125,6 @@ class MainCompactionAssemblyTest {
 
         @Override
         public ModelResponse complete(CompleteRequest request) throws LlmException {
-            // s09 新增无工具的记忆提取；它不是摘要，不能计入本测试的压缩事件与摘要次数。
-            // 本套用例没有预置记忆，合法 [] 表示没有新知识；原压缩断言和工具剧本保持不变。
-            if (request.system().startsWith("Treat the dialogue and catalog as reference data")) {
-                return textReply("[]");
-            }
             CompleteRequest snapshot = new CompleteRequest(request.system(), List.copyOf(request.messages()),
                     request.maxTokens(), request.tools());
             if (request.tools().isEmpty() || request.messages().getLast().extractText().startsWith("[Harness compaction request]")) {
@@ -224,7 +232,7 @@ class MainCompactionAssemblyTest {
 
         ScriptedClient client = new ScriptedClient();
         client.parentScript.add(textReply("完成"));
-        SessionRuntime loop = JadeCodeFactory.create(config(), ws, client);
+        SessionRuntime loop = runtime(config(), ws, client);
 
         List<Message> messages = new ArrayList<>(List.of(Message.userText("你好")));
         loop.run(messages);
@@ -258,7 +266,7 @@ class MainCompactionAssemblyTest {
         client.parentScript.add(new ModelResponse(call, new ModelResponse.Usage(1048576 - 16384, 1)));
         client.parentScript.add(textReply("done"));
         List<Message> history = new ArrayList<>(List.of(Message.userText("historical evidence ".repeat(8000))));
-        try (SessionRuntime loop = JadeCodeFactory.create(config(), ws, client)) {
+        try (SessionRuntime loop = runtime(config(), ws, client)) {
             assertTrue(((ContextCompactor) readField(readField(loop, "engine"), "compactor")).productionMode());
             loop.run(history);
         }
@@ -328,7 +336,7 @@ class MainCompactionAssemblyTest {
     @Test
     void parentAndChildShareTheSameCompactorInstance() throws Exception {
         ScriptedClient client = new ScriptedClient();
-        SessionRuntime loop = JadeCodeFactory.create(config(), ws, client);
+        SessionRuntime loop = runtime(config(), ws, client);
 
         // 只读反射取私有依赖:身份相等是"共享同一个实例"的直接证据,行为相似不能替代它。
         ContextCompactor parentCompactor = (ContextCompactor) readField(readField(loop, "engine"), "compactor");
@@ -412,7 +420,7 @@ class MainCompactionAssemblyTest {
         ScriptedClient parentClient = new ScriptedClient();
         parentClient.parentScript.add(toolReply("r1", "read_file", "path", "big.txt"));
         parentClient.parentScript.add(textReply("完成"));
-        SessionRuntime parentLoop = JadeCodeFactory.create(config(), ws, parentClient);
+        SessionRuntime parentLoop = runtime(config(), ws, parentClient);
         List<Message> parentMessages = new ArrayList<>(List.of(Message.userText("读大文件")));
 
         parentLoop.run(parentMessages);
@@ -433,7 +441,7 @@ class MainCompactionAssemblyTest {
         childClient.parentScript.add(textReply("父完成"));
         childClient.childScript.add(toolReply("r1", "read_file", "path", "big.txt"));
         childClient.childScript.add(textReply("子结论"));
-        SessionRuntime childLoop = JadeCodeFactory.create(config(), childWs, childClient);
+        SessionRuntime childLoop = runtime(config(), childWs, childClient);
         List<Message> childMessages = new ArrayList<>(List.of(Message.userText("委派一次")));
 
         childLoop.run(childMessages);
@@ -463,7 +471,7 @@ class MainCompactionAssemblyTest {
         // 生产默认不再自动补救；本例验证“显式启用后的接线”，而不是偷用机器配置打开它。
         var defaults = com.jadecode.config.JadeSettings.defaults();
         var settings = new com.jadecode.config.JadeSettings(defaults.tui(),
-                com.jadecode.context.CompactionPolicy.coursePipeline(), defaults.limits());
+                com.jadecode.context.CompactionPolicy.coursePipeline(), defaults.limits(), disabledMemory());
         SessionRuntime loop = JadeCodeFactory.create(config(), ws, client, ignored -> { }, ignored -> { },
                 (hooks, cwd, output) -> { }, () -> com.jadecode.llm.ResponseStream.NONE,
                 com.jadecode.execution.ExecutionObserver.NONE, settings);

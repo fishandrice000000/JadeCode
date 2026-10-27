@@ -16,12 +16,12 @@ import java.util.concurrent.*;
 import java.util.function.Consumer;
 
 /**
- * v2 维护者：主线程只登记证据，后台在独立维护锁内执行提取和受限整理。
+ * 记忆维护者：主线程只登记证据，后台在独立维护锁内执行提取和受限整理。
  * 正式手册仅接受完整候选；失败保留作业和旧版。构造不创建目录、不启动线程、不访问网络。
  * 文件锁跨进程协调维护，短存储锁协调读写；模型等待不占用短锁。
  */
-final class MemoryV2 implements AutoCloseable {
-    private final MemoryV2Store store;
+final class MemoryMaintenance implements AutoCloseable {
+    private final MemoryStore store;
     private final LlmClient client;
     private final JadeSettings.Memory settings;
     private final Consumer<String> information, warnings;
@@ -34,12 +34,12 @@ final class MemoryV2 implements AutoCloseable {
     private String userRequest = "", session = "", turn = "";
 
     /** 保存依赖；autoStart=false 的同包离线测试仍运行相同维护方法。 */
-    MemoryV2(MemoryV2Store store, LlmClient client, JadeSettings.Memory settings,
+    MemoryMaintenance(MemoryStore store, LlmClient client, JadeSettings.Memory settings,
             Consumer<String> information, Consumer<String> warnings, boolean autoStart) {
         this.store = store; this.client = client; this.settings = settings;
         this.information = information; this.warnings = warnings;
         worker = autoStart ? Executors.newSingleThreadScheduledExecutor(Thread.ofPlatform()
-                .name("jade-memory-v2").daemon(true).inheritInheritableThreadLocals(false).factory()) : null;
+                .name("jade-memory-maintenance").daemon(true).inheritInheritableThreadLocals(false).factory()) : null;
     }
 
     /** 首次使用恢复存储并复制旧库；初始化失败不发布空候选，后续入口可以重试。 */
@@ -93,7 +93,7 @@ final class MemoryV2 implements AutoCloseable {
             List<Message> snapshot, List<String> humans, String outcome) throws IOException {
         initialize();
         var job = Json.mapper().createObjectNode();
-        job.put("id", MemoryV2Store.hash(store.scope() + ":" + session + ":" + task))
+        job.put("id", MemoryStore.hash(store.scope() + ":" + session + ":" + task))
                 .put("scope", store.scope()).put("session_id", session).put("task_id", task)
                 .put("memory_root", store.root().toString()).put("journal", journal == null ? "" : journal.toString()).put("start_sequence", start).put("end_sequence", end)
                 .put("created_at", Instant.now().toString()).put("outcome", outcome).put("status", "pending").put("attempts", 0);
@@ -101,7 +101,7 @@ final class MemoryV2 implements AutoCloseable {
         if (journal == null) {
             // 快照也执行与日志相同的证据过滤，序列化前不把无限历史塞进后台状态文件。
             job.set("snapshot", Json.mapper().valueToTree(snapshot));
-            String bounded = MemoryV2Evidence.render(job, store.workspace(), settings.consolidationInputChars());
+            String bounded = MemoryEvidence.render(job, store.workspace(), settings.consolidationInputChars());
             job.remove("snapshot"); job.put("evidence_snapshot", bounded);
         }
         store.enqueue(job);
@@ -114,7 +114,7 @@ final class MemoryV2 implements AutoCloseable {
     private List<String> boundedHumans(List<String> humans) {
         var retained = new ArrayList<String>(); int remaining = settings.consolidationInputChars();
         for (int i = humans.size() - 1; i >= 0 && remaining > 100; i--) {
-            String safe = MemoryV2Evidence.redact(humans.get(i));
+            String safe = MemoryEvidence.redact(humans.get(i));
             if (safe.length() > remaining - 80) safe = safe.substring(0, remaining - 80) + "\n[human input truncated by budget]";
             retained.add(safe); remaining -= safe.length();
         }
@@ -130,11 +130,11 @@ final class MemoryV2 implements AutoCloseable {
         if (!turn.equals(taskId) || userRequest.isBlank()) throw new IOException("No trusted user request for this note");
         if (!Set.of("remember", "correct", "forget").contains(kind) || body.isBlank() || body.length() > 8000)
             throw new IOException("Invalid pending memory note");
-        String safe = MemoryV2Evidence.redact(body), request = MemoryV2Evidence.redact(userRequest);
-        if (MemoryV2Evidence.bytes(request) > 64_000) throw new IOException("Trusted user request exceeds the note evidence budget");
-        String id = MemoryV2Store.hash(store.scope() + ":" + session + ":" + turn + ":" + kind + ":" + safe);
+        String safe = MemoryEvidence.redact(body), request = MemoryEvidence.redact(userRequest);
+        if (MemoryEvidence.bytes(request) > 64_000) throw new IOException("Trusted user request exceeds the note evidence budget");
+        String id = MemoryStore.hash(store.scope() + ":" + session + ":" + turn + ":" + kind + ":" + safe);
         store.note(id, kind, safe, request, session, turn);
-        event(kind.equals("correct") ? "correction" : "note", "pending/" + id + ".json", MemoryV2Store.hash(safe), id);
+        event(kind.equals("correct") ? "correction" : "note", "pending/" + id + ".json", MemoryStore.hash(safe), id);
         return "Pending memory note saved: " + id + ". Formal memory has not yet been changed.";
     }
 
@@ -152,7 +152,7 @@ final class MemoryV2 implements AutoCloseable {
             String raw = call.input().path("path").asText();
             Path path = Path.of(raw); if (!path.isAbsolute()) path = store.workspace().resolve(path);
             path = path.normalize(); if (!store.readable(path)) continue;
-            String relative = store.root().relativize(path).toString(), version = MemoryV2Store.hash(result.content());
+            String relative = store.root().relativize(path).toString(), version = MemoryStore.hash(result.content());
             reads.put(path.toString(), version); reads.put(relative, version);
             event("read", relative, version, call.id());
         }
@@ -170,7 +170,7 @@ final class MemoryV2 implements AutoCloseable {
     /** 事件没有对话正文；使用稳定键让日志追加重放时可去重。 */
     private void event(String kind, String path, String version, String source) throws IOException {
         var event = Json.mapper().createObjectNode();
-        event.put("event_id", MemoryV2Store.hash(session + ":" + turn + ":" + kind + ":" + source))
+        event.put("event_id", MemoryStore.hash(session + ":" + turn + ":" + kind + ":" + source))
                 .put("kind", kind).put("scope", store.scope()).put("session_id", session).put("turn_id", turn)
                 .put("path", path).put("version", version).put("at", Instant.now().toString());
         store.feedback(event);
@@ -220,14 +220,14 @@ final class MemoryV2 implements AutoCloseable {
         } finally { LOCAL_MAINTENANCE.remove(store.root()); }
     }
 
-    /** 单次无工具 v2 提取；严格两字段、空结果与截断分别处理，输出先脱敏再存来源材料。 */
+    /** 单次无工具提取；严格两字段、空结果与截断分别处理，输出先脱敏再存来源材料。 */
     private void extract(ObjectNode job) throws IOException, LlmException {
         // 崩溃可能发生在材料发布后、作业 done 标记前；已发布材料复用，避免重新生成不同正文。
         if (store.materials().stream().anyMatch(n -> n.path("id").asText().equals(job.path("id").asText()))) return;
         if (!job.has("extracted_summary")) {
             String evidence = job.has("evidence_snapshot") ? job.path("evidence_snapshot").asText()
-                    : MemoryV2Evidence.render(job, store.workspace(), settings.consolidationInputChars());
-            var response = client.complete(MemoryReply.request(client, resource("extraction-v2.md"),
+                    : MemoryEvidence.render(job, store.workspace(), settings.consolidationInputChars());
+            var response = client.complete(MemoryReply.request(client, resource("extraction.md"),
                     "Workspace: " + store.workspace() + "\nTask outcome: " + job.path("outcome").asText() + "\n" + evidence,
                     settings.extractionMaxOutputTokens()));
             if (closed) return;
@@ -236,11 +236,11 @@ final class MemoryV2 implements AutoCloseable {
             JsonNode output = Json.mapper().reader().with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
                     .readTree(response.message().extractText());
             if (output == null || !output.isObject() || output.size() != 2 || !output.path("rollout_summary").isTextual()
-                    || !output.path("rollout_slug").isTextual()) throw new IOException("Invalid v2 extraction object");
-            String summary = MemoryV2Evidence.redact(output.path("rollout_summary").asText()), slug = output.path("rollout_slug").asText();
+                    || !output.path("rollout_slug").isTextual()) throw new IOException("Invalid extraction object");
+            String summary = MemoryEvidence.redact(output.path("rollout_summary").asText()), slug = output.path("rollout_slug").asText();
             if (!(summary.isEmpty() && slug.isEmpty()) && (summary.isBlank() || !slug.matches("[A-Za-z0-9][A-Za-z0-9_-]{0,119}")
-                    || !slug.equals(MemoryV2Evidence.redact(slug)) || MemoryV2Evidence.bytes(summary) > 9000))
-                throw new IOException("Invalid v2 summary or slug");
+                    || !slug.equals(MemoryEvidence.redact(slug)) || MemoryEvidence.bytes(summary) > 9000))
+                throw new IOException("Invalid summary or slug");
             // 先缓存完整已验证结果，再发布来源两文件；中断重试复用正文，不重复生成不同材料。
             job.put("extracted_summary", summary).put("extracted_slug", slug);
             synchronized (lifecycle) { if (closed) return; store.saveJob(job); }
@@ -253,7 +253,7 @@ final class MemoryV2 implements AutoCloseable {
                 .put("journal", job.path("journal").asText()).put("session_id", job.path("session_id").asText())
                 .put("task_id", job.path("task_id").asText()).put("created_at", job.path("created_at").asText())
                 .put("start_sequence", job.path("start_sequence").asLong()).put("end_sequence", job.path("end_sequence").asLong())
-                .put("outcome", job.path("outcome").asText()).put("sha256", MemoryV2Store.hash(summary));
+                .put("outcome", job.path("outcome").asText()).put("sha256", MemoryStore.hash(summary));
         synchronized (lifecycle) { if (!closed) store.material(job.path("id").asText(), summary, metadata); }
     }
 
@@ -263,7 +263,7 @@ final class MemoryV2 implements AutoCloseable {
      */
     private void consolidate() throws IOException {
         var sources = store.materials(); var notes = store.notes(); var snapshot = store.snapshot();
-        String baseline = MemoryV2Store.hash(sources.toString() + notes.toString());
+        String baseline = MemoryStore.hash(sources.toString() + notes.toString());
         if (sources.isEmpty() && notes.isEmpty() || baseline.equals(snapshot.baseline())) return;
         var retry = store.maintenanceState();
         if (!retry.path("baseline").asText().equals(baseline)) {
@@ -290,7 +290,7 @@ final class MemoryV2 implements AutoCloseable {
         var allowed = new HashSet<String>();
         for (var source : sources) {
             String ref = source.path("source").asText();
-            if (!MemoryV2Store.hash(store.readSource(ref)).equals(source.path("sha256").asText()))
+            if (!MemoryStore.hash(store.readSource(ref)).equals(source.path("sha256").asText()))
                 throw new IOException("Immutable memory source changed; review required");
             allowed.add(ref);
         }
@@ -299,7 +299,7 @@ final class MemoryV2 implements AutoCloseable {
                 .matcher(snapshot.globalHandbook() + snapshot.workspaceHandbook());
         while (oldLinks.find()) { store.readSource(oldLinks.group()); allowed.add(oldLinks.group()); }
         var readSources = new HashSet<String>();
-        var candidates = new LinkedHashMap<String, MemoryV2Store.Artifacts>();
+        var candidates = new LinkedHashMap<String, MemoryStore.Artifacts>();
         List<Message> messages = new ArrayList<>(List.of(Message.userText(input.toString())));
         int remainingReads = settings.consolidationInputChars();
         try {
@@ -308,7 +308,7 @@ final class MemoryV2 implements AutoCloseable {
                 // 累计消息也检查，避免多次 read_source 逐步撑爆维护上下文。
                 if (Json.mapper().writeValueAsString(messages).length() > settings.consolidationInputChars())
                     throw new IOException("Consolidation input budget exceeded");
-                ModelResponse response = client.complete(new CompleteRequest(resource("consolidation-v2.md"), List.copyOf(messages),
+                ModelResponse response = client.complete(new CompleteRequest(resource("consolidation.md"), List.copyOf(messages),
                         settings.consolidationMaxOutputTokens(), definitions(), ThinkingSettings.DEFAULT));
                 if (closed) return;
                 if (response == null || response.message() == null || response.message().role() != Role.ASSISTANT
@@ -323,7 +323,7 @@ final class MemoryV2 implements AutoCloseable {
                         store.publish(snapshot, candidates, baseline, List.copyOf(allowed),
                                 notes.stream().map(n -> n.path("id").asText()).toList());
                     }
-                    information.accept("[Memory] v2 maintenance completed; staged sections " + candidates.size()); return;
+                    information.accept("[Memory] maintenance completed; staged sections " + candidates.size()); return;
                 }
                 messages.add(reply); var results = new ArrayList<ContentBlock>();
                 Set<String> ids = new HashSet<>();
@@ -340,16 +340,16 @@ final class MemoryV2 implements AutoCloseable {
                         exact(args, Set.of("scope", "summary", "handbook"));
                         String scope = args.path("scope").asText();
                         if (!Set.of("workspace", "global").contains(scope)) throw new IOException("Invalid candidate scope");
-                        String summary = MemoryV2Evidence.redact(args.path("summary").asText());
-                        String handbook = MemoryV2Evidence.redact(args.path("handbook").asText());
-                        if (!summary.startsWith("v2\n") || summary.length() > 10_000 || handbook.isBlank() || handbook.length() > 64_000)
+                        String summary = MemoryEvidence.redact(args.path("summary").asText());
+                        String handbook = MemoryEvidence.redact(args.path("handbook").asText());
+                        if (summary.isBlank() || summary.length() > 10_000 || handbook.isBlank() || handbook.length() > 64_000)
                             throw new IOException("Invalid memory candidate");
                         validateLinks(summary + "\n" + handbook, allowed, notes);
                         String changed = summary + "\n" + handbook;
                         for (String ref : allowed) if (changed.contains(ref) && !readSources.contains(ref)
                                 && !(snapshot.globalHandbook() + snapshot.workspaceHandbook()).contains(ref))
                             throw new IOException("New source claim must be read before staging");
-                        candidates.put(scope.equals("global") ? "global" : store.scope(), new MemoryV2Store.Artifacts(summary, handbook));
+                        candidates.put(scope.equals("global") ? "global" : store.scope(), new MemoryStore.Artifacts(summary, handbook));
                         result = "Candidate staged; not yet published.";
                     } else throw new IOException("Unavailable maintenance tool");
                     results.add(new ToolResultBlock(call.id(), result, false));
@@ -390,7 +390,7 @@ final class MemoryV2 implements AutoCloseable {
 
     /** 资源缺失属于装配错误；不把空提示发给模型。 */
     private static String resource(String name) throws IOException {
-        try (var input = MemoryV2.class.getResourceAsStream("/memory/" + name)) {
+        try (var input = MemoryMaintenance.class.getResourceAsStream("/memory/" + name)) {
             if (input == null) throw new IOException("Missing memory prompt resource");
             return new String(input.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
         }
@@ -398,7 +398,7 @@ final class MemoryV2 implements AutoCloseable {
     boolean readable(Path path) { return store.readable(path); }
     Path root() { return store.root(); }
     private void warn(String phase, Exception failure) {
-        warnings.accept("[Warning] [Memory] v2 " + phase + " failed: "
+        warnings.accept("[Warning] [Memory] " + phase + " failed: "
                 + (failure instanceof MemoryReply.Invalid invalid ? invalid.reason.description() : failure.getClass().getSimpleName()) + "; prior memory and pending jobs retained");
     }
 

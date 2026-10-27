@@ -134,13 +134,11 @@ public record JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimit
      * 记忆辅助请求的独立额度；token 是输出上限，char 是 UTF-16 输入预算，不改变正式请求。
      * enabled=false 只停用自动召回/提取/整理，不删除已有知识；缺省保持启用。
      */
-    public record Memory(boolean enabled, int extractionMaxOutputTokens, int recallMaxOutputTokens,
-            int consolidationMaxOutputTokens, int consolidationInputChars, int extractionCatalogChars) {
-        /** 旧装配只指定提取额度时，为其余设置提供与生产相同的默认值。 */
-        public Memory(int extractionMaxOutputTokens) { this(true, extractionMaxOutputTokens, 2048, 16384, 128000, 128000); }
+    public record Memory(boolean enabled, int extractionMaxOutputTokens, int consolidationMaxOutputTokens, int consolidationInputChars) {
+        /** 只指定提取额度时，为整理输出和输入预算采用默认值。 */
+        public Memory(int extractionMaxOutputTokens) { this(true, extractionMaxOutputTokens, 16384, 128000); }
         public Memory {
-            if (extractionMaxOutputTokens < 1 || recallMaxOutputTokens < 1 || consolidationMaxOutputTokens < 1
-                    || consolidationInputChars < 1 || extractionCatalogChars < 1)
+            if (extractionMaxOutputTokens < 1 || consolidationMaxOutputTokens < 1 || consolidationInputChars < 1)
                 throw new IllegalArgumentException("memory output and input budgets must be positive integers");
         }
     }

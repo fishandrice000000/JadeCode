@@ -24,7 +24,6 @@ import com.jadecode.llm.LlmClient;
 import com.jadecode.llm.ResponseStream;
 import com.jadecode.llm.ModelMetadataResolver;
 import com.jadecode.memory.MemoryManager;
-import com.jadecode.memory.MemoryStore;
 import com.jadecode.messages.ToolUseBlock;
 import com.jadecode.process.BackgroundManager;
 import com.jadecode.safety.PermissionGate;
@@ -186,6 +185,13 @@ public final class JadeCodeFactory {
         return create(config, cwd, client, ignored -> { }, ignored -> { }, (hooks, path, output) -> { });
     }
 
+    /** 离线调用者显式指定临时记忆根，生产与测试仍执行同一套装配。 */
+    public static SessionRuntime create(AppConfig config, Path cwd, LlmClient client, Path memoryRoot) {
+        var settings = JadeSettings.defaults();
+        return create(config, cwd, client, ignored -> { }, ignored -> { }, (hooks, path, output) -> { },
+                () -> ResponseStream.NONE, ExecutionObserver.NONE, settings, settings.permissions().state(null), memoryRoot);
+    }
+
     /**
      * 共用装配路径：先建状态服务和工具，再接权限与展示，最后交给会话拥有。
      *
@@ -230,7 +236,8 @@ public final class JadeCodeFactory {
     }
 
     /**
-     * 所有依赖均可注入的装配。离线验证不读用户 HOME；生产传已验证的配置快照。
+     * 所有依赖均可注入的装配，不自行读取认证；生产传已验证的配置快照。
+     * 记忆仍默认使用全局目录，离线验证应使用带 memoryRoot 的重载或显式关闭记忆。
      * Leader、常驻队友及一次性子代理采用同一组开关和阈值，但历史与执行状态仍各自独立。
      */
     public static SessionRuntime create(AppConfig config, Path cwd, LlmClient client,
@@ -245,17 +252,18 @@ public final class JadeCodeFactory {
     public static SessionRuntime create(AppConfig config, Path cwd, LlmClient client,
             Consumer<String> output, Consumer<String> errors, Presentation presentation, Supplier<ResponseStream> streams,
             ExecutionObserver observer, JadeSettings settings, PermissionState permissions) {
-        // 显式课程兼容入口保留旧存储；生产与 v2 离线测试均调用下面的根目录重载。
-        return create(config, cwd, client, output, errors, presentation, streams, observer, settings, permissions, null);
+        // 只保留全局记忆实现；离线测试通过下面的根目录重载隔离 HOME。
+        return create(config, cwd, client, output, errors, presentation, streams, observer, settings, permissions, MemoryManager.defaultRoot());
     }
 
     /**
-     * v2 与生产共用装配；memoryRoot 显式注入，离线测试必须用临时目录以隔离 HOME。
-     * null 仅用于旧课程兼容；此方法不自行读取认证，也不发生成请求。
+     * 所有调用方共用装配；memoryRoot 显式注入，离线测试必须用临时目录以隔离 HOME。
+     * memoryRoot 不可为 null；此方法不自行读取认证，也不发生成请求。
      */
     public static SessionRuntime create(AppConfig config, Path cwd, LlmClient client,
             Consumer<String> output, Consumer<String> errors, Presentation presentation, Supplier<ResponseStream> streams,
             ExecutionObserver observer, JadeSettings settings, PermissionState permissions, Path memoryRoot) {
+        java.util.Objects.requireNonNull(memoryRoot, "memoryRoot");
         try {
             Path workspace = cwd.toRealPath();
             WorkspaceDataMigration.migrate(new com.jadecode.config.WorkspacePaths(workspace));
@@ -329,11 +337,10 @@ public final class JadeCodeFactory {
         CronScheduler cron;
         try {
             LlmClient memoryClient = tracked(client, config.model(), actor, com.jadecode.llm.UsageRecord.Purpose.MEMORY, usage, null);
-            memory = !isLeader || !settings.memory().enabled() ? null : memoryRoot != null
-                    ? MemoryManager.v2(memoryClient, memoryRoot, cwd, settings.memory(), output, errors)
-                    : new MemoryManager(memoryClient, new MemoryStore(cwd, errors), settings.memory(), output, errors);
+            memory = !isLeader || !settings.memory().enabled() ? null
+                    : new MemoryManager(memoryClient, memoryRoot, cwd, settings.memory(), output, errors);
             // 队友也受正式库写保护；只有 Leader 的窄只读入口获得默认读取权限。
-            if (memoryRoot != null && settings.memory().enabled())
+            if (settings.memory().enabled())
                 gate.memoryAccess(memoryRoot, path -> memory != null && memory.readable(path));
             tasks = team.tasks();
             cron = isLeader ? new CronScheduler(cwd) : null;
@@ -377,7 +384,7 @@ public final class JadeCodeFactory {
                 TASK_TOOL, new SubagentTool(subagentRuntime),
                 LOAD_SKILL_TOOL, new LoadSkillTool(skillLoader),
                 COMPACT_TOOL, new CompactTool()));
-        if (memory != null && memory.isV2()) registered.put("memory_note", new com.jadecode.tools.MemoryNoteTool(memory));
+        if (memory != null) registered.put("memory_note", new com.jadecode.tools.MemoryNoteTool(memory));
         for (Tool tool : TaskTools.forStore(tasks, isLeader ? "agent" : actor)) {
             if (isLeader || tool.name().equals("get_task") || tool.name().equals("list_tasks")) {
                 registered.put(tool.name(), tool);

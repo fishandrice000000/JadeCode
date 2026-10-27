@@ -1,57 +1,30 @@
 package com.jadecode.memory;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.DeserializationFeature;
-import com.fasterxml.jackson.databind.JsonNode;
 import com.jadecode.llm.*;
 import com.jadecode.messages.Role;
-import com.jadecode.util.Json;
 
 /**
- * 三种记忆辅助请求共用的 JSON 读取规则，不解释长期价值，也不写盘。
- * 允许伴随 thinking 和包住全文的一层 JSON 代码围栏；只读取正式文本，不展示或解析思考。
- * 不从解释文字中猜数组、不修补截断 JSON，避免把半份整理结果当成完整库。
+ * 提取辅助回复的协议边界：只接受完整正式正文，允许伴随 thinking，但不读取思考内容。
+ * 严格两字段 JSON 由维护者继续解析；这里不修补围栏、截断正文或其它旧格式。
  */
-public final class MemoryReply {
-    /** 固定诊断，不携带模型正文、原异常消息或凭据。 */
-    public enum Reason {
-        NONE("No error"), REQUEST_FAILED("Auxiliary model request failed"), MISSING_RESPONSE("Model returned no message"),
-        INVALID_BLOCKS("Reply role or content blocks do not meet the JSON contract"), EMPTY_TEXT("Reply has no text, possibly only thinking"),
-        OUTPUT_LIMIT("Output limit reached; a possibly truncated result was discarded. Adjust the memory output budget"),
-        CONTEXT_LIMIT("Auxiliary request exceeds the model context window"), REFUSAL("Model refused the auxiliary request"),
-        NOT_ARRAY("Reply top level is not a JSON array"), INVALID_JSON("Text is not complete JSON, or contains extra explanation/trailing data"),
-        INVALID_INDEX("Recall index is not an integer within the current catalog"), INVALID_RECORD("Consolidation entry is missing a field or has an invalid type"),
-        INVALID_COUNT("Consolidation must return a non-empty complete library without increasing the record count"), NAME_CONFLICT("Consolidation returned duplicate names or conflicting targets"),
-        INPUT_LIMIT("The full catalog or library exceeds the configured input character budget; incomplete material was not sent"),
-        CATALOG_ITEM_TOO_LARGE("A single catalog entry exceeds the recall page budget; fell back to keyword search over the full library");
+final class MemoryReply {
+    /** 固定诊断不携带模型正文与凭据；只保留当前提取链需要的类别。 */
+    enum Reason {
+        MISSING_RESPONSE("Model returned no message"), INVALID_BLOCKS("Reply role or blocks violate the text contract"),
+        EMPTY_TEXT("Reply has no text, possibly only thinking"), OUTPUT_LIMIT("Output limit reached; incomplete memory discarded"),
+        CONTEXT_LIMIT("Auxiliary request exceeds the model context window"), REFUSAL("Model refused the auxiliary request");
         private final String description;
         Reason(String description) { this.description = description; }
-        public String description() { return description; }
+        String description() { return description; }
     }
 
-    /** 仅传递安全分类，不保留 Jackson 可能含候选正文的异常链。 */
+    /** 只传递分类，不保存可能包含秘密的解析异常链。 */
     static final class Invalid extends IllegalArgumentException {
         final Reason reason;
         Invalid(Reason reason) { super(reason.description()); this.reason = reason; }
     }
 
-    /**
-     * 检查协议停止原因和消息形状，再解析整个文本为数组；失败不产生任何 IO。
-     * 缺少 stopReason 的旧客户端兼容保留，但明确的截断/拒绝必须拒绝，不能靠 JSON 恰好闭合猜成功。
-     */
-    static JsonNode array(ModelResponse response) {
-        validateTextResponse(response);
-        String text = response.message().extractText().strip();
-        var fence = java.util.regex.Pattern.compile("(?is)\\A```(?:json)?[ \\t]*\\R(.*)\\R```\\z").matcher(text);
-        if (fence.matches()) text = fence.group(1).strip();
-        try {
-            JsonNode value = Json.mapper().reader().with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS).readTree(text);
-            if (value == null || !value.isArray()) throw new Invalid(Reason.NOT_ARRAY);
-            return value;
-        } catch (JsonProcessingException invalidJson) { throw new Invalid(Reason.INVALID_JSON); }
-    }
-
-    /** 只验证完整正文协议；v2 在此之后执行自己的严格对象解析，不沿用旧数组/围栏容错。 */
+    /** 验证完整正文协议，再由维护者执行严格对象解析；本方法不产生 IO。 */
     static void validateTextResponse(ModelResponse response) {
         if (response == null || response.message() == null) throw new Invalid(Reason.MISSING_RESPONSE);
         switch (response.stopReason()) {

@@ -45,7 +45,7 @@ class WorkflowIntegrationTest {
     private SessionRuntime session(LlmClient client, PermissionState permissions, ExecutionObserver observer, int maxTokens) {
         var defaults = JadeSettings.defaults();
         var settings = new JadeSettings(defaults.tui(), defaults.compaction(), defaults.limits(),
-                new JadeSettings.Memory(false, 100, 100, 100, 1000, 1000), defaults.modelMetadata(), defaults.thinking(),
+                new JadeSettings.Memory(false, 100, 100, 1000), defaults.modelMetadata(), defaults.thinking(),
                 defaults.permissions(), new JadeSettings.Mcp(Map.of()));
         return JadeCodeFactory.create(new AppConfig("offline", "http://127.0.0.1:9", "fixture", maxTokens), workspace, client,
                 ignored -> { }, ignored -> { }, (hooks, cwd, out) -> { }, () -> ResponseStream.NONE,

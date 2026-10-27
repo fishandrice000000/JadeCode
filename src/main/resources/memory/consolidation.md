@@ -16,7 +16,7 @@ For volatile facts retain observed versions/dates and tell future agents what to
 
 stage_memory replaces one COMPLETE section, so preserve useful existing claims in that section.
 Use scope workspace or global only. Other workspaces are preserved by the harness.
-summary must start with v2 followed by a newline and be a short routing index describing
+summary must be a short routing index describing
 applicability and where to read details. handbook is Markdown with useful, scoped knowledge,
 concrete source links, confidence/evidence limits, and superseded claims explained when needed.
 Cite source files using relative Markdown links: rollout_summaries/<64-hex-id>.md.

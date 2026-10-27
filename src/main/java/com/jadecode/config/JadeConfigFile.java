@@ -245,10 +245,8 @@ public final class JadeConfigFile implements com.jadecode.safety.rules.Permissio
             catch (IllegalArgumentException invalid) { throw new IOException("Invalid config.thinking.effort"); }
         }
         var memorySettings = new JadeSettings.Memory(bool(memory, "enabled", d.memory().enabled()), extractionTokens,
-                number(memory, "recallMaxOutputTokens", d.memory().recallMaxOutputTokens(), 1, "config.memory"),
                 number(memory, "consolidationMaxOutputTokens", d.memory().consolidationMaxOutputTokens(), 1, "config.memory"),
-                number(memory, "consolidationInputChars", d.memory().consolidationInputChars(), 1, "config.memory"),
-                number(memory, "extractionCatalogChars", d.memory().extractionCatalogChars(), 1, "config.memory"));
+                number(memory, "consolidationInputChars", d.memory().consolidationInputChars(), 1, "config.memory"));
         var defaults = com.jadecode.context.ProductionCompactionSettings.defaults();
         Integer summaryInput = null;
         if (c.has("summaryMaxInputTokens") && !c.get("summaryMaxInputTokens").isNull()

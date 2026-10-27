@@ -39,7 +39,7 @@ src/main/java/com/jadecode/
 ├── subagent/         # SubagentRuntime(嵌套循环 + 消息隔离 + 三终态)
 ├── skills/           # SkillDefinition, SkillLoader(catalog 常驻 / 全文按需)
 ├── context/          # ContextCompactor(请求前保护 / 主动压缩 / 超限补救)
-├── memory/           # 全局 v2 记忆：短索引 / 后台回顾 / 受限整理 / 反馈
+├── memory/           # 全局记忆：短索引 / 后台回顾 / 受限整理 / 反馈
 ├── tasks/            # 持久任务图：创建 / 依赖 / 认领 / 完成与解锁，六工具由父循环使用
 ├── team/             # 常驻队友、独立派工编号、文件邮箱与结果提交
 ├── mcp/              # 真实 stdio 服务连接、工具发现与文本调用；官方 Java SDK 隔离层
@@ -477,7 +477,7 @@ s15 从现有装配、会话事件、工具批次与结束判断串联前面各�
 正式行动回复若明确以 `max_tokens` 截断，父/队友与一次性子代理会拒绝采用和执行其中工具，
 不会把半份回复当正常完成，也不自动提高额度或续写；之前轮次已发生的副作用不回滚。
 
-生产记忆 v2 保存在 `~/.jadecode/memory/`，按真实工作区路径哈希区分项目，并保留全局作用域。
+记忆保存在 `~/.jadecode/memory/`，按真实工作区路径哈希区分项目，并保留全局作用域。
 任务入口注入当前项目和全局的短路由（`memory_summary.md` 对应分区），主模型通过 `read_file`
 按需阅读 `MEMORY.md` 和 `rollout_summaries/`；召回不再额外请求选择模型，也没有向量检索。
 system 只保留稳定参考边界，路由作为带内部来源的参考消息追加；参考不是用户指令。
@@ -486,7 +486,7 @@ system 只保留稳定参考边界，路由作为带内部来源的参考消息�
 用户轮次真正结束、失败或普通退出中断时，登记持久作业。后台从已落盘事件区间读取证据，
 排除思考、压缩替代历史、旧记忆、技能正文和后台通知；忙时真实用户补充单独保留。
 无日志的嵌入调用使用有界快照。输入有预算，超出时明确标记遗漏，不保证无限会话完整进入模型。
-提取完整采用 Codex v2 提示语义：忠实任务回顾，保留条件和不确定性，不把教学演示泛化成稳定偏好。
+提取采用 Codex 的任务回顾提示语义：忠实任务回顾，保留条件和不确定性，不把教学演示泛化成稳定偏好。
 仅接受两个字符串字段 `rollout_summary` / `rollout_slug`，同时为空是正常无产出；拒绝额外字段、
 围栏、截断、拒答和不完整 JSON。回顾最多 9000 UTF-8 字节，超限拒绝而不静默截断。
 
@@ -508,14 +508,13 @@ system 只保留稳定参考边界，路由作为带内部来源的参考消息�
 达到重试上限的作业留在 `state/jobs/`，整理退避留在 `state/maintenance-<scope>.json`，需检查原因后人工重置；
 目前没有重试管理 UI。索引、手册和维护输入均有限额，超限保留旧库并告警，不静默丢弃资料覆盖。
 
-`memory.enabled=false` 关闭自动记忆，不删除文件。v2 使用 `extractionMaxOutputTokens`、
+`memory.enabled=false` 关闭自动记忆，不删除文件。使用 `extractionMaxOutputTokens`、
 `consolidationMaxOutputTokens`（默认 8000 / 16384）和 `consolidationInputChars`（默认 128000 字符）。
-`recallMaxOutputTokens`、`extractionCatalogChars` 仅用于显式旧课程兼容入口，生产 v2 不使用它们。
 旧项目 `.jadecode/memory/*.md` 首次使用时复制到全局 `legacy/<scope>/`，原文件不移动、不删除，
 旧内容不自动进入正式手册。已有而无法识别的全局手册会拒绝初始化，需明确导入。
 子代理和队友不自主维护长期记忆；共享客户端允许辅助请求并行于正式请求，可能增加后端并发和用量。
 后台正常失败不覆盖主任务结果。提炼质量仍需真实模型与用户验收，离线替身只证明工程契约。
-提取提示来源与阅读顺序见 [记忆 v2 阅读指南](docs/notes/s09/memory-v2-review.md)。
+提取提示来源与阅读顺序见 [记忆系统阅读指南](docs/notes/s09/memory-system-review.md)。
 
 Task System 使用 `.jadecode/tasks/{id}.json`。先创建取得实际 ID，再增加依赖；认领检查前置条件，完成报告刚解锁任务。
 `list_tasks` 查看全部进度，`get_task` 读取完整描述。`task` 仍表示子代理委派，不是持久任务创建。

@@ -630,7 +630,7 @@ public final class SessionRuntime implements AutoCloseable {
             task.goal = activeRequest(history);
             if (task.goalEligible && task.goal != null && journal == null) task.memoryHumans.add(task.goal);
             if (memory != null) memory.beginTask(sessionId(), task.context().id(), task.goalEligible ? task.goal : "");
-            task.system = prepareTaskSystem(task.goal);
+            task.system = prepareTaskSystem();
             if (entry.request().incoming() != null) {
                 output.accept(entry.request().incoming().kind().equals("background")
                         ? "[Background] 1 command result received" : "[Incoming] " + entry.request().incoming().summary());
@@ -677,34 +677,18 @@ public final class SessionRuntime implements AutoCloseable {
      * 也复用这次返回的字符串，不每次都查记忆。调用前已捕获 task.goal，新增参考消息不会
      * 变成压缩/目标判断的请求；旧历史不改写。普通召回故障由 MemoryManager 告警降级，
      * 追加日志失败仍停止任务，不能假装资料已经保存。</p>
-     * @param activeRequest 用户最初的请求，启用记忆时应已由 activeRequest 方法检查
      * @return 本任务复用的稳定提示；可能追加参考消息并同步写日志
      * @throws IllegalStateException 会话或执行器已退出
      */
-    private String prepareTaskSystem(String activeRequest) {
+    private String prepareTaskSystem() {
         ensureOpen();
         String base = engine.system() + resumeContext;
         if (memory == null) return base;
         String system = memory.prepareSystem(base);
-        String reference = memory.recallReference(activeRequest);
+        String reference = memory.reference();
         // 来源存在内部字段，不靠正文前缀判断；只追加，不替换上一轮已发出的内容。
         if (!reference.isEmpty()) appendMessage(Message.memoryReference(reference), "memory_reference");
         return system;
-    }
-
-    /**
-     * Stop 允许候选结束后执行旧课程的同步维护。v2 在这里不请求模型，
-     * 等最终输入检查和 TURN_FINISHED 都完成后，才由 finishV2 登记一次后台作业。
-     *
-     * <p>没有记忆功能就直接返回；有的话可能读写文件或调用辅助模型。
-     * 具体失败处理由 MemoryManager 负责，不能把辅助回复当成主任务回答。
-     * 工具运行到一半或仍在等后台时不能调用，否则可能把没完成的结论当成长期知识。</p>
-     * @param messages 当前已完成任务的历史，只读，不由本方法追加消息
-     * @throws IllegalStateException 会话或执行器已退出
-     */
-    private void finish(List<Message> messages) {
-        ensureOpen();
-        if (memory != null) memory.finishTask(messages);
     }
 
     /**
@@ -716,8 +700,8 @@ public final class SessionRuntime implements AutoCloseable {
      * <p>没有工具调用也不能马上结束。例如模型说“构建还在跑”，而当前任务必须等构建结果：
      * 程序要等命令完成，不花模型请求反复问进度，也不做队列里的下一项任务。
      * 结果到了再放进 history，请模型继续。Stop hook 若说还有事，也继续当前任务。
-     * 这些事都处理完才完成业务 future；v2 在结束事件落盘后登记后台记忆作业，
-     * 不等待提取模型。旧课程装配仍在候选结束时同步维护记忆。</p>
+     * 这些事都处理完才完成业务 future；在结束事件落盘后登记后台记忆作业，
+     * 不等待提取模型。</p>
      *
      * <p>等模型回答时，也可能刚好有后台命令跑完，所以想结束时再查一次。
      * 定时任务在第一次正常回复时记为送达，先记录再执行工具；
@@ -789,7 +773,6 @@ public final class SessionRuntime implements AutoCloseable {
             if (continueGoal(task)) continue;
             // 4. 最后回答已输出；计时停在回答边界，Memory/日志及真实结束判定继续执行。
             task.timer.beginMaintenance();
-            finish(history);
             ensureOpen();
             boolean pending;
             synchronized (inbox) {
@@ -809,7 +792,7 @@ public final class SessionRuntime implements AutoCloseable {
             // 本次回答已在候选边界显示；这里只收口业务，不重复输出。
             engine.hooks().trigger(Hooks.TURN_END, Map.of(Hooks.PARAM_TOOL_COUNT, task.toolCalls));
             record(JournalEntry.Kind.TURN_FINISHED, List.of(), "turn");
-            finishV2(task, "completed");
+            finishMemory(task, "completed");
             turnEnded(task, "DONE", !answer.isBlank());
             task.entry.result().complete(answer);
             task.incomingReceipts.forEach(receipt -> receipt.result().complete(answer));
@@ -1119,7 +1102,7 @@ public final class SessionRuntime implements AutoCloseable {
         inbox.discardRequired(task.context().id());
         try { if (!persistenceFailed) record(JournalEntry.Kind.TURN_FAILED, List.of(), "turn"); }
         catch (RuntimeException recording) { failure.addSuppressed(recording); }
-        if (!closed && !persistenceFailed) finishV2(task, "failed");
+        if (!closed && !persistenceFailed) finishMemory(task, "failed");
         if (persistenceFailed) {
             // 写失败也可能刚刚发生在失败记录本身；统一收尾，排队 future 不能永久等待。
             inbox.close();
@@ -1132,16 +1115,16 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 真正结束后登记一次 v2 作业；只处理用户轮次，通知/定时任务不自动变成人类记忆。
+     * 真正结束后登记一次记忆作业；只处理用户轮次，通知/定时任务不自动变成人类记忆。
      * 持久会话按日志区间读取，嵌入入口仅截取本轮历史，避免重复提取往轮任务。
      */
-    private void finishV2(Active task, String outcome) {
-        if (memory == null || !memory.isV2() || !task.goalEligible || task.memoryRegistered) return;
+    private void finishMemory(Active task, String outcome) {
+        if (memory == null || !task.goalEligible || task.memoryRegistered) return;
         synchronized (historyMonitor) {
             if (task.memoryRegistered) return;
             task.memoryRegistered = true;
             List<Message> evidence = journal == null ? List.copyOf(history.subList(Math.min(task.memoryHistoryStart, history.size()), history.size())) : List.of();
-            memory.finishV2(sessionId(), task.context().id(), journal == null ? null : journal.eventsPath(), task.memoryStart,
+            memory.finishTask(sessionId(), task.context().id(), journal == null ? null : journal.eventsPath(), task.memoryStart,
                     journal == null ? 0 : journal.sequence(), evidence, List.copyOf(task.memoryHumans), outcome);
         }
     }
@@ -1192,7 +1175,7 @@ public final class SessionRuntime implements AutoCloseable {
         final List<String> notices = new ArrayList<>();
         /** 当前大轮次模型提出的工具调用个数，包含被拒绝调用，不数子代理内部工具。 */
         int toolCalls;
-        /** v2 证据边界属于运行状态，不能由长期记忆反过来充当任务队列。 */
+        /** 记忆证据边界属于运行状态，不能由长期记忆反过来充当任务队列。 */
         long memoryStart;
         int memoryHistoryStart;
         volatile boolean memoryRegistered;
@@ -1283,7 +1266,7 @@ public final class SessionRuntime implements AutoCloseable {
      * 最后中断处理线程，最多等它两秒。先停止执行，再完成 future，
      * 是因为完成 future 可能立即运行调用者自己的代码，不能让这些代码拖延停止工具。</p>
      *
-     * <p>重复调用没关系。不保存会话 Inbox，不还原已经写入的文件；v2 的维护作业另行持久保存。
+     * <p>重复调用没关系。不保存会话 Inbox，不还原已经写入的文件；记忆维护作业另行持久保存。
      * 网络客户端可能不理会线程中断，稍后才返回；父子 Agent 会在继续请求模型或执行工具前
      * 检查是否退出，但不能保证把正在进行的网络请求立刻停止。</p>
      */
@@ -1296,7 +1279,7 @@ public final class SessionRuntime implements AutoCloseable {
         }
         cron.close();
         Active interruptedTask = active;
-        if (interruptedTask != null) finishV2(interruptedTask, "interrupted");
+        if (interruptedTask != null) finishMemory(interruptedTask, "interrupted");
         if (memory != null) memory.close();
         try { closeDependents.run(); }
         catch (RuntimeException failure) { errors.accept("[Error] Dependent session cleanup failed: " + failure.getMessage()); }

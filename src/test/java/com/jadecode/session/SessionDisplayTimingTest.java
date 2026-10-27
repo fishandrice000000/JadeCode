@@ -16,37 +16,39 @@ import com.jadecode.hooks.Hooks;
 import com.jadecode.llm.ModelResponse;
 import com.jadecode.llm.ScriptedLlmClient;
 import com.jadecode.memory.MemoryManager;
-import com.jadecode.memory.MemoryStore;
+import com.jadecode.config.JadeSettings;
 import com.jadecode.messages.Message;
 
 /** 主会话与真实 Memory 调用边界的离线集成验证；辅助请求使用脚本，不访问模型服务。 */
 class SessionDisplayTimingTest {
-    @Test void inputPromotedDuringMemoryContinuesSameTurnWithoutLosingEitherFuture(@TempDir Path dir) throws Exception {
+    /** 候选回答后的 Stop 边界接收补充；记忆只在整轮真正结束后登记一次。 */
+    @Test void inputPromotedAtTerminalBoundaryContinuesOneTurnAndQueuesOneMemoryJob(@TempDir Path dir) throws Exception {
         var entered = new CountDownLatch(1); var release = new CountDownLatch(1);
-        var calls = new AtomicInteger();
+        var extracted = new CountDownLatch(1); var calls = new AtomicInteger();
         var memory = new MemoryManager(request -> {
-            if (calls.getAndIncrement() == 0) {
+            calls.incrementAndGet(); extracted.countDown();
+            return response("{\"rollout_summary\":\"\",\"rollout_slug\":\"\"}");
+        }, dir.resolve("fixture-memory"), dir, new JadeSettings.Memory(1000), ignored -> { }, ignored -> { });
+        var hooks = new Hooks(); var stops = new AtomicInteger();
+        hooks.register(Hooks.STOP, ignored -> {
+            if (stops.getAndIncrement() == 0) {
                 entered.countDown();
-                try { if (!release.await(5, TimeUnit.SECONDS)) throw new IllegalStateException("Memory release missing"); }
-                catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IllegalStateException(e); }
+                try { if (!release.await(5, TimeUnit.SECONDS)) throw new IllegalStateException("Stop release missing"); }
+                catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); throw new IllegalStateException(interrupted); }
             }
-            return response("[]");
-        }, new MemoryStore(dir), 1000, ignored -> { }, ignored -> { });
+            return null;
+        });
         var notices = new CopyOnWriteArrayList<ExecutionNotice>();
-        var engine = new AgentExecutor(new ScriptedLlmClient(response("first"), response("last")), Map.of(), "test", 1000, new Hooks());
+        var engine = new AgentExecutor(new ScriptedLlmClient(response("first"), response("last")), Map.of(), "test", 1000, hooks);
         engine.observe(notices::add);
         try (var runtime = new SessionRuntime(engine, memory, null, null, ignored -> { }, ignored -> { })) {
-            runtime.start(false);
-            var first = runtime.submit("question", null);
-            assertTrue(entered.await(5, TimeUnit.SECONDS));
-            var late = runtime.submitUser("more detail", null);
-            assertTrue(runtime.promoteUserBuffer());
-            release.countDown();
-            assertEquals("last", first.get(5, TimeUnit.SECONDS));
-            assertEquals("last", late.get(5, TimeUnit.SECONDS));
+            runtime.start(false); var first = runtime.submit("question", null);
+            assertTrue(entered.await(5, TimeUnit.SECONDS)); assertEquals(0, calls.get());
+            var late = runtime.submitUser("more detail", null); assertTrue(runtime.promoteUserBuffer()); release.countDown();
+            assertEquals("last", first.get(5, TimeUnit.SECONDS)); assertEquals("last", late.get(5, TimeUnit.SECONDS));
             assertEquals(1, notices.stream().filter(n -> n.kind() == ExecutionNotice.Kind.TURN_START).count());
             assertEquals(1, notices.stream().filter(n -> n.kind() == ExecutionNotice.Kind.TURN_DISPLAY_RESUME).count());
-            assertEquals(2, calls.get(), "Memory still runs after each accepted terminal candidate");
+            assertTrue(extracted.await(5, TimeUnit.SECONDS)); assertEquals(1, calls.get());
         } finally { release.countDown(); }
     }
     private static ModelResponse response(String text) {
@@ -54,7 +56,7 @@ class SessionDisplayTimingTest {
                 new ModelResponse.Usage(0, 0), "end_turn");
     }
 
-    @Test void answerStopsDisplayBeforeMemoryWhileRuntimeAndFutureRemainBusy(@TempDir Path dir) throws Exception {
+    @Test void backgroundMemoryDoesNotKeepRuntimeOrFutureBusy(@TempDir Path dir) throws Exception {
         var entered = new CountDownLatch(1);
         var release = new CountDownLatch(1);
         var notices = new CopyOnWriteArrayList<ExecutionNotice>();
@@ -64,8 +66,8 @@ class SessionDisplayTimingTest {
             entered.countDown();
             try { if (!release.await(5, TimeUnit.SECONDS)) throw new IllegalStateException("test did not release Memory"); }
             catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); throw new IllegalStateException(interrupted); }
-            return response("[]");
-        }, new MemoryStore(dir), 1000, output::add, errors::add);
+            return response("{\"rollout_summary\":\"\",\"rollout_slug\":\"\"}");
+        }, dir.resolve("fixture-memory"), dir, new JadeSettings.Memory(1000), output::add, errors::add);
         var engine = new AgentExecutor(new ScriptedLlmClient(response("final answer")), Map.of(), "test", 1000, new Hooks());
         engine.observe(notices::add);
         try (var runtime = new SessionRuntime(engine, memory, null, null, output::add, errors::add)) {
@@ -74,10 +76,10 @@ class SessionDisplayTimingTest {
             try {
                 assertTrue(entered.await(5, TimeUnit.SECONDS));
                 assertEquals(1, output.stream().filter(line -> line.equals("[Reply] final answer")).count());
-                assertFalse(future.isDone(), "display stop must not prematurely finish the task");
-                assertEquals(SessionRuntime.State.RUNNING, runtime.state());
+                assertEquals("final answer", future.get(5, TimeUnit.SECONDS), "后台记忆未完成也不能占用任务 future");
+                assertEquals(SessionRuntime.State.IDLE, runtime.state());
                 assertTrue(notices.stream().anyMatch(n -> n.kind() == ExecutionNotice.Kind.TURN_DISPLAY_STOP));
-                assertFalse(notices.stream().anyMatch(n -> n.kind() == ExecutionNotice.Kind.TURN_END));
+                assertTrue(notices.stream().anyMatch(n -> n.kind() == ExecutionNotice.Kind.TURN_END));
             } finally { release.countDown(); }
             assertEquals("final answer", future.get(5, TimeUnit.SECONDS));
             long cutoff = notices.stream().filter(n -> n.kind() == ExecutionNotice.Kind.TURN_DISPLAY_STOP)

@@ -16,23 +16,23 @@ import org.junit.jupiter.api.io.TempDir;
 import static org.junit.jupiter.api.Assertions.*;
 
 /** 真文件、假模型验证持久化与协议，不把替身测试当作提取语义质量评估。 */
-class MemoryV2Test {
+class MemoryMaintenanceTest {
     @TempDir Path temporary;
     private final List<String> warnings = new ArrayList<>();
 
     /** 每个用例独占临时 HOME 等价目录；不读取真实用户记忆。 */
-    private MemoryV2Store store() throws Exception {
+    private MemoryStore store() throws Exception {
         Path workspace = Files.createDirectories(temporary.resolve("project"));
-        return new MemoryV2Store(temporary.resolve("home/.jadecode/memory"), workspace, warnings::add);
+        return new MemoryStore(temporary.resolve("home/.jadecode/memory"), workspace, warnings::add);
     }
-    private MemoryV2 service(MemoryV2Store store, LlmClient fake) {
-        return new MemoryV2(store, fake, JadeSettings.defaults().memory(), ignored -> { }, warnings::add, false);
+    private MemoryMaintenance service(MemoryStore store, LlmClient fake) {
+        return new MemoryMaintenance(store, fake, JadeSettings.defaults().memory(), ignored -> { }, warnings::add, false);
     }
     private static ModelResponse reply(String body) { return new ModelResponse(Message.assistant(List.of(new TextBlock(body))), null, "end_turn"); }
     private static ModelResponse call(String id, String tool, ObjectNode input) {
         return new ModelResponse(Message.assistant(List.of(new ToolUseBlock(id, tool, input))), null, "tool_use");
     }
-    private void enqueue(MemoryV2 memory, String task) throws Exception {
+    private void enqueue(MemoryMaintenance memory, String task) throws Exception {
         memory.enqueue("session", task, null, 0, 0, List.of(Message.userText("Keep the project on Java 21"),
                 Message.assistant(List.of(new TextBlock("Verified pom and compiler output")))), List.of(), "completed");
     }
@@ -56,7 +56,7 @@ class MemoryV2Test {
                 if (request.messages().size() <= 3) {
                     String link = source.isEmpty() ? "pending/" + input.path("pending_notes").get(0).path("id").asText() + ".json" : source;
                     return call("stage", "stage_memory", Json.mapper().createObjectNode().put("scope", "workspace")
-                            .put("summary", "v2\nJava 21 applies to this workspace; see MEMORY.md.\n")
+                            .put("summary", "# Memory routes\nJava 21 applies to this workspace; see MEMORY.md.\n")
                             .put("handbook", "# Project\nUse Java 21. [evidence](" + link + ")\n"));
                 }
                 return reply("Completed");
@@ -78,7 +78,7 @@ class MemoryV2Test {
         }
     }
 
-    @Test void emptyV2IsSuccessfulAndDoesNotConsolidate() throws Exception {
+    @Test void emptyExtractionIsSuccessfulAndDoesNotConsolidate() throws Exception {
         var store = store(); var fake = new Curator(); fake.extraction = "{\"rollout_summary\":\"\",\"rollout_slug\":\"\"}";
         try (var memory = service(store, fake)) {
             enqueue(memory, "empty"); memory.maintain();
@@ -115,7 +115,7 @@ class MemoryV2Test {
         try (var memory = service(store, fake)) {
             enqueue(memory, "turn");
             assertThrows(IOException.class, memory::maintain);
-            assertEquals(MemoryV2Store.EMPTY_HANDBOOK, store.snapshot().handbook());
+            assertEquals(MemoryStore.EMPTY_HANDBOOK, store.snapshot().handbook());
             memory.maintain(); assertEquals(1, fake.consolidations);
         }
         try (var memory = service(store, fake)) { memory.maintain(); assertEquals(1, fake.consolidations); }
@@ -123,11 +123,11 @@ class MemoryV2Test {
 
     @Test void globalStorePreservesOtherWorkspaceAndRefusesStalePublication() throws Exception {
         var first = store(); first.initialize();
-        var second = new MemoryV2Store(first.root(), Files.createDirectory(temporary.resolve("other")), warnings::add);
+        var second = new MemoryStore(first.root(), Files.createDirectory(temporary.resolve("other")), warnings::add);
         second.initialize(); var stale = first.snapshot();
-        second.publish(second.snapshot(), Map.of(second.scope(), new MemoryV2Store.Artifacts("v2\nOther index", "Other facts")), "other", List.of());
+        second.publish(second.snapshot(), Map.of(second.scope(), new MemoryStore.Artifacts("# Memory routes\nOther index", "Other facts")), "other", List.of());
         assertThrows(IOException.class, () -> first.publish(stale, Map.of(), "stale", List.of()));
-        first.publish(first.snapshot(), Map.of(first.scope(), new MemoryV2Store.Artifacts("v2\nFirst index", "First facts")), "first", List.of());
+        first.publish(first.snapshot(), Map.of(first.scope(), new MemoryStore.Artifacts("# Memory routes\nFirst index", "First facts")), "first", List.of());
         assertEquals("Other facts", second.snapshot().workspaceHandbook());
         assertTrue(first.snapshot().handbook().contains("First facts")); assertTrue(first.snapshot().handbook().contains("Other facts"));
         try (var memory = service(first, req -> { throw new AssertionError("index must not call model"); })) {
@@ -154,11 +154,11 @@ class MemoryV2Test {
         var store = store(); var calls = new java.util.concurrent.atomic.AtomicInteger();
         try (var memory = service(store, request -> calls.incrementAndGet() == 1
                 ? call("stage", "stage_memory", Json.mapper().createObjectNode().put("scope", "workspace")
-                    .put("summary", "v2\nCandidate").put("handbook", "Candidate fact"))
+                    .put("summary", "# Memory routes\nCandidate").put("handbook", "Candidate fact"))
                 : new ModelResponse(Message.assistant(List.of(new TextBlock("partial"))), null, "max_tokens"))) {
             memory.begin("session", "turn", "Remember a project fact"); memory.note("remember", "Candidate fact", "turn");
             assertThrows(IOException.class, memory::maintain);
-            assertEquals(MemoryV2Store.EMPTY_HANDBOOK, store.snapshot().handbook());
+            assertEquals(MemoryStore.EMPTY_HANDBOOK, store.snapshot().handbook());
             assertTrue(store.snapshot().processedNotes().isEmpty());
         }
     }
@@ -179,13 +179,13 @@ class MemoryV2Test {
         Files.writeString(legacy.resolve("python.md"), original);
         try (var memory = service(store, req -> { throw new AssertionError(); })) { memory.reference(); }
         assertEquals(original, Files.readString(legacy.resolve("python.md")));
-        assertEquals(original, Files.readString(store.root().resolve("legacy/" + store.scope() + "/" + MemoryV2Store.hash(original) + ".md")));
-        assertEquals(MemoryV2Store.EMPTY_HANDBOOK, store.snapshot().handbook()); assertTrue(store.materials().isEmpty());
+        assertEquals(original, Files.readString(store.root().resolve("legacy/" + store.scope() + "/" + MemoryStore.hash(original) + ".md")));
+        assertEquals(MemoryStore.EMPTY_HANDBOOK, store.snapshot().handbook()); assertTrue(store.materials().isEmpty());
     }
 
     @Test void symlinkedRootAndSourceTraversalAreRejected() throws Exception {
         Path real = Files.createDirectory(temporary.resolve("real")); Path link = temporary.resolve("link"); Files.createSymbolicLink(link, real);
-        var store = new MemoryV2Store(link.resolve("memory"), temporary, warnings::add);
+        var store = new MemoryStore(link.resolve("memory"), temporary, warnings::add);
         assertThrows(IOException.class, store::initialize);
         var regular = store(); regular.initialize(); assertThrows(IOException.class, () -> regular.readSource("../secret"));
         assertFalse(regular.readable(regular.root().resolve("state/jobs/x.json")));
@@ -199,7 +199,7 @@ class MemoryV2Test {
             memory.note("remember", "Use Java 21 here", "turn"); memory.note("remember", "Use Java 21 here", "turn");
             assertEquals(1, store.notes().size()); assertEquals(1, store.feedback().size());
             assertTrue(store.notes().getFirst().path("user_request").asText().contains("别把这当全局偏好"));
-            assertEquals(MemoryV2Store.EMPTY_HANDBOOK, store.snapshot().handbook());
+            assertEquals(MemoryStore.EMPTY_HANDBOOK, store.snapshot().handbook());
             memory.maintain(); assertTrue(store.snapshot().workspaceHandbook().contains("Java 21"));
             var read = new ToolUseBlock("read-call", "read_file", Json.mapper().createObjectNode().put("path", store.root().resolve("MEMORY.md").toString()));
             Message success = Message.userBlocks(List.of(new ToolResultBlock("read-call", "Read handbook body", false)));
@@ -220,7 +220,7 @@ class MemoryV2Test {
     }
 
     @Test void closingDuringModelCallPreventsLatePublication() throws Exception {
-        var store = store(); MemoryV2[] holder = new MemoryV2[1];
+        var store = store(); MemoryMaintenance[] holder = new MemoryMaintenance[1];
         holder[0] = service(store, request -> { holder[0].close(); return reply("{\"rollout_summary\":\"Late reply\",\"rollout_slug\":\"late\"}"); });
         enqueue(holder[0], "late"); holder[0].maintain();
         assertTrue(store.materials().isEmpty()); assertEquals("running", store.jobs().getFirst().path("status").asText());

@@ -10,12 +10,12 @@ import org.junit.jupiter.api.io.TempDir;
 import static org.junit.jupiter.api.Assertions.*;
 
 /** 验证记忆例外是窄只读授权，不能越过用户显式规则或覆盖正式库。 */
-class MemoryV2PermissionTest {
+class MemoryPermissionTest {
     @TempDir Path temporary;
 
     @Test void explicitDenyStillWinsAndFullAccessDoesNotEnableDirectMemoryWrites() throws Exception {
         Path workspace = Files.createDirectory(temporary.resolve("project")), root = temporary.resolve("memory");
-        var store = new MemoryV2Store(root, workspace, ignored -> { }); store.initialize();
+        var store = new MemoryStore(root, workspace, ignored -> { }); store.initialize();
         String path = root.resolve("MEMORY.md").toString();
         var deny = new PermissionRule("deny.memory", PermissionRule.Effect.DENY, PermissionRule.Kind.TOOL,
                 "read_file", "", "", "", false, List.of());

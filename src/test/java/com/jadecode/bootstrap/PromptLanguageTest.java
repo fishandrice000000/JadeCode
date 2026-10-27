@@ -38,12 +38,8 @@ class PromptLanguageTest {
     @Test void builtInAuxiliaryPromptsAreEnglishAndKeepMachineFields() throws Exception {
         assertPrompt("com.jadecode.context.HistoryCompactor", "SUMMARY_SYSTEM",
                 List.of("factual state", "Preserve the current goal"));
-        assertPrompt("com.jadecode.memory.MemoryExtractionService", "EXTRACTION_SYSTEM",
-                List.of("Return only a JSON array", "name", "type", "description", "body"));
-        assertPrompt("com.jadecode.memory.MemoryRecallService", "SELECTION_SYSTEM",
-                List.of("memory"));
-        assertPrompt("com.jadecode.memory.MemoryConsolidationService", "CONSOLIDATION_SYSTEM",
-                List.of("Consolidate", "JSON"));
+        assertResource("/memory/extraction.md", List.of("rollout_summary", "rollout_slug", "Write task history, not a user profile"));
+        assertResource("/memory/consolidation.md", List.of("read_source", "stage_memory", "workspace", "global"));
     }
 
     @Test void approvalReviewerBuildsEnglishPromptAndKeepsJsonContract() {
@@ -72,6 +68,16 @@ class PromptLanguageTest {
         assertFalse(CJK.matcher(prompt).find(), className + "." + field + " must be English");
         for (String fragment : fragments) assertTrue(prompt.contains(fragment),
                 className + "." + field + " missing " + fragment + ": " + prompt);
+    }
+
+    /** 维护提示来自真实打包资源；不再反射已删除的算法类或字符串常量。 */
+    private static void assertResource(String resource, List<String> fragments) throws Exception {
+        try (var input = PromptLanguageTest.class.getResourceAsStream(resource)) {
+            assertNotNull(input, resource);
+            String prompt = new String(input.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+            assertFalse(CJK.matcher(prompt).find(), resource);
+            for (String fragment : fragments) assertTrue(prompt.contains(fragment), resource + " missing " + fragment);
+        }
     }
 
     private static final class CapturingClient implements LlmClient {

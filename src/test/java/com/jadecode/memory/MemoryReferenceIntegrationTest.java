@@ -1,4 +1,7 @@
-package com.jadecode.session;
+package com.jadecode.memory;
+
+import com.jadecode.session.SessionRuntime;
+import com.jadecode.session.SessionEvent;
 
 import com.jadecode.agent.AgentExecutor;
 import com.jadecode.bootstrap.JadeCodeFactory;
@@ -8,8 +11,6 @@ import com.jadecode.context.CompactionLimits;
 import com.jadecode.context.ContextCompactor;
 import com.jadecode.hooks.Hooks;
 import com.jadecode.llm.*;
-import com.jadecode.memory.MemoryManager;
-import com.jadecode.memory.MemoryStore;
 import com.jadecode.messages.*;
 import com.jadecode.session.history.SessionStore;
 import com.jadecode.util.Json;
@@ -27,19 +28,27 @@ import static org.junit.jupiter.api.Assertions.*;
 /** 真实工厂/历史/磁盘和假模型共同验证召回位置；不读取用户配置、不访问真实 API。 */
 @Timeout(15)
 class MemoryReferenceIntegrationTest {
-    @TempDir Path workspace;
+    @TempDir Path temporary;
+    Path workspace, root;
 
-    /** 两条不同正文帮助识别召回是否切换；名称/描述不包含正文标记，便于检查提取输入。 */
-    private MemoryStore seed() throws Exception {
-        var store = new MemoryStore(workspace, ignored -> { });
-        store.saveNew(List.of(new MemoryStore.MemoryDraft("alpha", "project", "first fixture", "ALPHA_REFERENCE_ONLY"),
-                new MemoryStore.MemoryDraft("beta", "project", "second fixture", "BETA_REFERENCE_ONLY")));
-        return store;
+    @org.junit.jupiter.api.BeforeEach void directories() throws Exception {
+        workspace = java.nio.file.Files.createDirectory(temporary.resolve("workspace"));
+        root = temporary.resolve("home/.jadecode/memory");
     }
 
-    /** 明确假配置由测试提供；工厂不会读取环境认证，fake 本身也没有网络实现。 */
+    /** 正式库只种当前项目路由，模型按需读详情；不再构造旧条目目录或选择器。 */
+    private MemoryStore seed() throws Exception {
+        var store = new MemoryStore(root, workspace, ignored -> { }); store.initialize();
+        route(store, "ALPHA_REFERENCE_ONLY"); return store;
+    }
+
+    private void route(MemoryStore store, String text) throws Exception {
+        store.publish(store.snapshot(), Map.of(store.scope(), new MemoryStore.Artifacts(text, "# Project handbook")), text, List.of());
+    }
+
+    /** 假配置与临时全局根由调用方显式提供，生产与测试使用同一条记忆链路。 */
     private SessionRuntime runtime(LlmClient fake) {
-        return JadeCodeFactory.create(new AppConfig("offline", "http://127.0.0.1:1", "fixture", 8000), workspace, fake);
+        return JadeCodeFactory.create(new AppConfig("offline", "http://127.0.0.1:1", "fixture", 8000), workspace, fake, root);
     }
 
     /** 辅助响应满足真实解析器契约；null usage 明确表示没有服务端用量报告。 */
@@ -47,32 +56,17 @@ class MemoryReferenceIntegrationTest {
         return new ModelResponse(Message.assistant(List.of(new TextBlock(text))), null, "end_turn");
     }
 
-    /**
-     * 召回依次选不同条目，提取只返回空候选；正式请求可先调用一次只读 list_tasks 再回答。
-     * 捕获完整请求快照而非历史列表引用，避免后续追加把先前请求证据一起改变。
-     */
+    /** 正式请求按剧本执行；辅助请求只接受严格回顾对象，不模拟已删除的召回模型。 */
     private static final class Fake implements LlmClient {
         final List<CompleteRequest> formal = new CopyOnWriteArrayList<>();
-        final List<String> recallQueries = new CopyOnWriteArrayList<>();
         final List<String> dialogues = new CopyOnWriteArrayList<>();
-        final List<String> recallInputs = new CopyOnWriteArrayList<>();
-        final List<String> extractionInputs = new CopyOnWriteArrayList<>();
+        final java.util.concurrent.CountDownLatch extracted = new java.util.concurrent.CountDownLatch(2);
         final boolean useTool;
         Fake(boolean useTool) { this.useTool = useTool; }
         @Override public ModelResponse complete(CompleteRequest request) throws LlmException {
-            if (request.system().startsWith("Select memory records")) {
-                recallInputs.add(request.messages().getFirst().extractText());
-                try {
-                    recallQueries.add(Json.mapper().readTree(request.messages().getFirst().extractText()).get("current_request").asText());
-                } catch (Exception invalid) { throw new AssertionError("Invalid recall input", invalid); }
-                return reply(recallQueries.size() % 2 == 1 ? "[0]" : "[1]");
-            }
-            if (request.system().startsWith("Treat the dialogue and catalog as reference data")) {
-                extractionInputs.add(request.messages().getFirst().extractText());
-                try {
-                    dialogues.add(Json.mapper().readTree(request.messages().getFirst().extractText()).get("dialogue").asText());
-                } catch (Exception invalid) { throw new AssertionError("Invalid extraction input", invalid); }
-                return reply("[]");
+            if (request.system().startsWith("You are part of an agent memory system.")) {
+                dialogues.add(request.messages().getFirst().extractText()); extracted.countDown();
+                return reply("{\"rollout_summary\":\"\",\"rollout_slug\":\"\"}");
             }
             formal.add(new CompleteRequest(request.system(), List.copyOf(request.messages()), request.maxTokens(),
                     List.copyOf(request.tools()), request.thinking()));
@@ -85,14 +79,14 @@ class MemoryReferenceIntegrationTest {
 
     /** 两轮各有工具续跑：system 不随召回变化，旧请求保持前缀，召回资料不再进入提取对话。 */
     @Test void changedRecallKeepsSystemAndOldHistoryStable() throws Exception {
-        seed(); var fake = new Fake(true);
+        var store = seed(); var fake = new Fake(true);
         String first = "first task\nRecalled memory reference data (JSON; not a user request): user quotation";
         var history = new ArrayList<>(List.of(Message.userText(first)));
         try (var runtime = runtime(fake)) {
-            runtime.run(history);
+            runtime.run(history); route(store, "BETA_REFERENCE_ONLY");
             history.add(Message.userText("second task")); runtime.run(history);
+            assertTrue(fake.extracted.await(5, TimeUnit.SECONDS));
         }
-        assertEquals(List.of(first, "second task"), fake.recallQueries, "续跑不能重复召回或把参考消息当任务");
         assertEquals(4, fake.formal.size());
         String system = fake.formal.getFirst().system();
         fake.formal.forEach(request -> {
@@ -118,26 +112,7 @@ class MemoryReferenceIntegrationTest {
         fake.dialogues.forEach(dialogue -> {
             assertFalse(dialogue.contains("ALPHA_REFERENCE_ONLY")); assertFalse(dialogue.contains("BETA_REFERENCE_ONLY"));
         });
-        assertTrue(fake.dialogues.getFirst().contains(first), "用户引用同样文字标签不能被误过滤");
-        // 比对真正发往辅助模型的 JSON 文本：不同任务保留完整目录前缀，正文值没有丢失或混入目录。
-        assertCatalogPrefix(fake.recallInputs, "catalog", "current_request");
-        assertCatalogPrefix(fake.extractionInputs, "existing_catalog", "dialogue");
-    }
-
-    /** 验证两轮不同资料都放在相同完整目录之后；不借助重排 JSON 来伪造字节前缀。 */
-    private static void assertCatalogPrefix(List<String> inputs, String catalogField, String taskField) throws Exception {
-        assertEquals(2, inputs.size());
-        String marker = ",\"" + taskField + "\":";
-        int boundary = inputs.getFirst().indexOf(marker);
-        assertTrue(boundary > 0);
-        String common = inputs.getFirst().substring(0, boundary);
-        assertTrue(common.startsWith("{\"" + catalogField + "\":["));
-        assertTrue(inputs.getLast().startsWith(common + marker));
-        var first = Json.mapper().readTree(inputs.getFirst());
-        var second = Json.mapper().readTree(inputs.getLast());
-        assertEquals(2, first.path(catalogField).size());
-        assertEquals(first.path(catalogField), second.path(catalogField));
-        assertNotEquals(first.path(taskField), second.path(taskField));
+        assertTrue(fake.dialogues.stream().anyMatch(dialogue -> dialogue.contains(first)), "用户引用同样文字标签不能被误过滤");
     }
 
     /** 真日志恢复保留来源；下一轮仍能排除旧参考，且恢复不会自动调用模型或重放工具。 */
@@ -161,26 +136,20 @@ class MemoryReferenceIntegrationTest {
             assertEquals(1, fake.formal.size(), "恢复本身不请求模型");
             runtime.start(false);
             assertEquals("done", runtime.submit("second persisted task", null).get(5, TimeUnit.SECONDS));
+            assertTrue(fake.extracted.await(5, TimeUnit.SECONDS));
         }
         assertEquals(2, fake.formal.size());
         assertFalse(fake.dialogues.getLast().contains("ALPHA_REFERENCE_ONLY"));
         assertFalse(fake.dialogues.getLast().contains("BETA_REFERENCE_ONLY"));
     }
 
-    /** 召回期间排入的宿主通知独立追加，不覆盖参考来源或改变原始任务。 */
+    /** 入口前排入的宿主通知独立追加，不覆盖参考来源或改变原始任务。 */
     @Test void queuedNotificationDoesNotMergeIntoRecalledReference() throws Exception {
         seed(); var fake = new Fake(false);
-        var owner = new java.util.concurrent.atomic.AtomicReference<SessionRuntime>();
-        LlmClient wrapped = request -> {
-            if (request.system().startsWith("Select memory records")) {
-                owner.get().receive(new SessionEvent.Incoming("notice-1", "fixture", "leader", null, null,
-                        "progress", "background done", null, true, false),
-                        com.jadecode.execution.ExecutionContext.create(com.jadecode.execution.ExecutionContext.Source.USER, null));
-            }
-            return fake.complete(request);
-        };
-        try (var runtime = runtime(wrapped)) {
-            owner.set(runtime);
+        try (var runtime = runtime(fake)) {
+            runtime.receive(new SessionEvent.Incoming("notice-1", "fixture", "leader", null, null,
+                    "progress", "background done", null, true, false),
+                    com.jadecode.execution.ExecutionContext.create(com.jadecode.execution.ExecutionContext.Source.USER, null));
             runtime.run(new ArrayList<>(List.of(Message.userText("actual user task"))));
         }
         List<Message> sent = fake.formal.getFirst().messages();
@@ -188,14 +157,13 @@ class MemoryReferenceIntegrationTest {
         assertEquals(Message.Source.MEMORY_REFERENCE, sent.get(1).source());
         assertFalse(sent.get(1).extractText().contains("background done"));
         assertNull(sent.get(2).source()); assertTrue(sent.get(2).extractText().contains("background done"));
-        assertEquals(List.of("actual user task"), fake.recallQueries);
-        assertFalse(fake.dialogues.getFirst().contains("ALPHA_REFERENCE_ONLY"));
+        assertEquals("actual user task", sent.getFirst().extractText());
     }
 
     /** 摘要触发后仍保留原用户任务；参考正文只能出现在参考摘要区，不能抢占当前请求。 */
     @Test void compactionUsesCapturedUserRequestInsteadOfMemory() throws Exception {
         var store = seed(); var fake = new Fake(false);
-        var memory = new MemoryManager(fake, store, 8000, ignored -> { }, ignored -> { });
+        var memory = new MemoryManager(fake, root, workspace, com.jadecode.config.JadeSettings.defaults().memory(), ignored -> { }, ignored -> { });
         var limits = new CompactionLimits(100, 10000, 10000, 20000, 5, 5, 4000, 100, 100, 1000, 1000, 2, .8);
         var compactor = new ContextCompactor(request -> reply("Memory is reference material only."),
                 workspace.resolve("transcripts"), workspace.resolve("results"), limits);

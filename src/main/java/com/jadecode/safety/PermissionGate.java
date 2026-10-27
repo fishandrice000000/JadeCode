@@ -38,7 +38,7 @@ public final class PermissionGate {
     private java.util.function.Predicate<Path> memoryReadable = path -> false;
 
     /**
-     * 工厂只为 v2 绑定受限只读入口；正文写入仍禁止，任意 Shell 不因此获得隔离保证。
+     * 工厂绑定受限只读入口；正文写入仍禁止，任意 Shell 不因此获得隔离保证。
      * 不授予 ~/.jadecode 其它文件的权限，显式 deny/ask 与敏感文件保护仍优先。
      */
     public void memoryAccess(Path root, java.util.function.Predicate<Path> readable) {

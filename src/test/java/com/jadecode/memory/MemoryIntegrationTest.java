@@ -17,14 +17,14 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /** 同一生产装配使用可注入根目录和假客户端，检查工具权限、真实日志与异步后台闭环。 */
 @Timeout(15)
-class MemoryV2IntegrationTest {
+class MemoryIntegrationTest {
     @TempDir Path temporary;
 
     @Test void productionAssemblyQueuesOneJobAfterToolsAndUsesGlobalReadOnlyMemory() throws Exception {
         Path workspace = Files.createDirectory(temporary.resolve("workspace")), root = temporary.resolve("home/.jadecode/memory");
         var warnings = new CopyOnWriteArrayList<String>();
-        var store = new MemoryV2Store(root, workspace, warnings::add); store.initialize();
-        store.publish(store.snapshot(), Map.of(store.scope(), new MemoryV2Store.Artifacts("v2\nProject uses Java 21; read MEMORY.md", "Known project fact")), "seed", List.of());
+        var store = new MemoryStore(root, workspace, warnings::add); store.initialize();
+        store.publish(store.snapshot(), Map.of(store.scope(), new MemoryStore.Artifacts("# Memory routes\nProject uses Java 21; read MEMORY.md", "Known project fact")), "seed", List.of());
         var requests = new CopyOnWriteArrayList<CompleteRequest>(); var extractionInput = new CompletableFuture<String>();
         var completed = new CountDownLatch(1);
         LlmClient fake = request -> {
@@ -73,7 +73,7 @@ class MemoryV2IntegrationTest {
     @Test void disabledMemoryCreatesNoLibraryAndMakesNoAuxiliaryRequests() throws Exception {
         Path workspace = Files.createDirectory(temporary.resolve("workspace")), root = temporary.resolve("global-memory");
         var d = JadeSettings.defaults();
-        var settings = new JadeSettings(d.tui(), d.compaction(), d.limits(), new JadeSettings.Memory(false, 8000, 2048, 16384, 128000, 128000),
+        var settings = new JadeSettings(d.tui(), d.compaction(), d.limits(), new JadeSettings.Memory(false, 8000, 16384, 128000),
                 d.modelMetadata(), d.thinking(), d.permissions(), d.mcp(), d.contextCompaction());
         try (var runtime = JadeCodeFactory.create(new AppConfig("offline", "http://127.0.0.1:1", "fixture", 8000), workspace,
                 request -> { assertFalse(request.tools().isEmpty()); return text("done"); }, ignored -> { }, ignored -> { },
@@ -101,9 +101,9 @@ class MemoryV2IntegrationTest {
                 runtime.submit("An unfinished human task", null); assertTrue(entered.await(2, TimeUnit.SECONDS));
             } finally { runtime.close(); release.countDown(); }
         }
-        var store = new MemoryV2Store(root, workspace, ignored -> { });
+        var store = new MemoryStore(root, workspace, ignored -> { });
         assertEquals(1, store.jobs().size()); assertEquals("interrupted", store.jobs().getFirst().path("outcome").asText());
-        try (var maintenance = new MemoryV2(store, request -> {
+        try (var maintenance = new MemoryMaintenance(store, request -> {
             assertTrue(request.messages().getFirst().extractText().contains("An unfinished human task"));
             return text("{\"rollout_summary\":\"\",\"rollout_slug\":\"\"}");
         }, settings.memory(), ignored -> { }, ignored -> { }, false)) { maintenance.maintain(); }

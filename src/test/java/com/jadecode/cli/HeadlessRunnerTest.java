@@ -47,7 +47,7 @@ class HeadlessRunnerTest {
         HeadlessRunner runner = new HeadlessRunner(stream(outBuffer), stream(errBuffer));
         int code = runner.execute(LaunchOptions.parse(new String[] { "--headless", "say hi" }), ignored ->
                 new SessionHost(new WorkspacePaths(workspace),
-                        generation -> JadeCodeFactory.create(config, workspace, client),
+                        generation -> JadeCodeFactory.create(config, workspace, client, workspace.resolve("fixture-home/.jadecode/memory")),
                         warning -> { }));
         String stdout = outBuffer.toString(StandardCharsets.UTF_8);
         String stderr = errBuffer.toString(StandardCharsets.UTF_8);

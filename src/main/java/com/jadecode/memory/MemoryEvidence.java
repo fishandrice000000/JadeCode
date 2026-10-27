@@ -11,18 +11,18 @@ import java.util.*;
 import java.util.regex.Pattern;
 
 /**
- * 为 v2 提取构造有来源的证据，而不是把当前压缩历史当作完整会话。
+ * 为记忆提取构造有来源的证据，而不是把当前压缩历史当作完整会话。
  * 原始日志只读；用户原话优先、正文其次、工具结果有单条预算，最后恢复时间顺序。
  * 脱敏是多层防护的一环，不声称正则能识别所有秘密。
  */
-final class MemoryV2Evidence {
+final class MemoryEvidence {
     private static final Pattern CREDENTIAL = Pattern.compile(
             "(?i)((?:api[_-]?key|access[_-]?token|authorization|password|secret)\\s*[=:]\\s*[\\\"']?)([^\\s\\\"',;}]+)");
     private static final Pattern TOKEN = Pattern.compile("\\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{15,})\\b");
     private static final Pattern URL_SECRET = Pattern.compile("(?i)([?&](?:token|key|signature|password|access_token)=)[^&#\\s]+");
     private record Item(int priority, long sequence, String source, String text) { }
 
-    private MemoryV2Evidence() { }
+    private MemoryEvidence() { }
 
     /** 输入/输出均用同一脱敏规则；日志、slug 和候选摘要不会绕开处理。 */
     static String redact(String text) {
@@ -45,7 +45,7 @@ final class MemoryV2Evidence {
             Path sessions = workspace.resolve(".jadecode/sessions");
             if (!path.startsWith(sessions) || !path.getFileName().toString().equals("events.jsonl"))
                 throw new IOException("Memory evidence is outside the session store");
-            MemoryV2Store.directory(path.getParent(), false);
+            MemoryStore.directory(path.getParent(), false);
             if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) throw new IOException("Memory evidence is not a regular file");
             Set<String> memoryCalls = new HashSet<>();
             try (var reader = Files.newBufferedReader(path)) {
