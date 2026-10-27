@@ -48,13 +48,13 @@ public record JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimit
         }
 
         /**
-         * 默认开放 Fetch 的连接入口，安装路径相对工作区，避免绑定开发者机器的绝对路径。
+         * 默认开放 Fetch 的连接入口，安装路径来自全局用户根，不依赖当前项目。
          * 此处只创建配置数据；环境未安装时由连接工具报告安装指引，不能在启动时自动下载。
          * 用户显式提供 servers 表时整表替换，因此空表或 enabled=false 仍能关闭服务。
          */
         public static Mcp defaults() {
             return new Mcp(Map.of("fetch", new com.jadecode.mcp.McpServerConfig(true,
-                    ".jadecode/mcp/fetch/bin/python", java.util.List.of("-m", "mcp_server_fetch"), "",
+                    JadePaths.defaults().fetchEnvironment().resolve("bin/python").toString(), java.util.List.of("-m", "mcp_server_fetch"), "",
                     15, 30, 20_000, java.util.Set.of("fetch"))));
         }
     }

@@ -14,7 +14,7 @@
 | 构建 | Maven 单模块,`mvn package` 产出 `target/jadecode.jar` |
 | LLM 接入 | Anthropic 消息格式 + 可配置 base URL(**DeepSeek /anthropic 端点**,已实测) |
 | 框架 | 无(CLI 形态,不用 Spring Boot);交互 TUI 由固定 Pi 的 Node 前端承担 |
-| 持久化 | 工作区 `.jadecode/`，按 tasks / memory / teams 等用途分目录 |
+| 持久化 | 用户目录 `~/.jadecode/`，项目状态按真实路径哈希隔离 |
 
 ## 目录结构
 
@@ -188,22 +188,22 @@ s14 使用官方 Java MCP SDK 接入独立 stdio 服务。Fetch 是现成的 Pyt
 ./scripts/install-fetch.sh
 ```
 
-脚本按 `scripts/fetch-requirements.txt` 安装固定版本服务到 `.jadecode/mcp/fetch/`，
-不改全局 Python 或用户配置。该目录已由工作区运行数据规则忽略。
-Fetch 未安装不影响 Maven 构建及其它工具；重新 clone 或移动目录后，在新位置重新执行脚本，不能搬运 venv。
+脚本按 `scripts/fetch-requirements.txt` 在 `~/.jadecode/mcp/fetch/` 创建固定版本的独立 Python 环境，
+不改系统 Python 或用户模型配置。多个项目共用该环境；移动项目无需重建，安装环境本身不能直接搬运。
+Fetch 未安装不影响 Maven 构建及其它工具。
 脚本面向 POSIX 环境；Windows 原生环境可用 `python -m venv` 与同一 requirements 安装，并配置实际的 `Scripts/python.exe`。
 
 Fetch 默认启用：没有 `mcp.servers` 配置时，JadeCode 自动采用以下定义并提供 `connect_mcp`，
 安装完成后无需手动合并配置。旧用户配置缺少该字段时同样生效；重建 JAR 并重启后使用新的默认值。
-`config.example.json` 与新生成的默认配置保持一致。
-如需自定义，可将以下对象写入 `~/.jadecode/config/config.json` 的 `mcp` 字段，保留其它设置：
+`config.example.json` 省略 `mcp` 字段以采用默认值；导出的完整模板使用当前用户的全局绝对路径。
+下面 `<user>` 需换成实际用户名；如需自定义，可将以下对象写入 `~/.jadecode/config/config.json` 的 `mcp` 字段，保留其它设置：
 
 ```json
 {
   "servers": {
     "fetch": {
       "enabled": true,
-      "command": ".jadecode/mcp/fetch/bin/python",
+      "command": "/home/<user>/.jadecode/mcp/fetch/bin/python",
       "args": ["-m", "mcp_server_fetch"],
       "startupTimeoutSeconds": 15,
       "callTimeoutSeconds": 30,
@@ -279,7 +279,7 @@ s16 新增 `Workflow` 工具：模型选择宿主登记的流程名称与参数�
 结构不合法最多修正一次；截断明确报告步骤/max_tokens/有效额度且不缓存，不按格式错误自动重放，普通 Workflow 失败不封锁会话。
 使用明确支持的 JSON Schema 子集进行宿主校验，不是服务端强制生成或完整 JSON Schema 引擎。
 
-运行文件放在 `.jadecode/workflows/<run_id>/`，包含 snapshot.json、journal.jsonl、output.json 与 run.lock。
+运行文件放在 `~/.jadecode/workspaces/<workspace-id>/workflows/<run_id>/`，包含 snapshot.json、journal.jsonl、output.json 与 run.lock。
 只有已成功落盘的步骤可以复用；恢复缓存命中不再次调用该步骤模型，主会话选择工具和汇总仍可能产生请求。
 工具结果 usage 统计本次执行，缺失或仍在途的用量明确标记；budget 是本次执行按报告检查的观察预算，
 并行请求可能超额，多次恢复也会重新计数，不是绝对账单上限。总体会话用量另在 WORKFLOW 分类持续记录。
@@ -427,7 +427,7 @@ REPL 默认新建并保存主会话。`/resume` 打开可筛选选择器，
 有运行任务、排队消息、未收后台结果或未关闭队友时拒绝切换，不暗中取消工作；启动选择器 Esc 退出，
 会话内选择器 Esc 返回原会话，输入草稿保留。两个入口共用加载器，不支持跨工作区或按任意文件路径加载。
 
-记录保存在 `.jadecode/sessions/<uuid>/`，包括 session.json、events.jsonl 和 session.lock。
+记录保存在 `~/.jadecode/workspaces/<workspace-id>/sessions/<uuid>/`，包括 session.json、events.jsonl 和 session.lock。
 完整消息、末条合并、压缩/回滚替换和实际 Todo 快照持续保存；不逐 token 存流式片段。
 恢复沿用原会话 ID，等待新输入，不重跑旧工具，也不恢复旧后台进程、队友、Inbox 或审批授权。
 正常恢复不再显示固定的范围提示；日志写入中断、工具结果缺失等实际问题仍会提示。
@@ -510,13 +510,12 @@ system 只保留稳定参考边界，路由作为带内部来源的参考消息�
 
 `memory.enabled=false` 关闭自动记忆，不删除文件。使用 `extractionMaxOutputTokens`、
 `consolidationMaxOutputTokens`（默认 8000 / 16384）和 `consolidationInputChars`（默认 128000 字符）。
-旧项目 `.jadecode/memory/*.md` 首次使用时复制到全局 `legacy/<scope>/`，原文件不移动、不删除，
-旧内容不自动进入正式手册。已有而无法识别的全局手册会拒绝初始化，需明确导入。
+项目内旧记忆目录不读取或迁移；已有而无法识别的全局手册会拒绝初始化，保留其内容。
 子代理和队友不自主维护长期记忆；共享客户端允许辅助请求并行于正式请求，可能增加后端并发和用量。
 后台正常失败不覆盖主任务结果。提炼质量仍需真实模型与用户验收，离线替身只证明工程契约。
 提取提示来源与阅读顺序见 [记忆系统阅读指南](docs/notes/s09/memory-system-review.md)。
 
-Task System 使用 `.jadecode/tasks/{id}.json`。先创建取得实际 ID，再增加依赖；认领检查前置条件，完成报告刚解锁任务。
+Task System 使用 `~/.jadecode/workspaces/<workspace-id>/tasks/{id}.json`。先创建取得实际 ID，再增加依赖；认领检查前置条件，完成报告刚解锁任务。
 `list_tasks` 查看全部进度，`get_task` 读取完整描述。`task` 仍表示子代理委派，不是持久任务创建。
 Team 共享同一 TaskStore，实例锁保护本进程认领与状态更新，不保证多进程文件互斥。
 新增 failed/blocked；只有 completed 满足依赖，Leader 可显式 reopen_task 后重新派工。
@@ -550,7 +549,7 @@ Background Tasks 沿用 `bash`：`run_in_background` 省略或 false 仍同步�
 Cron Scheduler 提供 `schedule_cron`、`list_crons`、`cancel_cron`，仅 Leader 开放，原一次性子代理仍六把工具。
 五段 cron 使用进程本地时间；支持星号、星号步进、数值、区间与列表，星期日为 0，日与星期都受限时取 OR。
 REPL 到期入队，在 Agent 空闲时主动发起 `[Scheduled]` 回合；人工与定时回合串行访问同一历史。
-`recurring` / `durable` 默认 true；持久定义与 pending 状态保存至工作区 `.jadecode/cron/jobs.json`。
+`recurring` / `durable` 默认 true；持久定义与 pending 状态保存至项目分区 `~/.jadecode/workspaces/<workspace-id>/cron/jobs.json`。
 模型首个合法正式回复表示交付确认，不是业务验收；一次性删除，周期项等待下一次匹配。
 进程停止后不执行、不补跑停机分钟；`run` 只管理定义，不开启常驻调度。需要停机也执行应使用外部调度服务。
 至少一次交付可能在崩溃后重复；确认前失败退避 5 秒，连续三次暂停本会话自动投递，保留 durable 待交付记录。
@@ -565,20 +564,42 @@ REPL 退出会关闭会话而不是等待队列排空；非交互执行使用 `r
 [原 s12 指南](docs/notes/s12/cron-scheduler-review.md)保留重构前的学习记录。
 
 Team 使用 `spawn_teammate`、`assign_task`、`send_message`、`submit_task_result` 等工具，
-最多三个常驻队友；模型提供短摘要与长正文，`.jadecode/teams/<team-id>/messages/` 保存正文，
+最多三个常驻队友；模型提供短摘要与长正文，`~/.jadecode/workspaces/<workspace-id>/teams/<team-id>/messages/` 保存正文，
 `pending/` 仅保存待投递记录。队友报告默认可以插入并唤起 Leader，普通进度默认不唤起。
 队友启用独立压缩与后台，不启用 Memory/cron；工具层弱隔离不是文件系统沙箱。
 请在存活的 REPL 中进行异步 Team 协作；`run` 在 Leader 本轮回复后退出，会关闭尚未结束的队友和命令。
 工程任务见 [s13 任务单](docs/jobs/s13/agent-teams.md)，学习入口见 [s13 阅读指南](docs/notes/s13/agent-teams-review.md)。
 
-## 工作区运行数据
+## 用户运行数据
 
-JadeCode 自己的运行数据统一保存在工作区 `.jadecode/`：tasks、memory、teams、transcripts、
-tool-results、approvals/backups 与 cron。压缩归档与工具输出仍按原用途保存，不改变命令工作目录。
-机器级 `~/.jadecode/config/config.json` 和模型参数缓存不搬进工作区，`.env`、Git、IDE 和外部 Agent 配置也不移动。
+JadeCode 的持久数据统一位于用户目录：
 
-升级后首次装配会迁移明确识别的旧数据位置，请先退出该工作区的旧版 JadeCode。
-迁移先检查冲突与软链，不覆盖新位置，不改历史正文；中途失败保留已经移动的数据，后续可继续。
-read_file 对已迁移的旧正文路径提供只读兼容，普通写入和 bash 命令不会自动重定向。
-新旧两处同时有数据或旧数据包含软链时停止并报错，需要人工确认，不能自动合并。
-迁移不扫描其它工作区、不恢复旧执行现场，也不删除无法识别的文件。
+```text
+~/.jadecode/
+├── config/                       # 模型与应用配置
+├── cache/model-metadata/          # 模型参数缓存
+├── memory/                       # 全局记忆，内部区分项目与全局作用域
+├── mcp/fetch/                    # 多项目共享的 Fetch Python 环境
+└── workspaces/<workspace-id>/
+    ├── workspace.json            # 项目真实路径与哈希身份
+    ├── sessions/                 # 会话日志、Todo、用量和 Goal 状态
+    ├── tasks/                    # 持久任务图
+    ├── teams/                    # Team 名册、派工与邮件
+    ├── transcripts/              # 压缩前原始消息归档
+    ├── tool-results/             # 完整工具大输出
+    ├── cron/jobs.json            # 定时定义与待交付状态
+    └── workflows/                # Workflow 快照、日志和输出
+```
+
+`workspace-id` 为项目真实路径的 SHA-256；同名项目与不同 worktree 使用不同分区，
+同一目录的符号链接入口归到同一分区。移动或重命名项目会产生新分区，本阶段不自动重新绑定。
+项目源码、`AGENTS.md` 和项目技能仍位于项目目录；shell 和 MCP 的默认工作目录保持项目目录。
+终端 IPC、编辑器草稿、剪贴板图片继续使用系统临时目录。
+
+本项目直接采用新布局，不导入旧 `.jadecode/`、`.tasks` 等项目目录，不保留旧路径映射。
+旧文件保持原样；新数据的正常跨会话恢复与事务失败恢复继续有效。
+模型默认只能读取当前项目的归档、工具结果、邮件正文及 Workflow 最终输出，
+显式 deny/ask 规则优先；状态文件通过 Harness 工具写入，通用文件命令不能改写运行分区。
+应用权限检查不是操作系统沙箱，任意程序内部访问仍由后续沙箱工作处理。
+测试统一注入临时 `JadePaths`，不修改 user.home、不访问真实用户状态。
+源码阅读见 [用户数据布局阅读指南](docs/notes/s15/global-runtime-storage-review.md)。
