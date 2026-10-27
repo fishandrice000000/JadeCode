@@ -23,7 +23,7 @@ class SessionUsagePersistenceTest {
 
     /** 已中断的辅助请求仍有费用事实；保存后应保留中断标志，并允许主会话继续写日志。 */
     @Test void interruptedUsageWriterDoesNotCloseSharedJournal() throws Exception {
-        var store = new SessionStore(new WorkspacePaths(workspace), ignored -> { });
+        var store = new SessionStore(com.jadecode.support.TestPaths.workspace(workspace), ignored -> { });
         String id;
         try (var opened = store.create("offline")) {
             id = opened.journal().metadata().id();
@@ -50,7 +50,7 @@ class SessionUsagePersistenceTest {
 
     /** 取消隔离不能吞掉真实不可写错误：日志已关闭时仍锁定账本，不发布虚假累计。 */
     @Test void unavailableJournalStillStopsNewRequests() throws Exception {
-        var store = new SessionStore(new WorkspacePaths(workspace), ignored -> { });
+        var store = new SessionStore(com.jadecode.support.TestPaths.workspace(workspace), ignored -> { });
         try (var opened = store.create("offline")) {
             var ledger = new SessionUsage(ignored -> { }); ledger.restore(opened.journal(), opened.restored().entries());
             opened.journal().close();

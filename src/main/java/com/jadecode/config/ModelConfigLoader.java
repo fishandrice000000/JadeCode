@@ -36,7 +36,7 @@ public final class ModelConfigLoader {
 
     /** 用户级默认位置；与非秘密 config.json 分开，不随工作区切换。 */
     public static Path defaultPath() {
-        return Path.of(System.getProperty("user.home"), ".jadecode", "config", "model.json");
+        return JadePaths.defaults().config().resolve("model.json");
     }
 
     /**

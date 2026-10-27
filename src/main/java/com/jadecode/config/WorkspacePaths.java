@@ -1,95 +1,75 @@
 package com.jadecode.config;
 
 import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.LinkOption;
-import java.nio.file.Path;
-import java.util.LinkedHashMap;
-import java.util.Map;
+import java.nio.file.*;
+import com.jadecode.util.Json;
 
 /**
- * 描述一个工作区内 JadeCode 自己的数据目录，不改变工具执行命令时的工作目录。
- *
- * <p>工厂与各存储共用这份布局，避免每个模块重新拼接隐藏目录。构造和路径访问方法
- * 不创建文件；只有显式调用 {@link #directory(Path, boolean)} 才可能创建目录。
- * 机器级配置仍在用户 HOME 下，不属于这里。</p>
+ * 某个项目在用户数据根中的分区。workspace 永远用于业务命令，root 只用于 Harness 持久状态。
+ * 构造解析已有工作区真实路径但不写盘；不同 checkout/worktree 按真实路径哈希隔离。
  */
-public record WorkspacePaths(Path workspace) {
-    /** 只规范化路径，不读配置、不访问模型，也不在构造时迁移数据。 */
-    public WorkspacePaths { workspace = workspace.toAbsolutePath().normalize(); }
-
-    public Path root() { return workspace.resolve(".jadecode"); }
+public record WorkspacePaths(Path workspace, JadePaths jade) {
+    public WorkspacePaths {
+        try { workspace = workspace.toRealPath(); }
+        catch (IOException invalid) { throw new IllegalArgumentException("Workspace is inaccessible", invalid); }
+        java.util.Objects.requireNonNull(jade);
+        if (!Files.isDirectory(workspace)) throw new IllegalArgumentException("Workspace must be a directory");
+    }
+    /** 生产默认用户根；离线调用者应显式提供临时 JadePaths。 */
+    public WorkspacePaths(Path workspace) { this(workspace, JadePaths.defaults()); }
+    public String id() { return JadePaths.identity(workspace); }
+    public Path root() { return jade.workspaces().resolve(id()); }
     public Path sessions() { return root().resolve("sessions"); }
     public Path tasks() { return root().resolve("tasks"); }
-    public Path memory() { return root().resolve("memory"); }
     public Path transcripts() { return root().resolve("transcripts"); }
     public Path toolResults() { return root().resolve("tool-results"); }
     public Path teams() { return root().resolve("teams"); }
-    /** Workflow 的快照、成功步骤和输出归当前工作区，不使用机器级配置目录。 */
     public Path workflows() { return root().resolve("workflows"); }
-    public Path approvalBackups() { return root().resolve("approvals/backups"); }
     public Path cronFile() { return root().resolve("cron/jobs.json"); }
 
-    /**
-     * 验证内部目录的每一级父目录，必要时逐级创建；拒绝软链和同名普通文件。
-     * 新增 .jadecode 一层后只检查最内层目录是不够的，否则父目录链接仍可能逃出工作区。
-     * 此检查不是对恶意并发替换路径的文件系统沙箱。
-     *
-     * @param directory 必须位于本布局 root 下的目录
-     * @param create false 只检查已经存在的部分，缺目录不创建
-     * @throws IOException 目录位置非法、存在链接/非目录或创建失败
-     */
+    /** 首次实际使用注册项目归属；已有元数据必须匹配，不凭目录名猜测或覆盖其它项目。 */
+    public void register() throws IOException {
+        // 所有注册先经过祖先目录检查，不能把注册文件写进一个链接分区。
+        jade.directory(root(), true);
+        Path file = root().resolve("workspace.json");
+        if (Files.exists(file, LinkOption.NOFOLLOW_LINKS)) {
+            // 已有分区只比对，不覆写用户修改或其它项目的身份。
+            regular(file);
+            var saved = Json.mapper().readTree(Files.readString(file));
+            if (saved == null || !saved.path("id").asText().equals(id()) || !saved.path("workspace").asText().equals(workspace.toString()))
+                throw new IOException("Workspace registry identity mismatch");
+        } else {
+            var value = Json.mapper().createObjectNode().put("id", id()).put("workspace", workspace.toString());
+            // 注册内容由真实路径唯一确定；同项目并发初始化得到相同内容。
+            JadePaths.atomicWrite(file, value.toString());
+        }
+    }
+
+    /** 只允许访问当前分区；创建目录前先登记项目元数据，读取不隐式建空库。 */
     public void directory(Path directory, boolean create) throws IOException {
         Path target = directory.toAbsolutePath().normalize();
-        if (!target.startsWith(root())) throw new IOException("Data directory is outside .jadecode: " + target);
-        Path cursor = workspace;
-        for (Path part : workspace.relativize(target)) {
-            cursor = cursor.resolve(part);
-            if (Files.exists(cursor, LinkOption.NOFOLLOW_LINKS)) {
-                if (!Files.isDirectory(cursor, LinkOption.NOFOLLOW_LINKS))
-                    throw new IOException("Data directory cannot be a symlink or regular file: " + cursor);
-            } else if (create) {
-                // 逐级创建，不让 createDirectories 偷偷跟随某个未检查过的父链接。
-                try { Files.createDirectory(cursor); }
-                catch (java.nio.file.FileAlreadyExistsException raced) {
-                    if (!Files.isDirectory(cursor, LinkOption.NOFOLLOW_LINKS)) throw raced;
-                }
-            }
-        }
+        if (!target.startsWith(root())) throw new IOException("Data directory is outside this workspace partition");
+        if (create) register();
+        jade.directory(target, create);
     }
 
-    /** 旧目录到新目录的固定映射；先列子目录，再列父目录，供迁移及只读旧引用兼容共用。 */
-    public Map<Path, Path> legacyLocations() {
-        Map<Path, Path> paths = new LinkedHashMap<>();
-        paths.put(workspace.resolve(".team/approval-backups"), approvalBackups());
-        paths.put(workspace.resolve(".tasks"), tasks());
-        paths.put(workspace.resolve(".memory"), memory());
-        paths.put(workspace.resolve(".team"), teams());
-        paths.put(workspace.resolve(".transcripts"), transcripts());
-        paths.put(workspace.resolve(".task_outputs/tool-results"), toolResults());
-        paths.put(workspace.resolve(".scheduled_tasks.json"), cronFile());
-        return paths;
+    /** 模型默认只读当前项目的可阅读产物，状态、会话原始日志、锁及其它项目不在此授权内。 */
+    public boolean readableArtifact(Path original) {
+        try {
+            Path path = original.toAbsolutePath().normalize();
+            if (!path.startsWith(root())) return false;
+            String relative = root().relativize(path).toString().replace('\\', '/');
+            // 白名单只包含交给模型消费的产物，不因同属 ~/.jadecode 就开放会话、锁或配置。
+            boolean allowed = relative.matches("transcripts/[^/]+\\.jsonl") || relative.matches("tool-results/[^/]+\\.txt")
+                    || relative.matches("teams/team_[0-9a-f-]+/messages/mail_[0-9a-f-]+\\.md")
+                    || relative.matches("workflows/wf_[0-9a-f]{32}/output\\.json");
+            if (!allowed) return false;
+            directory(path.getParent(), false); regular(path); return true;
+        } catch (IOException | RuntimeException invalid) { return false; }
     }
 
-    /**
-     * 只为已迁移数据提供旧路径读取兼容，不改变历史正文，也不把写入重定向到另一个文件。
-     * 原位置仍有对象时不替换；新位置的父目录和最终真实位置均须留在内部目录中。
-     * @return 原路径，或确实存在且通过检查的新路径；无 IO 副作用
-     */
-    public Path legacyRead(Path original) throws IOException {
-        Path absolute = original.toAbsolutePath().normalize();
-        if (Files.exists(absolute, LinkOption.NOFOLLOW_LINKS)) return original;
-        for (var entry : legacyLocations().entrySet()) {
-            if (!absolute.startsWith(entry.getKey())) continue;
-            Path target = entry.getValue().resolve(entry.getKey().relativize(absolute));
-            directory(target.getParent(), false);
-            if (Files.exists(target)) {
-                Path real = target.toRealPath();
-                if (!real.startsWith(root().toRealPath())) throw new IOException("Migration reference escapes the data directory");
-                return real;
-            }
-            break;
-        }
-        return original;
+    /** 普通文件检查不跟随最终链接；不把目录或不存在资料当作可读产物。 */
+    private static void regular(Path path) throws IOException {
+        if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) throw new IOException("Runtime data is not a regular file");
     }
 }

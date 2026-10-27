@@ -23,7 +23,7 @@ class MemoryMaintenanceTest {
     /** 每个用例独占临时 HOME 等价目录；不读取真实用户记忆。 */
     private MemoryStore store() throws Exception {
         Path workspace = Files.createDirectories(temporary.resolve("project"));
-        return new MemoryStore(temporary.resolve("home/.jadecode/memory"), workspace, warnings::add);
+        return new MemoryStore(new com.jadecode.config.WorkspacePaths(workspace, new com.jadecode.config.JadePaths(temporary.resolve("home/.jadecode"))), warnings::add);
     }
     private MemoryMaintenance service(MemoryStore store, LlmClient fake) {
         return new MemoryMaintenance(store, fake, JadeSettings.defaults().memory(), ignored -> { }, warnings::add, false);
@@ -123,7 +123,7 @@ class MemoryMaintenanceTest {
 
     @Test void globalStorePreservesOtherWorkspaceAndRefusesStalePublication() throws Exception {
         var first = store(); first.initialize();
-        var second = new MemoryStore(first.root(), Files.createDirectory(temporary.resolve("other")), warnings::add);
+        var second = new MemoryStore(new com.jadecode.config.WorkspacePaths(Files.createDirectory(temporary.resolve("other")), first.paths().jade()), warnings::add);
         second.initialize(); var stale = first.snapshot();
         second.publish(second.snapshot(), Map.of(second.scope(), new MemoryStore.Artifacts("# Memory routes\nOther index", "Other facts")), "other", List.of());
         assertThrows(IOException.class, () -> first.publish(stale, Map.of(), "stale", List.of()));
@@ -173,19 +173,19 @@ class MemoryMaintenanceTest {
         assertFalse(warnings.isEmpty());
     }
 
-    @Test void legacyIsCopiedUnchangedAndNotAdmitted() throws Exception {
+    @Test void projectLocalMemoryIsIgnoredAndLeftUntouched() throws Exception {
         var store = store(); Path legacy = Files.createDirectories(store.workspace().resolve(".jadecode/memory"));
         String original = "用户似乎喜欢 Python。其实只让演示了一段 Python。";
         Files.writeString(legacy.resolve("python.md"), original);
         try (var memory = service(store, req -> { throw new AssertionError(); })) { memory.reference(); }
         assertEquals(original, Files.readString(legacy.resolve("python.md")));
-        assertEquals(original, Files.readString(store.root().resolve("legacy/" + store.scope() + "/" + MemoryStore.hash(original) + ".md")));
+        assertFalse(Files.exists(store.root().resolve("legacy")));
         assertEquals(MemoryStore.EMPTY_HANDBOOK, store.snapshot().handbook()); assertTrue(store.materials().isEmpty());
     }
 
     @Test void symlinkedRootAndSourceTraversalAreRejected() throws Exception {
         Path real = Files.createDirectory(temporary.resolve("real")); Path link = temporary.resolve("link"); Files.createSymbolicLink(link, real);
-        var store = new MemoryStore(link.resolve("memory"), temporary, warnings::add);
+        var store = new MemoryStore(new com.jadecode.config.WorkspacePaths(temporary, new com.jadecode.config.JadePaths(link)), warnings::add);
         assertThrows(IOException.class, store::initialize);
         var regular = store(); regular.initialize(); assertThrows(IOException.class, () -> regular.readSource("../secret"));
         assertFalse(regular.readable(regular.root().resolve("state/jobs/x.json")));

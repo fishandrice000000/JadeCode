@@ -28,18 +28,16 @@ public final class MemoryManager implements AutoCloseable {
     private final Consumer<String> warnings;
 
     /**
-     * 绑定唯一维护实现；显式根目录让离线调用方隔离 HOME，生产传 defaultRoot。
+     * 绑定唯一维护实现；布局显式区分项目与用户数据根，离线调用方使用临时 JadePaths。
      * 构造只校验工作区真实路径，不创建库、不启动后台线程、不调用模型。
      * 关闭开关保留原有文件，所有入口均跳过维护 IO。
      */
-    public MemoryManager(LlmClient client, Path root, Path workspace, JadeSettings.Memory settings,
-            Consumer<String> information, Consumer<String> warnings) throws IOException {
+    public MemoryManager(LlmClient client, com.jadecode.config.WorkspacePaths paths, JadeSettings.Memory settings,
+            Consumer<String> information, Consumer<String> warnings) {
         enabled = settings.enabled(); this.warnings = java.util.Objects.requireNonNull(warnings);
-        maintenance = new MemoryMaintenance(new MemoryStore(root, workspace, warnings), client, settings, information, warnings, true);
+        maintenance = new MemoryMaintenance(new MemoryStore(paths, warnings), client, settings, information, warnings, true);
     }
 
-    /** 默认全局位置；不读取认证、不创建文件。 */
-    public static Path defaultRoot() { return MemoryStore.defaultRoot(); }
     public Path root() { return maintenance.root(); }
     public boolean readable(Path path) { return enabled && maintenance.readable(path); }
 

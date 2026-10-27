@@ -99,7 +99,7 @@ class MainCompactionAssemblyTest {
         var defaults = com.jadecode.config.JadeSettings.defaults();
         var settings = new com.jadecode.config.JadeSettings(defaults.tui(), defaults.compaction(), defaults.limits(), disabledMemory());
         return JadeCodeFactory.create(config, workspace, client, ignored -> { }, ignored -> { }, (hooks, path, output) -> { },
-                () -> com.jadecode.llm.ResponseStream.NONE, com.jadecode.execution.ExecutionObserver.NONE, settings);
+                () -> com.jadecode.llm.ResponseStream.NONE, com.jadecode.execution.ExecutionObserver.NONE, settings, settings.permissions().state(null), com.jadecode.support.TestPaths.jade(workspace));
     }
 
     /** 保留原课程“短历史也全部摘要”的集成断言；生产默认另测 Token 保留尾部的契约。 */
@@ -109,7 +109,7 @@ class MainCompactionAssemblyTest {
                 com.jadecode.context.CompactionPolicy.coursePipeline(), defaults.limits(), disabledMemory());
         return JadeCodeFactory.create(config, ws, client, ignored -> { }, ignored -> { },
                 (hooks, path, output) -> { }, () -> com.jadecode.llm.ResponseStream.NONE,
-                com.jadecode.execution.ExecutionObserver.NONE, settings);
+                com.jadecode.execution.ExecutionObserver.NONE, settings, settings.permissions().state(null), com.jadecode.support.TestPaths.jade(ws));
     }
 
     /** 剧本化客户端:父 / 子各有正式请求剧本,摘要请求统一返回固定文本 */
@@ -191,7 +191,7 @@ class MainCompactionAssemblyTest {
     }
 
     private List<String> archiveLines() throws IOException {
-        List<Path> files = filesIn(ws.resolve(".jadecode/transcripts"));
+        List<Path> files = filesIn(com.jadecode.support.TestPaths.workspace(ws).transcripts());
         assertEquals(1, files.size(), "应当恰好有一份 transcript 归档");
         return Files.readAllLines(files.getFirst(), StandardCharsets.UTF_8);
     }
@@ -249,8 +249,8 @@ class MainCompactionAssemblyTest {
         assertEquals(1, occurrences(request.system(), BOUNDARY), "边界句必须恰出现一次");
         // 装配与这次短任务都不该建存储、也不该发摘要。
         assertEquals(0, client.summaries.size());
-        assertFalse(Files.exists(ws.resolve(".jadecode/transcripts")), "装配不主动建归档目录");
-        assertFalse(Files.exists(ws.resolve(".jadecode/tool-results")), "装配不主动建落盘目录");
+        assertFalse(Files.exists(com.jadecode.support.TestPaths.workspace(ws).transcripts()), "装配不主动建归档目录");
+        assertFalse(Files.exists(com.jadecode.support.TestPaths.workspace(ws).toolResults()), "装配不主动建落盘目录");
         assertEquals("完成", messages.getLast().extractText());
     }
 
@@ -326,7 +326,7 @@ class MainCompactionAssemblyTest {
         assertEquals(1, retried.size());
         assertTrue(retried.getFirst().extractText().startsWith("[Compacted]"));
         assertTrue(retried.getFirst().extractText().contains("Current user request:\n阶段目标"));
-        // 归档落在注入工作区的 .jadecode/transcripts，内容按结构等于压缩前完整历史。
+        // 归档落在注入的全局项目分区 transcripts，内容按结构等于压缩前完整历史。
         assertArchivedMessages(List.of(Message.userText("阶段目标"), compactReply.message(),
                 Message.userBlocks(List.of(new ToolResultBlock("c1", CompactTool.OUTPUT)))), archiveLines());
     }
@@ -428,12 +428,12 @@ class MainCompactionAssemblyTest {
         assertEquals(0, parentClient.summaries.size(), "确定性落盘不需要辅助摘要");
         String parentShell = resultsOf(parentClient.formal.get(1).messages().getLast()).getFirst().content();
         assertTrue(parentShell.startsWith("<persisted-output>"), "父的下一次请求应看到路径 + 预览");
-        List<Path> parentPersisted = filesIn(ws.resolve(".jadecode/tool-results"));
+        List<Path> parentPersisted = filesIn(com.jadecode.support.TestPaths.workspace(ws).toolResults());
         assertEquals(1, parentPersisted.size());
         assertEquals(big, Files.readString(parentPersisted.getFirst(), StandardCharsets.UTF_8),
-                "父路径的完整原文应落在注入工作区里");
+                "父路径的完整原文应落在注入的项目数据分区");
 
-        // (b) 子路径:换一个工作区,证明落盘位置跟着装配时注入的 cwd 走
+        // (b) 子路径:换一个工作区,证明落盘位置属于装配时注入的项目分区
         Path childWs = Files.createDirectories(ws.resolve("child-ws"));
         Files.writeString(childWs.resolve("big.txt"), big);
         ScriptedClient childClient = new ScriptedClient();
@@ -450,7 +450,7 @@ class MainCompactionAssemblyTest {
         // formal:0=父(task)、1=子第一次 read_file、2=子第二次(应看到外壳)
         String childShell = resultsOf(childClient.formal.get(2).messages().getLast()).getFirst().content();
         assertTrue(childShell.startsWith("<persisted-output>"), "子的下一次请求应看到路径 + 预览");
-        List<Path> childPersisted = filesIn(childWs.resolve(".jadecode/tool-results"));
+        List<Path> childPersisted = filesIn(com.jadecode.support.TestPaths.workspace(childWs).toolResults());
         assertEquals(1, childPersisted.size());
         assertEquals(big, Files.readString(childPersisted.getFirst(), StandardCharsets.UTF_8));
         assertEquals("子结论", resultsOf(childMessages.get(2)).getFirst().content());
@@ -474,7 +474,7 @@ class MainCompactionAssemblyTest {
                 com.jadecode.context.CompactionPolicy.coursePipeline(), defaults.limits(), disabledMemory());
         SessionRuntime loop = JadeCodeFactory.create(config(), ws, client, ignored -> { }, ignored -> { },
                 (hooks, cwd, output) -> { }, () -> com.jadecode.llm.ResponseStream.NONE,
-                com.jadecode.execution.ExecutionObserver.NONE, settings);
+                com.jadecode.execution.ExecutionObserver.NONE, settings, settings.permissions().state(null), com.jadecode.support.TestPaths.jade(ws));
         List<String> toolEvents = new ArrayList<>();
         ((AgentExecutor) readField(loop, "engine")).hooks().register(Hooks.POST_TOOL_USE, params -> {
             toolEvents.add("post");

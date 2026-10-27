@@ -56,6 +56,14 @@ public final class ContextCompactor {
         return facade;
     }
 
+    /** 生产使用统一全局布局，归档及工具结果均在对应项目分区。 */
+    public static ContextCompactor production(LlmClient client, com.jadecode.config.WorkspacePaths paths,
+            ProductionCompactionSettings settings) {
+        var facade = new ContextCompactor(client, paths, CompactionLimits.defaults(),
+                new CompactionPolicy(true, false, false, false, false, settings.autoSummaryEnabled(), false));
+        facade.production = new ProductionCompactor(client, paths, settings); return facade;
+    }
+
     /** @return 是否使用 Token 生产主干，供装配与验证区分课程路径。 */
     public boolean productionMode() { return production != null; }
 
@@ -145,10 +153,21 @@ public final class ContextCompactor {
      */
     public ContextCompactor(LlmClient client, Path transcriptDir, Path toolResultsDir, CompactionLimits limits,
             CompactionPolicy policy) {
+        this(client, transcriptDir, toolResultsDir, limits, policy, null);
+    }
+
+    /** 显式课程策略也可使用全局布局，使用与生产相同的运行目录。 */
+    public ContextCompactor(LlmClient client, com.jadecode.config.WorkspacePaths paths, CompactionLimits limits, CompactionPolicy policy) {
+        this(client, paths.transcripts(), paths.toolResults(), limits, policy, paths);
+    }
+
+    /** 所有策略复用同一组归档存储；构造不执行 IO。 */
+    private ContextCompactor(LlmClient client, Path transcriptDir, Path toolResultsDir, CompactionLimits limits,
+            CompactionPolicy policy, com.jadecode.config.WorkspacePaths paths) {
         this.limits = java.util.Objects.requireNonNull(limits);
         this.policy = java.util.Objects.requireNonNull(policy);
-        this.toolOutputStore = new ToolOutputStore(toolResultsDir);
-        this.transcriptStore = new TranscriptStore(transcriptDir);
+        this.toolOutputStore = paths == null ? new ToolOutputStore(toolResultsDir) : new ToolOutputStore(paths);
+        this.transcriptStore = paths == null ? new TranscriptStore(transcriptDir) : new TranscriptStore(paths);
         this.toolResultBudgetCompactor = new ToolResultBudgetCompactor(limits, toolOutputStore);
         this.snipCompactor = new SnipCompactor(limits, transcriptStore);
         this.microCompactor = new MicroCompactor(limits, toolOutputStore);

@@ -22,8 +22,8 @@ public final class TeamMailbox {
     private final com.jadecode.config.WorkspacePaths paths;
 
     /** 绑定本次 Team 的独立目录；构造不建文件，不扫描其它 Team 的历史邮件。 */
-    public TeamMailbox(Path workspace) {
-        paths = new com.jadecode.config.WorkspacePaths(workspace);
+    public TeamMailbox(com.jadecode.config.WorkspacePaths paths) {
+        this.paths = paths;
         root = paths.teams().resolve("team_" + UUID.randomUUID());
     }
 
@@ -38,7 +38,7 @@ public final class TeamMailbox {
                 || body == null || body.isBlank() || body.length() > 200_000) {
             throw new IllegalArgumentException("Summary must be 1–2000 characters and body must be 1–200000 characters");
         }
-        // teams 的祖先也检查，避免 .jadecode 被换成链接后写到工作区外。
+        // teams 的祖先也检查，避免全局目录祖先被换成链接后写入其它位置。
         paths.directory(root.resolve("messages"), true);
         paths.directory(root.resolve("pending"), true);
         String id = "mail_" + UUID.randomUUID();
@@ -52,6 +52,12 @@ public final class TeamMailbox {
 
     /** 成功交给 Inbox 后清除运输记录，正文必须继续存在；清理失败可再次调用。 */
     public void delivered(Incoming incoming) throws IOException { Files.deleteIfExists(pending(incoming.id())); }
+
+    /** 名册与派工也共用本 Team 的受检目录，不能绕过全局目录祖先检查。 */
+    void directory(Path directory) throws IOException {
+        if (!directory.normalize().startsWith(root)) throw new IOException("Team data escapes its partition");
+        paths.directory(directory, true);
+    }
 
     /** 返回本次 Team 目录，供名册与派工记录使用，不把旧 Team 当作当前运行中的会话。 */
     public Path root() { return root; }

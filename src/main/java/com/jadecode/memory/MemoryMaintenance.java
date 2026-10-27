@@ -42,12 +42,12 @@ final class MemoryMaintenance implements AutoCloseable {
                 .name("jade-memory-maintenance").daemon(true).inheritInheritableThreadLocals(false).factory()) : null;
     }
 
-    /** 首次使用恢复存储并复制旧库；初始化失败不发布空候选，后续入口可以重试。 */
+    /** 首次使用恢复存储；初始化失败不发布空候选，后续入口可以重试。 */
     private void initialize() throws IOException {
         synchronized (lifecycle) {
             if (closed) throw new IOException("Memory maintenance is closed");
             if (initialized) return;
-            store.initialize(); store.archiveLegacy(); initialized = true;
+            store.initialize(); initialized = true;
             if (worker != null) worker.scheduleWithFixedDelay(this::maintainSafely, 500, 1000, TimeUnit.MILLISECONDS);
         }
     }
@@ -101,7 +101,7 @@ final class MemoryMaintenance implements AutoCloseable {
         if (journal == null) {
             // 快照也执行与日志相同的证据过滤，序列化前不把无限历史塞进后台状态文件。
             job.set("snapshot", Json.mapper().valueToTree(snapshot));
-            String bounded = MemoryEvidence.render(job, store.workspace(), settings.consolidationInputChars());
+            String bounded = MemoryEvidence.render(job, store.paths(), settings.consolidationInputChars());
             job.remove("snapshot"); job.put("evidence_snapshot", bounded);
         }
         store.enqueue(job);
@@ -226,7 +226,7 @@ final class MemoryMaintenance implements AutoCloseable {
         if (store.materials().stream().anyMatch(n -> n.path("id").asText().equals(job.path("id").asText()))) return;
         if (!job.has("extracted_summary")) {
             String evidence = job.has("evidence_snapshot") ? job.path("evidence_snapshot").asText()
-                    : MemoryEvidence.render(job, store.workspace(), settings.consolidationInputChars());
+                    : MemoryEvidence.render(job, store.paths(), settings.consolidationInputChars());
             var response = client.complete(MemoryReply.request(client, resource("extraction.md"),
                     "Workspace: " + store.workspace() + "\nTask outcome: " + job.path("outcome").asText() + "\n" + evidence,
                     settings.extractionMaxOutputTokens()));

@@ -23,19 +23,20 @@ final class MemoryStore {
     static final String EMPTY_SUMMARY = "# Memory routes\n\nNo consolidated memories yet.\n";
     static final String EMPTY_HANDBOOK = "# Memory handbook\n\nNo consolidated memories yet.\n";
     private final Path root, workspace;
+    private final com.jadecode.config.WorkspacePaths paths;
     private final String scope;
     private final Consumer<String> warnings;
 
     /** 只绑定显式目录；构造不创建用户文件，也不读取模型配置。 */
-    MemoryStore(Path root, Path workspace, Consumer<String> warnings) throws IOException {
-        this.root = root.toAbsolutePath().normalize();
-        this.workspace = workspace.toRealPath();
-        this.scope = hash(this.workspace.toString());
+    MemoryStore(com.jadecode.config.WorkspacePaths paths, Consumer<String> warnings) {
+        this.paths = paths;
+        this.root = paths.jade().memory();
+        this.workspace = paths.workspace();
+        this.scope = paths.id();
         this.warnings = warnings;
     }
 
-    /** 全局默认位置；测试通过构造参数注入临时目录，不修改 user.home。 */
-    static Path defaultRoot() { return Path.of(System.getProperty("user.home"), ".jadecode", "memory"); }
+    com.jadecode.config.WorkspacePaths paths() { return paths; }
     Path root() { return root; }
     String scope() { return scope; }
     Path workspace() { return workspace; }
@@ -47,7 +48,7 @@ final class MemoryStore {
     void initialize() throws IOException {
         directory(root, true);
         MemoryLibraryLock.run(root, () -> {
-            for (String dir : List.of("rollout_summaries", "pending", "events", "legacy", "state/jobs", "state/materials"))
+            for (String dir : List.of("rollout_summaries", "pending", "events", "state/jobs", "state/materials"))
                 directory(root.resolve(dir), true);
             MemoryTransaction.recover(root, warnings);
             Path manifest = root.resolve("memory_manifest.json");
@@ -243,31 +244,6 @@ final class MemoryStore {
             }
             return List.copyOf(unique.values());
         });
-    }
-
-    /**
-     * 旧项目库只复制留档：按正文哈希命名，保留映射和项目作用域，原文件不移动、不删除。
-     * 旧库中的泛化偏好或教程不会因迁移自动成为正式手册内容。
-     */
-    void archiveLegacy() throws IOException {
-        Path legacy = workspace.resolve(".jadecode/memory");
-        if (legacy.equals(root) || !Files.exists(legacy, LinkOption.NOFOLLOW_LINKS)) return;
-        directory(legacy, false);
-        Path target = root.resolve("legacy/" + scope);
-        directory(target, true);
-        try (var files = Files.list(legacy)) {
-            for (Path file : files.filter(p -> p.getFileName().toString().endsWith(".md")).sorted().toList()) {
-                if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) throw new IOException("Legacy memory is not a regular file");
-                String body = text(file), name = hash(body);
-                MemoryLibraryLock.run(root, () -> {
-                    immutable(target.resolve(name + ".md"), body);
-                    var mapping = Json.mapper().createObjectNode();
-                    mapping.put("original", file.toString()).put("scope", scope).put("sha256", name).put("status", "legacy-unverified");
-                    immutable(target.resolve(hash(file.toString() + ":" + name) + ".json"), mapping.toString());
-                    return null;
-                });
-            }
-        }
     }
 
     /** 只读入口仅允许正式 Markdown 与回顾；配置、状态和备份不因记忆权限而暴露。 */

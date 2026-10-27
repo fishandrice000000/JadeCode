@@ -45,7 +45,7 @@ class CodeReviewWorkflowTest {
     }
     /** 用原 runner 接口装配新预设；所有输出仍走原 JSON/schema、journal 和取消围栏。 */
     private WorkflowRuntime runtime(LlmClient client) {
-        return new WorkflowRuntime(workspace, WorkflowDefinition.registry(List.of(CodeReviewWorkflow.definition())),
+        return new WorkflowRuntime(com.jadecode.support.TestPaths.workspace(workspace), WorkflowDefinition.registry(List.of(CodeReviewWorkflow.definition())),
                 () -> new WorkflowAgentRunner(client, "offline", 2000, ThinkingSettings.DEFAULT), WorkflowRuntime.Limits.defaults(), ignored -> { });
     }
     /** 每维返回调用方提供的结构；复核请求可断言看见完整源资料与候选，统计真实步骤。 */

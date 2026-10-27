@@ -26,7 +26,7 @@ final class WorkflowStore {
     private final WorkspacePaths paths;
 
     /** 只绑定工作区布局，实际新建/读取在 open 时发生。 */
-    WorkflowStore(Path workspace) { paths = new WorkspacePaths(workspace); }
+    WorkflowStore(WorkspacePaths paths) { this.paths = paths; }
 
     /**
      * 排他预留或打开 run，全程持锁；恢复材料全部验证通过后才交给运行时改写状态。

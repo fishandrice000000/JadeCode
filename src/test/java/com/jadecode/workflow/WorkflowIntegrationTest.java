@@ -49,7 +49,7 @@ class WorkflowIntegrationTest {
                 defaults.permissions(), new JadeSettings.Mcp(Map.of()));
         return JadeCodeFactory.create(new AppConfig("offline", "http://127.0.0.1:9", "fixture", maxTokens), workspace, client,
                 ignored -> { }, ignored -> { }, (hooks, cwd, out) -> { }, () -> ResponseStream.NONE,
-                observer, settings, permissions);
+                observer, settings, permissions, com.jadecode.support.TestPaths.jade(workspace));
     }
 
     /** 主历史仅包含两份工具结果；各类请求身份正确，缓存恢复不再请求步骤模型。 */
@@ -125,7 +125,7 @@ class WorkflowIntegrationTest {
     @Test void truncatedParallelWorkflowKeepsPersistentSessionUsable() throws Exception {
         var allStarted = new CountDownLatch(4); var cancelled = new CountDownLatch(3);
         AtomicInteger formal = new AtomicInteger();
-        var paths = new WorkspacePaths(workspace);
+        var paths = com.jadecode.support.TestPaths.workspace(workspace);
         try (var host = new com.jadecode.cli.SessionHost(paths, generation -> session(request -> {
             assertEquals(8192, request.maxTokens(), "Workflow must use the configured effective formal budget");
             if (request.tools().isEmpty()) {
@@ -182,7 +182,7 @@ class WorkflowIntegrationTest {
             return reply(new TextBlock("denied"));
         }, permissions, ExecutionObserver.NONE)) {
             runtime.run(new ArrayList<>(List.of(Message.userText("review"))));
-            assertFalse(Files.exists(workspace.resolve(".jadecode/workflows")));
+            assertFalse(Files.exists(com.jadecode.support.TestPaths.workspace(workspace).workflows()));
         }
     }
 
@@ -223,7 +223,7 @@ class WorkflowIntegrationTest {
             runtime.start(false); var answer = runtime.submit("review", null);
             assertTrue(entered.await(3, TimeUnit.SECONDS)); runtime.close(); release.countDown();
             assertThrows(ExecutionException.class, () -> answer.get(3, TimeUnit.SECONDS)); assertEquals(1, formal.get());
-            try (var files = Files.walk(workspace.resolve(".jadecode/workflows"))) {
+            try (var files = Files.walk(com.jadecode.support.TestPaths.workspace(workspace).workflows())) {
                 for (Path path : files.filter(p -> p.getFileName().toString().equals("journal.jsonl")).toList()) assertEquals("", Files.readString(path));
             }
         } finally { release.countDown(); runtime.close(); }

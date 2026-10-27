@@ -28,7 +28,7 @@ class SessionDisplayTimingTest {
         var memory = new MemoryManager(request -> {
             calls.incrementAndGet(); extracted.countDown();
             return response("{\"rollout_summary\":\"\",\"rollout_slug\":\"\"}");
-        }, dir.resolve("fixture-memory"), dir, new JadeSettings.Memory(1000), ignored -> { }, ignored -> { });
+        }, com.jadecode.support.TestPaths.workspace(dir), new JadeSettings.Memory(1000), ignored -> { }, ignored -> { });
         var hooks = new Hooks(); var stops = new AtomicInteger();
         hooks.register(Hooks.STOP, ignored -> {
             if (stops.getAndIncrement() == 0) {
@@ -67,7 +67,7 @@ class SessionDisplayTimingTest {
             try { if (!release.await(5, TimeUnit.SECONDS)) throw new IllegalStateException("test did not release Memory"); }
             catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); throw new IllegalStateException(interrupted); }
             return response("{\"rollout_summary\":\"\",\"rollout_slug\":\"\"}");
-        }, dir.resolve("fixture-memory"), dir, new JadeSettings.Memory(1000), output::add, errors::add);
+        }, com.jadecode.support.TestPaths.workspace(dir), new JadeSettings.Memory(1000), output::add, errors::add);
         var engine = new AgentExecutor(new ScriptedLlmClient(response("final answer")), Map.of(), "test", 1000, new Hooks());
         engine.observe(notices::add);
         try (var runtime = new SessionRuntime(engine, memory, null, null, output::add, errors::add)) {

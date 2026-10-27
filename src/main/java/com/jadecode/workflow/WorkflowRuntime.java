@@ -40,9 +40,9 @@ public final class WorkflowRuntime implements AutoCloseable {
     private volatile boolean closed;
 
     /** 绑定已有依赖，不启动线程、不建目录、不请求模型。registry 的代码全部来自宿主。 */
-    public WorkflowRuntime(Path workspace, Map<String, WorkflowDefinition> registry, Supplier<WorkflowAgentRunner> runners,
+    public WorkflowRuntime(com.jadecode.config.WorkspacePaths paths, Map<String, WorkflowDefinition> registry, Supplier<WorkflowAgentRunner> runners,
             Limits limits, Consumer<Progress> observer) {
-        store = new WorkflowStore(workspace); this.registry = Map.copyOf(registry);
+        store = new WorkflowStore(paths); this.registry = Map.copyOf(registry);
         this.runners = Objects.requireNonNull(runners); this.limits = Objects.requireNonNull(limits);
         this.observer = Objects.requireNonNull(observer);
         registry.forEach((key, value) -> { if (!key.equals(value.name())) throw new IllegalArgumentException("Workflow registry name mismatch"); });

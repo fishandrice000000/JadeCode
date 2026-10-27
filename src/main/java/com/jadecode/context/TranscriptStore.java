@@ -23,12 +23,18 @@ final class TranscriptStore {
 
     /** transcript 归档目录 */
     private final Path transcriptDir;
+    private final com.jadecode.config.WorkspacePaths paths;
 
     /**
      * @param transcriptDir transcript 归档目录
      */
     TranscriptStore(Path transcriptDir) {
-        this.transcriptDir = transcriptDir;
+        this.transcriptDir = transcriptDir; this.paths = null;
+    }
+
+    /** 使用统一布局，逐级检查用户数据目录。 */
+    TranscriptStore(com.jadecode.config.WorkspacePaths paths) {
+        this.transcriptDir = paths.transcripts(); this.paths = paths;
     }
 
     /**
@@ -57,7 +63,8 @@ final class TranscriptStore {
     Path writeTranscript(List<Message> messages) {
         // 1. 建目录。失败即抛出,绝不返回一个写不进去的路径。
         try {
-            Files.createDirectories(transcriptDir);
+            if (paths == null) Files.createDirectories(transcriptDir);
+            else paths.directory(transcriptDir, true);
         } catch (IOException e) {
             throw new IllegalStateException("Failed to create transcript directory: " + transcriptDir, e);
         }
@@ -187,12 +194,9 @@ final class TranscriptStore {
         // 6. 真实路径校验:候选与归档目录都解析到真实路径后再判包含关系。
         // toRealPath 会把符号链接解到最终目标,所以"指向目录外的软链"在这里被拒。
         try {
+            if (paths != null) paths.directory(transcriptDir, false);
             Path realDir = transcriptDir.toRealPath();
-            Path actual = path;
-            Path parent = transcriptDir.toAbsolutePath().getParent();
-            if (parent != null && parent.getFileName().toString().equals(".jadecode"))
-                actual = new com.jadecode.config.WorkspacePaths(parent.getParent()).legacyRead(path);
-            Path realFile = actual.toRealPath();
+            Path realFile = path.toRealPath();
             return realFile.startsWith(realDir) && Files.isRegularFile(realFile);
         } catch (IOException e) {
             // 解析失败或文件读不到 = 无法判断,当作不可信。

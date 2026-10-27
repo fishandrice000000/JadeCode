@@ -50,6 +50,7 @@ public final class SessionStore {
 
     /** 列表只读取轻量清单；坏清单报出文件位置，不把原始对话/凭据打印出来。 */
     public List<SessionMetadata> list() throws IOException {
+        paths.register();
         paths.directory(paths.sessions(), false);
         if (Files.notExists(paths.sessions())) return List.of();
         List<SessionMetadata> result = new ArrayList<>();
@@ -69,6 +70,7 @@ public final class SessionStore {
 
     /** 创建一个全新会话；这里只存模型名称，不保存 AppConfig 或认证。 */
     public Opened create(String model) throws IOException {
+        paths.register();
         String time = Instant.now().toString();
         var metadata = new SessionMetadata(SessionMetadata.VERSION, UUID.randomUUID().toString(), paths.workspace().toString(),
                 "New session", time, time, model);
@@ -89,6 +91,7 @@ public final class SessionStore {
      * @throws IOException 被其它进程使用、目录/文件非法或历史损坏
      */
     public Opened open(String id) throws IOException {
+        paths.register();
         SessionMetadata.requireId(id);
         Path directory = paths.sessions().resolve(id);
         paths.directory(directory, false);

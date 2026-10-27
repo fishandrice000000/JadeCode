@@ -46,8 +46,8 @@ class HeadlessRunnerTest {
         var config = new AppConfig("dummy", "http://127.0.0.1:9", "smoke-model", 128);
         HeadlessRunner runner = new HeadlessRunner(stream(outBuffer), stream(errBuffer));
         int code = runner.execute(LaunchOptions.parse(new String[] { "--headless", "say hi" }), ignored ->
-                new SessionHost(new WorkspacePaths(workspace),
-                        generation -> JadeCodeFactory.create(config, workspace, client, workspace.resolve("fixture-home/.jadecode/memory")),
+                new SessionHost(com.jadecode.support.TestPaths.workspace(workspace),
+                        generation -> JadeCodeFactory.create(config, workspace, client, com.jadecode.support.TestPaths.jade(workspace)),
                         warning -> { }));
         String stdout = outBuffer.toString(StandardCharsets.UTF_8);
         String stderr = errBuffer.toString(StandardCharsets.UTF_8);
@@ -55,10 +55,10 @@ class HeadlessRunnerTest {
         assertEquals("Final answer from the fake model\n", stdout, "stdout must contain exactly the final reply");
         assertFalse(stderr.contains("[Tool]"), "headless must not print tool progress: " + stderr);
         assertFalse(stderr.contains("Thinking"), "headless must not print thinking: " + stderr);
-        SessionStore store = new SessionStore(new WorkspacePaths(workspace), warning -> { });
+        SessionStore store = new SessionStore(com.jadecode.support.TestPaths.workspace(workspace), warning -> { });
         List<SessionMetadata> sessions = store.list();
         assertEquals(1, sessions.size(), "the headless run must create one resumable session");
-        try (Stream<Path> files = Files.walk(workspace.resolve(".jadecode"))) {
+        try (Stream<Path> files = Files.walk(com.jadecode.support.TestPaths.workspace(workspace).root())) {
             assertTrue(files.anyMatch(path -> path.toString().endsWith("events.jsonl")));
         }
     }

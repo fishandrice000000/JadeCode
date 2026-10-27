@@ -36,13 +36,14 @@ final class MemoryEvidence {
      * 原始 APPEND 事件在压缩后仍存在，因此早期反馈不会被最后一次 history 替换抹掉。
      * 无日志的显式离线入口使用登记时的有界快照，来源会明确标为 snapshot。
      */
-    static String render(ObjectNode job, Path workspace, int budget) throws IOException {
+    static String render(ObjectNode job, com.jadecode.config.WorkspacePaths paths, int budget) throws IOException {
+        Path workspace = paths.workspace();
         List<Item> items = new ArrayList<>();
         String memoryRoot = job.path("memory_root").asText();
         String location = job.path("journal").asText();
         if (!location.isEmpty()) {
             Path path = Path.of(location).toAbsolutePath().normalize();
-            Path sessions = workspace.resolve(".jadecode/sessions");
+            Path sessions = paths.sessions();
             if (!path.startsWith(sessions) || !path.getFileName().toString().equals("events.jsonl"))
                 throw new IOException("Memory evidence is outside the session store");
             MemoryStore.directory(path.getParent(), false);

@@ -23,7 +23,7 @@ class MemoryIntegrationTest {
     @Test void productionAssemblyQueuesOneJobAfterToolsAndUsesGlobalReadOnlyMemory() throws Exception {
         Path workspace = Files.createDirectory(temporary.resolve("workspace")), root = temporary.resolve("home/.jadecode/memory");
         var warnings = new CopyOnWriteArrayList<String>();
-        var store = new MemoryStore(root, workspace, warnings::add); store.initialize();
+        var store = new MemoryStore(new com.jadecode.config.WorkspacePaths(workspace, new com.jadecode.config.JadePaths(root.getParent())), warnings::add); store.initialize();
         store.publish(store.snapshot(), Map.of(store.scope(), new MemoryStore.Artifacts("# Memory routes\nProject uses Java 21; read MEMORY.md", "Known project fact")), "seed", List.of());
         var requests = new CopyOnWriteArrayList<CompleteRequest>(); var extractionInput = new CompletableFuture<String>();
         var completed = new CountDownLatch(1);
@@ -48,11 +48,11 @@ class MemoryIntegrationTest {
             completed.countDown(); return text("[Source](" + root.resolve("MEMORY.md") + ") Verified.");
         };
         var settings = JadeSettings.defaults();
-        var sessions = new SessionStore(new WorkspacePaths(workspace), warnings::add);
+        var sessions = new SessionStore(new com.jadecode.config.WorkspacePaths(workspace, new com.jadecode.config.JadePaths(root.getParent())), warnings::add);
         try (var opened = sessions.create("offline"); var runtime = JadeCodeFactory.create(
                 new AppConfig("offline", "http://127.0.0.1:1", "fixture", 8000), workspace, fake,
                 ignored -> { }, warnings::add, (hooks, cwd, output) -> { }, () -> ResponseStream.NONE,
-                ExecutionObserver.NONE, settings, settings.permissions().state(null), root)) {
+                ExecutionObserver.NONE, settings, settings.permissions().state(null), new com.jadecode.config.JadePaths(root.getParent()))) {
             runtime.restore(opened.journal(), opened.restored()); runtime.start(false);
             assertTrue(runtime.submit("Check the project fact", null).get(5, TimeUnit.SECONDS).contains("Verified"));
             assertTrue(completed.await(1, TimeUnit.SECONDS));
@@ -78,7 +78,7 @@ class MemoryIntegrationTest {
         try (var runtime = JadeCodeFactory.create(new AppConfig("offline", "http://127.0.0.1:1", "fixture", 8000), workspace,
                 request -> { assertFalse(request.tools().isEmpty()); return text("done"); }, ignored -> { }, ignored -> { },
                 (hooks, cwd, output) -> { }, () -> ResponseStream.NONE, ExecutionObserver.NONE, settings,
-                settings.permissions().state(null), root)) {
+                settings.permissions().state(null), new com.jadecode.config.JadePaths(root.getParent()))) {
             runtime.run(new ArrayList<>(List.of(Message.userText("hello"))));
         }
         assertFalse(Files.exists(root));
@@ -87,7 +87,7 @@ class MemoryIntegrationTest {
     @Test void ordinaryExitRetainsInterruptedTaskForNextMaintenance() throws Exception {
         Path workspace = Files.createDirectory(temporary.resolve("workspace")), root = temporary.resolve("memory");
         var entered = new CountDownLatch(1); var release = new CountDownLatch(1); var settings = JadeSettings.defaults();
-        var sessions = new SessionStore(new WorkspacePaths(workspace), ignored -> { });
+        var sessions = new SessionStore(new com.jadecode.config.WorkspacePaths(workspace, new com.jadecode.config.JadePaths(root.getParent())), ignored -> { });
         try (var opened = sessions.create("offline")) {
             var runtime = JadeCodeFactory.create(new AppConfig("offline", "http://127.0.0.1:1", "fixture", 8000), workspace,
                     request -> {
@@ -95,13 +95,13 @@ class MemoryIntegrationTest {
                         try { release.await(5, TimeUnit.SECONDS); } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
                         return text("Late response");
                     }, ignored -> { }, ignored -> { }, (hooks, cwd, output) -> { }, () -> ResponseStream.NONE,
-                    ExecutionObserver.NONE, settings, settings.permissions().state(null), root);
+                    ExecutionObserver.NONE, settings, settings.permissions().state(null), new com.jadecode.config.JadePaths(root.getParent()));
             try {
                 runtime.restore(opened.journal(), opened.restored()); runtime.start(false);
                 runtime.submit("An unfinished human task", null); assertTrue(entered.await(2, TimeUnit.SECONDS));
             } finally { runtime.close(); release.countDown(); }
         }
-        var store = new MemoryStore(root, workspace, ignored -> { });
+        var store = new MemoryStore(new com.jadecode.config.WorkspacePaths(workspace, new com.jadecode.config.JadePaths(root.getParent())), ignored -> { });
         assertEquals(1, store.jobs().size()); assertEquals("interrupted", store.jobs().getFirst().path("outcome").asText());
         try (var maintenance = new MemoryMaintenance(store, request -> {
             assertTrue(request.messages().getFirst().extractText().contains("An unfinished human task"));

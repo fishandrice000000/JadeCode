@@ -47,9 +47,9 @@ public final class TeamManager implements AutoCloseable {
     private boolean closed;
 
     /** 仅绑定依赖，不创建队友、不发模型请求、不恢复旧会话。 */
-    public TeamManager(Path workspace, TaskStore tasks, Consumer<String> errors) {
+    public TeamManager(com.jadecode.config.WorkspacePaths paths, TaskStore tasks, Consumer<String> errors) {
         this.tasks = tasks;
-        this.mailbox = new TeamMailbox(workspace);
+        this.mailbox = new TeamMailbox(paths);
         this.errors = errors;
     }
 
@@ -318,7 +318,7 @@ public final class TeamManager implements AutoCloseable {
 
     /** 每次只原子替换一份记录，不声称多个 JSON 文件形成跨文件事务。 */
     private void write(Path target, Object value) throws IOException {
-        Files.createDirectories(target.getParent());
+        mailbox.directory(target.getParent());
         Path temp = Files.createTempFile(target.getParent(), ".update-", ".tmp");
         try {
             Files.writeString(temp, Json.mapper().writerWithDefaultPrettyPrinter().writeValueAsString(value));

@@ -17,7 +17,7 @@ class SessionHostLookupTest {
     @TempDir Path workspace;
 
     private SessionHost host() {
-        return new SessionHost(new WorkspacePaths(workspace), generation -> new SessionRuntime(
+        return new SessionHost(com.jadecode.support.TestPaths.workspace(workspace), generation -> new SessionRuntime(
                 new AgentExecutor(request -> { throw new AssertionError("Lookup must not call a model"); },
                         Map.of(), "test", 1000, new Hooks()), ignored -> { }, ignored -> { }), ignored -> { });
     }

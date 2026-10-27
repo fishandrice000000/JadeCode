@@ -33,7 +33,7 @@ import com.jadecode.util.Json;
  */
 public final class CronScheduler {
     private static final int MAX_JOBS = 100;
-    private final Path workspace;
+    private final com.jadecode.config.WorkspacePaths paths;
     private final Path file;
     private final Clock clock;
     private Map<String, CronJob> jobs = new LinkedHashMap<>();
@@ -43,20 +43,18 @@ public final class CronScheduler {
     private boolean loaded;
 
     /** 绑定已有工作区，不创建状态文件；首次工具操作/轮询才读取保存的任务。 */
-    public CronScheduler(Path workspace) throws IOException {
-        this(workspace, Clock.systemDefaultZone());
+    public CronScheduler(com.jadecode.config.WorkspacePaths paths) {
+        this(paths, Clock.systemDefaultZone());
     }
 
     /**
      * 注入时钟使离线验证不需要真实等到某一分钟，生产仍用系统本地时间。
-     * @param workspace 已存在的工作区；解析真实路径，不接受模型指定状态文件路径
+     * @param paths 已绑定真实工作区的全局布局，不接受模型指定状态文件路径
      * @param clock 计时时钟及默认时区
-     * @throws IOException 工作区无法绑定
      */
-    public CronScheduler(Path workspace, Clock clock) throws IOException {
-        this.workspace = workspace.toRealPath();
-        if (!Files.isDirectory(this.workspace)) throw new IOException("Cron workspace must be a directory");
-        this.file = new com.jadecode.config.WorkspacePaths(this.workspace).cronFile();
+    public CronScheduler(com.jadecode.config.WorkspacePaths paths, Clock clock) {
+        this.paths = paths;
+        this.file = paths.cronFile();
         this.clock = java.util.Objects.requireNonNull(clock);
     }
 
@@ -65,7 +63,7 @@ public final class CronScheduler {
      * @param cron 五段表达式，原样保存，创建前完整校验
      * @param prompt 到期后要交给模型的任务，不是直接执行的命令
      * @param recurring 确认交付后是否保留定义
-     * @param durable 是否将定义与交付状态保存到工作区
+     * @param durable 是否将定义与交付状态保存到项目分区
      * @return 实际分配 ID 的不可变记录
      * @throws IOException 恢复或保存失败；旧任务表保持不变
      * @throws IllegalArgumentException 无效规则/正文或任务已达上限
@@ -230,7 +228,7 @@ public final class CronScheduler {
     private void commit(Map<String, CronJob> next) throws IOException {
         ArrayNode encoded = payload(next);
         if (!encoded.equals(payload(jobs))) {
-            new com.jadecode.config.WorkspacePaths(workspace).directory(file.getParent(), true);
+            paths.directory(file.getParent(), true);
             checkFile();
             String json = Json.mapper().writerWithDefaultPrettyPrinter().writeValueAsString(encoded);
             Path temporary = Files.createTempFile(file.getParent(), "jobs-", ".tmp");
@@ -255,7 +253,7 @@ public final class CronScheduler {
 
     /** 拒绝软链、悬空链接和目录型状态文件；不承诺阻止恶意并发替换路径的竞态。 */
     private void checkFile() throws IOException {
-        new com.jadecode.config.WorkspacePaths(workspace).directory(file.getParent(), false);
+        paths.directory(file.getParent(), false);
         if (Files.exists(file, LinkOption.NOFOLLOW_LINKS) && !Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) {
             throw new IOException("Cron state must be a regular non-symlink file: " + file);
         }

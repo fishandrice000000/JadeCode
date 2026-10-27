@@ -26,7 +26,7 @@ public final class JadeConfigFile implements com.jadecode.safety.rules.Permissio
 
     /** 新的唯一用户配置位置；不会把配置写进当前项目或 CODEX_HOME。 */
     public static Path defaultPath() {
-        return Path.of(System.getProperty("user.home"), ".jadecode", "config", "config.json");
+        return JadePaths.defaults().config().resolve("config.json");
     }
 
     /**

@@ -21,13 +21,13 @@ import com.jadecode.session.SessionRuntime;
 /** 首轮与已到期 cron 同时存在时，验证真实 Host/Inbox/消费者的采用顺序，不调用外部模型。 */
 class SessionHostStartupTest {
     @Test void initialPromptPrecedesDueCronAndCannotBeRegisteredTwice(@TempDir Path workspace) throws Exception {
-        var scheduler = new CronScheduler(workspace);
+        var scheduler = new CronScheduler(com.jadecode.support.TestPaths.workspace(workspace));
         scheduler.schedule("* * * * *", "DUE_CRON", false, true);
         scheduler.pollDue(); // 先将任务持久化为待交付，模拟启动前已经到期。
         var requests = new CopyOnWriteArrayList<String>();
         var cronSeen = new CountDownLatch(1);
         var errors = new CopyOnWriteArrayList<String>();
-        try (var host = new SessionHost(new WorkspacePaths(workspace), generation -> {
+        try (var host = new SessionHost(com.jadecode.support.TestPaths.workspace(workspace), generation -> {
             var engine = new AgentExecutor(request -> {
                 // 保存每次模型实际看见的历史；第二次含 cron 不代表它先于用户首轮被采用。
                 String history = request.messages().toString();

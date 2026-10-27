@@ -49,7 +49,7 @@ public final class ModelMetadataResolver {
     }
 
     public static Path defaultCacheDirectory() {
-        return Path.of(System.getProperty("user.home"), ".jadecode", "cache", "model-metadata");
+        return com.jadecode.config.JadePaths.defaults().cache().resolve("model-metadata");
     }
 
     /**

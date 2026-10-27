@@ -45,7 +45,7 @@ class GoalIntegrationTest {
                 new JadeSettings.Memory(false, 100, 100, 1000), defaults.modelMetadata(), defaults.thinking(),
                 defaults.permissions(), new JadeSettings.Mcp(Map.of()));
         return JadeCodeFactory.create(new AppConfig("offline", "http://127.0.0.1:9", "fixture", 1234), workspace, client,
-                ignored -> { }, ignored -> { }, (hooks, cwd, out) -> { }, () -> ResponseStream.NONE, observer, settings, PermissionState.defaults());
+                ignored -> { }, ignored -> { }, (hooks, cwd, out) -> { }, () -> ResponseStream.NONE, observer, settings, PermissionState.defaults(), com.jadecode.support.TestPaths.jade(workspace));
     }
     /** 小额度或门闩测试用真实 Session，判断端口可注入；不需要复制生产客户端来制造竞态。 */
     private static SessionRuntime runtime(LlmClient client, GoalEvaluator evaluator, GoalController.Limits limits, Hooks hooks) {
@@ -73,7 +73,7 @@ class GoalIntegrationTest {
             if (count == 3) assertFalse(request.messages().getLast().blocksOfType(ToolResultBlock.class).getFirst().isError());
             return text(count == 1 ? "unsupported claim" : "verified result");
         };
-        try (var host = new SessionHost(new WorkspacePaths(workspace), generation -> factory(client, notices::add), ignored -> { })) {
+        try (var host = new SessionHost(com.jadecode.support.TestPaths.workspace(workspace), generation -> factory(client, notices::add), ignored -> { })) {
             var opened = host.open(null);
             assertEquals("verified result", host.startWithInitial(opened.generation(), "/goal read proof.txt and report evidence", null, false).get(5, TimeUnit.SECONDS));
             assertEquals(GoalState.Status.ACHIEVED, host.current().goalState().status());
@@ -83,7 +83,7 @@ class GoalIntegrationTest {
             assertTrue(host.current().submitUser("/goal", null).get().contains("ACHIEVED")); assertEquals(2, judges.get());
         }
         assertTrue(notices.stream().anyMatch(n -> n.kind() == ExecutionNotice.Kind.GOAL && n.state().equals("ACHIEVED")));
-        var store = new SessionStore(new WorkspacePaths(workspace), ignored -> { });
+        var store = new SessionStore(com.jadecode.support.TestPaths.workspace(workspace), ignored -> { });
         try (var opened = store.open(store.list().getFirst().id())) {
             var restored = opened.restored();
             assertEquals(3, restored.entries().stream().filter(e -> e.kind() == JournalEntry.Kind.GOAL).count());
@@ -177,16 +177,16 @@ class GoalIntegrationTest {
     /** 恢复活跃目标只恢复元数据，等待新用户输入；判断次数从本次恢复重新计算。 */
     @Test void restoreWaitsForInputAndResetsEvaluationCount() throws Exception {
         AtomicInteger formal = new AtomicInteger();
-        try (var host = new SessionHost(new WorkspacePaths(workspace), generation -> runtime(request -> {
+        try (var host = new SessionHost(com.jadecode.support.TestPaths.workspace(workspace), generation -> runtime(request -> {
             formal.incrementAndGet(); return text("candidate");
         }, (condition, history) -> new GoalEvaluator.Evaluation(false, "not yet", false), new GoalController.Limits(10, 1), new Hooks()), ignored -> { })) {
             var opened = host.open(null);
             assertThrows(ExecutionException.class, () -> host.startWithInitial(opened.generation(), "/goal original condition", null, false).get(5, TimeUnit.SECONDS));
         }
         assertEquals(2, formal.get());
-        var store = new SessionStore(new WorkspacePaths(workspace), ignored -> { });
+        var store = new SessionStore(com.jadecode.support.TestPaths.workspace(workspace), ignored -> { });
         String id = store.list().getFirst().id();
-        try (var host = new SessionHost(new WorkspacePaths(workspace), generation -> runtime(request -> {
+        try (var host = new SessionHost(com.jadecode.support.TestPaths.workspace(workspace), generation -> runtime(request -> {
             formal.incrementAndGet(); return text("continued");
         }, (condition, history) -> new GoalEvaluator.Evaluation(true, "new evidence", false), GoalController.Limits.defaults(), new Hooks()), ignored -> { })) {
             var opened = host.open(id); var current = host.current();

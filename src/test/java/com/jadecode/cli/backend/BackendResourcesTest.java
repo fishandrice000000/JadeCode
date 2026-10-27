@@ -18,7 +18,7 @@ class BackendResourcesTest {
         Files.writeString(skill.resolve("SKILL.md"), "---\nname: local\ndescription: local fixture\n---\nPRIVATE_SKILL_BODY");
         var config = new AppConfig("dummy", "http://127.0.0.1:9", "fixture", 128);
         try (var runtime = JadeCodeFactory.create(config, workspace,
-                request -> { throw new AssertionError("Resource display must not call a model"); }, workspace.resolve("fixture-home/.jadecode/memory"))) {
+                request -> { throw new AssertionError("Resource display must not call a model"); }, com.jadecode.support.TestPaths.jade(workspace))) {
             var display = runtime.display();
             assertEquals(List.of("AGENTS.md"), display.resources().get("Context"));
             assertEquals(List.of("local"), display.resources().get("Skills"));

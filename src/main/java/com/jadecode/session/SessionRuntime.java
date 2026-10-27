@@ -310,7 +310,7 @@ public final class SessionRuntime implements AutoCloseable {
         if (!restored.entries().isEmpty()) resumeContext = "\nRestored conversation: previous background processes, teammates, inbox and approval grants were not restored."
                 + " Workspace files and persistent tasks, memory and cron reflect current disk state, not a rollback."
                 + " Do not replay old tool calls to reconstruct history. An unrecorded result does not prove the operation did not execute."
-                + " Internal data moved under .jadecode; read_file supports legacy artifact paths, but shell commands must use current paths.";
+                + " Runtime artifacts are stored under the user data directory. Use current artifact paths; shell commands run in the project.";
         journal = java.util.Objects.requireNonNull(writer);
         usage.restore(writer, restored.entries());
         if (goals != null) {

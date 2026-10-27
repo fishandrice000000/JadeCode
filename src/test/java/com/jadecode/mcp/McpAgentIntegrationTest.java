@@ -48,7 +48,7 @@ class McpAgentIntegrationTest {
         };
         try (var runtime = JadeCodeFactory.create(new AppConfig("offline", "http://127.0.0.1:1", "offline", 100), workspace,
                 fake, ignored -> { }, ignored -> { }, (hooks, cwd, output) -> { }, () -> ResponseStream.NONE,
-                ExecutionObserver.NONE, settings)) {
+                ExecutionObserver.NONE, settings, settings.permissions().state(null), com.jadecode.support.TestPaths.jade(workspace))) {
             runtime.run(new java.util.ArrayList<>(List.of(Message.userText("connect fixture and echo hello"))));
             assertEquals(3, requests.get());
         }

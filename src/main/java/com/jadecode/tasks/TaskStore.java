@@ -25,7 +25,7 @@ import com.jadecode.tasks.Task.Status;
 import com.jadecode.util.Json;
 
 /**
- * 工作区里的持久任务图：检查任务能不能开始，保存负责人和进度。实际工作仍由模型自己做。
+ * 项目分区里的持久任务图：检查任务能不能开始，保存负责人和进度。实际工作仍由模型自己做。
  *
  * <p>主流程是创建 → 加依赖 → 认领 → 完成；读取和列举用于恢复和查看。
  * 与 todo_write 整表替换不同，这里每次只更新一项任务的新版本，模型也不能随意改状态或路径。
@@ -36,23 +36,16 @@ import com.jadecode.util.Json;
  * 也不保证多个进程同时认领时的互斥。
  */
 public final class TaskStore {
-    private final Path workspaceRoot;
+    private final com.jadecode.config.WorkspacePaths paths;
     private final Path taskDir;
 
     /**
-     * 绑定现有工作区，构造无写盘、无网络；只有创建任务时才创建 .jadecode/tasks。
-     * @param workspaceRoot 实际工作区，不能为 null 或不存在
-     * @throws IOException 工作区不能解析或不是目录
+     * 绑定项目的全局运行布局，构造无写盘、无网络；创建任务时才建 tasks 目录。
+     * @param paths 项目工作目录与独立的全局数据分区
      */
-    public TaskStore(Path workspaceRoot) throws IOException {
-        if (workspaceRoot == null) {
-            throw new IllegalArgumentException("workspaceRoot cannot be null");
-        }
-        this.workspaceRoot = workspaceRoot.toRealPath();
-        if (!Files.isDirectory(this.workspaceRoot)) {
-            throw new IOException("Task workspace is not a directory");
-        }
-        taskDir = new com.jadecode.config.WorkspacePaths(this.workspaceRoot).tasks();
+    public TaskStore(com.jadecode.config.WorkspacePaths paths) {
+        this.paths = java.util.Objects.requireNonNull(paths);
+        taskDir = paths.tasks();
     }
 
     /**
@@ -111,7 +104,7 @@ public final class TaskStore {
      * @throws IOException 库根 / 列举 / 合法命名记录读取失败
      */
     public synchronized List<Task> list() throws IOException {
-        new com.jadecode.config.WorkspacePaths(workspaceRoot).directory(taskDir, false);
+        paths.directory(taskDir, false);
         // 不跟随链接判断“缺库”：悬空库根是坏配置，应由 checkedRoot 报错，而非伪装成空库。
         if (Files.notExists(taskDir, LinkOption.NOFOLLOW_LINKS)) {
             return List.of();
@@ -353,12 +346,12 @@ public final class TaskStore {
         return task;
     }
 
-    /** 缺库仅在 create 路径创建；逐级拒绝内部目录链接，包含新增的 .jadecode 父目录。 */
+    /** 缺库仅在 create 路径创建；逐级拒绝全局用户根和项目分区中的目录链接。 */
     private Path checkedRoot(boolean create) throws IOException {
-        new com.jadecode.config.WorkspacePaths(workspaceRoot).directory(taskDir, create);
+        paths.directory(taskDir, create);
         Path root = taskDir.toRealPath();
-        if (!root.startsWith(workspaceRoot) || !Files.isDirectory(root)) {
-            throw new IOException("Task store root is not a directory inside the workspace");
+        if (!root.startsWith(paths.root().toRealPath()) || !Files.isDirectory(root)) {
+            throw new IOException("Task store root is not inside this workspace partition");
         }
         return root;
     }

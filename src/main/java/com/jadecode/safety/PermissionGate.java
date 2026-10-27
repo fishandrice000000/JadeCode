@@ -34,6 +34,8 @@ public final class PermissionGate {
             "schedule_cron", "cancel_cron", "spawn_teammate", "close_teammate", "shutdown_teammate", "assign_task", "send_message", "submit_task_result",
             "reopen_task", "retry_team_message");
 
+    private Path runtimeRoot;
+    private java.util.function.Predicate<Path> artifactReadable = path -> false;
     private Path memoryRoot;
     private java.util.function.Predicate<Path> memoryReadable = path -> false;
 
@@ -43,6 +45,11 @@ public final class PermissionGate {
      */
     public void memoryAccess(Path root, java.util.function.Predicate<Path> readable) {
         memoryRoot = root.toAbsolutePath().normalize(); memoryReadable = readable;
+    }
+
+    /** 当前项目资料获得窄只读授权，所有项目的运行状态均禁止模型直接改写。 */
+    public void runtimeData(com.jadecode.config.WorkspacePaths paths) {
+        runtimeRoot = paths.jade().workspaces(); artifactReadable = paths::readableArtifact;
     }
 
     /** 工厂传入同一 CLI 的共享状态；coordinator 可以询问用户或辅助模型，本类不读终端。 */
@@ -133,6 +140,9 @@ public final class PermissionGate {
         if (memoryRoot != null && action.resources().stream().anyMatch(r -> !r.operation().equals("READ")
                 && (r.path().startsWith(memoryRoot) || memoryRoot.startsWith(r.path()))))
             return PermissionDecision.deny("memory.read-only", "Formal memory is read-only; propose changes with memory_note");
+        if (runtimeRoot != null && action.resources().stream().anyMatch(r -> !r.operation().equals("READ")
+                && (r.path().startsWith(runtimeRoot) || runtimeRoot.startsWith(r.path()))))
+            return PermissionDecision.deny("runtime.read-only", "Runtime state is managed by Harness tools and is read-only to file commands");
         var denied = matcher.first(snapshot.rules(), PermissionRule.Effect.DENY, action);
         if (denied != null) return PermissionDecision.deny(denied.id(), "Matched deny rule: " + denied.id());
         var asked = matcher.first(snapshot.rules(), PermissionRule.Effect.ASK, action);
@@ -143,7 +153,7 @@ public final class PermissionGate {
         if (action.commands().isEmpty() && action.resources().isEmpty() && action.uncertain())
             return PermissionDecision.ask("tool.unknown", "This tool has not declared a permission check", true);
         if (action.tool().equals("read_file") && !action.resources().isEmpty()
-                && action.resources().stream().allMatch(r -> r.operation().equals("READ") && memoryReadable.test(r.path())))
+                && action.resources().stream().allMatch(r -> r.operation().equals("READ") && (memoryReadable.test(r.path()) || artifactReadable.test(r.path()))))
             return PermissionDecision.allow();
         if (matcher.covers(snapshot.rules(), action)) return PermissionDecision.allow();
         return defaults.ordinary(action, snapshot);

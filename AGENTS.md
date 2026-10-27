@@ -16,7 +16,7 @@
 
 - Java 21；Maven 单模块。
 - Anthropic Messages 格式；LLM 后端由项目配置决定，可使用兼容 Anthropic endpoint 的服务。开发工作流的调整不改变 JadeCode 的模型后端配置。
-- 需要持久化的运行期能力使用工作区目录。
+- JadeCode 持久运行数据统一存入 `~/.jadecode`；项目状态按真实路径哈希隔离在 `workspaces/<id>/`。业务命令仍在项目工作目录执行，测试显式注入临时用户数据根。
 - Maven Toolchains 隔离 JDK。
 - 依赖版本、构建产物、命令和当前能力必须从实际 `pom.xml`、脚本、源码与 `README.md` 核实。
 

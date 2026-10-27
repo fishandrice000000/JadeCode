@@ -29,13 +29,23 @@ final class ProductionCompactor {
 
     /** 保存依赖而不创建文件；共享的只有无会话状态的转存/摘要服务。 */
     ProductionCompactor(LlmClient client, Path transcriptDir, Path resultsDir, ProductionCompactionSettings settings) {
-        this.client = client; this.settings = settings; transcripts = new TranscriptStore(transcriptDir);
+        this(client, new TranscriptStore(transcriptDir), new ToolOutputStore(resultsDir), settings);
+    }
+
+    /** 使用用户分区中的归档与工具输出，工作目录由正式执行器单独管理。 */
+    ProductionCompactor(LlmClient client, com.jadecode.config.WorkspacePaths paths, ProductionCompactionSettings settings) {
+        this(client, new TranscriptStore(paths), new ToolOutputStore(paths), settings);
+    }
+
+    /** 组合无会话状态的归档依赖，再按生产阈值建立大结果转存器；不创建目录。 */
+    private ProductionCompactor(LlmClient client, TranscriptStore transcripts, ToolOutputStore results, ProductionCompactionSettings settings) {
+        this.client = client; this.settings = settings; this.transcripts = transcripts;
         var d = CompactionLimits.defaults();
         var limits = new CompactionLimits(d.contextCharLimit(), d.toolResultBatchCharLimit(), settings.largeResultCharLimit(),
                 d.summaryInputCharLimit(), d.keepRecentResults(), d.keepRecentMessages(), d.microResultMinChars(),
                 settings.largeResultPreviewChars(), d.fitPreviewChars(), settings.summaryMaxOutputTokens(),
                 d.snipMaxMessages(), d.snipHeadMessages(), d.targetRatio());
-        largeResults = new ToolResultBudgetCompactor(limits, new ToolOutputStore(resultsDir));
+        largeResults = new ToolResultBudgetCompactor(limits, results);
     }
 
     /**

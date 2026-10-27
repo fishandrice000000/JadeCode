@@ -171,13 +171,13 @@ public final class JadeCodeFactory {
         var metadata = new ModelMetadataResolver(ModelMetadataResolver.defaultCacheDirectory()).resolve(config, settings.modelMetadata());
         observer.publish(com.jadecode.execution.ExecutionNotice.event(
                 com.jadecode.execution.ExecutionNotice.Kind.MODEL, "", config.model(), metadata.describe(), "READY").actor(TeamManager.LEADER));
-        return create(config, cwd, new AnthropicSdkLlmClient(config, metadata), output, errors, presentation, streams, observer, settings, permissions, MemoryManager.defaultRoot());
+        return create(config, cwd, new AnthropicSdkLlmClient(config, metadata), output, errors, presentation, streams, observer, settings, permissions, com.jadecode.config.JadePaths.defaults());
     }
 
     /**
      * 离线调用方注入客户端和工作区，复用生产装配，不读取真实配置或安装终端展示。
      * @param config 已提供的设置，不加载环境配置
-     * @param cwd 所有工作区状态与路径解析的根目录
+     * @param cwd 项目工作目录；运行数据目录另由 JadePaths 指定
      * @param client 可用假实现替代的共享模型客户端
      * @return 未启动会话，拥有执行器与服务；同步 run 返回不会关闭它
      */
@@ -185,11 +185,11 @@ public final class JadeCodeFactory {
         return create(config, cwd, client, ignored -> { }, ignored -> { }, (hooks, path, output) -> { });
     }
 
-    /** 离线调用者显式指定临时记忆根，生产与测试仍执行同一套装配。 */
-    public static SessionRuntime create(AppConfig config, Path cwd, LlmClient client, Path memoryRoot) {
+    /** 离线调用者显式指定临时用户数据根，生产与测试仍执行同一套装配。 */
+    public static SessionRuntime create(AppConfig config, Path cwd, LlmClient client, com.jadecode.config.JadePaths jade) {
         var settings = JadeSettings.defaults();
         return create(config, cwd, client, ignored -> { }, ignored -> { }, (hooks, path, output) -> { },
-                () -> ResponseStream.NONE, ExecutionObserver.NONE, settings, settings.permissions().state(null), memoryRoot);
+                () -> ResponseStream.NONE, ExecutionObserver.NONE, settings, settings.permissions().state(null), jade);
     }
 
     /**
@@ -199,7 +199,7 @@ public final class JadeCodeFactory {
      * 后台服务与父 bash 共用，cron 与定时工具共用。构造不启动命令、轮询或模型请求；
      * 路径、技能和存储仍按原构造语义访问工作区。</p>
      * @param config 已加载的模型与输出设置
-     * @param cwd 工作目录，运行文件统一保存在 .jadecode 下
+     * @param cwd 业务工作目录，运行数据统一保存在用户目录的项目分区
      * @param client 父子和辅助请求共用的客户端
      * @param output 正常进展与完成输出
      * @param errors 任务与调度错误输出
@@ -237,13 +237,13 @@ public final class JadeCodeFactory {
 
     /**
      * 所有依赖均可注入的装配，不自行读取认证；生产传已验证的配置快照。
-     * 记忆仍默认使用全局目录，离线验证应使用带 memoryRoot 的重载或显式关闭记忆。
+     * 运行数据默认使用全局目录；离线验证必须使用带 jade 的重载注入临时根。
      * Leader、常驻队友及一次性子代理采用同一组开关和阈值，但历史与执行状态仍各自独立。
      */
     public static SessionRuntime create(AppConfig config, Path cwd, LlmClient client,
             Consumer<String> output, Consumer<String> errors, Presentation presentation, Supplier<ResponseStream> streams,
             ExecutionObserver observer, JadeSettings settings) {
-        // 离线装配不暗中写 HOME；需要检查保存行为的调用者应显式注入临时规则存储。
+        // 权限规则只写显式提供的存储；运行数据默认用户根，测试通过 jade 重载隔离。
         return create(config, cwd, client, output, errors, presentation, streams, observer, settings,
                 settings.permissions().state(null));
     }
@@ -252,35 +252,36 @@ public final class JadeCodeFactory {
     public static SessionRuntime create(AppConfig config, Path cwd, LlmClient client,
             Consumer<String> output, Consumer<String> errors, Presentation presentation, Supplier<ResponseStream> streams,
             ExecutionObserver observer, JadeSettings settings, PermissionState permissions) {
-        // 只保留全局记忆实现；离线测试通过下面的根目录重载隔离 HOME。
-        return create(config, cwd, client, output, errors, presentation, streams, observer, settings, permissions, MemoryManager.defaultRoot());
+        // 所有运行数据共享用户根；离线测试通过下面的重载显式注入。
+        return create(config, cwd, client, output, errors, presentation, streams, observer, settings, permissions, com.jadecode.config.JadePaths.defaults());
     }
 
     /**
-     * 所有调用方共用装配；memoryRoot 显式注入，离线测试必须用临时目录以隔离 HOME。
-     * memoryRoot 不可为 null；此方法不自行读取认证，也不发生成请求。
+     * 所有调用方共用装配；jade 显式注入，离线测试必须用临时目录以隔离 HOME。
+     * jade 不可为 null；此方法不自行读取认证，也不发生成请求。
      */
     public static SessionRuntime create(AppConfig config, Path cwd, LlmClient client,
             Consumer<String> output, Consumer<String> errors, Presentation presentation, Supplier<ResponseStream> streams,
-            ExecutionObserver observer, JadeSettings settings, PermissionState permissions, Path memoryRoot) {
-        java.util.Objects.requireNonNull(memoryRoot, "memoryRoot");
+            ExecutionObserver observer, JadeSettings settings, PermissionState permissions, com.jadecode.config.JadePaths jade) {
+        java.util.Objects.requireNonNull(jade, "jade");
         try {
             Path workspace = cwd.toRealPath();
-            WorkspaceDataMigration.migrate(new com.jadecode.config.WorkspacePaths(workspace));
-            TaskStore tasks = new TaskStore(workspace);
-            TeamManager team = new TeamManager(workspace, tasks, errors);
+            var paths = new com.jadecode.config.WorkspacePaths(workspace, jade);
+            paths.register();
+            TaskStore tasks = new TaskStore(paths);
+            TeamManager team = new TeamManager(paths, tasks, errors);
             var usage = new com.jadecode.session.SessionUsage(errors);
             if (!client.thinkingChoices().contains(settings.thinking()))
                 throw new IllegalArgumentException("config.thinking.effort is not adapted for the current endpoint or model");
             SessionRuntime leader = assemble(config, workspace, client,
                     text -> output.accept("[Leader] " + text), text -> errors.accept("[Leader] " + text),
                     presentation, team, TeamManager.LEADER, "Leader", streams, observer.scoped(TeamManager.LEADER), settings,
-                    usage, new java.util.concurrent.atomic.AtomicReference<>(settings.thinking()), permissions, memoryRoot);
+                    usage, new java.util.concurrent.atomic.AtomicReference<>(settings.thinking()), permissions, paths);
             team.bind(leader, (id, role) -> assemble(config, workspace, client,
                     text -> output.accept("[Teammate " + id + "] " + text),
                     text -> errors.accept("[Teammate " + id + "] " + text),
                     presentation, team, id, role, () -> ResponseStream.NONE, observer.scoped(id), settings, usage,
-                    new java.util.concurrent.atomic.AtomicReference<>(leader.thinking()), permissions, memoryRoot));
+                    new java.util.concurrent.atomic.AtomicReference<>(leader.thinking()), permissions, paths));
             leader.onClose(team::close);
             return leader;
         } catch (IOException failure) {
@@ -297,7 +298,7 @@ public final class JadeCodeFactory {
             Consumer<String> output, Consumer<String> errors, Presentation presentation,
             TeamManager team, String actor, String role, Supplier<ResponseStream> streams, ExecutionObserver observer,
             JadeSettings settings, com.jadecode.session.SessionUsage usage,
-            java.util.concurrent.atomic.AtomicReference<com.jadecode.llm.ThinkingSettings> thinking, PermissionState permissions, Path memoryRoot) {
+            java.util.concurrent.atomic.AtomicReference<com.jadecode.llm.ThinkingSettings> thinking, PermissionState permissions, com.jadecode.config.WorkspacePaths workspacePaths) {
         boolean isLeader = actor.equals(TeamManager.LEADER);
         // 配置里的 0 只代表 auto：先按已发现的模型能力解析，执行器与 wire 始终收到正数。
         // 这份额度只交给正式父/子请求；下方摘要、Memory 和审批继续使用各自的独立预算。
@@ -307,6 +308,7 @@ public final class JadeCodeFactory {
         PermissionGate gate = new PermissionGate(resolver, permissions,
                 new ApprovalCoordinator(new ModelApprovalReviewer(tracked(client, config.model(), actor,
                         com.jadecode.llm.UsageRecord.Purpose.APPROVAL, usage, null))), actor);
+        gate.runtimeData(workspacePaths);
         TodoManager manager = new TodoManager();
 
         // 技能根目录由这里注入,Loader 不读全局 cwd;构造即扫描一次(skills 目录不存在 = 合法空 registry)
@@ -317,7 +319,6 @@ public final class JadeCodeFactory {
         // 每个常驻 Agent 各有一份压缩器，它与自己的一次性子代理共用；不同历史仍独立。
         // 压缩器不持有 messages / 目标 / 轮数，摘要用量归持有它的 Agent，汇总仍属同一用户会话。
         // 目录只是"整理结果放哪",构造时不建目录、不摘要。
-        var workspacePaths = new com.jadecode.config.WorkspacePaths(cwd);
         // 每种用途直接包装同一个底层客户端，不把统计包装叠起来，避免同一次调用重复记账。
         LlmClient formalClient = tracked(client, config.model(), actor, com.jadecode.llm.UsageRecord.Purpose.FORMAL, usage, thinking::get);
         LlmClient summaryClient = tracked(client, config.model(), actor, com.jadecode.llm.UsageRecord.Purpose.SUMMARY, usage, null);
@@ -326,27 +327,23 @@ public final class JadeCodeFactory {
         boolean coursePipeline = course.batchBudgetEnabled() || course.snipEnabled() || course.microEnabled()
                 || course.fitEnabled() || course.reactiveEnabled() || !course.largeResultEnabled();
         ContextCompactor compactor = coursePipeline
-                ? new ContextCompactor(summaryClient, workspacePaths.transcripts(), workspacePaths.toolResults(), settings.limits(), course)
-                : ContextCompactor.production(summaryClient, workspacePaths.transcripts(), workspacePaths.toolResults(), settings.contextCompaction());
+                ? new ContextCompactor(summaryClient, workspacePaths, settings.limits(), course)
+                : ContextCompactor.production(summaryClient, workspacePaths, settings.contextCompaction());
 
         // Memory 属于用户任务的跨会话知识；只给父循环接线，不让子任务临时猜测直接写入库。
         // 这里只保存目录，不创建记忆库或调用模型；开始处理任务时才查记忆。
-        // TaskStore 绑定 .jadecode/tasks，模型之后通过工具操作，不在此自动开工。
+        // TaskStore 绑定当前项目的数据分区，模型之后通过工具操作，不在此自动开工。
         MemoryManager memory;
         TaskStore tasks;
         CronScheduler cron;
-        try {
-            LlmClient memoryClient = tracked(client, config.model(), actor, com.jadecode.llm.UsageRecord.Purpose.MEMORY, usage, null);
-            memory = !isLeader || !settings.memory().enabled() ? null
-                    : new MemoryManager(memoryClient, memoryRoot, cwd, settings.memory(), output, errors);
-            // 队友也受正式库写保护；只有 Leader 的窄只读入口获得默认读取权限。
-            if (settings.memory().enabled())
-                gate.memoryAccess(memoryRoot, path -> memory != null && memory.readable(path));
-            tasks = team.tasks();
-            cron = isLeader ? new CronScheduler(cwd) : null;
-        } catch (IOException failure) {
-            throw new IllegalStateException("Cannot bind the workspace state store", failure);
-        }
+        LlmClient memoryClient = tracked(client, config.model(), actor, com.jadecode.llm.UsageRecord.Purpose.MEMORY, usage, null);
+        memory = !isLeader || !settings.memory().enabled() ? null
+                : new MemoryManager(memoryClient, workspacePaths, settings.memory(), output, errors);
+        // 队友也受正式库写保护；只有 Leader 的窄只读入口获得默认读取权限。
+        if (settings.memory().enabled())
+            gate.memoryAccess(workspacePaths.jade().memory(), path -> memory != null && memory.readable(path));
+        tasks = team.tasks();
+        cron = isLeader ? new CronScheduler(workspacePaths) : null;
 
         // 子代理工具表(D1):五把基础工具 + compact——不含 task(只有一层委派)、
         // 不含 todo_write(聚焦子任务无需计划表)、也不含 load_skill:子代理不能自己加载技能,
@@ -399,7 +396,7 @@ public final class JadeCodeFactory {
         // 每次运行开始才快照思考设置。推理型后端会把思考也计入输出，独立压到 2000 可能耗尽
         // 额度后还没返回 JSON；沿用已经按配置/模型能力解析的正式额度，不修改模型或思考选择。
         var workflowClient = tracked(client, config.model(), actor, com.jadecode.llm.UsageRecord.Purpose.WORKFLOW, usage, null);
-        var workflows = new com.jadecode.workflow.WorkflowRuntime(cwd,
+        var workflows = new com.jadecode.workflow.WorkflowRuntime(workspacePaths,
                 com.jadecode.workflow.WorkflowDefinition.registry(List.of(com.jadecode.workflow.ReviewChangesWorkflow.definition(),
                         com.jadecode.workflow.CodeReviewWorkflow.definition())),
                 () -> new com.jadecode.workflow.WorkflowAgentRunner(workflowClient, config.baseUrl() + "|" + config.model(),

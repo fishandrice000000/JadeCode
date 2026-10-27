@@ -38,7 +38,7 @@ class MemoryReferenceIntegrationTest {
 
     /** 正式库只种当前项目路由，模型按需读详情；不再构造旧条目目录或选择器。 */
     private MemoryStore seed() throws Exception {
-        var store = new MemoryStore(root, workspace, ignored -> { }); store.initialize();
+        var store = new MemoryStore(new com.jadecode.config.WorkspacePaths(workspace, new com.jadecode.config.JadePaths(root.getParent())), ignored -> { }); store.initialize();
         route(store, "ALPHA_REFERENCE_ONLY"); return store;
     }
 
@@ -48,7 +48,7 @@ class MemoryReferenceIntegrationTest {
 
     /** 假配置与临时全局根由调用方显式提供，生产与测试使用同一条记忆链路。 */
     private SessionRuntime runtime(LlmClient fake) {
-        return JadeCodeFactory.create(new AppConfig("offline", "http://127.0.0.1:1", "fixture", 8000), workspace, fake, root);
+        return JadeCodeFactory.create(new AppConfig("offline", "http://127.0.0.1:1", "fixture", 8000), workspace, fake, new com.jadecode.config.JadePaths(root.getParent()));
     }
 
     /** 辅助响应满足真实解析器契约；null usage 明确表示没有服务端用量报告。 */
@@ -118,7 +118,7 @@ class MemoryReferenceIntegrationTest {
     /** 真日志恢复保留来源；下一轮仍能排除旧参考，且恢复不会自动调用模型或重放工具。 */
     @Test void persistentRestorePreservesReferenceSource() throws Exception {
         seed(); var fake = new Fake(false);
-        var store = new SessionStore(new WorkspacePaths(workspace), ignored -> { });
+        var store = new SessionStore(new com.jadecode.config.WorkspacePaths(workspace, new com.jadecode.config.JadePaths(root.getParent())), ignored -> { });
         String id;
         try (var opened = store.create("fixture"); var runtime = runtime(fake)) {
             id = opened.journal().metadata().id();
@@ -163,7 +163,7 @@ class MemoryReferenceIntegrationTest {
     /** 摘要触发后仍保留原用户任务；参考正文只能出现在参考摘要区，不能抢占当前请求。 */
     @Test void compactionUsesCapturedUserRequestInsteadOfMemory() throws Exception {
         var store = seed(); var fake = new Fake(false);
-        var memory = new MemoryManager(fake, root, workspace, com.jadecode.config.JadeSettings.defaults().memory(), ignored -> { }, ignored -> { });
+        var memory = new MemoryManager(fake, new com.jadecode.config.WorkspacePaths(workspace, new com.jadecode.config.JadePaths(root.getParent())), com.jadecode.config.JadeSettings.defaults().memory(), ignored -> { }, ignored -> { });
         var limits = new CompactionLimits(100, 10000, 10000, 20000, 5, 5, 4000, 100, 100, 1000, 1000, 2, .8);
         var compactor = new ContextCompactor(request -> reply("Memory is reference material only."),
                 workspace.resolve("transcripts"), workspace.resolve("results"), limits);

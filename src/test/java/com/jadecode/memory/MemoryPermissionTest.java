@@ -15,7 +15,7 @@ class MemoryPermissionTest {
 
     @Test void explicitDenyStillWinsAndFullAccessDoesNotEnableDirectMemoryWrites() throws Exception {
         Path workspace = Files.createDirectory(temporary.resolve("project")), root = temporary.resolve("memory");
-        var store = new MemoryStore(root, workspace, ignored -> { }); store.initialize();
+        var store = new MemoryStore(new com.jadecode.config.WorkspacePaths(workspace, new com.jadecode.config.JadePaths(root.getParent())), ignored -> { }); store.initialize();
         String path = root.resolve("MEMORY.md").toString();
         var deny = new PermissionRule("deny.memory", PermissionRule.Effect.DENY, PermissionRule.Kind.TOOL,
                 "read_file", "", "", "", false, List.of());

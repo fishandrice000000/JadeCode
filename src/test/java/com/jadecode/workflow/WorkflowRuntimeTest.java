@@ -45,7 +45,7 @@ class WorkflowRuntimeTest {
 
     /** 较小限额只影响本次测试，避免开大量线程凑矩阵。 */
     private WorkflowRuntime runtime(List<WorkflowDefinition> definitions, LlmClient client, WorkflowRuntime.Limits limits) {
-        return new WorkflowRuntime(workspace, WorkflowDefinition.registry(definitions),
+        return new WorkflowRuntime(com.jadecode.support.TestPaths.workspace(workspace), WorkflowDefinition.registry(definitions),
                 () -> new WorkflowAgentRunner(client, "offline", 2000, ThinkingSettings.DEFAULT), limits, ignored -> { });
     }
 
@@ -267,7 +267,7 @@ class WorkflowRuntimeTest {
             try (var changed = runtime(List.of(changedVersion), req -> reply("must not run"))) {
                 assertThrows(IOException.class, () -> changed.run("saved", null, id, origin()));
             }
-            try (var changedModel = new WorkflowRuntime(workspace, WorkflowDefinition.registry(List.of(definition)),
+            try (var changedModel = new WorkflowRuntime(com.jadecode.support.TestPaths.workspace(workspace), WorkflowDefinition.registry(List.of(definition)),
                     () -> new WorkflowAgentRunner(req -> reply("must not run"), "other-model", 2000, ThinkingSettings.DEFAULT),
                     WorkflowRuntime.Limits.defaults(), ignored -> { })) {
                 assertThrows(IOException.class, () -> changedModel.run("saved", null, id, origin()));
@@ -290,7 +290,7 @@ class WorkflowRuntimeTest {
         CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
         AtomicReference<String> id = new AtomicReference<>();
         var definition = flow("late", (ctx, args) -> ctx.agent("one", null, "one"));
-        WorkflowRuntime runtime = new WorkflowRuntime(workspace, WorkflowDefinition.registry(List.of(definition)),
+        WorkflowRuntime runtime = new WorkflowRuntime(com.jadecode.support.TestPaths.workspace(workspace), WorkflowDefinition.registry(List.of(definition)),
                 () -> new WorkflowAgentRunner(req -> {
                     entered.countDown();
                     try { if (!release.await(4, TimeUnit.SECONDS)) throw new LlmException("test release missing"); }
@@ -319,7 +319,8 @@ class WorkflowRuntimeTest {
             assertThrows(IllegalArgumentException.class, () -> runtime.run("missing", null, null, origin()));
             assertThrows(IllegalArgumentException.class, () -> runtime.run("safe", object("{\"unexpected\":true}"), null, origin()));
             assertThrows(IOException.class, () -> runtime.run("safe", null, "../../outside", origin()));
-            Path internal = Files.createDirectories(workspace.resolve(".jadecode"));
+            var paths = com.jadecode.support.TestPaths.workspace(workspace); paths.register();
+            Path internal = paths.root();
             Files.createSymbolicLink(internal.resolve("workflows"), Files.createDirectory(workspace.resolve("outside")));
             assertThrows(IOException.class, () -> runtime.run("safe", null, null, origin()));
         }
