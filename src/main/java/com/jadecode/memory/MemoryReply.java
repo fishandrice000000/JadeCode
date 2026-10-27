@@ -40,6 +40,19 @@ public final class MemoryReply {
      * 缺少 stopReason 的旧客户端兼容保留，但明确的截断/拒绝必须拒绝，不能靠 JSON 恰好闭合猜成功。
      */
     static JsonNode array(ModelResponse response) {
+        validateTextResponse(response);
+        String text = response.message().extractText().strip();
+        var fence = java.util.regex.Pattern.compile("(?is)\\A```(?:json)?[ \\t]*\\R(.*)\\R```\\z").matcher(text);
+        if (fence.matches()) text = fence.group(1).strip();
+        try {
+            JsonNode value = Json.mapper().reader().with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS).readTree(text);
+            if (value == null || !value.isArray()) throw new Invalid(Reason.NOT_ARRAY);
+            return value;
+        } catch (JsonProcessingException invalidJson) { throw new Invalid(Reason.INVALID_JSON); }
+    }
+
+    /** 只验证完整正文协议；v2 在此之后执行自己的严格对象解析，不沿用旧数组/围栏容错。 */
+    static void validateTextResponse(ModelResponse response) {
         if (response == null || response.message() == null) throw new Invalid(Reason.MISSING_RESPONSE);
         switch (response.stopReason()) {
             case "max_tokens" -> throw new Invalid(Reason.OUTPUT_LIMIT);
@@ -52,13 +65,6 @@ public final class MemoryReply {
             throw new Invalid(Reason.INVALID_BLOCKS);
         String text = message.extractText().strip();
         if (text.isEmpty()) throw new Invalid(Reason.EMPTY_TEXT);
-        var fence = java.util.regex.Pattern.compile("(?is)\\A```(?:json)?[ \\t]*\\R(.*)\\R```\\z").matcher(text);
-        if (fence.matches()) text = fence.group(1).strip();
-        try {
-            JsonNode value = Json.mapper().reader().with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS).readTree(text);
-            if (value == null || !value.isArray()) throw new Invalid(Reason.NOT_ARRAY);
-            return value;
-        } catch (JsonProcessingException invalidJson) { throw new Invalid(Reason.INVALID_JSON); }
     }
 
     /** 辅助任务只需结构化正文；已适配 OFF 的后端明确关闭思考，未知后端保持默认不乱加字段。 */

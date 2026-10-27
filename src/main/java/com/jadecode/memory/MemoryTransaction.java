@@ -128,7 +128,9 @@ final class MemoryTransaction {
     }
 
     private static String filename(String value) throws IOException {
-        if (value.isEmpty() || !value.endsWith(".md") || value.equals("MEMORY.md") || value.contains("/") || value.contains("\\"))
+        // v2 的清单与正文必须属于同一恢复事务；只额外开放这个固定 JSON 名称，不能任意恢复路径。
+        if (value.isEmpty() || (!value.endsWith(".md") && !value.equals("memory_manifest.json"))
+                || value.equals("MEMORY.md") || value.contains("/") || value.contains("\\"))
             throw new IOException("Memory recovery filename must be a single-level record name");
         return value;
     }

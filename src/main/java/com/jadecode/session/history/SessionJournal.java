@@ -54,6 +54,12 @@ public final class SessionJournal implements AutoCloseable {
 
     public SessionMetadata metadata() { return metadata; }
 
+    /** 提取器只读取已落盘事件，调用者仍不能直接追加日志；不打开第二个写者。 */
+    public Path eventsPath() { return directory.resolve("events.jsonl"); }
+
+    /** 与 append 共用锁，返回已经 force 成功的事件序号，作为任务证据的闭区间终点。 */
+    public synchronized long sequence() { return sequence; }
+
     /**
      * 同步保存一次正式采用的变化。调用者必须保留已执行工具的结果，写盘失败不能据此重跑工具。
      * 任何写入失败后，本对象不再接受新记录，以免在半行后追加而破坏合法前缀。

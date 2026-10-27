@@ -1,0 +1,6 @@
+extraction-v2.md is copied without modification from OpenAI Codex:
+https://github.com/openai/codex/blob/1a69ad3237fc485273ccfa9731239fdf789b43e4/codex-rs/memories/write/templates/memories/stage_one_system_v2.md
+Source checkout: 1a69ad3237fc485273ccfa9731239fdf789b43e4
+Licensed under the Apache License, Version 2.0; see CODEX-LICENSE.txt.
+
+consolidation-v2.md is a JadeCode adaptation for its own restricted maintenance tools.
