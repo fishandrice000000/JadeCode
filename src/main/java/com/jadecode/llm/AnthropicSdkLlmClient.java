@@ -33,6 +33,10 @@ import com.jadecode.util.Json;
  *
  * <p>这是全项目唯一引用 {@code com.anthropic.*} 的类：发出请求时把内部消息转成 SDK 类型，
  * 收到响应时马上转回内部的 ContentBlock。其他代码都不认识 SDK 类型。
+ *
+ * <p>OpenCode Go 的目标模型原生使用 Chat Completions，本轮利用 Console 的 Messages 转换，
+ * 因而继续复用 SDK 的流拼装、工具校验与用量语义。供应商档案只改变认证、身份头和思考设置；
+ * 不自行模拟其它协议，也不把本地夹具通过等同于真实网关已经验收。</p>
  */
 public class AnthropicSdkLlmClient implements LlmClient {
     /** SDK 客户端：只在木类内部使用，不暴露给其他代码。 */
@@ -41,8 +45,10 @@ public class AnthropicSdkLlmClient implements LlmClient {
     private final String model;
     /** 服务商已知输出上限；未知时不改变各调用方原有额度。 */
     private final ModelMetadata metadata;
-    /** 服务商适配信息仅由配置端点确定；不能把一个兼容代理按模型名字当成官方接口。 */
+    /** 原兼容入口只按精确官方主机识别 DeepSeek；显式 Go 档案不套用直连能力。 */
     private final boolean deepseek;
+    /** Go 的能力来自显式配置档案，不因为模型名称含 DeepSeek 就套用直连服务规则。 */
+    private final boolean openCodeGo;
     private final List<ThinkingSettings> thinkingChoices;
 
     /**
@@ -59,17 +65,22 @@ public class AnthropicSdkLlmClient implements LlmClient {
      * 所有正式／辅助请求在转 SDK 参数时采用同一输出封顶，不改变用户选择的模型和认证。
      */
     public AnthropicSdkLlmClient(AppConfig config, ModelMetadata metadata) {
-        this.client = AnthropicOkHttpClient.builder()
-                .apiKey(config.apiKey())
-                .baseUrl(config.baseUrl()) // SDK 自动在 baseUrl 后拼 /v1/messages
-                .build();
+        openCodeGo = config.provider() == com.jadecode.config.ModelProvider.OPENCODE_GO;
+        var builder = AnthropicOkHttpClient.builder().baseUrl(config.baseUrl());
+        // Console 文档要求 Bearer；旧兼容服务仍用 x-api-key，不把两种认证同时发送。
+        if (openCodeGo) builder.authToken(config.apiKey()).replaceHeaders("User-Agent", "jadecode/1.0.0")
+                .putHeader("x-opencode-client", "jadecode");
+        else builder.apiKey(config.apiKey());
+        this.client = builder.build();
         this.model = config.model();
         this.metadata = java.util.Objects.requireNonNull(metadata, "metadata");
         var endpoint = java.net.URI.create(config.baseUrl());
         String host = "https".equalsIgnoreCase(endpoint.getScheme()) ? endpoint.getHost() : null;
-        deepseek = "api.deepseek.com".equalsIgnoreCase(host);
-        // 只开放已核实的格式。其它模型保留服务商默认，不发送它可能忽略或拒绝的参数。
-        if (deepseek) thinkingChoices = List.of(ThinkingSettings.DEFAULT, ThinkingSettings.OFF,
+        deepseek = !openCodeGo && "api.deepseek.com".equalsIgnoreCase(host);
+        // 只开放当前档案适配的格式。Go 档位依据 Pi 资料；网关实际效果仍需真实服务验收。
+        if (openCodeGo) thinkingChoices = List.of(ThinkingSettings.DEFAULT, ThinkingSettings.LOW,
+                ThinkingSettings.HIGH, ThinkingSettings.MAX);
+        else if (deepseek) thinkingChoices = List.of(ThinkingSettings.DEFAULT, ThinkingSettings.OFF,
                 ThinkingSettings.LOW, ThinkingSettings.HIGH, ThinkingSettings.MAX);
         else if ("api.anthropic.com".equalsIgnoreCase(host)
                 && (model.startsWith("claude-opus-4-6") || model.startsWith("claude-sonnet-4-6")))
@@ -98,10 +109,10 @@ public class AnthropicSdkLlmClient implements LlmClient {
             return toResponse(client.messages().create(params));
         } catch (AnthropicServiceException e) {
             // 子类在前:带 HTTP 状态码(429/402 等),先接
-            throw new LlmException(e.getMessage(), e.statusCode(), e);
+            throw serviceFailure(e);
         } catch (AnthropicException e) {
             // 网络类异常:无状态码
-            throw new LlmException(e.getMessage(), e);
+            throw openCodeGo ? new LlmException("OpenCode Go network request failed") : new LlmException(e.getMessage(), e);
         }
     }
 
@@ -178,12 +189,31 @@ public class AnthropicSdkLlmClient implements LlmClient {
             // accumulator.message 在缺少结束事件时抛错，不能把已经预览的半份回复写入历史。
             return toResponse(accumulator.message());
         } catch (AnthropicServiceException failure) {
-            throw new LlmException(failure.getMessage(), failure.statusCode(), failure);
+            throw serviceFailure(failure);
         } catch (AnthropicException failure) {
-            throw new LlmException("Failed to read or assemble the model stream: " + failure.getMessage(), failure);
+            throw openCodeGo ? new LlmException("OpenCode Go stream did not form a complete response")
+                    : new LlmException("Failed to read or assemble the model stream: " + failure.getMessage(), failure);
         } catch (IllegalStateException failure) {
             throw new LlmException("The model stream did not form a complete response", failure);
         }
+    }
+
+    /**
+     * Go 错误只保留固定分类和状态码；兼容网关错误体可能回显请求，不能把原文或 cause 带入日志。
+     * 认证/权限/套餐额度不伪装成上下文溢出，也不在这里切端点或重复整个 Agent 行动。
+     */
+    private LlmException serviceFailure(AnthropicServiceException failure) {
+        if (!openCodeGo) return new LlmException(failure.getMessage(), failure.statusCode(), failure);
+        String message = switch (failure.statusCode()) {
+            case 400 -> "OpenCode Go rejected the request; check parameters and configured model limits";
+            case 401 -> "OpenCode Go authentication failed; check the selected API key";
+            case 403 -> "OpenCode Go access was denied; check workspace subscription and model access settings";
+            case 402 -> "OpenCode Go allowance or balance is unavailable; check the Console";
+            case 429 -> "OpenCode Go request was limited; retry later or check the plan allowance";
+            case 404 -> "OpenCode Go Messages endpoint or target model was not found";
+            default -> "OpenCode Go request failed";
+        };
+        return new LlmException(message + " (HTTP " + failure.statusCode() + ")", failure.statusCode(), null);
     }
 
     /**
@@ -210,6 +240,12 @@ public class AnthropicSdkLlmClient implements LlmClient {
                         .model(model)
                         .maxTokens(metadata.capOutput(request.maxTokens())) // 只封顶，不自动扩大请求额度
                         .messages(request.messages().stream().map(this::toMessageParam).toList());
+        if (openCodeGo) {
+            // 身份随请求不可变地传入，不在并发共用的 SDK 客户端上切换全局 header。
+            if (request.sessionId().isEmpty())
+                throw new IllegalArgumentException("OpenCode Go requests require a stable model session ID");
+            builder.putAdditionalHeader("x-opencode-session", request.sessionId());
+        }
         if (request.system() != null) {
             builder.system(request.system());
         }
@@ -224,7 +260,7 @@ public class AnthropicSdkLlmClient implements LlmClient {
         ThinkingSettings thinking = request.thinking();
         if (!thinkingChoices.contains(thinking)) throw new IllegalArgumentException("This endpoint or model is not adapted for that thinking effort");
         if (thinking != ThinkingSettings.DEFAULT) {
-            String type = thinking == ThinkingSettings.OFF ? "disabled" : deepseek ? "enabled" : "adaptive";
+            String type = thinking == ThinkingSettings.OFF ? "disabled" : deepseek || openCodeGo ? "enabled" : "adaptive";
             builder.putAdditionalBodyProperty("thinking", JsonValue.from(Map.of("type", type)));
             if (thinking != ThinkingSettings.OFF)
                 builder.putAdditionalBodyProperty("output_config", JsonValue.from(Map.of("effort", thinking.value())));

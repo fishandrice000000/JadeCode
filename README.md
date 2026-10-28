@@ -87,17 +87,50 @@ mkdir -p ~/.jadecode/config
 ```
 
 文件默认权限为 `600`（仅当前用户可读写）；加载器只读，不自动迁移 Key 或修改已有文件权限。
-JSON 字段为 `apiKey`、`baseUrl`、`model`、`maxTokens`，其中 `maxTokens` 接受 `"auto"` 或正整数。
-未设置模型与端点时沿用原默认值；文件可省略 apiKey 并通过进程环境提供，显式空白字段会报错。
+JSON 字段为 `apiKey`、`baseUrl`、`model`、`maxTokens` 和可选 `provider`，其中 `maxTokens` 接受 `"auto"` 或正整数。
+provider 缺省为 `anthropic-compatible`，保留原端点与模型默认值；文件可省略 apiKey 并通过进程环境提供，显式空白字段会报错。
 
 此后在任意项目目录调用 JadeCode 的启动脚本即可，工作区仍为当前目录。也可用
 `jade --model-config /path/to/model.json`（或 `--model-config=...`）选择另一份 JSON；支持交互、headless 和 resume。
 相对路径以启动目录为基准，显式文件取代全局文件，不跨文件补 Key。配置在启动时固定，修改后需重启。
 
-JSON 路径下，进程环境变量 `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` / `MODEL_ID` / `MAX_TOKENS` 覆盖文件，再补默认值。
-只改变端点时必须在同一环境覆盖中提供 Key，避免借用文件中另一服务的凭据。任何情况下都不读取 `.env`，也不查找项目或父目录中的旧配置。
+JSON 路径下，进程环境变量 `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` / `MODEL_ID` / `MAX_TOKENS` / `MODEL_PROVIDER` 覆盖文件，再补所选 provider 的默认值。
+改变端点或 provider 时必须在同一环境覆盖中提供 Key，避免借用文件中另一服务的凭据。任何情况下都不读取 `.env`，也不查找项目或父目录中的旧配置。
 未指定文件且全局 JSON 不存在时，可仅使用进程环境变量；缺少认证则直接报错。指定文件缺失、JSON 无效或全局文件不可读时明确失败。
 详细优先级与验收见 [全局模型配置指南](docs/notes/s13/global-model-config-review.md)。
+
+OpenCode Go 只适配 **`deepseek-v4.1-flash`**。可以单独创建一份模型配置：
+
+```json
+{
+  "provider": "opencode-go",
+  "apiKey": "replace-with-your-opencode-go-api-key",
+  "baseUrl": "https://opencode.ai/inference/go/anthropic",
+  "model": "deepseek-v4.1-flash",
+  "maxTokens": "auto"
+}
+```
+
+**配置中必须有 `"provider": "opencode-go"`**；只更换 Key、baseUrl 和 model 不会启用 Go 的认证与会话头。
+官方 Go URL 若未搭配此字段，启动时会直接提示修正，不向服务端发送缺少会话头的请求。
+填写属于 Go 订阅工作区的 Key，文件权限设为 `600`，再用
+`jade --model-config /path/to/your-go-model.json` 启动；上面的示例不包含可用凭据，程序不自动覆盖已有配置。
+Go 缺省基址为 `https://opencode.ai/inference/go/anthropic`，不要追加 `/v1/messages`；
+客户端发送 Bearer、自身 User-Agent 和稳定会话头，利用 [Console 的 Messages 转换](https://opencode.ai/v2/docs/console/harnesses/#base-urls)。
+用户已确认本次 Go 切换与交互启动恢复正常；各思考档位的实际效果仍需专项验收，未测试其它 Go 模型。
+
+该入口的 `/thinking` 仅提供 `default / low / high / max`。default 完全省略额外思考参数，
+不猜成 high；off/medium/xhigh 明确拒绝，不静默换档。原 `config.json` 若显式设置了不支持的全局档位，
+应先改为 default 或可用档位。辅助请求沿用各自原有策略；不支持 off 时保留默认，
+小输出额度若被思考耗尽会如实失败，不采用半份审批、摘要或记忆结果。
+
+Go 公共目录目前未提供 token 限额，启动不会借用直连 DeepSeek 的参数。
+需要自动压缩或自动最大输出时，在 `config.json` 的 `modelMetadata.overrides["deepseek-v4.1-flash"]`
+中填写由服务商确认的 `contextWindowTokens`、`maxInputTokens`、`maxOutputTokens`，各字段为正整数且可省略。
+不填时未知输出按下文回退 8000，未知窗口会明确提示自动压缩不可用。
+主会话及其辅助请求沿用同一会话 UUID，常驻队友独立；Go 恢复要求原供应商、Messages 基址和模型一致。
+无后端身份的旧历史应新建会话后使用 Go。会话格式升为 5，继续读取 1–4；旧二进制不能继续写新格式日志。
+离线发行验证命令为 `python3 scripts/verify-release.py --scenario opencode-go`；它只访问本机夹具，不调用真实模型。
 
 `MAX_TOKENS` 缺失、为空或设为 `auto` 时，正式对话（包括队友、一次性子代理）使用已知的模型最大输出额度；
 未取得最大输出字段时明确回退到 8000 token，不能用上下文窗口代替输出上限。
@@ -481,7 +514,7 @@ s15 从现有装配、会话事件、工具批次与结束判断串联前面各�
 任务入口注入当前项目和全局的短路由（`memory_summary.md` 对应分区），主模型通过 `read_file`
 按需阅读 `MEMORY.md` 和 `rollout_summaries/`；召回不再额外请求选择模型，也没有向量检索。
 system 只保留稳定参考边界，路由作为带内部来源的参考消息追加；参考不是用户指令。
-会话格式仍为版本 4，可读取版本 1–3；新版写入后不要用旧程序继续写该会话。
+会话格式为版本 5，可读取版本 1–4；新版写入后不要用旧程序继续写该会话。
 
 用户轮次真正结束、失败或普通退出中断时，登记持久作业。后台从已落盘事件区间读取证据，
 排除思考、压缩替代历史、旧记忆、技能正文和后台通知；忙时真实用户补充单独保留。

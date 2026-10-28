@@ -130,4 +130,57 @@ class ModelConfigLoaderTest {
         assertFalse(failure.toString().contains(secret));
         assertNull(failure.getCause());
     }
+
+    /** Go 显式选择后使用自己的缺省端点/模型；不读取其它凭据来源或继承直连缺省值。 */
+    @Test void goProfileUsesItsOwnDefaultsAndRejectsModelsOutsideTheAuthorizedScope() throws Exception {
+        Path cwd = workspace();
+        write(global(), "{\"provider\":\"opencode-go\",\"apiKey\":\"fixture-go-key\"}");
+        AppConfig go = ModelConfigLoader.load(cwd, global(), null, Map.of());
+        assertEquals(ModelProvider.OPENCODE_GO, go.provider());
+        assertEquals("https://opencode.ai/inference/go/anthropic", go.baseUrl());
+        assertEquals("deepseek-v4.1-flash", go.model());
+        assertEquals(AppConfig.AUTO_MAX_TOKENS, go.maxTokens());
+        // 非目标 ID 只做配置拒绝验证，不为其它模型发送请求或声明能力。
+        assertThrows(IllegalStateException.class, () -> ModelConfigLoader.load(cwd, global(), null,
+                Map.of("MODEL_ID", "outside-authorized-scope")));
+        assertThrows(IllegalStateException.class, () -> ModelConfigLoader.load(cwd, global(), null,
+                Map.of("ANTHROPIC_BASE_URL", "https://opencode.ai/inference/anthropic", "ANTHROPIC_API_KEY", "fixture-key")));
+    }
+
+    /** provider 也能改变 URL/认证缺省值；环境切换必须同源提供 Key，不借用文件的旧凭据。 */
+    @Test void changingProviderRequiresAnExplicitCredentialAndOldConfigurationStillWorks() throws Exception {
+        Path cwd = workspace();
+        write(global(), "{\"apiKey\":\"fixture-direct-key\"}");
+        assertEquals(ModelProvider.ANTHROPIC_COMPATIBLE, ModelConfigLoader.load(cwd, global(), null, Map.of()).provider());
+        assertThrows(IllegalStateException.class, () -> ModelConfigLoader.load(cwd, global(), null,
+                Map.of("MODEL_PROVIDER", "opencode-go")));
+        AppConfig changed = ModelConfigLoader.load(cwd, global(), null,
+                Map.of("MODEL_PROVIDER", "opencode-go", "ANTHROPIC_API_KEY", "fixture-go-key"));
+        assertEquals(ModelProvider.OPENCODE_GO, changed.provider());
+        assertEquals("deepseek-v4.1-flash", changed.model());
+        assertEquals("fixture-go-key", changed.apiKey());
+        String secret = "DO_NOT_DISCLOSE_PROVIDER_FIXTURE";
+        var failure = assertThrows(IllegalStateException.class, () -> ModelConfigLoader.load(cwd, global(), null,
+                Map.of("MODEL_PROVIDER", secret)));
+        assertFalse(failure.toString().contains(secret)); assertNull(failure.getCause());
+    }
+
+    /** Go URL 不能沿用旧默认身份；在发请求前直接指出缺少 provider，避免服务端才报 MissingSessionID。 */
+    @Test void goEndpointWithoutGoProviderFailsBeforeCreatingAClient() throws Exception {
+        Path cwd = workspace();
+        String endpoint = "https://opencode.ai/inference/go/anthropic";
+        write(global(), "{\"apiKey\":\"fixture-secret\",\"baseUrl\":\"" + endpoint
+                + "\",\"model\":\"deepseek-v4.1-flash\"}");
+        var failure = assertThrows(IllegalStateException.class,
+                () -> ModelConfigLoader.load(cwd, global(), null, Map.of()));
+        assertTrue(failure.getMessage().contains("provider"));
+        assertTrue(failure.getMessage().contains("opencode-go"));
+        assertFalse(failure.getMessage().contains("fixture-secret")); assertNull(failure.getCause());
+        assertThrows(IllegalArgumentException.class,
+                () -> new AppConfig("fixture-key", endpoint, "deepseek-v4.1-flash", 8000));
+        // URL 是配置检查依据，不把相似路径或另一个主机自动当成 Go 服务。
+        assertDoesNotThrow(() -> new AppConfig("fixture-key", "https://proxy.example/inference/go/anthropic", "fixture", 8000));
+        write(global(), "{\"apiKey\":\"fixture-key\",\"provider\":\"opencode-go\"}");
+        assertEquals(ModelProvider.OPENCODE_GO, ModelConfigLoader.load(cwd, global(), null, Map.of()).provider());
+    }
 }

@@ -43,6 +43,17 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         self.server.calls.append(body)
+        if self.server.scenario == "opencode-go":
+            # 只记录断言结果与会话 UUID，不把认证头/占位 Key 保存到报告。
+            session = self.headers.get("x-opencode-session", "")
+            self.server.go_requests.append({
+                "valid": self.path == "/inference/go/anthropic/v1/messages"
+                and self.headers.get("Authorization") == "Bearer dummy-go-fixture"
+                and self.headers.get("x-api-key") is None
+                and self.headers.get("User-Agent", "").startswith("jadecode/")
+                and bool(re.fullmatch(r"[0-9a-f-]{36}", session))
+                and body.get("model") == "deepseek-v4.1-flash",
+                "session": session, "stream": bool(body.get("stream"))})
         if body.get("tools") and self.server.scenario in ("model-error", "retry"):
             if self.server.scenario == "model-error" or not self.server.failed_once:
                 self.server.failed_once = True
@@ -129,7 +140,7 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
                 answer = "\n".join(f"ROW_{i:03} 中文 body" for i in range(120)) + "\nLONG_END"
             content = [{"type": "text", "text": answer}]
         workflow_limit = self.server.scenario == "workflow-limit" and "You are a focused workflow agent." in json.dumps(body.get("system", ""))
-        message = {"id": "msg-verify", "type": "message", "role": "assistant", "model": "verify-local",
+        message = {"id": "msg-verify", "type": "message", "role": "assistant", "model": body["model"] if self.server.scenario == "opencode-go" else "verify-local",
                    "content": content, "stop_reason": "tool_use" if tool else "max_tokens" if workflow_limit or self.server.scenario == "output-limit" and body.get("tools") else "end_turn",
                    "stop_sequence": None, "usage": {"input_tokens": 20, "output_tokens": int(body["max_tokens"]) if workflow_limit else 10}}
         self.send_response(200)
@@ -182,6 +193,7 @@ class Case:
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Endpoint)
         self.server.target = self.target
         self.server.calls = []
+        self.server.go_requests = []
         self.server.scenario = name
         self.server.failed_once = False
         self.server.aux_requests = 0
@@ -322,6 +334,47 @@ class Case:
 
 def verify(case, name):
     """场景断言直接观察真实副作用/进程/屏幕；每项最多等待明确预算。"""
+    if name == "opencode-go":
+        # 新配置走真实生产加载/工厂；只连接回环夹具，不读取用户 Key 或调用 OpenCode 服务。
+        for variable in ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "MODEL_ID", "MAX_TOKENS", "MODEL_PROVIDER"):
+            case.env.pop(variable, None)
+        config = case.home / ".jadecode/config/config.json"
+        settings = json.loads(config.read_text())
+        settings.update({"memory": {"enabled": False}, "thinking": {"effort": "low"}, "modelMetadata": {
+            "autoDiscover": False, "overrides": {"deepseek-v4.1-flash": {
+                "contextWindowTokens": 50000, "maxOutputTokens": 12345}}}})
+        config.write_text(json.dumps(settings))  # 数字仅为离线夹具，绝不当作服务商实际限额。
+        selected = config.with_name("model.json")
+        selected.write_text(json.dumps({"provider": "opencode-go", "apiKey": "dummy-go-fixture",
+            "baseUrl": f"http://127.0.0.1:{case.server.server_port}/inference/go/anthropic",
+            "model": "deepseek-v4.1-flash", "maxTokens": "auto"}))
+        selected.chmod(0o600)
+        completed = subprocess.run([str(case.release / "jade"), "--headless", "JADE_VERIFY_TEXT"], cwd=case.workspace,
+            env=case.env, stdin=subprocess.DEVNULL, capture_output=True, timeout=20)
+        assert completed.returncode == 0, completed.stderr.decode("utf8", "replace")
+        assert completed.stdout.decode().strip() == "JADE_VERIFY_DONE"
+        # 当前会话存在用户目录分区；不沿用旧夹具对工作区 .jadecode 的路径假设。
+        metadata_file = next((case.home / ".jadecode/workspaces").rglob("session.json"))
+        metadata = json.loads(metadata_file.read_text())
+        assert metadata["backendIdentity"].startswith("opencode-go:messages:")
+        before = len(case.server.calls)
+        case.start(extra=["--resume=" + metadata["id"]]); case.until("JADE_VERIFY_DONE")
+        assert len(case.server.calls) == before, "Go resume replayed a saved request"
+        case.send("/thinking high\r")
+        deadline = time.monotonic() + 5
+        while json.loads(metadata_file.read_text()).get("thinking") != "HIGH" and time.monotonic() < deadline:
+            case.drain(.04)
+        assert json.loads(metadata_file.read_text())["thinking"] == "HIGH"
+        offset = len(case.output); case.send("JADE_VERIFY_TEXT\r"); case.until("JADE_VERIFY_DONE", offset)
+        case.finish()
+        assert len(case.server.go_requests) == 2 and all(item["valid"] for item in case.server.go_requests)
+        assert all(item["session"] == metadata["id"] for item in case.server.go_requests)
+        assert {item["stream"] for item in case.server.go_requests} == {True, False}
+        assert all(call["max_tokens"] == 12345 for call in case.server.calls)
+        assert [call["output_config"]["effort"] for call in case.server.calls] == ["low", "high"]
+        assert all(call["thinking"]["type"] == "enabled" for call in case.server.calls)
+        return {"exit": 0, "httpRequests": 2, "headersValid": True, "resumeIdentityStable": True,
+                "headlessAndStreaming": True, "thinkingChanged": True, "manualOutputLimit": 12345}
     if name in ("model-config", "model-config-explicit"):
         # 认证仅使用本地夹具占位值；同时移除旧环境变量，避免 JSON 没接通却被环境兜底。
         for variable in ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "MODEL_ID", "MAX_TOKENS"):
@@ -802,7 +855,7 @@ def verify(case, name):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--release", type=Path, default=REPO / "dist/jadecode")
-    parser.add_argument("--scenario", action="append", choices=["model-config", "model-config-explicit", "java-only", "smoke", "input-routing", "commands", "regular", "regular-approval", "copy", "retry", "model-error", "output-limit", "headless", "headless-read-only", "headless-full-access", "headless-workspace", "headless-auto-review", "memory-delay", "mcp", "team", "team-headless", "workflow", "code-review", "workflow-limit", "goal", "goal-error", "goal-headless", "resume", "long-output", "approval-resize", "approval-small", "approval-mouse", "approval-suspend", "approval-deny", "full-access", "sighup", "sigint", "sigterm", "java-exit", "node-exit"])
+    parser.add_argument("--scenario", action="append", choices=["opencode-go", "model-config", "model-config-explicit", "java-only", "smoke", "input-routing", "commands", "regular", "regular-approval", "copy", "retry", "model-error", "output-limit", "headless", "headless-read-only", "headless-full-access", "headless-workspace", "headless-auto-review", "memory-delay", "mcp", "team", "team-headless", "workflow", "code-review", "workflow-limit", "goal", "goal-error", "goal-headless", "resume", "long-output", "approval-resize", "approval-small", "approval-mouse", "approval-suspend", "approval-deny", "full-access", "sighup", "sigint", "sigterm", "java-exit", "node-exit"])
     parser.add_argument("--report", type=Path, default=REPO / "target/tui-release-verification.json")
     options = parser.parse_args()
     release = options.release.resolve()
@@ -825,7 +878,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="jade-release-verify-") as directory:
         root = Path(directory)
         shutil.copytree(release, root / "release", symlinks=True)
-        for name in options.scenario or ["model-config", "model-config-explicit", "java-only", "smoke", "input-routing", "commands", "regular", "regular-approval", "copy", "retry", "model-error", "output-limit", "headless", "headless-read-only", "headless-full-access", "headless-workspace", "headless-auto-review", "memory-delay", "mcp", "team", "team-headless", "workflow", "code-review", "workflow-limit", "goal", "goal-error", "goal-headless", "resume", "long-output", "approval-resize", "approval-small", "approval-mouse", "approval-suspend", "approval-deny", "full-access", "sighup", "sigint", "sigterm", "java-exit", "node-exit"]:
+        for name in options.scenario or ["opencode-go", "model-config", "model-config-explicit", "java-only", "smoke", "input-routing", "commands", "regular", "regular-approval", "copy", "retry", "model-error", "output-limit", "headless", "headless-read-only", "headless-full-access", "headless-workspace", "headless-auto-review", "memory-delay", "mcp", "team", "team-headless", "workflow", "code-review", "workflow-limit", "goal", "goal-error", "goal-headless", "resume", "long-output", "approval-resize", "approval-small", "approval-mouse", "approval-suspend", "approval-deny", "full-access", "sighup", "sigint", "sigterm", "java-exit", "node-exit"]:
             case = Case(root, root / "release", shutil.which("node"), name)
             try:
                 result = {"name": name, "status": "pass", **verify(case, name)}

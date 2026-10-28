@@ -28,9 +28,10 @@ public final class ModelConfigLoader {
     private static final String URL = "ANTHROPIC_BASE_URL";
     private static final String MODEL = "MODEL_ID";
     private static final String TOKENS = "MAX_TOKENS";
+    private static final String PROVIDER = "MODEL_PROVIDER";
     private static final int MAX_BYTES = 64 * 1024;
     private static final Map<String, String> FIELDS = Map.of(
-            "apiKey", KEY, "baseUrl", URL, "model", MODEL, "maxTokens", TOKENS);
+            "apiKey", KEY, "baseUrl", URL, "model", MODEL, "maxTokens", TOKENS, "provider", PROVIDER);
 
     private ModelConfigLoader() { }
 
@@ -53,18 +54,25 @@ public final class ModelConfigLoader {
         // 仅能确认全局文件不存在时才允许纯进程环境；其余读取失败不能静默忽略。
         boolean json = selectedFile != null || !Files.notExists(file, LinkOption.NOFOLLOW_LINKS);
         Map<String, String> values = json ? readJson(file) : new HashMap<>();
-        // 只改变端点却沿用文件 Key 可能发往另一个服务；需要同一次显式环境覆盖带上 Key。
-        requireMatchingCredential(process.get(URL), values.getOrDefault(URL, AppConfig.DEFAULT_BASE_URL), process.get(KEY));
+        ModelProvider previousProvider = ModelProvider.parse(values.get(PROVIDER));
+        String previousUrl = values.getOrDefault(URL, previousProvider.defaultBaseUrl());
         for (String name : FIELDS.values()) {
             if (process.containsKey(name)) values.put(name, process.get(name));
         }
+        // provider 自身也会改变缺省 URL/认证方式；不能只检查显式 URL，漏掉由 provider 引起的换服务。
+        ModelProvider provider = ModelProvider.parse(values.get(PROVIDER));
+        String effectiveUrl = values.getOrDefault(URL, provider.defaultBaseUrl());
+        if ((provider != previousProvider || !effectiveUrl.strip().equals(previousUrl.strip()))
+                && (process.get(KEY) == null || process.get(KEY).isBlank()))
+            throw invalid("Changing provider or ANTHROPIC_BASE_URL requires ANTHROPIC_API_KEY in the same override source");
         // 先校验再交给 AppConfig 转换，避免转换异常把无效额度的原始值写进 stderr。
         validate(values);
-        return AppConfig.fromEnv(Env.of(values));
+        try { return AppConfig.fromEnv(Env.of(values)); }
+        catch (IllegalArgumentException unsupported) { throw invalid(unsupported.getMessage()); }
     }
 
     /**
-     * 只解析四个已知字段，拒绝重复键、尾随 JSON、未知字段、null 和错误类型。
+     * 只解析五个已知字段，拒绝重复键、尾随 JSON、未知字段、null 和错误类型。
      * 读取最多 64 KiB + 1 字节，避免超大文件；异常不携带原始 JSON 或底层异常 cause。
      */
     private static Map<String, String> readJson(Path file) {
@@ -106,13 +114,6 @@ public final class ModelConfigLoader {
         }
     }
 
-    /** 端点没有变化时可沿用已选 Key；跨端点覆盖必须同源明确提供非空 Key。 */
-    private static void requireMatchingCredential(String overridingUrl, String previousUrl, String overridingKey) {
-        if (overridingUrl != null && !overridingUrl.strip().equals(previousUrl == null ? "" : previousUrl.strip())
-                && (overridingKey == null || overridingKey.isBlank()))
-            throw invalid("Changing ANTHROPIC_BASE_URL requires ANTHROPIC_API_KEY in the same override source");
-    }
-
     /** 校验合并后的有效值；默认额度、默认端点/模型仍由 AppConfig 统一提供。 */
     private static void validate(Map<String, String> values) {
         if (values.get(KEY) == null || values.get(KEY).isBlank())
@@ -120,7 +121,7 @@ public final class ModelConfigLoader {
         if (values.get(KEY).chars().anyMatch(c -> c < 32 || c == 127))
             throw invalid("apiKey / ANTHROPIC_API_KEY must not contain control characters");
         if (values.containsKey(MODEL) && values.get(MODEL).isBlank()) throw invalid("model / MODEL_ID must not be blank");
-        String url = values.getOrDefault(URL, AppConfig.DEFAULT_BASE_URL);
+        String url = values.getOrDefault(URL, ModelProvider.parse(values.get(PROVIDER)).defaultBaseUrl());
         try {
             URI parsed = URI.create(url);
             if (!("http".equalsIgnoreCase(parsed.getScheme()) || "https".equalsIgnoreCase(parsed.getScheme())) || parsed.getHost() == null

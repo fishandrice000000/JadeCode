@@ -363,6 +363,21 @@ public final class SessionRuntime implements AutoCloseable {
     public String model() { return model; }
     public String sessionId() { return journal == null ? "" : journal.metadata().id(); }
 
+    /** 路由包装只归本运行时，绝不保存认证；非持久化调用也已有稳定的临时身份。 */
+    private com.jadecode.llm.SessionLlmClient modelRequests;
+    private String backendIdentity = "";
+
+    /** 工厂在 start/restore 前安装模型路由与非秘密恢复身份；本方法不发请求或写盘。 */
+    public void modelRequests(com.jadecode.llm.SessionLlmClient client, String identity) {
+        if (consumer != null || journal != null || closed || modelRequests != null)
+            throw new IllegalStateException("Model requests are already bound or the session has started");
+        modelRequests = java.util.Objects.requireNonNull(client);
+        backendIdentity = java.util.Objects.requireNonNull(identity);
+    }
+
+    /** 会话清单只保存这份无凭据身份，不将整个 AppConfig 交给日志。 */
+    public String backendIdentity() { return backendIdentity; }
+
     /** 关闭后消费者确实退出才返回 true；不把“已发中断”冒充“线程已停止”。 */
     public boolean isStopped() { return closed && (consumer == null || !consumer.isAlive()); }
 
@@ -372,6 +387,13 @@ public final class SessionRuntime implements AutoCloseable {
      */
     public synchronized void restore(SessionJournal writer, RestoredSession restored) {
         if (consumer != null || closed || journal != null) throw new IllegalStateException("Cannot install history into a running session");
+        String previousBackend = restored.metadata().backendIdentity();
+        // 原兼容入口保留旧恢复行为；涉及 Go 时必须证明来源一致，不能把旧签名/工具历史交给另一个后端。
+        // 先检查再改变内存历史或采用 writer，失败时宿主仍能关闭目标日志并保留旧会话。
+        if ((backendIdentity.startsWith("opencode-go:") || previousBackend.startsWith("opencode-go:"))
+                && !backendIdentity.equals(previousBackend))
+            throw new IllegalArgumentException("OpenCode Go history requires the same provider, Messages endpoint and model; start a new session for a different backend");
+        if (modelRequests != null) modelRequests.restoreIdentity(restored.metadata().id());
         if (todos != null) todos.restore(restored.todos());
         history = new ArrayList<>(restored.history());
         engine.invalidateContext();

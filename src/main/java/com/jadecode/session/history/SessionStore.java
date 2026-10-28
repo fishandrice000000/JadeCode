@@ -68,12 +68,17 @@ public final class SessionStore {
         return List.copyOf(result);
     }
 
-    /** 创建一个全新会话；这里只存模型名称，不保存 AppConfig 或认证。 */
+    /** 旧调用者没有后端身份，继续创建可读的通用会话，不猜测其供应商。 */
     public Opened create(String model) throws IOException {
+        return create(model, "");
+    }
+
+    /** 创建全新会话；只存模型名及无秘密恢复身份，不保存 AppConfig 或认证。 */
+    public Opened create(String model, String backendIdentity) throws IOException {
         paths.register();
         String time = Instant.now().toString();
         var metadata = new SessionMetadata(SessionMetadata.VERSION, UUID.randomUUID().toString(), paths.workspace().toString(),
-                "New session", time, time, model);
+                "New session", time, time, model, false, com.jadecode.session.SessionUsage.Totals.empty(), null, backendIdentity);
         Path directory = paths.sessions().resolve(metadata.id());
         paths.directory(paths.sessions(), true);
         Files.createDirectory(directory);

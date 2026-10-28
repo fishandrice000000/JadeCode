@@ -301,6 +301,10 @@ public final class JadeCodeFactory {
             JadeSettings settings, com.jadecode.session.SessionUsage usage,
             java.util.concurrent.atomic.AtomicReference<com.jadecode.llm.ThinkingSettings> thinking, PermissionState permissions, com.jadecode.config.WorkspacePaths workspacePaths) {
         boolean isLeader = actor.equals(TeamManager.LEADER);
+        // 每个常驻 Agent 先绑定自己的路由；下方所有用途都包装它，不能有辅助请求绕过会话身份。
+        // 共享的是参数/传输，身份只归本次 assemble；CLI 恢复日志前还不会发请求。
+        var sessionClient = new com.jadecode.llm.SessionLlmClient(client);
+        client = sessionClient;
         // 配置里的 0 只代表 auto：先按已发现的模型能力解析，执行器与 wire 始终收到正数。
         // 这份额度只交给正式父/子请求；下方摘要、Memory 和审批继续使用各自的独立预算。
         int formalMaxTokens = client.metadata().formalOutputBudget(config.maxTokens());
@@ -397,10 +401,14 @@ public final class JadeCodeFactory {
         // 每次运行开始才快照思考设置。推理型后端会把思考也计入输出，独立压到 2000 可能耗尽
         // 额度后还没返回 JSON；沿用已经按配置/模型能力解析的正式额度，不修改模型或思考选择。
         var workflowClient = tracked(client, config.model(), actor, com.jadecode.llm.UsageRecord.Purpose.WORKFLOW, usage, null);
+        // Go 缓存身份包含 provider/协议，不能仅凭相同 URL/模型复用另一认证约定的步骤结果。
+        // 原兼容入口保留既有身份字符串，不使已经保存的直连 Workflow 无故失效。
+        String workflowModel = config.provider() == com.jadecode.config.ModelProvider.OPENCODE_GO
+                ? config.backendIdentity() : config.baseUrl() + "|" + config.model();
         var workflows = new com.jadecode.workflow.WorkflowRuntime(workspacePaths,
                 com.jadecode.workflow.WorkflowDefinition.registry(List.of(com.jadecode.workflow.ReviewChangesWorkflow.definition(),
                         com.jadecode.workflow.CodeReviewWorkflow.definition())),
-                () -> new com.jadecode.workflow.WorkflowAgentRunner(workflowClient, config.baseUrl() + "|" + config.model(),
+                () -> new com.jadecode.workflow.WorkflowAgentRunner(workflowClient, workflowModel,
                         formalMaxTokens, thinking.get()),
                 com.jadecode.workflow.WorkflowRuntime.Limits.defaults(),
                 progress -> observer.publish(com.jadecode.execution.ExecutionNotice.event(
@@ -442,6 +450,7 @@ public final class JadeCodeFactory {
                 com.jadecode.execution.ExecutionNotice.Kind.SESSION, "", role, config.model(), "IDLE"));
         // 所有权在这里交给 session；CLI 不再另外关闭 engine/background/cron。
         SessionRuntime runtime = new SessionRuntime(engine, memory, background, cron, output, errors);
+        runtime.modelRequests(sessionClient, config.backendIdentity());
         // 只读服务快照：MCP 页面不会触发连接/认证，也不会把配置中的命令/凭据暴露给 UI。
         runtime.services(mcp::snapshot);
         // 名单来自同一次实际装配，不读取另一份资源或把指令全文发到终端。

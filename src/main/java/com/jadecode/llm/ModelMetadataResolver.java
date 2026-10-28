@@ -63,7 +63,10 @@ public final class ModelMetadataResolver {
     public ModelMetadata resolve(AppConfig config, JadeSettings.Models settings) {
         Limits official = Limits.unknown(); String source;
         Target target = target(config);
-        if (!settings.autoDiscover()) source = "Automatic discovery is off; using the existing configuration";
+        if (config.provider() == com.jadecode.config.ModelProvider.OPENCODE_GO)
+            // 已核对 Go 公共目录只有身份字段；不把一次目录请求伪装成已取得限额，也不借用直连限额。
+            source = "Automatic token-limit lookup is not adapted for OpenCode Go; configure modelMetadata.overrides for deepseek-v4.1-flash";
+        else if (!settings.autoDiscover()) source = "Automatic discovery is off; using the existing configuration";
         else if (target == null) source = "No official lookup is adapted for this endpoint; using the existing configuration";
         else {
             // 1. 缓存按实际端点和精确请求模型区分；命中有效记录才免去查询。

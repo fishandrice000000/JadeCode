@@ -119,7 +119,7 @@ public final class SessionHost implements AutoCloseable {
                 if (!frozen) throw new IOException("Tasks, queued messages, background results or live teammates remain; finish them before /resume");
             }
             candidate = factory.create(next);
-            if (prepared == null) prepared = store.create(candidate.model());
+            if (prepared == null) prepared = store.create(candidate.model(), candidate.backendIdentity());
             candidate.restore(prepared.journal(), prepared.restored());
             synchronized (this) {
                 if (closed.get()) throw new IOException("CLI exited; session switch cancelled");
