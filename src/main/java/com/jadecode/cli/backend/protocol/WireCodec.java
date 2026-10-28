@@ -37,7 +37,7 @@ public final class WireCodec {
     /** Node → Java 命令类型白名单。 */
     public static final Set<String> COMMANDS = Set.of(
             "client.hello", "session.ready", "session.submit", "session.promoteBuffer", "session.new",
-            "session.list", "session.find", "session.resume", "session.rename", "session.thinking",
+            "session.list", "session.find", "session.resume", "session.rename", "session.thinking", "team.report",
             "settings.patch", "permission.select", "permission.prepareFullAccess", "permission.presented",
             "permission.cancelFullAccess", "permission.default", "approval.presented", "approval.answer",
             "terminal.suspend", "terminal.resume", "terminal.invalidate", "state.refresh", "client.shutdown");

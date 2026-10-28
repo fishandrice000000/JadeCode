@@ -33,7 +33,7 @@ public record BackendSnapshot(String sessionId, String title, long generation, S
         Usage usage, Context context, Permission permission, List<Actor> actors, boolean teamActive,
         List<Mcp> mcp, Map<String, String> background, String bufferSummary, String bufferState,
         Tui tui, long configRevision, Capabilities capabilities, Map<String, DisplayClock.Tick> clocks,
-        Map<String, List<String>> resources) {
+        Map<String, List<String>> resources, List<Map<String, Object>> team) {
 
     /** 累计用量；null 字段表示“没有报告”，不是 0。 */
     public record Usage(Long inputTokens, Long outputTokens, Long cacheReadTokens, Long cacheWriteTokens,
@@ -124,7 +124,7 @@ public record BackendSnapshot(String sessionId, String title, long generation, S
                 configRevision,
                 new Capabilities(display != null && !display.thinkingChoices().isEmpty(), true, true,
                         !servers.isEmpty(), !tui.externalEditor().isBlank(), false),
-                Map.copyOf(clocks == null ? Map.of() : clocks), display == null ? Map.of() : display.resources());
+                Map.copyOf(clocks == null ? Map.of() : clocks), display == null ? Map.of() : display.resources(), display == null ? List.of() : display.team());
     }
 
     private static Usage usage(SessionUsage.Snapshot snapshot) {
@@ -199,6 +199,7 @@ public record BackendSnapshot(String sessionId, String title, long generation, S
             actorNode.put("state", actor.state());
         }
         node.put("teamActive", teamActive);
+        node.set("team", Json.mapper().valueToTree(team));
         ArrayNode mcpArray = node.putArray("mcp");
         for (Mcp server : mcp) {
             ObjectNode serverNode = mcpArray.addObject();

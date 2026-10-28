@@ -11,7 +11,7 @@ test("the approved 97-action catalogue keeps 62 supported / 35 hidden", () => {
 
 test("the session command catalogue includes the goal lifecycle command", () => {
 	assert.deepEqual(COMMANDS.map((command) => command.name), [
-		"/settings", "/name", "/session", "/hotkeys", "/copy", "/new",
+		"/settings", "/name", "/team", "/session", "/hotkeys", "/copy", "/new",
 		"/resume", "/quit", "/model", "/thinking", "/permission", "/mcp", "/goal",
 	]);
 });

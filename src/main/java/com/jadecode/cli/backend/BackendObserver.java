@@ -98,7 +98,11 @@ public final class BackendObserver implements ExecutionObserver {
                 if (!actor.isBlank()) {
                     if ("CLOSED".equals(notice.state())) actors.remove(actor); else actors.put(actor, notice.state());
                 }
-                if ("CLOSED".equals(notice.state())) clock.reset();
+                if ("CLOSED".equals(notice.state())) {
+                    // 关闭单个队友只冻结它的时钟；Leader 仍在执行/等待，不能把全队计时清空。
+                    if ("leader".equals(actor)) clock.reset();
+                    else if (!actor.isBlank()) clock.ended(actor, null, 0);
+                }
             }
             case BUFFER -> {
                 bufferSummary = notice.detail() == null ? "" : notice.detail();
@@ -113,16 +117,16 @@ public final class BackendObserver implements ExecutionObserver {
         }
     }
 
-    /** 用量/工具/轮次结束后刷新 footer 与 Team 状态；250ms 节流，不轮询。 */
+    /** 常规事件按 250ms 节流刷新 footer；Team 与会话状态变化立即请求快照，不轮询。 */
     private void maybeRefreshSnapshot(ExecutionNotice.Kind kind) {
         boolean interesting = switch (kind) {
-            case USAGE, TOOL_END, TURN_END, SESSION, MODEL, BUFFER, BACKGROUND, COMPACT, WORKFLOW, GOAL -> true;
+            case USAGE, TOOL_END, TURN_END, SESSION, MODEL, BUFFER, BACKGROUND, COMPACT, WORKFLOW, GOAL, TEAM -> true;
             default -> false;
         };
         if (!interesting || snapshotRefresh == null) return;
         long now = System.nanoTime();
         long previous = lastRefresh.get();
-        if (now - previous < 250_000_000L) return;
+        if (kind != ExecutionNotice.Kind.TEAM && kind != ExecutionNotice.Kind.SESSION && now - previous < 250_000_000L) return;
         if (!lastRefresh.compareAndSet(previous, now)) return;
         snapshotRefresh.accept(null);
     }

@@ -17,10 +17,35 @@
   },
   "additionalProperties": false,
   "$defs": {
+    "teamReportRequest": {
+      "description": "Read-only report lookup for the current session; accepts an assignment ID, never a file path. Response carries textBlobRef.",
+      "type": "object",
+      "required": ["assignmentId"],
+      "properties": { "assignmentId": { "type": "string" } },
+      "additionalProperties": false
+    },
+    "snapshotTransport": {
+      "description": "State and session snapshot payloads carry either snapshot or snapshotBlobRef. Referenced JSON must pass payload hash/length validation before use.",
+      "oneOf": [
+        { "required": ["snapshot"], "properties": { "snapshot": { "type": "object" } } },
+        { "required": ["snapshotBlobRef"], "properties": { "snapshotBlobRef": { "type": "string" } } }
+      ]
+    },
+    "teamMember": {
+      "description": "Read-only team entries in snapshot.team. Runtime state, report submission and explicit leader review are separate facts. assignment.scope uses readPaths/writePaths arrays.",
+      "type": "object",
+      "required": ["id", "name", "responsibilities", "state", "closed", "currentAssignment", "assignments", "historyCount", "pendingReports", "toReview", "openQuestions", "questions"],
+      "properties": {
+        "id": { "type": "string" }, "name": { "type": "string" }, "responsibilities": { "type": "string" },
+        "state": { "type": "string" }, "closed": { "type": "boolean" }, "currentAssignment": { "type": "string" },
+        "assignments": { "type": "array", "items": { "type": "object" } }, "questions": { "type": "array", "items": { "type": "object" } },
+        "historyCount": { "type": "integer" }, "pendingReports": { "type": "integer" }, "toReview": { "type": "integer" }, "openQuestions": { "type": "integer" }
+      }
+    },
     "commandTypes": {
       "enum": [
         "client.hello", "session.ready", "session.submit", "session.promoteBuffer", "session.new",
-        "session.list", "session.find", "session.resume", "session.rename", "session.thinking",
+        "session.list", "session.find", "session.resume", "session.rename", "session.thinking", "team.report",
         "settings.patch", "permission.select", "permission.prepareFullAccess", "permission.presented",
         "permission.cancelFullAccess", "permission.default", "approval.presented", "approval.answer",
         "terminal.suspend", "terminal.resume", "terminal.invalidate", "state.refresh", "client.shutdown",

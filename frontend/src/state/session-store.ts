@@ -66,6 +66,20 @@ export interface PermissionSnapshot {
 	disabledDefaultCount: number;
 }
 
+/** Team 展示只采用后端事实；运行状态、报告与核对状态分别保存。 */
+export interface TeamQuestion { id: string; summary: string; to: string; answered: boolean; }
+export interface TeamAssignment {
+	id: string; taskId: string; subject: string; leaderRunId: string; required: boolean;
+	scope: { readPaths: string[]; writePaths: string[] };
+	finished: boolean; abandoned: boolean; outcome: string; reportId: string; reportSummary: string;
+	reportPath: string; reviewNotes: string; deliveryError: string; progress: string; questions: TeamQuestion[];
+}
+export interface TeamMember {
+	id: string; name: string; responsibilities: string; state: string; closed: boolean;
+	currentAssignment: string; assignments: TeamAssignment[]; historyCount: number;
+	pendingReports: number; toReview: number; openQuestions: number; questions: TeamQuestion[];
+}
+
 export interface ActorState {
 	id: string;
 	state: string;
@@ -116,6 +130,7 @@ export interface BackendSnapshot {
 	permission: PermissionSnapshot | null;
 	actors: ActorState[];
 	teamActive: boolean;
+	team: TeamMember[];
 	mcp: McpServerSnapshot[];
 	background: Record<string, string>;
 	bufferSummary: string;
@@ -258,6 +273,8 @@ export class SessionStore {
 	actors(): ActorState[] { return this.snapshotValue?.actors ?? []; }
 
 	teamActive(): boolean { return this.snapshotValue?.teamActive === true; }
+	/** 当前 Team 快照；前端不自行创建成员或派工状态。 */
+	team(): TeamMember[] { return this.snapshotValue?.team ?? []; }
 
 	permissionRevision(): string { return this.snapshotValue?.permission?.revision ?? "0"; }
 
@@ -267,6 +284,12 @@ export class SessionStore {
 			if (actor === "leader") return "";
 			if (actor.startsWith("leader/")) return actor.slice("leader/".length);
 			return actor;
+		}
+		const member = this.team().find((item) => actor === item.id || actor.startsWith(`${item.id}/`));
+		if (member) {
+			const duplicate = this.team().some((item) => item.id !== member.id && item.name === member.name);
+			const label = duplicate ? `${member.name} (${member.id.slice(-8)})` : member.name;
+			return label + actor.slice(member.id.length).replace(/^\//, " / ");
 		}
 		return actor === "leader" ? "Leader" : actor.startsWith("leader/") ? `Leader / ${actor.slice(7)}` : actor;
 	}
@@ -411,6 +434,7 @@ function parseSnapshot(node: Payload): BackendSnapshot {
 		} : null,
 		actors,
 		teamActive: node.teamActive === true,
+		team: parseTeam(node.team),
 		mcp,
 		background,
 		bufferSummary: text(node, "bufferSummary"),
@@ -451,4 +475,27 @@ function usageGroups(value: unknown): Record<string, UsageSnapshot> {
 			reportedRequests: nullableNumber(node, "reportedRequests"), missingRequests: nullableNumber(node, "missingRequests") };
 	}
 	return groups;
+}
+
+/** 逐层复制后端快照，缺省字段只表示未知/空，不从摘要推断状态。 */
+function parseTeam(value: unknown): TeamMember[] {
+	const objects = (items: unknown): Payload[] => Array.isArray(items)
+		? items.filter((item): item is Payload => typeof item === "object" && item !== null) : [];
+	const strings = (items: unknown): string[] => Array.isArray(items) ? items.filter((item): item is string => typeof item === "string") : [];
+	return objects(value).map((member) => ({
+		id: text(member, "id"), name: text(member, "name"), responsibilities: text(member, "responsibilities"),
+		state: text(member, "state"), closed: member.closed === true, currentAssignment: text(member, "currentAssignment"),
+		historyCount: numberValue(member, "historyCount"), pendingReports: numberValue(member, "pendingReports"),
+		toReview: numberValue(member, "toReview"), openQuestions: numberValue(member, "openQuestions"),
+		questions: objects(member.questions).map((q) => ({ id: text(q, "id"), summary: text(q, "summary"), to: text(q, "to"), answered: q.answered === true })),
+		assignments: objects(member.assignments).map((a) => {
+			const scope = typeof a.scope === "object" && a.scope !== null ? a.scope as Payload : {};
+			return { id: text(a, "id"), taskId: text(a, "taskId"), subject: text(a, "subject"), leaderRunId: text(a, "leaderRunId"),
+				required: a.required === true, scope: { readPaths: strings(scope.readPaths), writePaths: strings(scope.writePaths) },
+				finished: a.finished === true, abandoned: a.abandoned === true, outcome: text(a, "outcome"),
+				reportId: text(a, "reportId"), reportSummary: text(a, "reportSummary"), reportPath: text(a, "reportPath"),
+				reviewNotes: text(a, "reviewNotes"), deliveryError: text(a, "deliveryError"), progress: text(a, "progress"),
+				questions: objects(a.questions).map((q) => ({ id: text(q, "id"), summary: text(q, "summary"), to: text(q, "to"), answered: q.answered === true })) };
+		}),
+	}));
 }

@@ -39,6 +39,7 @@ import { PageStack, type Page, type PageContext, type SessionItem } from "../pag
 import { SettingsPage } from "../pages/settings-page.ts";
 import { ResumePage } from "../pages/resume-page.ts";
 import { HotkeysPage, McpPage, ModelPage, SessionPage } from "../pages/information-pages.ts";
+import { TeamPage } from "../pages/team-page.ts";
 import { PermissionPage } from "../pages/permission-page.ts";
 import { SearchPage } from "../pages/search-page.ts";
 import { ClipboardController } from "../services/clipboard-controller.ts";
@@ -625,7 +626,7 @@ export class Application {
 				this.finishSnapshot(message.payload);
 				return;
 			case "state.snapshot":
-				this.session.applySnapshot(message.payload);
+				this.session.applySnapshot(this.resolveSnapshot(message.payload));
 				this.onSessionStateChanged();
 				return;
 			case "stream.started":
@@ -754,6 +755,12 @@ export class Application {
 				this.transcript.notice(actor, "Subagent", detail, false);
 				break;
 
+			case "TEAM": {
+				if (state === "UPDATED") break;
+				const entry = this.transcript.notice(actor, text(payload, "name", "Team"), detail, state === "ERROR");
+				this.transcript.update(entry.id, (current) => ({ ...current, status: state === "ERROR" ? "ERROR" : "" }));
+				break;
+			}
 			case "GOAL": {
 				// 判断结果来自宿主独立调用；显示状态不授予权限，也不把模型自述升级为验收。
 				const failed = state === "IMPOSSIBLE";
@@ -830,7 +837,7 @@ export class Application {
 		this.clearApprovalResult();
 		this.approval.clear();
 		this.transcript.install(entries);
-		this.session.applySnapshot(payload);
+		this.session.applySnapshot(this.resolveSnapshot(payload));
 		this.editor.rememberInputs(this.transcript.userTexts());
 		this.syncTranscriptHistoryMessage();
 		this.client?.send("session.ready", {
@@ -865,6 +872,18 @@ export class Application {
 		const value = this.assembler.resolve(id);
 		if (value !== undefined) this.approval.blobReady(id, value);
 		this.host.requestRender();
+	}
+
+	/** 大状态快照在 begin/chunk/end 校验完成后解析；缺失正文明确失败，不能用空 Team 覆盖。 */
+	private resolveSnapshot(payload: Payload): Payload {
+		const id = text(payload, "snapshotBlobRef");
+		if (!id) return payload;
+		const value = this.assembler.resolve(id);
+		if (value === undefined) throw new Error("The state snapshot payload is incomplete");
+		const snapshot: unknown = JSON.parse(value);
+		if (typeof snapshot !== "object" || snapshot === null || Array.isArray(snapshot)) throw new Error("Invalid state snapshot payload");
+		this.assembler.discard(id);
+		return { ...payload, snapshot };
 	}
 
 	private resolveText(payload: Payload, field: string, blobField: string): string {
@@ -1006,6 +1025,19 @@ export class Application {
 			keymap: this.keymap,
 			theme: () => this.theme.snapshot(),
 			client: () => this.client ?? null,
+			readTeamReport: async (assignment) => {
+				if (!this.client) throw new Error("The backend connection is closed");
+				const identity = this.identity();
+				const result = await this.client.command("team.report", { assignmentId: assignment }, identity);
+				if (!result.ok) throw new Error(result.message ?? "Unable to read the report");
+				if (identity.sessionId !== this.session.sessionId() || identity.generation !== this.session.generation())
+					throw new Error("The session changed while reading the report");
+				const id = text(result.payload, "textBlobRef");
+				const value = this.assembler.resolve(id);
+				if (value === undefined) throw new Error("The report payload is incomplete");
+				this.assembler.discard(id);
+				return value;
+			},
 			identity: () => this.identity(),
 			closePage: () => {
 				if (this.pages.current() instanceof SearchPage) this.closeSearchOverlay();
@@ -1128,6 +1160,7 @@ export class Application {
 			case "/hotkeys": this.pages.push(new HotkeysPage(this.pageContext(), this.keymap)); this.host.requestRender(); return true;
 			case "/model": this.pages.push(new ModelPage(this.pageContext())); this.host.requestRender(); return true;
 			case "/session": this.pages.push(new SessionPage(this.pageContext())); this.host.requestRender(); return true;
+			case "/team": this.pages.push(new TeamPage(this.pageContext())); this.host.requestRender(); return true;
 			case "/mcp": this.pages.push(new McpPage(this.pageContext())); this.host.requestRender(); return true;
 			// 使用既有用户提交协议；只有后端用户入口解析命令，工具结果/模型正文不能设置目标。
 			case "/goal": return this.submitPrompt(raw);

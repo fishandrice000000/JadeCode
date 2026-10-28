@@ -25,6 +25,7 @@ export class ToolCard {
 		private readonly theme: ResolvedTheme,
 		private readonly outputPad: number,
 		private readonly teamActive: boolean,
+		private readonly actorName: (actor: string) => string = (actor) => actor,
 	) {}
 
 	render(width: number): string[] {
@@ -76,7 +77,7 @@ export class ToolCard {
 
 	private header(width: number): string[] {
 		const theme = this.theme;
-		const actor = this.teamActive && this.entry.actor ? headingPart(theme, "muted", `${this.entry.actor} · `) : "";
+		const actor = this.teamActive && this.entry.actor ? headingPart(theme, "muted", `${this.actorName(this.entry.actor)} · `) : "";
 		const elapsed = this.entry.elapsedMs !== null && this.entry.elapsedMs > 0
 			? headingDetail(theme, "dim", formatDuration(this.entry.elapsedMs)) : "";
 		// 工具名与结果独立：保留原始状态词，不把 Returned 或历史记录改名为成功。

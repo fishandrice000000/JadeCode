@@ -81,6 +81,9 @@ export class PayloadAssembler {
 		return this.complete.get(ref);
 	}
 
+	/** 详情页消费一次性正文后释放已完成载荷，不影响仍被其它界面引用的资料。 */
+	discard(ref: string): void { this.complete.delete(ref); }
+
 	/** 断连/切换时丢弃未完成组装。 */
 	clear(): void {
 		this.active.clear();

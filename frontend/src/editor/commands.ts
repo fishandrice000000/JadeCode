@@ -14,6 +14,7 @@ export interface CommandDefinition {
 export const COMMANDS: CommandDefinition[] = [
 	{ name: "/settings", arguments: "", description: "Open TUI settings and theme/mode menus", takesArguments: false },
 	{ name: "/name", arguments: "[title]", description: "Rename the current session", takesArguments: true },
+	{ name: "/team", arguments: "", description: "Show teammates, assignments and reports", takesArguments: false },
 	{ name: "/session", arguments: "", description: "Show session identity and usage", takesArguments: false },
 	{ name: "/hotkeys", arguments: "", description: "Show keys and available commands", takesArguments: false },
 	{ name: "/copy", arguments: "", description: "Copy the latest assistant reply", takesArguments: false },

@@ -21,6 +21,7 @@ export const COMMAND_TYPES = [
 	"session.resume",
 	"session.rename",
 	"session.thinking",
+	"team.report",
 	"settings.patch",
 	"permission.select",
 	"permission.prepareFullAccess",

@@ -305,6 +305,15 @@ public final class BackendApplication implements AutoCloseable {
     /** 完整快照：begin/chunk/end 三段，Node 校验 hash 后安装并发 ready。 */
     private BackendSessionService.SnapshotSink snapshotSink(WireContext wire) {
         return new BackendSessionService.SnapshotSink() {
+            /** Team 历史可能较长；超过小帧预算时复用已校验的分块通道，不静默截掉派工。 */
+            private void putSnapshot(ObjectNode payload, BackendSnapshot snapshot) {
+                ObjectNode value = snapshot.toJson();
+                String text = value.toString();
+                if (text.length() > 32_000) payload.put("snapshotBlobRef",
+                        wire.payloads().sendText("state-snapshot", text, wire.sessionId(), wire.generation(), "state"));
+                else payload.set("snapshot", value);
+            }
+
             @Override public void full(String snapshotId, long generation, long sourceSeq,
                     List<BackendHistoryProjector.Entry> entries, BackendSnapshot snapshot) {
                 ObjectNode begin = Json.mapper().createObjectNode();
@@ -343,13 +352,13 @@ public final class BackendApplication implements AutoCloseable {
                 end.put("snapshotId", snapshotId);
                 end.put("totalChunks", chunkIndex);
                 end.put("hash", HexFormat.of().formatHex(digest.digest()));
-                end.set("snapshot", snapshot.toJson());
+                putSnapshot(end, snapshot);
                 wire.session().sendEvent("session.snapshot.end", end, wire.sessionId(), generation);
             }
 
             @Override public void state(BackendSnapshot snapshot) {
                 ObjectNode payload = Json.mapper().createObjectNode();
-                payload.set("snapshot", snapshot.toJson());
+                putSnapshot(payload, snapshot);
                 wire.session().sendEvent("state.snapshot", payload, wire.sessionId(), wire.generation());
             }
         };

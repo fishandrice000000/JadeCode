@@ -194,7 +194,7 @@ export class ConversationView implements Component {
 	private cardFor(entry: Entry, theme: ResolvedTheme, thinkingVisible: boolean, outputPad: number,
 		codeBlockIndent: string): MessageCard | ToolCard {
 		if (entry.kind === "TOOL") {
-			return new ToolCard(entry, theme, outputPad, this.session.teamActive());
+			return new ToolCard(entry, theme, outputPad, this.session.teamActive(), (actor) => this.session.displayActor(actor) || actor);
 		}
 		return new MessageCard(entry, theme, this.factory, codeBlockIndent, thinkingVisible,
 			this.session.teamActive(), (actor) => this.session.displayActor(actor) || actor);

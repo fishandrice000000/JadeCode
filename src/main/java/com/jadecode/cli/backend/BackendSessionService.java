@@ -218,6 +218,20 @@ public final class BackendSessionService implements AutoCloseable {
         });
     }
 
+    /**
+     * 只读报告入口绑定当前会话和派工编号；正文走现有有界分块协议，前端不能传文件路径。
+     * 不发模型请求，不改变报告核对状态。IO 失败沿用命令错误通道。
+     */
+    private void teamReport(WireMessage command) throws ProtocolException, IOException {
+        requireSession(command);
+        String id = requiredText(command, "assignmentId");
+        String body = host.current().teamReport(id);
+        ObjectNode result = Json.mapper().createObjectNode();
+        result.put("assignmentId", id);
+        result.put("textBlobRef", wire.payloads().sendText("team-report", body, wire.sessionId(), wire.generation(), "team"));
+        wire.session().sendOk(command.commandId(), result, wire.sessionId(), wire.generation());
+    }
+
     private void handle(WireMessage command) throws ProtocolException, IOException {
         switch (command.type()) {
             case "session.submit" -> submit(command);
@@ -228,6 +242,7 @@ public final class BackendSessionService implements AutoCloseable {
             case "session.find" -> find(command);
             case "session.rename" -> rename(command);
             case "session.thinking" -> thinking(command);
+            case "team.report" -> teamReport(command);
             case "settings.patch" -> patchSettings(command);
             case "permission.select" -> selectPermission(command);
             case "permission.prepareFullAccess" -> prepareFullAccess(command);

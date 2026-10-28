@@ -38,11 +38,17 @@ export class StatusView {
 		const identity = `${snapshot.workspace ?? ""}${snapshot.gitBranch ? ` (${snapshot.gitBranch})` : ""} · ${snapshot.title ?? ""}`;
 		const lines = [theme.style("dim", clipLine(singleLine(identity), width)),
 			theme.style("dim", clipLine(singleLine(line), Math.max(0, width)))];
-		if (snapshot.actors.length > 1 || snapshot.teamActive) {
-			const actors = snapshot.actors
-				.filter((actor) => actor.id !== "leader" || snapshot.teamActive)
-				.map((actor) => `${this.session.displayActor(actor.id) || actor.id}:${actor.state}`);
-			if (actors.length > 0) lines.push(theme.style("dim", clipLine(singleLine(actors.join(" · ")), Math.max(0, width))));
+		if (snapshot.teamActive) {
+			const members = this.session.team();
+			const leader = snapshot.actors.find((actor) => actor.id === "leader");
+			const state = leader?.state.startsWith("WAITING_") ? "Waiting" : leader?.state === "RUNNING" ? "Running" : "Idle";
+			const running = members.filter((m) => m.state === "RUNNING").length;
+			const pending = members.reduce((count, m) => count + m.pendingReports, 0);
+			const review = members.reduce((count, m) => count + m.toReview, 0);
+			const questions = members.reduce((count, m) => count + m.openQuestions, 0);
+			const summary = `Leader · ${state}    Team · ${running} running · ${pending} pending report${pending === 1 ? "" : "s"}`
+				+ (review ? ` · ${review} to review` : "") + (questions ? ` · ${questions} open question${questions === 1 ? "" : "s"}` : "") + "    /team";
+			lines.push(clipLine(theme.style(questions ? "warning" : "muted", summary), width));
 		}
 		const hints: string[] = [];
 		if (settings.mode === "fullscreen") hints.push("PgUp/PgDn scroll", "Ctrl+R search");

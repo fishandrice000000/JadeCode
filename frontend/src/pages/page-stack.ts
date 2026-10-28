@@ -22,6 +22,8 @@ export interface PageContext {
 	keymap: KeymapAdapter;
 	theme(): ResolvedTheme;
 	client(): BackendClient | null;
+	/** 显式读取当前 Team 的报告；只读，不触发模型或登记核对。 */
+	readTeamReport?(assignment: string): Promise<string>;
 	identity(): { sessionId: string; generation: string };
 	closePage(): void;
 	pushPage(page: Page): void;

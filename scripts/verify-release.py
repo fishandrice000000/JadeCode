@@ -58,8 +58,22 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
         requested = None
         if "JADE_VERIFY_MCP" in text and len(results) < 2:
             requested = ("connect_mcp", {"name": "fixture"}) if not results else ("mcp__fixture__echo", {"text": "MCP_ECHO_OK"})
-        if "JADE_VERIFY_TEAM" in text and len(results) < 2:
-            requested = ("spawn_teammate", {"role": "local verifier"}) if not results else ("list_teammates", {})
+        team_member = self.server.scenario in ("team", "team-headless") and "You are JadeCode teammate." in json.dumps(body.get("system", ""))
+        if team_member and body.get("tools") and not results:
+            # 让 Leader 确实进入等待；只延迟本地夹具，不调用真实服务。
+            time.sleep(.8)
+            assignment = re.search(r"assignment=(assignment_[a-z0-9-]+)", text).group(1)
+            requested = ("submit_task_result", {"assignment_id": assignment, "status": "completed",
+                         "summary": "TEAM_REPORT_EVIDENCE", "body": "TEAM_REPORT_BODY_READY\n" + "Verified source evidence.\n" * 256})
+        if "JADE_VERIFY_TEAM" in text and body.get("tools") and not team_member:
+            if not results:
+                requested = ("spawn_teammate", {"role": "Verifier\nInspect evidence and report findings in English."})
+            elif len(results) == 1:
+                requested = ("create_task", {"subject": "Verify Team delivery", "description": "Collect evidence."})
+            elif len(results) == 2:
+                requested = ("assign_task", {"agent_id": json.loads(results[0]["content"])["agent_id"],
+                             "task_id": json.loads(results[1]["content"])["id"], "summary": "Verify Team delivery",
+                             "body": "Submit a concise report.", "scope": {"read_paths": ["proof.txt"], "write_paths": []}})
         if "JADE_VERIFY_WORKFLOW" in text and body.get("tools") and len(results) < 2:
             # 第一轮运行固定文本流程，第二轮用真实返回的 run_id 恢复；不由夹具猜文件路径或调用缓存内部接口。
             workflow_args = {"name": "review-changes", "args": {"changes": "return 1;"}} if not results else {
@@ -85,6 +99,8 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
                 content = [{"type": "tool_use", "id": call_id, "name": requested[0], "input": requested[1]}]
         else:
             answer = "PARTIAL_LIMIT_TEXT" if self.server.scenario == "output-limit" and body.get("tools") else "JADE_VERIFY_DONE"
+            if self.server.scenario in ("team", "team-headless") and body.get("tools"):
+                answer = "Team member idle" if team_member else "JADE_VERIFY_DONE" if "TEAM_REPORT_EVIDENCE" in text else "Waiting for Team evidence"
             if not body.get("tools"):
                 if "You are an independent goal completion evaluator." in json.dumps(body.get("system", "")):
                     self.server.goal_judgments = getattr(self.server, "goal_judgments", 0) + 1
@@ -384,6 +400,14 @@ def verify(case, name):
             assert answer.returncode == 0 and answer.stdout.decode().strip() == "JADE_VERIFY_DONE"
         finally: hidden.rename(frontend)
         return {"exit": 0, "nodeOnPath": False, "frontendPresent": False, "helpVersionHeadless": True}
+    if name == "team-headless":
+        answer = subprocess.run([str(case.release / "jade"), "--headless", "--permission=workspace", "JADE_VERIFY_TEAM"],
+                                cwd=case.workspace, env=case.env, stdin=subprocess.DEVNULL, capture_output=True, timeout=20)
+        assert answer.returncode == 0, answer.stderr.decode("utf8", "replace")
+        assert answer.stdout.decode().strip() == "JADE_VERIFY_DONE", "headless returned before the required report or leaked intermediate replies"
+        records = list((case.home / ".jadecode").rglob("assignment_*.json"))
+        assert len(records) == 1 and json.loads(records[0].read_text())["finished"], "headless closed before result delivery"
+        return {"exit": 0, "requiredReportReceived": True, "stdout": "final answer only", "httpRequests": len(case.server.calls)}
     if name in ("headless", "headless-read-only", "headless-full-access", "headless-workspace", "headless-auto-review", "resume", "memory-delay"):
         profile = ["--permission=" + name.removeprefix("headless-")] if name.startswith("headless-") else []
         started = time.monotonic()
@@ -592,11 +616,24 @@ def verify(case, name):
         case.finish()
         return {"exit": 0, "truncationReported": True, "sessionContinues": True, "workflowOutputBudget": steps[0]["max_tokens"]}
     if name in ("mcp", "team"):
+        if name == "team": case.until("Leader · Waiting")
         case.until("JADE_VERIFY_DONE")
         results = [block for call in case.server.calls for msg in call.get("messages", [])
                    for block in msg.get("content", []) if isinstance(block, dict) and block.get("type") == "tool_result"]
         expected = "MCP_ECHO_OK" if name == "mcp" else "agent_"
         assert any(expected in json.dumps(block) for block in results), "domain result never reached the next SDK request"
+        if name == "team":
+            # 打开实际页面并读取完整报告；只有页面读取端口能显示正文中的唯一标记。
+            start = len(case.output); case.send("/team\r"); case.until("Up/Down select", start=start)
+            start = len(case.output); case.send("\r"); case.until("Assigned scope", start=start)
+            case.until("Press Enter to read", start=start)
+            start = len(case.output); case.send("\r"); case.until("TEAM_REPORT_BODY_READY", start=start)
+            case.send("\x1b"); case.drain(.1); case.send("\x1b"); case.drain(.1)
+            records = list((case.home / ".jadecode").rglob("assignment_*.json"))
+            assert len(records) == 1, "assignment record missing"
+            record = json.loads(records[0].read_text())
+            assert record["scope"] == {"readPaths": ["proof.txt"], "writePaths": []}
+            assert record["wait_for_completion"] and record["finished"], "required result was not completed"
         if name == "mcp":
             case.send("/mcp\r")
             case.until("fixture · connected")
@@ -765,7 +802,7 @@ def verify(case, name):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--release", type=Path, default=REPO / "dist/jadecode")
-    parser.add_argument("--scenario", action="append", choices=["model-config", "model-config-explicit", "java-only", "smoke", "input-routing", "commands", "regular", "regular-approval", "copy", "retry", "model-error", "output-limit", "headless", "headless-read-only", "headless-full-access", "headless-workspace", "headless-auto-review", "memory-delay", "mcp", "team", "workflow", "code-review", "workflow-limit", "goal", "goal-error", "goal-headless", "resume", "long-output", "approval-resize", "approval-small", "approval-mouse", "approval-suspend", "approval-deny", "full-access", "sighup", "sigint", "sigterm", "java-exit", "node-exit"])
+    parser.add_argument("--scenario", action="append", choices=["model-config", "model-config-explicit", "java-only", "smoke", "input-routing", "commands", "regular", "regular-approval", "copy", "retry", "model-error", "output-limit", "headless", "headless-read-only", "headless-full-access", "headless-workspace", "headless-auto-review", "memory-delay", "mcp", "team", "team-headless", "workflow", "code-review", "workflow-limit", "goal", "goal-error", "goal-headless", "resume", "long-output", "approval-resize", "approval-small", "approval-mouse", "approval-suspend", "approval-deny", "full-access", "sighup", "sigint", "sigterm", "java-exit", "node-exit"])
     parser.add_argument("--report", type=Path, default=REPO / "target/tui-release-verification.json")
     options = parser.parse_args()
     release = options.release.resolve()
@@ -788,7 +825,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="jade-release-verify-") as directory:
         root = Path(directory)
         shutil.copytree(release, root / "release", symlinks=True)
-        for name in options.scenario or ["model-config", "model-config-explicit", "java-only", "smoke", "input-routing", "commands", "regular", "regular-approval", "copy", "retry", "model-error", "output-limit", "headless", "headless-read-only", "headless-full-access", "headless-workspace", "headless-auto-review", "memory-delay", "mcp", "team", "workflow", "code-review", "workflow-limit", "goal", "goal-error", "goal-headless", "resume", "long-output", "approval-resize", "approval-small", "approval-mouse", "approval-suspend", "approval-deny", "full-access", "sighup", "sigint", "sigterm", "java-exit", "node-exit"]:
+        for name in options.scenario or ["model-config", "model-config-explicit", "java-only", "smoke", "input-routing", "commands", "regular", "regular-approval", "copy", "retry", "model-error", "output-limit", "headless", "headless-read-only", "headless-full-access", "headless-workspace", "headless-auto-review", "memory-delay", "mcp", "team", "team-headless", "workflow", "code-review", "workflow-limit", "goal", "goal-error", "goal-headless", "resume", "long-output", "approval-resize", "approval-small", "approval-mouse", "approval-suspend", "approval-deny", "full-access", "sighup", "sigint", "sigterm", "java-exit", "node-exit"]:
             case = Case(root, root / "release", shutil.which("node"), name)
             try:
                 result = {"name": name, "status": "pass", **verify(case, name)}

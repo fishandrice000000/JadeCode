@@ -575,11 +575,32 @@ REPL 退出会关闭会话而不是等待队列排空；非交互执行使用 `r
 [原 s12 指南](docs/notes/s12/cron-scheduler-review.md)保留重构前的学习记录。
 
 Team 使用 `spawn_teammate`、`assign_task`、`send_message`、`submit_task_result` 等工具，
-最多三个常驻队友；模型提供短摘要与长正文，`~/.jadecode/workspaces/<workspace-id>/teams/<team-id>/messages/` 保存正文，
-`pending/` 仅保存待投递记录。队友报告默认可以插入并唤起 Leader，普通进度默认不唤起。
-队友启用独立压缩与后台，不启用 Memory/cron；工具层弱隔离不是文件系统沙箱。
-请在存活的 REPL 中进行异步 Team 协作；`run` 在 Leader 本轮回复后退出，会关闭尚未结束的队友和命令。
-工程任务见 [s13 任务单](docs/jobs/s13/agent-teams.md)，学习入口见 [s13 阅读指南](docs/notes/s13/agent-teams-review.md)。
+最多三个常驻队友；新成员从空历史开始，后续沿用自己的历史，不 fork Leader。
+`spawn_teammate.role` 首行为 1–40 字符的英文显示名，后续行为职责，例如：
+
+```text
+Explorer
+Inspect source and report evidence.
+```
+
+`assign_task.wait_for_completion` 默认 true：Leader 可以先做其它工作，收尾前由会话等待本轮必要报告，
+报告到达后恢复模型；显式 false 才让该派工脱离本轮等待。交付失败、执行异常、关闭与缺少正式报告均明确通知，
+不把队友空闲当作完成。最多 32 项尚未收讫的必要派工，报告有独立接收槽。
+
+每次派工保存原执行编号、任务标题和独立 `scope` 快照；输入使用 `read_paths` / `write_paths` 字符串数组，
+缺省为空，路径相对工作区，总路径预算 4096 字符。范围随执行上下文传给子代理与后台命令，
+不反复修改 system；当前权限仍由既有 Gate 决定。后续派工不会覆盖历史记录或旧命令的范围。
+模型提供短摘要与长正文，`~/.jadecode/workspaces/<workspace-id>/teams/<team-id>/messages/` 保存正文，
+`pending/` 保存待投递记录。队友报告默认可以插入并唤起 Leader，普通进度默认不唤起。
+`send_message.reply_to` 关联原问题，成功投递后才算答复；`review_task_result` 记录 Leader 对具体报告的核对说明，
+不改变现有 completed 满足任务依赖的契约，也不表示自动证明工作正确。
+
+TUI `/team` 查看成员与派工详情，左右切换近期派工、Enter 显式读取完整报告、PgUp/PgDn 滚动；
+一行概览显示 `Waiting`、`Pending reports`、`To review` 与 `Open questions`。
+界面展示每个成员最近八项加当前执行派工；全部派工与范围仍留在磁盘，不承诺跨进程恢复执行。
+队友启用独立压缩与后台，不启用 Memory/cron；共享工作区的工具层隔离不是文件系统沙箱。
+交互与 `--headless` 都会等待本轮必要报告；退出会关闭队友及命令，显式脱离等待的工作也随之关闭。
+工程任务见 [s13 任务单](docs/jobs/s13/agent-teams.md)与[Team 协作扩展](docs/jobs/s13/team-coordination.md)，学习入口见 [s13 阅读指南](docs/notes/s13/agent-teams-review.md)。
 
 ## 用户运行数据
 
