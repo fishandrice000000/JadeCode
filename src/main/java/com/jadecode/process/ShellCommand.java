@@ -177,7 +177,8 @@ public final class ShellCommand implements AutoCloseable {
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
         } finally {
-            process.destroyForcibly();
+            // 已退出的父进程仍有待读取的管道缓冲；再次 destroy 会关流并丢失输出。
+            if (process.isAlive()) process.destroyForcibly();
         }
     }
 
