@@ -272,17 +272,20 @@ public final class JadeCodeFactory {
             TeamManager team = new TeamManager(paths, tasks, errors);
             team.observe(observer);
             var usage = new com.jadecode.session.SessionUsage(errors);
+            // CLI 共享容量/回收器；实际使用前不连接 daemon，不启动轮询。
+            var docker = settings.sandbox().enabled() ? new com.jadecode.sandbox.DockerRuntime(settings.sandbox(),
+                    paths.root().resolve("sandbox/cache"), errors) : null;
             if (!client.thinkingChoices().contains(settings.thinking()))
                 throw new IllegalArgumentException("config.thinking.effort is not adapted for the current endpoint or model");
             SessionRuntime leader = assemble(config, workspace, client,
                     text -> output.accept("[Leader] " + text), text -> errors.accept("[Leader] " + text),
                     presentation, team, TeamManager.LEADER, "Leader", streams, observer.scoped(TeamManager.LEADER), settings,
-                    usage, new java.util.concurrent.atomic.AtomicReference<>(settings.thinking()), permissions, paths);
+                    usage, new java.util.concurrent.atomic.AtomicReference<>(settings.thinking()), permissions, paths, docker);
             team.bind(leader, (id, role) -> assemble(config, workspace, client,
                     text -> output.accept("[Teammate " + id + "] " + text),
                     text -> errors.accept("[Teammate " + id + "] " + text),
                     presentation, team, id, role, () -> ResponseStream.NONE, observer.scoped(id), settings, usage,
-                    new java.util.concurrent.atomic.AtomicReference<>(leader.thinking()), permissions, paths));
+                    new java.util.concurrent.atomic.AtomicReference<>(leader.thinking()), permissions, paths, docker));
             leader.onClose(team::close);
             return leader;
         } catch (IOException failure) {
@@ -299,7 +302,8 @@ public final class JadeCodeFactory {
             Consumer<String> output, Consumer<String> errors, Presentation presentation,
             TeamManager team, String actor, String role, Supplier<ResponseStream> streams, ExecutionObserver observer,
             JadeSettings settings, com.jadecode.session.SessionUsage usage,
-            java.util.concurrent.atomic.AtomicReference<com.jadecode.llm.ThinkingSettings> thinking, PermissionState permissions, com.jadecode.config.WorkspacePaths workspacePaths) {
+            java.util.concurrent.atomic.AtomicReference<com.jadecode.llm.ThinkingSettings> thinking, PermissionState permissions,
+            com.jadecode.config.WorkspacePaths workspacePaths, com.jadecode.sandbox.DockerRuntime docker) {
         boolean isLeader = actor.equals(TeamManager.LEADER);
         // 每个常驻 Agent 先绑定自己的路由；下方所有用途都包装它，不能有辅助请求绕过会话身份。
         // 共享的是参数/传输，身份只归本次 assemble；CLI 恢复日志前还不会发请求。
@@ -310,9 +314,14 @@ public final class JadeCodeFactory {
         int formalMaxTokens = client.metadata().formalOutputBudget(config.maxTokens());
         PathResolver resolver = new PathResolver(cwd);
         // 审批独立请求只读任务说明和待执行操作；不借用主循环，也不执行工具。
-        PermissionGate gate = new PermissionGate(resolver, permissions,
-                new ApprovalCoordinator(new ModelApprovalReviewer(tracked(client, config.model(), actor,
-                        com.jadecode.llm.UsageRecord.Purpose.APPROVAL, usage, null))), actor);
+        var approvalCoordinator = new ApprovalCoordinator(new ModelApprovalReviewer(tracked(client, config.model(), actor,
+                com.jadecode.llm.UsageRecord.Purpose.APPROVAL, usage, null)));
+        PermissionGate gate = new PermissionGate(resolver, permissions, approvalCoordinator, actor);
+        gate.sandboxed(docker != null);
+        var sandbox = docker == null ? null : new com.jadecode.sandbox.SandboxSession(actor, cwd,
+                workspacePaths.jade().root(), permissions, gate, approvalCoordinator, docker);
+        var childSandbox = docker == null ? null : new com.jadecode.sandbox.SandboxSession(actor + "/subagent", cwd,
+                workspacePaths.jade().root(), permissions, gate, approvalCoordinator, docker);
         gate.runtimeData(workspacePaths);
         TodoManager manager = new TodoManager();
 
@@ -354,13 +363,15 @@ public final class JadeCodeFactory {
         // 不含 todo_write(聚焦子任务无需计划表)、也不含 load_skill:子代理不能自己加载技能,
         // 父代理已经加载过的技能正文<b>不会</b>自动进入子代理的 messages(历史隔离)。
         // 若子任务确实需要某段说明,由父代理在委派 prompt 里显式带上——这不是本轮新增的传递机制。
-        Map<String, Tool> subTools = Map.of(
-                BASH_TOOL, new BashTool(cwd),
+        Map<String, Tool> subTools = new LinkedHashMap<>(Map.of(
+                BASH_TOOL, childSandbox == null ? new BashTool(cwd) : new BashTool(cwd, childSandbox.shellRunner()),
                 READ_FILE_TOOL, new ReadFileTool(resolver),
                 WRITE_FILE_TOOL, new WriteFileTool(resolver),
                 EDIT_FILE_TOOL, new EditFileTool(resolver),
                 GLOB_TOOL, new GlobTool(resolver),
-                COMPACT_TOOL, new CompactTool());
+                COMPACT_TOOL, new CompactTool()));
+        if (childSandbox != null) for (String name : List.of(BASH_TOOL, READ_FILE_TOOL, WRITE_FILE_TOOL, EDIT_FILE_TOOL, GLOB_TOOL))
+            subTools.put(name, childSandbox.wrap(subTools.get(name)));
 
         // 子代理正式请求单独归类；摘要仍由拥有共享压缩器的 Agent 记账，不能漏记或重复记。
         // 它能自己整理、自己响应超限，但使用的仍是子任务自己的历史。
@@ -369,12 +380,14 @@ public final class JadeCodeFactory {
                 formalMaxTokens, hooks, compactor);
         subagentRuntime.observe(observer);
         subagentRuntime.thinking(thinking::get);
+        if (childSandbox != null) subagentRuntime.sandboxCleanup(childSandbox::endScope);
 
         // 原有工具加上六个持久任务工具后超过 Map.of 的十项上限，先用可修改的表逐个添加。
         // 最终 copyOf 后才注册 hooks，运行期不开放修改分发表；子代理表不加入这六把工具。
         // 后台结果只归父会话消费，不能与子代理共用队列；子表仍是同步 bash。
         // 管理器构造无 IO/线程副作用，退出由 SessionRuntime.close 负责。
-        BackgroundManager background = new BackgroundManager(cwd);
+        BackgroundManager background = sandbox == null ? new BackgroundManager(cwd)
+                : new BackgroundManager(cwd, 120, sandbox.shellRunner());
         background.observe(observer);
         Map<String, Tool> registered = new LinkedHashMap<>(Map.of(
                 BASH_TOOL, new BashTool(background),
@@ -386,6 +399,8 @@ public final class JadeCodeFactory {
                 TASK_TOOL, new SubagentTool(subagentRuntime),
                 LOAD_SKILL_TOOL, new LoadSkillTool(skillLoader),
                 COMPACT_TOOL, new CompactTool()));
+        if (sandbox != null) for (String name : List.of(BASH_TOOL, READ_FILE_TOOL, WRITE_FILE_TOOL, EDIT_FILE_TOOL, GLOB_TOOL))
+            registered.put(name, sandbox.wrap(registered.get(name)));
         if (memory != null) registered.put("memory_note", new com.jadecode.tools.MemoryNoteTool(memory));
         for (Tool tool : TaskTools.forStore(tasks, isLeader ? "agent" : actor)) {
             if (isLeader || tool.name().equals("get_task") || tool.name().equals("list_tasks")) {
@@ -416,7 +431,7 @@ public final class JadeCodeFactory {
                         progress.event() + ": " + progress.label(), progress.status())));
         registered.put("Workflow", new com.jadecode.tools.WorkflowTool(workflows));
         // 每份 Session 独立持有连接；构造不启动进程，模型明确 connect 后才发现外部工具。
-        var mcp = new com.jadecode.mcp.McpManager(settings.mcp().servers(), cwd, errors);
+        var mcp = new com.jadecode.mcp.McpManager(settings.mcp().servers(), cwd, errors, docker, actor, permissions);
         if (!mcp.availableServers().isEmpty()) registered.put("connect_mcp", new com.jadecode.tools.ConnectMcpTool(mcp));
         var tools = new com.jadecode.tools.ToolCatalog(registered,
                 () -> mcp.tools().stream().map(d -> new com.jadecode.tools.McpTool(mcp, d).entry()).toList());
@@ -450,6 +465,9 @@ public final class JadeCodeFactory {
                 com.jadecode.execution.ExecutionNotice.Kind.SESSION, "", role, config.model(), "IDLE"));
         // 所有权在这里交给 session；CLI 不再另外关闭 engine/background/cron。
         SessionRuntime runtime = new SessionRuntime(engine, memory, background, cron, output, errors);
+        // 后登记的依赖先关闭：MCP 先结束 stdio，再清理身份容器，最后释放 CLI 共享后端。
+        if (docker != null && isLeader) runtime.onClose(docker::close);
+        if (sandbox != null) runtime.onClose(() -> docker.endActor(actor));
         runtime.modelRequests(sessionClient, config.backendIdentity());
         // 只读服务快照：MCP 页面不会触发连接/认证，也不会把配置中的命令/凭据暴露给 UI。
         runtime.services(mcp::snapshot);
@@ -458,6 +476,9 @@ public final class JadeCodeFactory {
                 "Skills", skillLoader.names()));
         runtime.onClose(mcp::close);
         runtime.onClose(workflows::close);
+        if (sandbox != null) {
+            runtime.onTaskEnd(sandbox::endTask); runtime.onTaskEnd(childSandbox::endTask);
+        }
         runtime.permissions(permissions);
         runtime.historyState(manager, config.model(), isLeader ? team::hasLiveMembers : () -> false);
         runtime.telemetry(usage, isLeader, formalClient, thinking);

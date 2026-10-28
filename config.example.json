@@ -1,5 +1,16 @@
 {
   "version": 1,
+  "sandbox": {
+    "enabled": true,
+    "image": "jadecode-sandbox:1",
+    "memoryMiB": 2048,
+    "cpus": 2,
+    "pids": 256,
+    "tmpMiB": 256,
+    "idleSeconds": 600,
+    "maxIdle": 2,
+    "maxContainers": 8
+  },
   "tui": {
     "theme": "dark",
     "thinkingVisible": true,

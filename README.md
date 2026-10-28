@@ -215,6 +215,10 @@ TUI 输入 `/model` 只显示当前模型、思考强度和已知的窗口／输
 s14 使用官方 Java MCP SDK 接入独立 stdio 服务。Fetch 是现成的 Python 服务，
 负责读取公开网页并转换为 Markdown；MCP 服务本身不按调用收费，模型读取正文仍消耗 token。
 
+Docker 沙箱启用时，Fetch 已随沙箱镜像安装，连接不使用宿主 Python venv。
+下面宿主安装步骤适用于显式关闭 Docker 接线的运行方式。自定义服务的 command/args
+需能在镜像或已挂载工作区中执行；`networkAccess` 控制该服务的网络，内置 Fetch 默认开启，其它服务默认关闭。
+
 先准备 Python 3.10+（含 venv），在 checkout 中执行：
 
 ```sh
@@ -440,10 +444,57 @@ kind 为 `TOOL/PATH/COMMAND`；工作区用绝对路径，空字符串表示用�
 deny → ask → 默认硬保护/强制人工 → allow → 档位普通策略，前者优先；权限规则字段、类型与编号严格检查。
 默认保护编号与配置示例见 [权限任务单](docs/jobs/s13/permissions.md)，学习见 [阅读指南](docs/notes/s13/permissions-review.md)。
 
-本轮没有 Linux 沙箱。shell 检查器只解释 `/bin/sh` 的有限语法，无法证明脚本/一般程序的真实副作用，
-被允许的程序仍以当前用户权限运行；Read Only 与 Workspace 是应用内审批策略，不是操作系统隔离保证。
+生产配置默认使用 Docker 运行时沙箱，安装和边界见下文。shell 检查器只解释 `/bin/sh` 的有限语法，
+审批不能证明一般程序的真实副作用；容器在执行时限制实际文件、网络和资源访问。
 这些档位检查模型调用的操作，不阻止日志、压缩归档和记忆等 Harness 自身的状态保存。
 配置写入有进程内互斥，不支持多 CLI 同时修改规则；外部手改在下次启动读取，运行中不热加载。
+
+### Docker 运行时沙箱
+
+首版支持非 root 用户使用本机 Linux Docker daemon（Unix socket、seccomp、cgroup 和递归只读挂载）。
+先在 checkout 中准备包含 Java 21/Maven、Node 24、Python、git、rg 和固定 Fetch 的镜像：
+
+```sh
+mvn -q package
+sh scripts/build-sandbox.sh
+```
+
+脚本只向构建器提供 JAR、Dockerfile、init.py 和 Fetch requirements，不上传整个项目。
+首次构建需要下载基础镜像和包；运行工具不会自动拉取或构建镜像。缺失镜像、daemon 不可用、
+协议不匹配或路径策略无法表达时返回明确错误，不自动改用宿主。镜像在首次使用时固定到本地 sha256 ID。
+
+`sandbox` 设置见 `config.example.json`：默认内存 2048 MiB、2 CPU、256 PID、256 MiB 临时目录，
+最多 8 个实例、保留 2 个闲置实例，空闲 600 秒后回收。限额是上限，不是启动预分配。
+普通 Workspace/Approve for Me 使用相同工作区边界；Read Only 将工作区挂为只读。
+Full Access 明确选择宿主文件/Shell 执行；`sandbox.enabled=false` 显式关闭整套 Docker 接线。
+MCP 始终使用独立的只读工作目录服务容器；权限版本变化时关闭旧连接，重新连接后采用新视图。
+显式 READ deny/ask 对服务保守遮蔽，不能通过 RPC 临时解除；WRITE 由整目录只读保证。
+
+容器使用非 root UID、只读系统根、cap-drop/no-new-privileges/seccomp，默认断网。
+工作区以原绝对路径挂载，模型命令无需字符串替换。已有敏感文件/目录被遮蔽，Git/Agent/编辑器元数据
+扣回只读；宿主 socket/FIFO/设备入口被遮蔽。额外访问需要授权；目录级允许不自动开放其中的敏感入口。
+读写工具与 Shell 使用同一可见视图；`glob` 可传 `root` 搜索已授权的外部目录。
+
+外部目录在任务目标中明确出现，或同一仓库第二个不同文件被读取时，由 Harness 主动提出任务级只读申请。
+批准后逐文件调用复用同一任务环境；额外挂载绑定 run/actor，纯工作区基线可在同一会话跨任务复用。
+挂载、网络、保护路径或读写策略变化时使用另一环境。
+额外文件、临时写入和联网使用独立的调用级实例。`bash` 可通过 `access_paths=[{"path":"绝对路径","write":false}]`
+声明脚本需要的资源，通过 `network_access=true` 请求本次联网。联网使用 Docker bridge，
+不是域名/私网白名单，也不会提供模型 Key、宿主 HOME 或凭据。当前任务授权在内存中保存，恢复历史不恢复授权。
+
+镜像层与 `~/.jadecode/workspaces/<项目标识>/sandbox/cache/` 分别保留工具链和项目缓存。
+Maven 使用镜像中的全局 toolchains.xml，不读取宿主 settings.xml；Harness 不向模型可写缓存内写配置。
+修改工作区和缓存不会因删除容器而回滚。
+后台命令单独持有容器，等待结果时文件操作仍可运行；活跃执行和 MCP 服务不按空闲淘汰。
+任务结束关闭新入口，已接收的后台操作保留原执行租约至结束；会话关闭主动终止。
+超时或输出不完整时销毁所属实例，不自动重放。启动时仅回收同 UID 且确认原进程已结束的 JadeCode 孤儿实例。
+
+限制：不抵抗同权限宿主进程恶意并发替换挂载源，不支持硬链接工作区、逗号/换行挂载路径、整个 HOME/顶层系统目录
+或工作区与 Harness 数据目录重叠。显式保护目标不存在或跨符号链接、祖先保护不能精确表达时拒绝执行。
+默认敏感入口保护基于每次执行前的目录视图，不能保证阻止当前命令新建所有同名配置；
+项目本身可写，也不能据此承诺防止损坏项目源码或后续在宿主执行被修改代码的风险。
+日志与 tmpfs 有界，工作区/持久缓存尚无磁盘硬配额；缓存保留供复用，需要单独维护，不随容器回收删除。
+容器也不是多租户虚拟机安全边界。任务与验证证据见 [s18 工程任务单](docs/jobs/s18/runtime-sandbox.md)。
 
 ### 会话保存与恢复
 
@@ -539,7 +590,7 @@ system 只保留稳定参考边界，路由作为带内部来源的参考消息�
 读取反馈来自成功的后端 `read_file`；引用需匹配本轮已读路径，表示模型声明引用，不证明内容正确。
 反馈独立追加并按事件 ID 去重，在下一次材料变化的整理中汇总，不因每次读取重写全库。
 普通文件工具和可解析 Shell 的正式记忆写入被权限层拒绝，显式读 deny/ask 仍优先。
-任意程序和复杂 Shell 的文件访问尚无操作系统隔离；这部分依赖后续沙箱工作。
+Docker 模式下任意程序和复杂 Shell 同样受挂载边界约束；显式宿主执行路径仍只有应用内检查。
 来源保留日期、任务结果和哈希，提示后续核对易变事实；目前没有按年龄自动淘汰记忆的定时器。
 
 后台维护使用跨进程锁，一轮最多提取两项；失败按 1/2/3 分钟退避，单项最多尝试三次。
@@ -587,8 +638,9 @@ Background Tasks 沿用 `bash`：`run_in_background` 省略或 false 仍同步�
 完成通知不复用原 tool_use_id，也不会改 s10 状态。退出 CLI 会终止本会话全部命令，包括脱离任务的命令。
 默认每条命令 120 秒，最多 32 个运行中或尚未确认接收结果的后台命令；通知只保留最多 500 字符摘要并标注截断，
 没有完整输出文件，需要可靠产物时由命令显式写入工作区。
-当前 shell 生命周期实现面向 Linux，依赖 `/usr/bin/setsid` 与 `/bin/kill`；进程组清理不是沙箱，
-自行另开 session 的程序、SIGKILL 与断电不在保证范围内。课程阅读见 [s11 指南](docs/notes/s11/background-tasks-review.md)。
+宿主 shell 生命周期面向 Linux，依赖 `/usr/bin/setsid` 与 `/bin/kill`，单独的进程组清理不能约束另开 session 的程序。
+Docker 模式另有容器内进程收尾与容器删除；宿主强杀/断电后的残留在下次启动核对归属后回收，
+不承诺立即清理。课程阅读见 [s11 指南](docs/notes/s11/background-tasks-review.md)。
 
 Cron Scheduler 提供 `schedule_cron`、`list_crons`、`cancel_cron`，仅 Leader 开放，原一次性子代理仍六把工具。
 五段 cron 使用进程本地时间；支持星号、星号步进、数值、区间与列表，星期日为 0，日与星期都受限时取 OR。
@@ -631,7 +683,8 @@ Inspect source and report evidence.
 TUI `/team` 查看成员与派工详情，左右切换近期派工、Enter 显式读取完整报告、PgUp/PgDn 滚动；
 一行概览显示 `Waiting`、`Pending reports`、`To review` 与 `Open questions`。
 界面展示每个成员最近八项加当前执行派工；全部派工与范围仍留在磁盘，不承诺跨进程恢复执行。
-队友启用独立压缩与后台，不启用 Memory/cron；共享工作区的工具层隔离不是文件系统沙箱。
+队友启用独立压缩与后台，不启用 Memory/cron；Docker 模式下各身份的授权容器共享工作区，
+派工文件范围仍是协作约定，不提供队友之间的独立 worktree 或目录写隔离。
 交互与 `--headless` 都会等待本轮必要报告；退出会关闭队友及命令，显式脱离等待的工作也随之关闭。
 工程任务见 [s13 任务单](docs/jobs/s13/agent-teams.md)与[Team 协作扩展](docs/jobs/s13/team-coordination.md)，学习入口见 [s13 阅读指南](docs/notes/s13/agent-teams-review.md)。
 真实模型的单项与连续三阶段结果见[黑马点评探索评测](docs/jobs/s13/hmdp-multi-agent-benchmark.md)。
@@ -666,6 +719,6 @@ JadeCode 的持久数据统一位于用户目录：
 旧文件保持原样；新数据的正常跨会话恢复与事务失败恢复继续有效。
 模型默认只能读取当前项目的归档、工具结果、邮件正文及 Workflow 最终输出，
 显式 deny/ask 规则优先；状态文件通过 Harness 工具写入，通用文件命令不能改写运行分区。
-应用权限检查不是操作系统沙箱，任意程序内部访问仍由后续沙箱工作处理。
+应用权限检查与 Docker 边界共同生效；显式宿主执行路径仍不能限制任意程序的内部访问。
 测试统一注入临时 `JadePaths`，不修改 user.home、不访问真实用户状态。
 源码阅读见 [用户数据布局阅读指南](docs/notes/s15/global-runtime-storage-review.md)。

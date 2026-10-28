@@ -11,7 +11,15 @@ import java.util.Map;
  */
 public record JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimits limits, Memory memory, Models modelMetadata,
         com.jadecode.llm.ThinkingSettings thinking, Permissions permissions, Mcp mcp,
-        com.jadecode.context.ProductionCompactionSettings contextCompaction) {
+        com.jadecode.context.ProductionCompactionSettings contextCompaction,
+        com.jadecode.sandbox.SandboxSettings sandbox) {
+    /** 旧的显式离线装配不访问 Docker；正式配置解析会显式传入 sandbox。 */
+    public JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimits limits, Memory memory, Models models,
+            com.jadecode.llm.ThinkingSettings thinking, Permissions permissions, Mcp mcp,
+            com.jadecode.context.ProductionCompactionSettings contextCompaction) {
+        this(tui, compaction, limits, memory, models, thinking, permissions, mcp, contextCompaction,
+                com.jadecode.sandbox.SandboxSettings.offline());
+    }
     /** 兼容显式离线装配，旧字符阈值不被解释成生产 Token 预算。 */
     public JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimits limits, Memory memory, Models models,
             com.jadecode.llm.ThinkingSettings thinking, Permissions permissions, Mcp mcp) {
@@ -36,6 +44,7 @@ public record JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimit
         java.util.Objects.requireNonNull(thinking, "thinking"); java.util.Objects.requireNonNull(permissions, "permissions");
         java.util.Objects.requireNonNull(mcp, "mcp");
         java.util.Objects.requireNonNull(contextCompaction, "contextCompaction");
+        java.util.Objects.requireNonNull(sandbox, "sandbox");
     }
 
     /** 非秘密服务配置；显式空表关闭所有 MCP 入口，不影响普通工具或 Java 构建。 */
@@ -55,7 +64,7 @@ public record JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimit
         public static Mcp defaults() {
             return new Mcp(Map.of("fetch", new com.jadecode.mcp.McpServerConfig(true,
                     JadePaths.defaults().fetchEnvironment().resolve("bin/python").toString(), java.util.List.of("-m", "mcp_server_fetch"), "",
-                    15, 30, 20_000, java.util.Set.of("fetch"))));
+                    15, 30, 20_000, java.util.Set.of("fetch"), true)));
         }
     }
     /** 启动默认与长期规则；不能在模型参数中伪造这份配置。 */
@@ -154,7 +163,7 @@ public record JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimit
         }
     }
 
-    /** 无配置文件或某项未填写时使用；离线装配也从此处取得与机器无关的默认值。 */
+    /** 程序化离线装配的默认值；正式配置解析为 sandbox 单独采用启用的生产默认。 */
     public static JadeSettings defaults() {
         return new JadeSettings(new Tui("system", true, false, true), CompactionPolicy.defaults(), CompactionLimits.defaults());
     }

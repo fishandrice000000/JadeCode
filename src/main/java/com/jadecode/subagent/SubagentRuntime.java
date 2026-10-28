@@ -183,15 +183,25 @@ public class SubagentRuntime {
      * @throws NullPointerException context 为 null
      */
     public String run(String prompt, ExecutionContext context) throws LlmException {
+        java.util.Objects.requireNonNull(context, "executionContext");
         com.jadecode.llm.ThinkingSettings taskThinking = thinking.get();
         displayId.set(java.util.UUID.randomUUID().toString().substring(0, 8));
         display(com.jadecode.execution.ExecutionNotice.event(com.jadecode.execution.ExecutionNotice.Kind.SESSION, "", "", "", "RUNNING"));
-        try { return runObserved(prompt, context, taskThinking); }
+        // 显示短编号不承担权限唯一性；隔离编号使用完整 UUID，且不改变父任务来源。
+        ExecutionContext scoped = context.withActorScope(java.util.UUID.randomUUID().toString());
+        try { return runObserved(prompt, scoped, taskThinking); }
         finally {
-            display(com.jadecode.execution.ExecutionNotice.event(com.jadecode.execution.ExecutionNotice.Kind.SESSION, "", "", "", "CLOSED"));
-            displayId.remove();
+            try { sandboxCleanup.accept(scoped); }
+            finally {
+                display(com.jadecode.execution.ExecutionNotice.event(com.jadecode.execution.ExecutionNotice.Kind.SESSION, "", "", "", "CLOSED"));
+                displayId.remove();
+            }
         }
     }
+
+    private java.util.function.Consumer<ExecutionContext> sandboxCleanup = ignored -> { };
+    /** 每次委派结束撤销它自己的目录授权，同一父任务的下一位子代理不能继承。 */
+    public void sandboxCleanup(java.util.function.Consumer<ExecutionContext> cleanup) { sandboxCleanup = java.util.Objects.requireNonNull(cleanup); }
 
     /** 原子代理主流程；外层只负责显示身份与 finally 收尾，不干涉运行异常。 */
     private String runObserved(String prompt, ExecutionContext context, com.jadecode.llm.ThinkingSettings taskThinking) throws LlmException {

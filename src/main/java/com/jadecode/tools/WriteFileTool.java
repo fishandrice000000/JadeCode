@@ -67,9 +67,13 @@ public class WriteFileTool implements Tool {
      */
     @Override
     public String execute(ObjectNode input) {
+        return executeOutcome(input, null).content();
+    }
+    /** 保存实际 IO 状态，宿主与容器使用同一份实现。 */
+    @Override public ToolOutcome executeOutcome(ObjectNode input, com.jadecode.execution.ExecutionContext context) {
         for (String key : required()) {
             if (input.get(key) == null) {
-                return "Error: Missing required parameter: " + key;
+                return new ToolOutcome("Error: Missing required parameter: " + key, true);
             }
         }
 
@@ -79,10 +83,10 @@ public class WriteFileTool implements Tool {
     /**
      * 建父目录并写文件;空路径直接拒绝,IO 失败(如无权限)回 "Error: ..."。
      */
-    private String run(String path, String content) {
+    private ToolOutcome run(String path, String content) {
         // 1.1 检查路径是否为空
         if (path == null || path.isBlank()) {
-            return "Error: Path is empty or missing";
+            return new ToolOutcome("Error: Path is empty or missing", true);
         }
 
         // 1.2 解析路径(词法 + 逐段符号链接);是否越界由闸门裁决
@@ -93,11 +97,11 @@ public class WriteFileTool implements Tool {
             Files.createDirectories(p.getParent());
             Files.writeString(p, content);
         } catch (IOException e) {
-            return "Error: " + e.getMessage();
+            return new ToolOutcome("Error: " + e.getMessage(), true);
         }
 
         // 3. 返回内容
-        return "Wrote " + content.getBytes(StandardCharsets.UTF_8).length + " bytes to " + path;
+        return new ToolOutcome("Wrote " + content.getBytes(StandardCharsets.UTF_8).length + " bytes to " + path, false);
     }
 
 }

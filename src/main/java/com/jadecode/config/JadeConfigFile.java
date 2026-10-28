@@ -157,6 +157,7 @@ public final class JadeConfigFile implements com.jadecode.safety.rules.Permissio
         root.set("memory", Json.mapper().valueToTree(defaults.memory()));
         root.set("modelMetadata", Json.mapper().valueToTree(defaults.modelMetadata()));
         root.set("mcp", Json.mapper().valueToTree(defaults.mcp()));
+        root.set("sandbox", Json.mapper().valueToTree(com.jadecode.sandbox.SandboxSettings.defaults()));
         ObjectNode permissions = root.putObject("permissions");
         permissions.put("defaultProfile", defaults.permissions().defaultProfile().value());
         permissions.putArray("rules"); permissions.putArray("disabledDefaults");
@@ -259,7 +260,24 @@ public final class JadeConfigFile implements com.jadecode.safety.rules.Permissio
                 number(c, "summaryMaxOutputTokens", defaults.summaryMaxOutputTokens(), 1, "config.compaction"), summaryInput,
                 number(c, "largeResultCharLimit", defaults.largeResultCharLimit(), 1, "config.compaction"),
                 number(c, "largeResultPreviewChars", defaults.largeResultPreviewChars(), 0, "config.compaction"));
-        return new JadeSettings(tui, policy, limits, memorySettings, discovery, thinking, permissions(root), mcp(root), production);
+        return new JadeSettings(tui, policy, limits, memorySettings, discovery, thinking, permissions(root), mcp(root), production, sandbox(root));
+    }
+
+    /** 严格解析沙箱设置；生产缺省启用，非法字段不能让限制静默失效。 */
+    private static com.jadecode.sandbox.SandboxSettings sandbox(ObjectNode root) throws IOException {
+        ObjectNode s = section(root, "sandbox");
+        var d = com.jadecode.sandbox.SandboxSettings.defaults();
+        var known = java.util.Set.of("enabled", "image", "memoryMiB", "cpus", "pids", "tmpMiB", "idleSeconds", "maxIdle", "maxContainers");
+        for (String key : java.util.stream.StreamSupport.stream(((Iterable<String>) s::fieldNames).spliterator(), false).toList())
+            if (!known.contains(key)) throw new IOException("Unknown config.sandbox field: " + key);
+        try {
+            return new com.jadecode.sandbox.SandboxSettings(bool(s, "enabled", d.enabled(), "config.sandbox"),
+                    s.has("image") ? string(s, "image", "config.sandbox.image") : d.image(),
+                    number(s, "memoryMiB", d.memoryMiB(), 128, "config.sandbox"),
+                    number(s, "cpus", d.cpus(), 1, "config.sandbox"), number(s, "pids", d.pids(), 32, "config.sandbox"),
+                    number(s, "tmpMiB", d.tmpMiB(), 16, "config.sandbox"), number(s, "idleSeconds", d.idleSeconds(), 1, "config.sandbox"),
+                    number(s, "maxIdle", d.maxIdle(), 0, "config.sandbox"), number(s, "maxContainers", d.maxContainers(), 1, "config.sandbox"));
+        } catch (IllegalArgumentException invalid) { throw new IOException("Invalid config.sandbox: " + invalid.getMessage(), invalid); }
     }
 
     /**
@@ -302,7 +320,7 @@ public final class JadeConfigFile implements com.jadecode.safety.rules.Permissio
             for (var property : value.properties()) {
                 String key = property.getKey();
                 if (!java.util.Set.of("enabled", "command", "args", "cwd", "startupTimeoutSeconds", "callTimeoutSeconds",
-                        "maxResultChars", "readOnlyTools").contains(key)) throw new IOException("config.mcp.servers contains an unsupported field");
+                        "maxResultChars", "readOnlyTools", "networkAccess").contains(key)) throw new IOException("config.mcp.servers contains an unsupported field");
             }
             if (!value.path("command").isTextual() || value.has("cwd") && !value.path("cwd").isTextual())
                 throw new IOException("config.mcp command/cwd must be strings");
@@ -312,7 +330,8 @@ public final class JadeConfigFile implements com.jadecode.safety.rules.Permissio
                         number(value, "startupTimeoutSeconds", 15, 1, "config.mcp"),
                         number(value, "callTimeoutSeconds", 30, 1, "config.mcp"),
                         number(value, "maxResultChars", 20_000, 1, "config.mcp"),
-                        new java.util.LinkedHashSet<>(mcpStrings(value, "readOnlyTools"))));
+                        new java.util.LinkedHashSet<>(mcpStrings(value, "readOnlyTools")),
+                        bool(value, "networkAccess", mcpStrings(value, "args").equals(java.util.List.of("-m", "mcp_server_fetch")), "config.mcp")));
             } catch (IllegalArgumentException invalid) { throw new IOException("Invalid config.mcp server arguments or range", invalid); }
         }
         try { return new JadeSettings.Mcp(servers); }

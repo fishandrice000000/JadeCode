@@ -14,9 +14,15 @@ import java.util.Set;
  * @param callTimeoutSeconds 一次工具调用等待上限
  * @param maxResultChars 进入模型的结果正文上限，单位为 Java 字符
  * @param readOnlyTools 宿主声明的原始只读工具名；不读取服务 annotations 授权
+ * @param networkAccess 是否允许该服务独立容器使用 bridge 网络；不授权普通 Shell，也不提供凭据
  */
 public record McpServerConfig(boolean enabled, String command, List<String> args, String cwd,
-        int startupTimeoutSeconds, int callTimeoutSeconds, int maxResultChars, Set<String> readOnlyTools) {
+        int startupTimeoutSeconds, int callTimeoutSeconds, int maxResultChars, Set<String> readOnlyTools, boolean networkAccess) {
+    /** 旧自定义服务不默认取得网络；显式配置或内置 Fetch 才开放对应服务的联网。 */
+    public McpServerConfig(boolean enabled, String command, List<String> args, String cwd,
+            int startupTimeoutSeconds, int callTimeoutSeconds, int maxResultChars, Set<String> readOnlyTools) {
+        this(enabled, command, args, cwd, startupTimeoutSeconds, callTimeoutSeconds, maxResultChars, readOnlyTools, false);
+    }
     /** 复制集合、检查边界；错误只指出字段，不回显可能包含敏感值的启动参数。 */
     public McpServerConfig {
         if (command == null || command.isBlank() || command.indexOf('\0') >= 0)

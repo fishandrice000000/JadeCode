@@ -73,9 +73,15 @@ public final class BackgroundManager implements AutoCloseable {
      * @throws IllegalArgumentException 超时不是正数
      */
     public BackgroundManager(Path cwd, long timeoutSeconds) {
+        this(cwd, timeoutSeconds, null);
+    }
+    private final ShellCommand.Runner runner;
+    /** 每个后台任务沿用同一受限后端，但拥有自己的执行实例和取消责任。 */
+    public BackgroundManager(Path cwd, long timeoutSeconds, ShellCommand.Runner runner) {
         this.cwd = cwd;
         this.timeoutSeconds = timeoutSeconds;
-        foreground = new ShellCommand(cwd, timeoutSeconds);
+        this.runner = runner;
+        foreground = new ShellCommand(cwd, timeoutSeconds, runner);
     }
 
     /**
@@ -133,7 +139,7 @@ public final class BackgroundManager implements AutoCloseable {
             throw new IllegalStateException(closed ? "Background session is closed" : "Too many pending background tasks");
         }
         String id = "bg_%04d".formatted(++counter);
-        Job job = new Job(id, context.id(), required, command, new ShellCommand(cwd, timeoutSeconds),
+        Job job = new Job(id, context.id(), required, command, new ShellCommand(cwd, timeoutSeconds, runner),
                 allowInsertion, wakeWhenIdle, context);
         // 先存 Job 再开线程，免得命令很快跑完或用户同时退出时，管理器里还找不到它。
         jobs.put(id, job);
@@ -157,6 +163,8 @@ public final class BackgroundManager implements AutoCloseable {
     public String runForeground(String command) { return runForeground(command, null); }
     /** 同步命令也把当前派工快照交给进程入口，不通过可变的成员全局状态读取范围。 */
     public String runForeground(String command, ExecutionContext context) { return foreground.run(command, context).text(); }
+    /** 保留真实退出状态供 ToolOutcome 使用，不能把以 Error 开头的正常 stdout 猜成失败。 */
+    public ShellCommand.Result runForegroundResult(String command, ExecutionContext context) { return foreground.run(command, context); }
 
     /**
      * 后台线程实际执行命令，收集输出后把结果放进 ready。

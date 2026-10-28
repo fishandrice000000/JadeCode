@@ -38,10 +38,14 @@ public final class DefaultPermissionRules {
     }
     /** 普通风险可以由精确用户 allow 消除；不确定并不意味着一定有害。 */
     public PermissionDecision ordinary(Analysis a, PermissionState.Snapshot state) {
+        return ordinary(a, state, false);
+    }
+    /** 沙箱已接线时，普通越界由具体资源范围审批负责，不重复弹两份相同申请。 */
+    public PermissionDecision ordinary(Analysis a, PermissionState.Snapshot state, boolean deferOutside) {
         if (state.profile() != PermissionProfile.FULL_ACCESS && enabled(state, "builtin.delete")
                 && a.resources().stream().anyMatch(r -> r.operation().equals("DELETE")))
             return PermissionDecision.ask("builtin.delete", "Deletion target requires confirmation: " + a.resources().stream().filter(r -> r.operation().equals("DELETE")).map(r -> r.path().toString()).toList(), false);
-        if (state.profile() != PermissionProfile.FULL_ACCESS && enabled(state, "builtin.outside")
+        if (!deferOutside && state.profile() != PermissionProfile.FULL_ACCESS && enabled(state, "builtin.outside")
                 && a.resources().stream().anyMatch(r -> !r.path().startsWith(a.cwd())))
             return PermissionDecision.ask("builtin.outside", "Accessing a specific target outside the workspace requires authorization", false);
         if (a.uncertain() && state.profile() != PermissionProfile.FULL_ACCESS && enabled(state, "builtin.complex-shell"))

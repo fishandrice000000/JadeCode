@@ -17,10 +17,25 @@ public final class McpManager implements AutoCloseable {
     private final Consumer<String> diagnostics;
     private final Map<String, McpConnection> connections = new LinkedHashMap<>();
     private final Map<String, List<McpToolDescriptor>> discovered = new LinkedHashMap<>();
+    private final Set<String> connecting = new HashSet<>();
     private boolean closed;
+    private final com.jadecode.sandbox.DockerRuntime sandbox;
+    private final String actor;
+    private final com.jadecode.safety.PermissionState permissions;
+    private final AutoCloseable permissionListener;
 
     /** 保存可信配置快照；不读取 HOME、环境凭据或启动进程。 */
     public McpManager(Map<String, McpServerConfig> configurations, Path workspace, Consumer<String> diagnostics) {
+        this(configurations, workspace, diagnostics, null, "offline");
+    }
+    /** 正式装配传受限后端；构造仍不启动服务，不能通过服务配置绕回宿主进程。 */
+    public McpManager(Map<String, McpServerConfig> configurations, Path workspace, Consumer<String> diagnostics,
+            com.jadecode.sandbox.DockerRuntime sandbox, String actor) {
+        this(configurations, workspace, diagnostics, sandbox, actor, null);
+    }
+    /** 生产服务绑定共享权限；版本变化使旧服务退场，下一次连接重新编译只读视图。 */
+    public McpManager(Map<String, McpServerConfig> configurations, Path workspace, Consumer<String> diagnostics,
+            com.jadecode.sandbox.DockerRuntime sandbox, String actor, com.jadecode.safety.PermissionState permissions) {
         configurations.forEach((name, config) -> {
             if (name == null || name.isBlank()) throw new IllegalArgumentException("MCP server name cannot be empty");
             Objects.requireNonNull(config, "server config");
@@ -28,6 +43,8 @@ public final class McpManager implements AutoCloseable {
         this.configurations = Map.copyOf(configurations);
         this.workspace = workspace.toAbsolutePath().normalize();
         this.diagnostics = Objects.requireNonNull(diagnostics);
+        this.sandbox = sandbox; this.actor = actor; this.permissions = permissions;
+        permissionListener = sandbox != null && permissions != null ? permissions.onChange(this::invalidatePolicy) : null;
     }
 
     /** 返回已启用名称供 connect_mcp 的 schema 使用，不启动任何服务。 */
@@ -48,29 +65,67 @@ public final class McpManager implements AutoCloseable {
      * 这样 tools 层可以检查规范化冲突，mcp 包仍不反向依赖 ToolCatalog。
      */
     public List<McpToolDescriptor> connect(String name, Consumer<List<McpToolDescriptor>> validate) {
-        McpConnection candidate;
+        McpConnection candidate = null;
+        McpServerConfig configuration;
+        long revision = permissions == null ? 0 : permissions.snapshot().revision();
         synchronized (this) {
             if (closed) throw new IllegalStateException("MCP manager closed");
             McpServerConfig config = configurations.get(name);
             if (config == null || !config.enabled()) throw new IllegalArgumentException("MCP server is not configured or not enabled");
             if (discovered.containsKey(name)) return discovered.get(name);
-            if (connections.containsKey(name)) throw new IllegalStateException("MCP server is already connecting");
-            candidate = new McpConnection(name, config, workspace, diagnostics);
-            connections.put(name, candidate);
+            if (connections.containsKey(name) || !connecting.add(name)) throw new IllegalStateException("MCP server is already connecting");
+            configuration = config;
         }
         try {
+            // 准备 Docker 容器可能阻塞；不持有 manager 锁，关闭仍可立即登记并拒绝迟到结果。
+            candidate = new McpConnection(name, configuration, workspace, diagnostics, sandbox, actor, serviceRestrictions(configuration));
+            synchronized (this) {
+                if (closed || permissions != null && permissions.snapshot().revision() != revision)
+                    throw new IllegalStateException("MCP manager closed or permissions changed while preparing the server");
+                connections.put(name, candidate);
+            }
             List<McpToolDescriptor> found = candidate.connect();
             synchronized (this) {
-                if (closed || connections.get(name) != candidate) throw new IllegalStateException("MCP manager closed");
+                if (closed || connections.get(name) != candidate || permissions != null && permissions.snapshot().revision() != revision)
+                    throw new IllegalStateException("MCP manager closed or permissions changed");
                 validate.accept(found);
                 discovered.put(name, found);
                 return found;
             }
         } catch (RuntimeException failed) {
             synchronized (this) { connections.remove(name, candidate); discovered.remove(name); }
-            candidate.close();
+            if (candidate != null) candidate.close();
             throw failed;
+        } finally { synchronized (this) { connecting.remove(name); } }
+    }
+
+    /**
+     * 服务持有整份只读目录，不能按不透明 RPC 内部文件访问判断规则；保守隐藏所有 READ deny/ask。
+     * 工具专属路径限制也收紧服务视图；WRITE 已由整目录只读满足。缺失/祖先/链接目标不能表达时拒绝连接。
+     */
+    private List<com.jadecode.sandbox.ExecutionPlan.Restriction> serviceRestrictions(McpServerConfig config) {
+        if (sandbox == null || permissions == null) return List.of();
+        Path root = workspace.resolve(config.cwd()).normalize();
+        var result = new ArrayList<com.jadecode.sandbox.ExecutionPlan.Restriction>();
+        for (var rule : permissions.snapshot().rules()) if (rule.kind() == com.jadecode.safety.rules.PermissionRule.Kind.PATH
+                && rule.effect() != com.jadecode.safety.rules.PermissionRule.Effect.ALLOW && rule.operation().equals("READ")
+                && (rule.workspace().isEmpty() || Path.of(rule.workspace()).equals(workspace))) {
+            Path path = Path.of(rule.path()).normalize();
+            if (!path.startsWith(root) && !root.startsWith(path)) continue;
+            try {
+                if (!path.startsWith(root) || !java.nio.file.Files.exists(path, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+                        || !path.toRealPath().equals(path)) throw new IllegalStateException("Cannot express MCP path protection " + rule.id());
+            } catch (java.io.IOException unavailable) { throw new IllegalStateException("Cannot resolve MCP path protection " + rule.id(), unavailable); }
+            result.add(new com.jadecode.sandbox.ExecutionPlan.Restriction(path, true));
         }
+        return List.copyOf(result);
+    }
+
+    /** 先撤下目录阻止新调用，再停止原服务；正在准备的连接通过版本检查拒绝发布。 */
+    private void invalidatePolicy() {
+        List<McpConnection> owned;
+        synchronized (this) { owned = List.copyOf(connections.values()); connections.clear(); discovered.clear(); }
+        owned.forEach(McpConnection::revoke);
     }
 
     /**
@@ -126,6 +181,8 @@ public final class McpManager implements AutoCloseable {
             if (closed) return;
             closed = true; owned = List.copyOf(connections.values()); connections.clear(); discovered.clear();
         }
+        if (permissionListener != null) try { permissionListener.close(); }
+        catch (Exception failure) { diagnostics.accept("[MCP] permission listener cleanup failed"); }
         owned.forEach(McpConnection::close);
     }
 }

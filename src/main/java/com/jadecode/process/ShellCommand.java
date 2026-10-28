@@ -23,11 +23,17 @@ public final class ShellCommand implements AutoCloseable {
     private static final int MAX_OUTPUT = 50_000;
     private final Path cwd;
     private final long timeoutSeconds;
+    /** 注入的执行后端；null 仅供明确的宿主/离线入口使用。 */
+    private final Runner runner;
+    /** 同步/后台共用的执行契约，必须保留超时、取消和失败状态。 */
+    @FunctionalInterface public interface Runner {
+        Result run(String command, Path cwd, long timeoutSeconds, com.jadecode.execution.ExecutionContext context);
+    }
     /** 同一锁保护启动登记与关闭，避免 close 扫描结束后又启动新进程。 */
     private final Set<Running> processes = new HashSet<>();
     private final Thread shutdownHook = new Thread(this::close, "jade-shell-cleanup");
     private boolean hookRegistered;
-    private boolean closed;
+    private volatile boolean closed;
 
     /**
      * 绑定工作区和超时，不创建线程/进程、不注册 hook。
@@ -35,11 +41,17 @@ public final class ShellCommand implements AutoCloseable {
      * @param timeoutSeconds 正数，每条命令独立计时
      */
     public ShellCommand(Path cwd, long timeoutSeconds) {
+        this(cwd, timeoutSeconds, null);
+    }
+
+    /** 保存可信后端；构造不启动程序，Docker 失败不会自动使用宿主。 */
+    public ShellCommand(Path cwd, long timeoutSeconds, Runner runner) {
         if (timeoutSeconds <= 0) {
             throw new IllegalArgumentException("timeoutSeconds must be positive");
         }
         this.cwd = cwd.toAbsolutePath().normalize();
         this.timeoutSeconds = timeoutSeconds;
+        this.runner = runner;
     }
 
     /** 最终结果：exitCode=null 表示超时/IO/中断；output 有界，truncated 表示不完整。 */
@@ -63,10 +75,16 @@ public final class ShellCommand implements AutoCloseable {
     public Result run(String command) { return run(command, null); }
 
     /**
-     * 工具/后台入口传入可信快照，未来进程隔离在 ProcessBuilder 创建前使用此上下文。
-     * 当前仍执行已通过 Gate 的命令；不把元数据伪装成操作系统限制。
+     * 工具/后台入口传入可信快照。已注入后端时由后端核验调用级许可并进入容器；
+     * 没有后端的明确宿主/离线路径才创建下面的本地进程。两者均不在此重新审批。
      */
     public Result run(String command, com.jadecode.execution.ExecutionContext context) {
+        if (runner != null) {
+            // 关闭注入后端的 Shell 也必须停止实际容器操作，不能只清空本地进程表。
+            // 即使已经关闭仍向受限后端传入取消条件，让它撤销尚未领取的后台许可。
+            if (context == null && closed) return new Result("Error: Shell is closed", null, false);
+            return runner.run(command, cwd, timeoutSeconds, context == null ? null : context.withAdditionalCancellation(() -> closed));
+        }
         Running running;
         try {
             synchronized (processes) {
@@ -79,8 +97,13 @@ public final class ShellCommand implements AutoCloseable {
                     hookRegistered = true;
                 }
                 if (context != null && context.isCancelled()) return new Result("Error: Execution source has exited", null, false);
-                Process process = new ProcessBuilder("/usr/bin/setsid", "/bin/sh", "-c", command)
-                        .directory(cwd.toFile()).redirectErrorStream(true).start();
+                ProcessBuilder builder = new ProcessBuilder("/usr/bin/setsid", "/bin/sh", "-c", command)
+                        .directory(cwd.toFile()).redirectErrorStream(true);
+                // 普通命令无需模型认证；宿主与容器执行均只继承工具链/locale 等基础设置。
+                var parent = new java.util.HashMap<>(builder.environment()); builder.environment().clear();
+                for (String key : List.of("PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR", "JAVA_HOME"))
+                    if (parent.containsKey(key)) builder.environment().put(key, parent.get(key));
+                Process process = builder.start();
                 running = new Running(process);
                 processes.add(running);
             }

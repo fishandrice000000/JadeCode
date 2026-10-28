@@ -39,16 +39,39 @@ final class McpConnection implements AutoCloseable {
     private volatile boolean closed;
     private volatile boolean broken;
     private volatile List<McpToolDescriptor> tools = List.of();
+    private volatile com.jadecode.sandbox.DockerRuntime.Service service;
 
-    /** 保存配置并构造 SDK，尚未启动外部进程。工作区由工厂确定，不能来自模型参数。 */
+    /** 离线后端仅构造 SDK；生产重载可能准备容器，但仍只在 connect_mcp 流程中调用。 */
     McpConnection(String serverName, McpServerConfig config, Path workspace, Consumer<String> diagnostics) {
+        this(serverName, config, workspace, diagnostics, null, "offline");
+    }
+    /** 实际连接流程先准备受限容器，再把固定 Docker argv 交给 SDK；镜像缺程序明确失败。 */
+    McpConnection(String serverName, McpServerConfig config, Path workspace, Consumer<String> diagnostics,
+            com.jadecode.sandbox.DockerRuntime sandbox, String actor) {
+        this(serverName, config, workspace, diagnostics, sandbox, actor, List.of());
+    }
+    /** 宿主编译的路径保护随服务视图固定；服务不能通过自己声明只读绕开显式路径限制。 */
+    McpConnection(String serverName, McpServerConfig config, Path workspace, Consumer<String> diagnostics,
+            com.jadecode.sandbox.DockerRuntime sandbox, String actor, List<com.jadecode.sandbox.ExecutionPlan.Restriction> restrictions) {
         this.serverName = serverName; this.config = config; this.diagnostics = diagnostics;
         Path cwd = workspace.resolve(config.cwd()).normalize();
         String command = config.command();
         // 裸程序名保留 PATH 查找；包含路径分隔符的相对程序按工作区解析，搬迁后重新计算。
         if (!Path.of(command).isAbsolute() && (command.contains("/") || command.contains("\\")))
             command = workspace.resolve(command).normalize().toString();
-        var parameters = ServerParameters.builder(command).args(config.args()).build();
+        var launch = new ArrayList<String>(); launch.add(command); launch.addAll(config.args());
+        if (sandbox != null) try {
+            // SDK connect 会重新设置 ProcessBuilder.command，因此必须把 Docker argv 放进参数对象。
+            // 此处位于 connect_mcp 的实际连接流程，不在 McpManager 构造时启动服务。
+            boolean fetch = config.args().equals(List.of("-m", "mcp_server_fetch"));
+            var containerCommand = new ArrayList<String>();
+            containerCommand.add(fetch ? "/opt/jadecode/fetch/bin/python" : command); containerCommand.addAll(config.args());
+            service = sandbox.openService(actor, serverName, cwd, containerCommand, config.networkAccess(), restrictions);
+            launch = new ArrayList<>(service.builder().command());
+        } catch (java.io.IOException failure) { throw new IllegalStateException("Cannot prepare sandboxed MCP service", failure); }
+        var parameters = ServerParameters.builder(launch.getFirst()).args(launch.subList(1, launch.size())).build();
+        // SDK 在 getProcessBuilder 之后还会合并默认 env；清空该表，确保下面的白名单是唯一来源。
+        parameters.getEnv().clear();
         var transport = new StdioClientTransport(parameters, new JacksonMcpJsonMapper(Json.mapper().copy()), 1_048_576) {
             /** 只改进程启动设置，通信读写仍使用 SDK；绝不继承模型认证或所有环境变量。 */
             @Override protected ProcessBuilder getProcessBuilder() {
@@ -69,10 +92,15 @@ final class McpConnection implements AutoCloseable {
         transport.setStdErrorHandler(line -> {
             if (lines.getAndIncrement() < 8) diagnostics.accept("[MCP " + serverName + "] server stderr (" + line.length() + " chars)");
         });
-        client = McpClient.sync(transport).clientInfo(new McpSchema.Implementation("jadecode", "1.0.0"))
-                .initializationTimeout(Duration.ofSeconds(config.startupTimeoutSeconds()))
-                .requestTimeout(Duration.ofSeconds(config.callTimeoutSeconds()))
-                .capabilities(McpSchema.ClientCapabilities.builder().build()).build();
+        try {
+            client = McpClient.sync(transport).clientInfo(new McpSchema.Implementation("jadecode", "1.0.0"))
+                    .initializationTimeout(Duration.ofSeconds(config.startupTimeoutSeconds()))
+                    .requestTimeout(Duration.ofSeconds(config.callTimeoutSeconds()))
+                    .capabilities(McpSchema.ClientCapabilities.builder().build()).build();
+        } catch (RuntimeException failed) {
+            // SDK 构造也可能失败，已经准备好的容器不能因此失去所有者。
+            var owned = service; if (owned != null) owned.close(); throw failed;
+        }
     }
 
     /**
@@ -152,6 +180,9 @@ final class McpConnection implements AutoCloseable {
     /** 只有可用连接继续参与目录与路由；传输失败后不偷偷重连或重放。 */
     boolean isUsable() { return !closed && !broken; }
 
+    /** 权限撤销先停止实际服务，再收尾 SDK；不能在等待优雅关闭时继续持有旧文件视图。 */
+    void revoke() { var owned = service; if (owned != null) owned.close(); close(); }
+
     /** SDK 的限时 graceful close 负责 TERM 与线程释放；失败明确报告，不假称进程已经退出。 */
     @Override public void close() {
         closed = true;
@@ -159,6 +190,6 @@ final class McpConnection implements AutoCloseable {
             if (!client.closeGracefully()) diagnostics.accept("[MCP " + serverName + "] close was not confirmed; check the server process");
         } catch (RuntimeException failed) {
             diagnostics.accept("[MCP " + serverName + "] close failed (" + failed.getClass().getSimpleName() + ")");
-        }
+        } finally { var owned = service; if (owned != null) owned.close(); }
     }
 }

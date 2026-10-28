@@ -52,12 +52,13 @@ class OpenCodeGoAssemblyTest {
         };
     }
 
-    /** 手动 compact 保留最近交换；其它副作用与记忆全落在本测试的临时根。 */
+    /** Provider 身份夹具显式使用离线宿主后端；Docker 的真实接线由独立集成测试验证。 */
     private JadeSettings settings(boolean memory) throws Exception {
         Path file = temporary.resolve("settings-" + memory + ".json");
         Files.writeString(file, """
                 {"memory":{"enabled":%s},"thinking":{"effort":"low"},
                  "permissions":{"defaultProfile":"auto-review"},"mcp":{"servers":{}},
+                 "sandbox":{"enabled":false},
                  "compaction":{"autoSummaryEnabled":false,"keepRecentTokens":0}}
                 """.formatted(memory));
         return new JadeConfigFile(file).load();

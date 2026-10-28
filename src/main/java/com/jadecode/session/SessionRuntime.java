@@ -353,6 +353,13 @@ public final class SessionRuntime implements AutoCloseable {
         closeDependents = () -> { try { cleanup.run(); } finally { previous.run(); } };
     }
 
+    private java.util.function.Consumer<String> taskCleanup = ignored -> { };
+    /** 真正任务结束才撤销任务级资源；压缩和单次模型回复不触发，清理失败必须报告。 */
+    public void onTaskEnd(java.util.function.Consumer<String> cleanup) {
+        var previous = taskCleanup;
+        taskCleanup = run -> { try { previous.accept(run); } finally { cleanup.accept(run); } };
+    }
+
     /** 工厂登记真实 Todo 和模型名，不开始存盘；旧兼容调用仍可使用没有日志的运行时。 */
     public void historyState(TodoManager manager, String modelName, java.util.function.BooleanSupplier blocked) {
         if (consumer != null || journal != null || closed) throw new IllegalStateException("Session is already started or closed");
@@ -737,6 +744,8 @@ public final class SessionRuntime implements AutoCloseable {
             Thread.currentThread().interrupt();
             fail(task, new IllegalStateException("Session execution interrupted", interrupted));
         } finally {
+            try { taskCleanup.accept(task.context().id()); }
+            catch (RuntimeException failed) { errors.accept("[Sandbox] Task resource cleanup did not finish"); }
             active = null;
             if (!closed && !persistenceFailed) changeState(State.IDLE);
         }

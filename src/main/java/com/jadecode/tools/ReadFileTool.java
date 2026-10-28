@@ -67,9 +67,14 @@ public class ReadFileTool implements Tool {
      */
     @Override
     public String execute(ObjectNode input) {
+        return executeOutcome(input, null).content();
+    }
+
+    /** 文件正文可能以 Error 开头，状态必须来自实际 IO 结果而不是内容关键词。 */
+    @Override public ToolOutcome executeOutcome(ObjectNode input, com.jadecode.execution.ExecutionContext context) {
         for (String key : required()) {
             if (input.get(key) == null) {
-                return "Error: Missing required parameter: " + key;
+                return new ToolOutcome("Error: Missing required parameter: " + key, true);
             }
         }
 
@@ -80,11 +85,11 @@ public class ReadFileTool implements Tool {
      * 读文件并应用截断:仅当 limit 非 null 且大于 0、行数确实超出时才截,
      * 尾部补一行说明省略了多少行;空路径或 IO 失败走 "Error: ..."。
      */
-    private String run(String path, Integer limit) {
+    private ToolOutcome run(String path, Integer limit) {
         List<String> lines;
         // 1.1 检查路径是否为空
         if (path == null || path.isBlank()) {
-            return "Error: Path is empty or missing";
+            return new ToolOutcome("Error: Path is empty or missing", true);
         }
 
         // 1.2 解析路径(词法 + 逐段符号链接);是否越界由闸门裁决
@@ -94,7 +99,7 @@ public class ReadFileTool implements Tool {
         try {
             lines = Files.readAllLines(p, StandardCharsets.UTF_8);
         } catch (IOException e) {
-            return "Error: " + e.getMessage();
+            return new ToolOutcome("Error: " + e.getMessage(), true);
         }
 
         // 3. 超过 limit 的行数截断
@@ -105,7 +110,7 @@ public class ReadFileTool implements Tool {
         }
 
         // 4. 返回内容
-        return String.join("\n", lines);
+        return new ToolOutcome(String.join("\n", lines), false);
     }
 
 }

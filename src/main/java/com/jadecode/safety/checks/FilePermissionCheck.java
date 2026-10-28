@@ -9,6 +9,16 @@ import com.jadecode.util.PathResolver;
 public final class FilePermissionCheck implements ToolPermissionCheck {
     private final PathResolver resolver;
     public FilePermissionCheck(PathResolver resolver) { this.resolver = resolver; }
+    /** Glob 的 root 也是读取资源，不能因为是搜索工具就漏掉外部目录或路径规则。 */
+    public Analysis analyzeGlob(ObjectNode input) {
+        if (input.has("root") && !input.path("root").isTextual())
+            return new Analysis("glob", resolver.workspaceReal(), List.of(), List.of(), false, true, false, "glob.root must be a string");
+        String raw = input.path("root").asText(".");
+        Path target = resolver.resolve(raw), original = resolver.workspaceReal().resolve(raw).normalize();
+        var resources = target.equals(original) ? List.of(new Resource(target, "READ"))
+                : List.of(new Resource(target, "READ"), new Resource(original, "READ"));
+        return new Analysis("glob", resolver.workspaceReal(), resources, List.of(), false, true, false, "");
+    }
     @Override public Analysis analyze(String tool, ObjectNode input) {
         Path cwd = resolver.workspaceReal();
         if (!input.path("path").isTextual() || input.path("path").textValue().isBlank())

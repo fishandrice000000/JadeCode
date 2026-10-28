@@ -27,6 +27,9 @@ public class BashTool implements Tool {
     private final long timeoutSeconds;
     /** null 表示只支持同步执行，例如当前的子代理。 */
     private final BackgroundManager background;
+    private ShellCommand.Runner runner;
+    /** 子代理使用受限后端；构造不执行操作，后端由工厂提供。 */
+    public BashTool(Path cwd, ShellCommand.Runner runner) { this(cwd); this.runner = runner; }
 
     /**
      * 在当前进程目录执行同步命令，默认最多 120 秒；不提供后台功能，也不立即执行命令。
@@ -145,49 +148,59 @@ public class BashTool implements Tool {
      */
     @Override
     public String execute(ObjectNode input, ExecutionContext context) {
+        return executeOutcome(input, context).content();
+    }
+
+    /** 参数错误显式标记失败，命令结果依据退出码；正常输出即使以 Error 开头也仍然成功。 */
+    @Override
+    public ToolOutcome executeOutcome(ObjectNode input, ExecutionContext context) {
         // 1. 所有开关都检查完再执行；不适用的参数报错，不能让模型以为设置已经生效。
         JsonNode command = input.get("command");
         if (command == null) {
-            return "Error: Missing required parameter: command";
+            return error("Missing required parameter: command");
         }
         if (!command.isTextual() || command.textValue().isBlank()) {
-            return "Error: command must be a non-empty string";
+            return error("command must be a non-empty string");
         }
         JsonNode requested = input.get("run_in_background");
         if (requested != null && !requested.isBoolean()) {
-            return "Error: run_in_background must be a boolean";
+            return error("run_in_background must be a boolean");
         }
         boolean asynchronous = requested != null && requested.booleanValue();
         JsonNode waiting = input.get("wait_for_completion");
-        if (waiting != null && !waiting.isBoolean()) return "Error: wait_for_completion must be a boolean";
-        if (waiting != null && !asynchronous) return "Error: wait_for_completion requires run_in_background=true";
+        if (waiting != null && !waiting.isBoolean()) return error("wait_for_completion must be a boolean");
+        if (waiting != null && !asynchronous) return error("wait_for_completion requires run_in_background=true");
         for (String flag : List.of("allow_insertion", "wake_when_idle")) {
-            if (input.has(flag) && !input.get(flag).isBoolean()) return "Error: " + flag + " must be a boolean";
-            if (input.has(flag) && !asynchronous) return "Error: " + flag + " requires run_in_background=true";
+            if (input.has(flag) && !input.get(flag).isBoolean()) return error(flag + " must be a boolean");
+            if (input.has(flag) && !asynchronous) return error(flag + " requires run_in_background=true");
         }
         if (asynchronous && background == null) {
-            return "Error: Background execution is not available in this agent";
+            return error("Background execution is not available in this agent");
         }
         if (asynchronous) {
             // 2. 所属任务由程序另外传入，不能由模型填写；调用这里前已经检查过权限。
-            if (context == null) return "Error: Background execution requires a Harness task context";
+            if (context == null) return error("Background execution requires a Harness task context");
             try {
                 boolean required = waiting == null || waiting.booleanValue();
                 String id = background.start(command.textValue(), context, required,
                         input.path("allow_insertion").asBoolean(false), input.path("wake_when_idle").asBoolean(false));
-                return "[Background task " + id + " started] " + (required
+                return new ToolOutcome("[Background task " + id + " started] " + (required
                         ? "The current task must process its result before finishing; it will resume automatically."
-                        : "Detached from the current task. Its result is a later session notification.");
+                        : "Detached from the current task. Its result is a later session notification."), false);
             } catch (IllegalArgumentException | IllegalStateException failure) {
-                return "Error: " + failure.getMessage();
+                return error(failure.getMessage());
             }
         }
         // 3. 同步命令直接返回最终结果，不再发后台通知。有管理器就用它，否则执行后关闭局部 shell。
         if (background != null) {
-            return background.runForeground(command.textValue(), context);
+            var result = background.runForegroundResult(command.textValue(), context);
+            return new ToolOutcome(result.text(), result.exitCode() == null || result.exitCode() != 0);
         }
-        try (ShellCommand shell = new ShellCommand(cwd, timeoutSeconds)) {
-            return shell.run(command.textValue(), context).text();
+        try (ShellCommand shell = new ShellCommand(cwd, timeoutSeconds, runner)) {
+            var result = shell.run(command.textValue(), context);
+            return new ToolOutcome(result.text(), result.exitCode() == null || result.exitCode() != 0);
         }
     }
+    /** 参数校验失败还没有启动程序；统一保留原 Error 文本协议。 */
+    private static ToolOutcome error(String message) { return new ToolOutcome("Error: " + message, true); }
 }

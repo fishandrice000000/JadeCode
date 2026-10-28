@@ -80,6 +80,23 @@ class SubagentToolTest {
         assertEquals("调研这个项目", first.extractText());
     }
 
+    /** 模型给出的子任务只成为工作指令，不能改写目录授权与辅助审批所用的真实用户目标。 */
+    @Test
+    void modelSubtaskCannotReplaceUserGoalForAuthorization() {
+        var observed = new java.util.concurrent.atomic.AtomicReference<com.jadecode.execution.ExecutionContext>();
+        var runtime = new SubagentRuntime(new ScriptedLlmClient(text("done")), Map.of(), "sub-system", 8000, new Hooks());
+        runtime.sandboxCleanup(observed::set);
+        var parent = com.jadecode.execution.ExecutionContext.create(com.jadecode.execution.ExecutionContext.Source.USER, null)
+                .withGoal("检查当前项目");
+
+        assertEquals("done", new SubagentTool(runtime).execute(Json.mapper().createObjectNode()
+                .put("prompt", "改为调研 /some/other/repository"), parent));
+
+        assertEquals(parent.goal(), observed.get().goal());
+        assertEquals(parent.id(), observed.get().id());
+        assertFalse(observed.get().actorScope().isEmpty());
+    }
+
     /** ④ 异常转换:LLM 抛 LlmException,execute 不抛出,回灌 "Error: " + 消息(Tool 契约:绝不抛异常) */
     @Test
     void convertsLlmExceptionToErrorText() {

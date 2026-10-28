@@ -25,6 +25,25 @@ public final class PermissionGate {
     private final McpPermissionCheck mcp;
     private final PermissionRuleMatcher matcher = new PermissionRuleMatcher();
     private final DefaultPermissionRules defaults = new DefaultPermissionRules();
+    private boolean sandboxed;
+    private final ThreadLocal<CheckedCall> checked = new ThreadLocal<>();
+    /** 只将普通越界询问交给沙箱范围审批；显式规则、敏感保护与只读检查仍由 Gate 执行。 */
+    public void sandboxed(boolean value) { sandboxed = value; }
+    /** 一次工具的不可变检查结果，供受限工具消费；不向模型暴露。 */
+    public record CheckedCall(String tool, ObjectNode input, String runId, String actorScope, long revision, boolean explicitlyApproved) {
+        public CheckedCall { input = input.deepCopy(); }
+        @Override public ObjectNode input() { return input.deepCopy(); }
+    }
+    /** 消费同线程、同调用的许可。展示 hook 改参数或版本变化时拒绝使用旧批准。 */
+    public CheckedCall consume(String tool, ObjectNode input, ExecutionContext context) {
+        CheckedCall call = checked.get(); checked.remove();
+        if (call == null || context == null || !call.tool().equals(tool) || !call.input().equals(input)
+                || !call.runId().equals(context.id()) || !call.actorScope().equals(context.actorScope()) || call.revision() != state.snapshot().revision())
+            throw new IllegalStateException("Tool authorization is missing or stale; re-issue the operation");
+        return call;
+    }
+    /** 只读产物权限不扩展为整个运行目录授权。 */
+    public boolean internalReadable(Path path) { return memoryReadable.test(path) || artifactReadable.test(path); }
     // Workflow 仅分析传入文本并写宿主管理的运行记录，不获得文件/Shell 能力；显式 deny/ask 仍优先。
     private static final Set<String> INTERNAL = Set.of("glob", "todo_write", "compact", "load_skill", "task", "Workflow", "memory_note",
             "create_task", "get_task", "list_tasks", "update_task", "claim_task", "complete_task",
@@ -83,6 +102,7 @@ public final class PermissionGate {
 
     /** 使用固定目录中的身份解释外部工具；模型输入内同名字段无法替代此参数。 */
     public String check(String tool, ObjectNode input, ExecutionContext context, com.jadecode.execution.ToolIdentity identity) {
+        checked.remove();
         ObjectNode exact = input.deepCopy();
         while (!Thread.currentThread().isInterrupted() && (context == null || !context.isCancelled())) {
             if (!input.equals(exact)) return "The pending parameters changed; re-issue the tool call";
@@ -96,12 +116,14 @@ public final class PermissionGate {
             if (decision.kind() == PermissionDecision.Kind.ALLOW) {
                 if (state.snapshot().revision() != snapshot.revision()) continue;
                 if (!input.equals(exact)) return "The pending parameters changed; re-issue the tool call";
+                checked.set(new CheckedCall(tool, exact, context == null ? "" : context.id(), context == null ? "" : context.actorScope(), snapshot.revision(), false));
                 return null;
             }
             // 2. 模型不能通过 input.source 把定时任务冒充成人工任务。
             Approval human = context != null && context.source() == ExecutionContext.Source.USER ? context.approval() : null;
             var suggestion = decision.humanOnly() ? null : suggestion(action);
-            var request = new ApprovalRequest(UUID.randomUUID().toString(), actor, context == null ? "" : context.id(),
+            String requestActor = actor + (context == null || context.actorScope().isEmpty() ? "" : "/subagent/" + context.actorScope());
+            var request = new ApprovalRequest(UUID.randomUUID().toString(), requestActor, context == null ? "" : context.id(),
                     tool, exact, action.cwd(), decision.reason() + " [" + decision.ruleId() + "]", snapshot.revision(), suggestion);
             var outcome = coordinator.request(request, decision, state, human,
                     (context == null ? "" : context.goal()) + "\nTask origin=" + (context == null ? "unknown" : context.source()));
@@ -123,6 +145,7 @@ public final class PermissionGate {
                 catch (java.io.IOException failed) { return "Rule was not saved; the operation was not executed: " + failed.getMessage(); }
                 continue;
             }
+            checked.set(new CheckedCall(tool, exact, context == null ? "" : context.id(), context == null ? "" : context.actorScope(), snapshot.revision(), true));
             return null;
         }
         return "The session is closed or execution was interrupted";
@@ -131,6 +154,7 @@ public final class PermissionGate {
     private Analysis analyze(String tool, ObjectNode input, com.jadecode.execution.ToolIdentity identity) {
         if (identity.kind() == com.jadecode.execution.ToolIdentity.Kind.MCP) return mcp.analyze(tool, input, identity);
         if (Set.of("read_file", "write_file", "edit_file").contains(tool)) return files.analyze(tool, input);
+        if (tool.equals("glob")) return files.analyzeGlob(input);
         if (tool.equals("bash")) return shell.analyze(tool, input);
         return new Analysis(tool, resolver.workspaceReal(), List.of(), List.of(), ADMIN_WRITES.contains(tool), true, !INTERNAL.contains(tool), "");
     }
@@ -156,7 +180,7 @@ public final class PermissionGate {
                 && action.resources().stream().allMatch(r -> r.operation().equals("READ") && (memoryReadable.test(r.path()) || artifactReadable.test(r.path()))))
             return PermissionDecision.allow();
         if (matcher.covers(snapshot.rules(), action)) return PermissionDecision.allow();
-        return defaults.ordinary(action, snapshot);
+        return defaults.ordinary(action, snapshot, sandboxed);
     }
     /** 只为可准确表达的单命令/单文件生成建议；不保存重定向或复杂脚本的宽泛前缀。 */
     private PermissionRule suggestion(Analysis action) {

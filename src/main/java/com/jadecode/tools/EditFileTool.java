@@ -14,7 +14,7 @@ import com.jadecode.util.PathResolver;
  * edit_file:在文件里做精确文本替换,只替换第一处匹配。
  *
  * <p>old_text 找不到时整次调用失败并回 "Error: Text not found in ..."——
- * 文件保持原样,绝不部分写入(先整读、替换、再整写,天然原子)。</p>
+ * 找不到匹配时文件保持原样；普通整写并非原子替换，写入中的 IO 故障可能留下部分结果。</p>
  */
 public class EditFileTool implements Tool {
     /** 路径解析器:解析目标路径;越界与否由闸门裁决 */
@@ -67,9 +67,13 @@ public class EditFileTool implements Tool {
      */
     @Override
     public String execute(ObjectNode input) {
+        return executeOutcome(input, null).content();
+    }
+    /** 查找失败和 IO 失败单独标记，已发生的写入不伪称回滚。 */
+    @Override public ToolOutcome executeOutcome(ObjectNode input, com.jadecode.execution.ExecutionContext context) {
         for (String key : required()) {
             if (input.get(key) == null) {
-                return "Error: Missing required parameter: " + key;
+                return new ToolOutcome("Error: Missing required parameter: " + key, true);
             }
         }
 
@@ -78,12 +82,12 @@ public class EditFileTool implements Tool {
 
     /**
      * 读整文件 → 找第一处 old_text → 拼新文本 → 整写回。
-     * 找不到匹配或 IO 失败都回 "Error: ...",不改文件。
+     * 找不到匹配或读取失败时不写文件；写入阶段失败会返回错误，但不保证回滚部分写入。
      */
-    private String run(String path, String oldText, String newText) {
+    private ToolOutcome run(String path, String oldText, String newText) {
         // 1.1 检查路径是否为空
         if (path == null || path.isBlank()) {
-            return "Error: Path is empty or missing";
+            return new ToolOutcome("Error: Path is empty or missing", true);
         }
 
         // 1.2 解析路径(词法 + 逐段符号链接);是否越界由闸门裁决
@@ -94,12 +98,12 @@ public class EditFileTool implements Tool {
         try {
             text = Files.readString(p, StandardCharsets.UTF_8);
         } catch (IOException e) {
-            return "Error: " + e.getMessage();
+            return new ToolOutcome("Error: " + e.getMessage(), true);
         }
 
         int idx = text.indexOf(oldText);
         if (idx < 0) {
-            return "Error: Text not found in " + path;
+            return new ToolOutcome("Error: Text not found in " + path, true);
         }
 
         // 3. 构建替换后的字符串
@@ -108,9 +112,9 @@ public class EditFileTool implements Tool {
         // 4. 写回再返回
         try {
             Files.writeString(p, edited, StandardCharsets.UTF_8);
-            return "Edited " + path;
+            return new ToolOutcome("Edited " + path, false);
         } catch (IOException e) {
-            return "Error: " + e.getMessage();
+            return new ToolOutcome("Error: " + e.getMessage(), true);
         }
     }
 
