@@ -601,6 +601,7 @@ TUI `/team` 查看成员与派工详情，左右切换近期派工、Enter 显�
 队友启用独立压缩与后台，不启用 Memory/cron；共享工作区的工具层隔离不是文件系统沙箱。
 交互与 `--headless` 都会等待本轮必要报告；退出会关闭队友及命令，显式脱离等待的工作也随之关闭。
 工程任务见 [s13 任务单](docs/jobs/s13/agent-teams.md)与[Team 协作扩展](docs/jobs/s13/team-coordination.md)，学习入口见 [s13 阅读指南](docs/notes/s13/agent-teams-review.md)。
+真实模型的单项与连续三阶段结果见[黑马点评探索评测](docs/jobs/s13/hmdp-multi-agent-benchmark.md)。
 
 ## 用户运行数据
 
