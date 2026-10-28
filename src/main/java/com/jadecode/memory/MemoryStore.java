@@ -84,26 +84,37 @@ final class MemoryStore {
                     local.path("summary").asText(EMPTY_SUMMARY), local.path("handbook").asText(EMPTY_HANDBOOK),
                     global.path("summary").asText(""), global.path("handbook").asText(""),
                     java.util.stream.StreamSupport.stream(local.path("processed_notes").spliterator(), false).map(JsonNode::asText).toList(),
+                    java.util.stream.StreamSupport.stream(local.path("processed_materials").spliterator(), false).map(JsonNode::asText).toList(),
                     hash(text(root.resolve("memory_manifest.json"))));
         });
     }
 
     record Snapshot(long revision, String summary, String handbook, String baseline, String updatedAt,
             String workspaceSummary, String workspaceHandbook, String globalSummary, String globalHandbook,
-            List<String> processedNotes, String manifestHash) { }
+            List<String> processedNotes, List<String> processedMaterials, String manifestHash) { }
     record Artifacts(String summary, String handbook) { }
 
     /**
      * 只发布已校验候选。模型等待期间清单或正文有变化就拒绝，不能以旧快照盖掉新修正。
      * 先准备可恢复备份，再替换摘要/清单/手册，最后提交；恢复材料保留用于诊断。
      */
-    void publish(Snapshot expected, Map<String, Artifacts> changes, String baseline, List<String> sources) throws IOException {
-        publish(expected, changes, baseline, sources, expected.processedNotes());
+    boolean publish(Snapshot expected, Map<String, Artifacts> changes, String baseline, List<String> sources) throws IOException {
+        return publish(expected, changes, baseline, sources, expected.processedNotes());
     }
 
     /** 成功发布同时登记已处理笔记；失败时不提前把纠正标成已应用。 */
-    void publish(Snapshot expected, Map<String, Artifacts> changes, String baseline, List<String> sources, List<String> processedNotes) throws IOException {
-        MemoryLibraryLock.run(root, () -> {
+    boolean publish(Snapshot expected, Map<String, Artifacts> changes, String baseline, List<String> sources, List<String> processedNotes) throws IOException {
+        return publish(expected, changes, baseline, sources, processedNotes, expected.processedMaterials());
+    }
+
+    /**
+     * 原子确认本批处理结果，返回正式正文是否发生变化；无变化也是成功处理。
+     * 已处理材料 ID 与笔记 ID 只在发布成功后登记，下一轮仅把新增材料交给整理器。
+     * 没有正文变化时只原子更新清单，不改写两份 Markdown，不制造空工作区知识块。
+     */
+    boolean publish(Snapshot expected, Map<String, Artifacts> changes, String baseline, List<String> sources,
+            List<String> processedNotes, List<String> processedMaterials) throws IOException {
+        return MemoryLibraryLock.run(root, () -> {
             MemoryTransaction.recover(root, warnings);
             Path manifest = root.resolve("memory_manifest.json"), shortFile = root.resolve("memory_summary.md");
             JsonNode current = json(manifest);
@@ -114,9 +125,15 @@ final class MemoryStore {
             var next = (ObjectNode) current.deepCopy();
             next.put("revision", expected.revision() + 1);
             ObjectNode sections = (ObjectNode) next.path("sections");
+            boolean contentChanged = false;
             // 仅允许本工作区及明确的全局用户知识变化，其它项目的块由程序原样保留。
             for (var change : changes.entrySet()) {
                 if (!change.getKey().equals(scope) && !change.getKey().equals("global")) throw new IOException("Cannot edit another workspace's memory");
+                JsonNode previous = sections.path(change.getKey());
+                // 模型可能原样重发一个完整分区；这不构成新的正文，不应触发文件重写。
+                if (previous.path("summary").asText().equals(change.getValue().summary())
+                        && previous.path("handbook").asText().equals(change.getValue().handbook())) continue;
+                contentChanged = true;
                 ObjectNode section = sections.putObject(change.getKey());
                 section.put("summary", change.getValue().summary()).put("handbook", change.getValue().handbook())
                         .put("workspace", change.getKey().equals("global") ? "global" : workspace.toString())
@@ -125,13 +142,21 @@ final class MemoryStore {
             }
             // 即使没有正文改动也保存本工作区的处理基线，避免同一份材料反复调用模型。
             ObjectNode local = sections.path(scope) instanceof ObjectNode object ? object : sections.putObject(scope);
-            local.put("baseline", baseline).put("updated_at", Instant.now().toString());
+            local.put("baseline", baseline).put("workspace", workspace.toString()).put("updated_at", Instant.now().toString());
             local.set("processed_notes", Json.mapper().valueToTree(processedNotes));
+            local.set("processed_materials", Json.mapper().valueToTree(processedMaterials));
+            if (!contentChanged) {
+                // 清单是一个原子文件；另外两份文件保持原样，读者仍在库锁内读取一致快照。
+                replace(manifest, next.toString());
+                return false;
+            }
             StringBuilder summary = new StringBuilder("# Memory routes\n");
             StringBuilder handbook = new StringBuilder("# Memory handbook\n");
             var names = new ArrayList<String>(); sections.fieldNames().forEachRemaining(names::add); Collections.sort(names);
             for (String name : names) {
                 JsonNode section = sections.get(name);
+                // 处理基线可能存在而正式知识为空，不能把任务处理元数据渲染成记忆。
+                if (section.path("summary").asText().isBlank() && section.path("handbook").asText().isBlank()) continue;
                 String heading = "\n## Scope: " + name + "\nWorkspace: " + section.path("workspace").asText() + "\n\n";
                 summary.append(heading).append(section.path("summary").asText());
                 handbook.append(heading).append(section.path("handbook").asText());
@@ -147,7 +172,7 @@ final class MemoryStore {
                 try { transaction.rollback(); } catch (IOException recovery) { failure.addSuppressed(recovery); }
                 throw failure;
             }
-            return null;
+            return true;
         });
     }
 
@@ -257,11 +282,27 @@ final class MemoryStore {
         catch (IOException invalid) { return false; }
     }
 
-    /** 根据模型给出的受限相对名读取来源；绝对路径和父目录跳转不会交给文件系统。 */
+    /**
+     * 从固定的来源/候选目录读取一个普通文件，不接受任意路径或符号链接。
+     * 调用者还必须检查本轮允许清单：本方法能解析 pending 路径不表示模型有权读取所有候选。
+     * 候选记录额外核对文件名与内部 ID、种类和证据字段，不能把同名任意 JSON 当成纠正来源。
+     */
     String readSource(String relative) throws IOException {
-        if (!relative.matches("rollout_summaries/[a-f0-9]{64}\\.md")) throw new IOException("Invalid memory source reference");
-        directory(root.resolve("rollout_summaries"), false);
-        return text(root.resolve(relative));
+        if (!relative.matches("(?:rollout_summaries/[a-f0-9]{64}\\.md|pending/[a-f0-9]{64}\\.json)"))
+            throw new IOException("Invalid memory source reference");
+        Path file = root.resolve(relative);
+        directory(file.getParent(), false);
+        String body = text(file);
+        if (relative.startsWith("pending/")) {
+            JsonNode note = Json.mapper().readTree(body);
+            String expected = relative.substring("pending/".length(), relative.length() - ".json".length());
+            if (note == null || !note.isObject() || !note.path("id").asText().equals(expected)
+                    || !Set.of("remember", "correct", "forget").contains(note.path("kind").asText())
+                    || !note.path("body").isTextual() || !note.path("user_request").isTextual()
+                    || !note.path("scope").asText().matches("(?:global|[a-f0-9]{64})"))
+                throw new IOException("Invalid pending memory source");
+        }
+        return body;
     }
 
     /** 每个项目持久保存整理失败退避，避免重启或每秒轮询重复付费；成功后随新基线重置。 */

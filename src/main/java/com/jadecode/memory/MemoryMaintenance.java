@@ -27,6 +27,9 @@ final class MemoryMaintenance implements AutoCloseable {
     private final Consumer<String> information, warnings;
     private final ScheduledExecutorService worker;
     private static final Set<Path> LOCAL_MAINTENANCE = ConcurrentHashMap.newKeySet();
+    /** 只识别记忆库的两类来源名；是否有权读取仍由当前清单决定。 */
+    private static final java.util.regex.Pattern SOURCE_LINK = java.util.regex.Pattern.compile(
+            "(?:rollout_summaries/[A-Za-z0-9_.-]+\\.md|pending/[A-Za-z0-9_.-]+\\.json)");
     private final Object lifecycle = new Object();
     private volatile boolean closed;
     private boolean initialized;
@@ -97,6 +100,7 @@ final class MemoryMaintenance implements AutoCloseable {
                 .put("scope", store.scope()).put("session_id", session).put("task_id", task)
                 .put("memory_root", store.root().toString()).put("journal", journal == null ? "" : journal.toString()).put("start_sequence", start).put("end_sequence", end)
                 .put("created_at", Instant.now().toString()).put("outcome", outcome).put("status", "pending").put("attempts", 0);
+        job.put("phase", "extraction");
         job.set("human_inputs", Json.mapper().valueToTree(boundedHumans(humans)));
         if (journal == null) {
             // 快照也执行与日志相同的证据过滤，序列化前不把无限历史塞进后台状态文件。
@@ -254,6 +258,7 @@ final class MemoryMaintenance implements AutoCloseable {
                 .put("task_id", job.path("task_id").asText()).put("created_at", job.path("created_at").asText())
                 .put("start_sequence", job.path("start_sequence").asLong()).put("end_sequence", job.path("end_sequence").asLong())
                 .put("outcome", job.path("outcome").asText()).put("sha256", MemoryStore.hash(summary));
+        metadata.set("human_inputs", job.path("human_inputs").deepCopy());
         synchronized (lifecycle) { if (!closed) store.material(job.path("id").asText(), summary, metadata); }
     }
 
@@ -263,25 +268,67 @@ final class MemoryMaintenance implements AutoCloseable {
      */
     private void consolidate() throws IOException {
         var sources = store.materials(); var notes = store.notes(); var snapshot = store.snapshot();
-        String baseline = MemoryStore.hash(sources.toString() + notes.toString());
-        if (sources.isEmpty() && notes.isEmpty() || baseline.equals(snapshot.baseline())) return;
+        if (sources.isEmpty() && notes.isEmpty()) return;
+        String prompt = resource("consolidation.md");
+        // 判据调整也应触发一次复核；不把旧判据下的“已处理”永久当作新判据下的成功。
+        String baseline = MemoryStore.hash(prompt + sources + notes);
         var retry = store.maintenanceState();
+        if (baseline.equals(snapshot.baseline())) {
+            // 正式发布后若进程尚未来得及保存完成状态就退出，用已发布基线修复状态，不重发模型。
+            if (baseline.equals(retry.path("baseline").asText()) && !retry.path("status").asText().equals("completed")) {
+                retry.put("status", "completed").put("published_revision", snapshot.revision());
+                retry.remove(List.of("retry_at", "failure")); store.maintenanceState(retry);
+            }
+            return;
+        }
         if (!retry.path("baseline").asText().equals(baseline)) {
             retry = Json.mapper().createObjectNode().put("baseline", baseline).put("attempts", 0);
         }
         if (retry.path("attempts").asInt() >= 3 || retry.path("retry_at").asLong() > System.currentTimeMillis()) return;
-        retry.put("attempts", retry.path("attempts").asInt() + 1);
+        retry.put("attempts", retry.path("attempts").asInt() + 1).put("status", "running");
         retry.put("retry_at", System.currentTimeMillis() + 60_000L * retry.path("attempts").asInt());
         store.maintenanceState(retry);
+        try {
+            boolean changed = curate(sources, notes, snapshot, baseline, prompt);
+            synchronized (lifecycle) {
+                if (closed) return;
+                retry.put("status", "completed").put("content_changed", changed)
+                        .put("published_revision", snapshot.revision() + 1).put("completed_at", Instant.now().toString());
+                retry.remove(List.of("retry_at", "failure")); store.maintenanceState(retry);
+            }
+            information.accept("[Memory] maintenance completed; " + (changed ? "knowledge published" : "no durable change"));
+        } catch (IOException | RuntimeException failure) {
+            synchronized (lifecycle) {
+                if (!closed) {
+                    retry.put("status", retry.path("attempts").asInt() >= 3 ? "exhausted" : "retry")
+                            .put("failure", failure.getClass().getSimpleName());
+                    try { store.maintenanceState(retry); }
+                    catch (IOException stateFailure) { failure.addSuppressed(stateFailure); }
+                }
+            }
+            throw failure;
+        }
+    }
+
+    /**
+     * 在已取得维护锁和重试额度后执行一批整理，正常结束才发布，返回正式正文是否改变。
+     * 新来源元数据进入输入，旧来源只提供受控名字，已有正文仍用于合并与消除矛盾。
+     * close 时返回 false，调用者会再次检查 closed，不能把中断误记成成功。
+     */
+    private boolean curate(List<ObjectNode> sources, List<ObjectNode> notes, MemoryStore.Snapshot snapshot,
+            String baseline, String prompt) throws IOException {
+        var pendingNotes = notes.stream().filter(n -> !snapshot.processedNotes().contains(n.path("id").asText())).toList();
+        var newSources = sources.stream().filter(n -> !snapshot.processedMaterials().contains(n.path("id").asText()))
+                .sorted(Comparator.comparing(n -> n.path("created_at").asText())).toList();
         var input = Json.mapper().createObjectNode();
         input.put("workspace", store.workspace().toString()).put("current_time", Instant.now().toString())
                 .put("existing_revision", snapshot.revision()).put("last_maintenance_at", snapshot.updatedAt())
                 .put("workspace_summary", snapshot.workspaceSummary())
                 .put("workspace_handbook", snapshot.workspaceHandbook()).put("global_summary", snapshot.globalSummary())
                 .put("global_handbook", snapshot.globalHandbook());
-        input.set("sources", Json.mapper().valueToTree(sources));
-        input.set("pending_notes", Json.mapper().valueToTree(notes.stream()
-                .filter(n -> !snapshot.processedNotes().contains(n.path("id").asText())).toList()));
+        input.set("sources", Json.mapper().valueToTree(newSources));
+        input.set("pending_notes", Json.mapper().valueToTree(pendingNotes));
+        input.set("source_user_requests", sourceUserRequests(sources));
         // 只提供当前作用域的去重计数，不把不断膨胀的原始事件日志塞进上下文。
         var counts = new TreeMap<String, Integer>();
         for (var event : store.feedback()) if (event.path("scope").asText().equals(store.scope()))
@@ -294,23 +341,29 @@ final class MemoryMaintenance implements AutoCloseable {
                 throw new IOException("Immutable memory source changed; review required");
             allowed.add(ref);
         }
-        // 全局手册可能沿用另一项目已发布的来源；只允许真实存在的既有链接，不能凭空扩大目录权限。
-        var oldLinks = java.util.regex.Pattern.compile("rollout_summaries/[a-f0-9]{64}\\.md")
-                .matcher(snapshot.globalHandbook() + snapshot.workspaceHandbook());
+        for (var note : notes) allowed.add("pending/" + note.path("id").asText() + ".json");
+        // 全局手册可能沿用另一项目的纠正来源。只继承这份快照中已有且仍能核验的具体引用，
+        // 不扫描其它项目的候选目录，也不允许模型凭空扩大清单。
+        String previous = snapshot.globalHandbook() + snapshot.workspaceHandbook()
+                + snapshot.globalSummary() + snapshot.workspaceSummary();
+        var oldLinks = SOURCE_LINK.matcher(previous);
         while (oldLinks.find()) { store.readSource(oldLinks.group()); allowed.add(oldLinks.group()); }
+        input.set("available_sources", Json.mapper().valueToTree(new TreeSet<>(allowed)));
         var readSources = new HashSet<String>();
+        // 新候选笔记的完整原话已在输入中，等价于已读；旧候选若要新增引用，仍需 read_source。
+        for (var note : pendingNotes) readSources.add("pending/" + note.path("id").asText() + ".json");
         var candidates = new LinkedHashMap<String, MemoryStore.Artifacts>();
         List<Message> messages = new ArrayList<>(List.of(Message.userText(input.toString())));
         int remainingReads = settings.consolidationInputChars();
         try {
             for (int step = 0; step < 12; step++) {
-                if (closed) return;
+                if (closed) return false;
                 // 累计消息也检查，避免多次 read_source 逐步撑爆维护上下文。
                 if (Json.mapper().writeValueAsString(messages).length() > settings.consolidationInputChars())
                     throw new IOException("Consolidation input budget exceeded");
-                ModelResponse response = client.complete(new CompleteRequest(resource("consolidation.md"), List.copyOf(messages),
+                ModelResponse response = client.complete(new CompleteRequest(prompt, List.copyOf(messages),
                         settings.consolidationMaxOutputTokens(), definitions(), ThinkingSettings.DEFAULT));
-                if (closed) return;
+                if (closed) return false;
                 if (response == null || response.message() == null || response.message().role() != Role.ASSISTANT
                         || Set.of("max_tokens", "model_context_window_exceeded", "refusal").contains(response.stopReason()))
                     throw new IOException("Incomplete consolidation response");
@@ -319,11 +372,11 @@ final class MemoryMaintenance implements AutoCloseable {
                     if (response.stopReason().equals("tool_use") || !reply.hasOnlyTextAndThinking() || reply.extractText().isBlank())
                         throw new IOException("Missing consolidation completion");
                     synchronized (lifecycle) {
-                        if (closed) return;
-                        store.publish(snapshot, candidates, baseline, List.copyOf(allowed),
-                                notes.stream().map(n -> n.path("id").asText()).toList());
+                        if (closed) return false;
+                        return store.publish(snapshot, candidates, baseline, List.copyOf(allowed),
+                                notes.stream().map(n -> n.path("id").asText()).toList(),
+                                sources.stream().map(n -> n.path("id").asText()).toList());
                     }
-                    information.accept("[Memory] maintenance completed; staged sections " + candidates.size()); return;
                 }
                 messages.add(reply); var results = new ArrayList<ContentBlock>();
                 Set<String> ids = new HashSet<>();
@@ -344,10 +397,10 @@ final class MemoryMaintenance implements AutoCloseable {
                         String handbook = MemoryEvidence.redact(args.path("handbook").asText());
                         if (summary.isBlank() || summary.length() > 10_000 || handbook.isBlank() || handbook.length() > 64_000)
                             throw new IOException("Invalid memory candidate");
-                        validateLinks(summary + "\n" + handbook, allowed, notes);
+                        validateLinks(summary + "\n" + handbook, allowed);
                         String changed = summary + "\n" + handbook;
                         for (String ref : allowed) if (changed.contains(ref) && !readSources.contains(ref)
-                                && !(snapshot.globalHandbook() + snapshot.workspaceHandbook()).contains(ref))
+                                && !previous.contains(ref))
                             throw new IOException("New source claim must be read before staging");
                         candidates.put(scope.equals("global") ? "global" : store.scope(), new MemoryStore.Artifacts(summary, handbook));
                         result = "Candidate staged; not yet published.";
@@ -360,6 +413,30 @@ final class MemoryMaintenance implements AutoCloseable {
         } catch (LlmException failure) { throw new IOException("Consolidation model request failed"); }
     }
 
+    /**
+     * 给当前项目的来源补充独立的人类原话证据，不把辅助模型总结当成唯一事实来源。
+     * 总预算只占维护输入的一部分，优先较新的来源；缺失或不合法的日志仅标为未知，绝不越界读取。
+     * 来源正文与原始日志仍不修改；该表只在本次维护输入中使用，不新建永久用户画像。
+     */
+    private ObjectNode sourceUserRequests(List<ObjectNode> sources) {
+        var result = Json.mapper().createObjectNode();
+        int remaining = settings.consolidationInputChars() / 4;
+        var newestFirst = sources.stream().sorted(Comparator.comparing((ObjectNode n) -> n.path("created_at").asText()).reversed()).toList();
+        for (var source : newestFirst) {
+            var item = result.putObject(source.path("source").asText());
+            try {
+                var evidence = MemoryEvidence.humanRequests(source, store.paths(), Math.min(8000, remaining));
+                item.set("requests", Json.mapper().valueToTree(evidence.requests()));
+                item.put("complete", evidence.complete()).put("status", evidence.complete() ? "available" : "partial");
+                for (String request : evidence.requests()) remaining -= request.length();
+            } catch (IOException | RuntimeException unavailable) {
+                // 例如来源日志已清理或夹具已重定位；未知不能变成“用户没有要求过”。
+                item.putArray("requests"); item.put("complete", false).put("status", "unavailable");
+            }
+        }
+        return result;
+    }
+
     /** 禁止额外字段与隐式类型转换，不能用模型参数构造任意路径。 */
     private static void exact(ObjectNode args, Set<String> fields) throws IOException {
         if (args == null || args.size() != fields.size()) throw new IOException("Invalid maintenance parameters");
@@ -367,16 +444,14 @@ final class MemoryMaintenance implements AutoCloseable {
     }
 
     /** 来源链接必须存在于本次允许材料；不接受伪造的哈希来源。 */
-    private static void validateLinks(String text, Set<String> sources, List<ObjectNode> notes) throws IOException {
-        var allowed = new HashSet<>(sources);
-        for (var note : notes) allowed.add("pending/" + note.path("id").asText() + ".json");
-        var links = java.util.regex.Pattern.compile("(?:rollout_summaries/[A-Za-z0-9_.-]+\\.md|pending/[A-Za-z0-9_.-]+\\.json)").matcher(text);
-        while (links.find()) if (!allowed.contains(links.group())) throw new IOException("Candidate cites unknown evidence");
+    private static void validateLinks(String text, Set<String> sources) throws IOException {
+        var links = SOURCE_LINK.matcher(text);
+        while (links.find()) if (!sources.contains(links.group())) throw new IOException("Candidate cites unknown evidence");
     }
 
     /** 整理器只有这两把工具；它的执行回调不会进入正式 Agent 的工具分发器。 */
     private static List<ToolDefinition> definitions() {
-        return List.of(new ToolDefinition("read_source", "Read one listed rollout source", schema("source")),
+        return List.of(new ToolDefinition("read_source", "Read one allowed rollout or human-linked note source", schema("source")),
                 new ToolDefinition("stage_memory", "Stage a complete workspace or global section", schema("scope", "summary", "handbook")));
     }
     /** 为维护器的固定字符串参数生成闭合 schema；运行时 exact 仍重新检查类型与字段集合。 */

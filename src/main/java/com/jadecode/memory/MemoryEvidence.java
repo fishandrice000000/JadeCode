@@ -21,6 +21,10 @@ final class MemoryEvidence {
     private static final Pattern TOKEN = Pattern.compile("\\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{15,})\\b");
     private static final Pattern URL_SECRET = Pattern.compile("(?i)([?&](?:token|key|signature|password|access_token)=)[^&#\\s]+");
     private record Item(int priority, long sequence, String source, String text) { }
+    /** 只记录被过滤调用的名称和路径，不保留其正文或整份工具参数。 */
+    private record FilteredCall(String tool, String path, boolean projectInstructions) { }
+    /** 来源用户原话与完整性分开传递；空列表不能自动被解释成用户从未表达过要求。 */
+    record HumanEvidence(List<String> requests, boolean complete) { }
 
     private MemoryEvidence() { }
 
@@ -29,6 +33,51 @@ final class MemoryEvidence {
         String safe = CREDENTIAL.matcher(text).replaceAll("$1[REDACTED_SECRET]");
         safe = TOKEN.matcher(safe).replaceAll("[REDACTED_SECRET]");
         return URL_SECRET.matcher(safe).replaceAll("$1[REDACTED_SECRET]");
+    }
+
+    /**
+     * 为整理器提取指定来源区间的真实用户文字，防止模型总结把实现细节错归为用户要求。
+     * 只读当前工作区的会话事件，不读取模型提供的任意路径；工具结果、助手文字和通知不算人类请求。
+     * 返回脱敏且有界的独立列表；被过滤/截断的内容不表示未发生，也不向整理器提供新的执行指令。
+     */
+    static HumanEvidence humanRequests(ObjectNode source, com.jadecode.config.WorkspacePaths paths, int budget) throws IOException {
+        var requests = new ArrayList<String>();
+        String journal = source.path("journal").asText();
+        if (!journal.isEmpty()) {
+            Path file = Path.of(journal).toAbsolutePath().normalize();
+            if (!file.startsWith(paths.sessions()) || !file.getFileName().toString().equals("events.jsonl"))
+                throw new IOException("Human evidence is outside the session store");
+            MemoryStore.directory(file.getParent(), false);
+            if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) throw new IOException("Human evidence is not a regular file");
+            try (var reader = Files.newBufferedReader(file)) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    JournalEntry event = Json.mapper().readValue(line, JournalEntry.class);
+                    if (event.sequence() <= source.path("start_sequence").asLong()) continue;
+                    if (event.sequence() > source.path("end_sequence").asLong()) break;
+                    if (event.kind() != JournalEntry.Kind.APPEND || !event.reason().equals("request")) continue;
+                    for (Message message : event.messages()) if (message.role() == Role.USER && message.source() == null
+                            && !message.extractText().isBlank()) requests.add(message.extractText());
+                }
+            }
+        }
+        // 忙时用户补充由后端另行绑定；无日志嵌入调用也通过该字段保留人类证据。
+        for (JsonNode human : source.path("human_inputs")) if (human.isTextual()) requests.add(human.asText());
+        var selected = new ArrayList<String>(); boolean complete = true; int remaining = Math.max(0, budget);
+        for (int i = requests.size() - 1; i >= 0; i--) {
+            String safe = redact(requests.get(i));
+            if (safe.length() <= remaining) { selected.add(safe); remaining -= safe.length(); }
+            else {
+                complete = false;
+                // 优先较新的纠正；只有能放下明确的截断标记时才保留部分原话。
+                String marker = "\n[user request truncated by budget]";
+                if (remaining > marker.length() + 128) {
+                    selected.add(safe.substring(0, remaining - marker.length()) + marker); remaining = 0;
+                }
+            }
+        }
+        Collections.reverse(selected);
+        return new HumanEvidence(List.copyOf(selected), complete);
     }
 
     /**
@@ -48,7 +97,7 @@ final class MemoryEvidence {
                 throw new IOException("Memory evidence is outside the session store");
             MemoryStore.directory(path.getParent(), false);
             if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) throw new IOException("Memory evidence is not a regular file");
-            Set<String> memoryCalls = new HashSet<>();
+            Map<String, FilteredCall> memoryCalls = new HashMap<>();
             try (var reader = Files.newBufferedReader(path)) {
                 String line;
                 while ((line = reader.readLine()) != null) {
@@ -63,7 +112,7 @@ final class MemoryEvidence {
             }
         } else {
             long sequence = 0;
-            Set<String> memoryCalls = new HashSet<>();
+            Map<String, FilteredCall> memoryCalls = new HashMap<>();
             for (JsonNode item : job.path("snapshot")) {
                 Message message = Json.mapper().treeToValue(item, Message.class);
                 add(items, message, ++sequence, "snapshot:" + job.path("id").asText() + ":" + sequence,
@@ -100,14 +149,21 @@ final class MemoryEvidence {
         return result.toString();
     }
 
-    /** 只采集有用文本；思考、旧记忆、提示注入资源和原始工具大输出不混入用户证据。 */
-    private static void add(List<Item> items, Message message, long sequence, String source, boolean human, Set<String> memoryCalls, String memoryRoot, Path workspace) {
+    /**
+     * 只采集有用文本，排除思考、旧记忆和指令正文；过滤正文不等于抹去操作事实。
+     * 同一调用 ID 跨 assistant/tool 消息关联，只有收到实际结果才说明项目指令是否读取成功。
+     * 该标记仍是工具证据，不是人类原话，也不允许辅助模型恢复被隐藏的规则内容。
+     */
+    private static void add(List<Item> items, Message message, long sequence, String source, boolean human,
+            Map<String, FilteredCall> memoryCalls, String memoryRoot, Path workspace) {
         if (message.source() == Message.Source.MEMORY_REFERENCE) return;
         for (ContentBlock block : message.content()) {
             if (block instanceof ToolUseBlock call) {
                 String path = call.input().path("path").asText();
+                boolean instructions = path.endsWith("/AGENTS.md") || path.equals("AGENTS.md");
                 if (call.name().equals("memory_note") || call.name().equals("load_skill")
-                        || isMemoryPath(path, memoryRoot, workspace) || path.endsWith("/AGENTS.md") || path.equals("AGENTS.md")) memoryCalls.add(call.id());
+                        || isMemoryPath(path, memoryRoot, workspace) || instructions)
+                    memoryCalls.put(call.id(), new FilteredCall(call.name(), path, instructions));
                 else items.add(new Item(2, sequence, source, redact("Tool request " + call.name() + ": " + call.input())));
                 continue;
             }
@@ -116,10 +172,23 @@ final class MemoryEvidence {
                 // 旧 run(messages) 无来源标记，保守排除明显的框架/压缩参考，不能据其推断用户偏好。
                 if (value.startsWith("[Compacted]") || value.startsWith("[Scheduled]") || value.startsWith("[Goal")) continue;
                 items.add(new Item(human ? 0 : 1, sequence, source, redact(value)));
-            } else if (block instanceof ToolResultBlock tool && !memoryCalls.contains(tool.toolUseId())) {
-                String body = tool.content();
-                if (body.length() > 8000) body = body.substring(0, 8000) + "\n[tool output truncated]";
-                items.add(new Item(2, sequence, source, redact(body)));
+            } else if (block instanceof ToolResultBlock tool) {
+                FilteredCall filtered = memoryCalls.get(tool.toolUseId());
+                if (filtered != null) {
+                    // 旧记忆/候选笔记不构成新的独立事实；项目指令只保留成功与否，永不复制正文。
+                    if (filtered.projectInstructions()) {
+                        var observation = Json.mapper().createObjectNode().put("type", "tool_observation")
+                                .put("tool", filtered.tool()).put("path", filtered.path())
+                                .put("succeeded", !tool.isError() && !tool.content().startsWith("Error")
+                                        && !tool.content().startsWith("Permission denied"))
+                                .put("body_omitted", "project_instructions");
+                        items.add(new Item(2, sequence, source, redact(observation.toString())));
+                    }
+                } else {
+                    String body = tool.content();
+                    if (body.length() > 8000) body = body.substring(0, 8000) + "\n[tool output truncated]";
+                    items.add(new Item(2, sequence, source, redact(body)));
+                }
             }
         }
     }
