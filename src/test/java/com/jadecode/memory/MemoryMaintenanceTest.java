@@ -219,6 +219,149 @@ class MemoryMaintenanceTest {
         }
     }
 
+    /** 无知识增量只确认基线：Markdown 的内容和修改时间不变，完成状态可以跨启动恢复。 */
+    @Test void noChangeAcknowledgesInputsWithoutRewritingKnowledge() throws Exception {
+        var store = store(); var calls = new java.util.concurrent.atomic.AtomicInteger();
+        try (var memory = service(store, request -> { calls.incrementAndGet(); return reply("No durable change."); })) {
+            memory.begin("session", "turn", "这是一次临时演示，没有长期约束");
+            memory.note("remember", "Temporary demo", "turn");
+            Path handbook = store.root().resolve("MEMORY.md"), summary = store.root().resolve("memory_summary.md");
+            var originalTime = java.nio.file.attribute.FileTime.fromMillis(1_000);
+            Files.setLastModifiedTime(handbook, originalTime); Files.setLastModifiedTime(summary, originalTime);
+            memory.maintain();
+            assertEquals(MemoryStore.EMPTY_HANDBOOK, Files.readString(handbook));
+            assertEquals(MemoryStore.EMPTY_SUMMARY, Files.readString(summary));
+            assertEquals(originalTime, Files.getLastModifiedTime(handbook));
+            assertEquals(originalTime, Files.getLastModifiedTime(summary));
+            assertEquals(1, store.snapshot().processedNotes().size());
+            assertEquals("completed", store.maintenanceState().path("status").asText());
+            assertFalse(store.maintenanceState().path("content_changed").asBoolean());
+            memory.maintain(); assertEquals(1, calls.get());
+            // 模拟已发布后、完成状态落盘前退出；再次启动依据发布基线修复，不重发请求。
+            var interrupted = store.maintenanceState().put("status", "running"); store.maintenanceState(interrupted);
+            memory.maintain(); assertEquals(1, calls.get());
+            assertEquals("completed", store.maintenanceState().path("status").asText());
+        }
+    }
+
+    /** 已处理来源仍可按名读取，但下一批输入只包含新增元数据，避免逐轮重讲旧任务。 */
+    @Test void consolidationReceivesOnlyNewSourceMetadata() throws Exception {
+        var store = store(); var fake = new Curator();
+        try (var memory = service(store, fake)) {
+            enqueue(memory, "first"); memory.maintain();
+            String first = store.snapshot().processedMaterials().getFirst();
+            enqueue(memory, "second"); memory.maintain();
+            var starts = fake.requests.stream().filter(r -> !r.tools().isEmpty() && r.messages().size() == 1).toList();
+            assertEquals(2, starts.size());
+            var input = Json.mapper().readTree(starts.getLast().messages().getFirst().extractText());
+            assertEquals(1, input.path("sources").size());
+            assertNotEquals(first, input.path("sources").get(0).path("id").asText());
+            assertTrue(input.path("available_sources").toString().contains(first));
+            assertEquals(2, store.snapshot().processedMaterials().size());
+        }
+    }
+
+    /** 重现真实故障：另一个项目应能保留并按清单阅读已发布的全局纠正来源。 */
+    @Test void inheritedGlobalPendingReferenceCanBeReadAndRepublishedAcrossProjects() throws Exception {
+        var first = store(); first.initialize();
+        String noteId = MemoryStore.hash("global-preference"), inherited = "pending/" + noteId + ".json";
+        first.note(noteId, "correct", "Simple replies should be brief", "以后简单问题只给结论", "session", "turn");
+        String global = "Use Chinese and brief simple replies. [correction](" + inherited + ")";
+        first.publish(first.snapshot(), Map.of("global", new MemoryStore.Artifacts("Global response preference", global),
+                first.scope(), new MemoryStore.Artifacts("First project", "First project must stay offline")), "first", List.of(inherited));
+        String hiddenId = MemoryStore.hash("unpublished-foreign-note");
+        first.note(hiddenId, "remember", "Unpublished foreign note", "只对第一个项目保留", "session", "other");
+        var second = new MemoryStore(new com.jadecode.config.WorkspacePaths(Files.createDirectory(temporary.resolve("second-project")), first.paths().jade()), warnings::add);
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        try (var memory = service(second, request -> {
+            int step = calls.incrementAndGet();
+            try {
+                var input = Json.mapper().readTree(request.messages().getFirst().extractText());
+                assertTrue(input.path("available_sources").toString().contains(inherited));
+                assertFalse(input.path("available_sources").toString().contains(hiddenId));
+                if (step == 1) return call("read-global", "read_source", Json.mapper().createObjectNode().put("source", inherited));
+                if (step == 2) {
+                    assertTrue(request.messages().getLast().content().toString().contains("以后简单问题只给结论"));
+                    String local = "pending/" + input.path("pending_notes").get(0).path("id").asText() + ".json";
+                    return new ModelResponse(Message.assistant(List.of(
+                            new ToolUseBlock("global", "stage_memory", Json.mapper().createObjectNode().put("scope", "global")
+                                    .put("summary", "Global response preference").put("handbook", global)),
+                            new ToolUseBlock("local", "stage_memory", Json.mapper().createObjectNode().put("scope", "workspace")
+                                    .put("summary", "Second project database").put("handbook", "Use PostgreSQL here. [decision](" + local + ")"))
+                    )), null, "tool_use");
+                }
+                return reply("Completed");
+            } catch (IOException failure) { throw new AssertionError(failure); }
+        })) {
+            memory.begin("second-session", "second-turn", "第二个项目用 PostgreSQL");
+            memory.note("remember", "Use PostgreSQL in second project", "second-turn"); memory.maintain();
+            assertTrue(second.snapshot().workspaceHandbook().contains("PostgreSQL"));
+            assertEquals(global, second.snapshot().globalHandbook());
+            assertEquals("First project must stay offline", first.snapshot().workspaceHandbook());
+            assertEquals("completed", second.maintenanceState().path("status").asText());
+        }
+    }
+
+    /** 未发布的其它项目候选仍不允许引用，失败保留旧知识并明确记录重试耗尽。 */
+    @Test void unknownPendingReferenceIsRejectedAndFailureExhaustionIsVisible() throws Exception {
+        var store = store(); var calls = new java.util.concurrent.atomic.AtomicInteger();
+        try (var memory = service(store, request -> {
+            calls.incrementAndGet();
+            return call("unknown", "stage_memory", Json.mapper().createObjectNode().put("scope", "global")
+                    .put("summary", "must not publish").put("handbook", "[unknown](pending/" + "f".repeat(64) + ".json)"));
+        })) {
+            memory.begin("session", "turn", "Remember a project fact"); memory.note("remember", "A project fact", "turn");
+            for (int attempt = 1; attempt <= 3; attempt++) {
+                assertThrows(IOException.class, memory::maintain);
+                assertEquals(attempt < 3 ? "retry" : "exhausted", store.maintenanceState().path("status").asText());
+                assertEquals(MemoryStore.EMPTY_HANDBOOK, store.snapshot().handbook());
+                assertTrue(store.snapshot().processedNotes().isEmpty());
+                // 测试主动推进持久退避时间，验证状态转移而不真实等待三分钟。
+                var state = store.maintenanceState().put("retry_at", 0); store.maintenanceState(state);
+            }
+            memory.maintain(); assertEquals(3, calls.get());
+        }
+    }
+
+    /** pending 读取同样拒绝伪造身份与符号链接，不能因修复继承而扩大文件访问。 */
+    @Test void pendingSourceIdentityAndSymlinkAreChecked() throws Exception {
+        var store = store(); store.initialize(); String id = MemoryStore.hash("note");
+        String ref = "pending/" + id + ".json";
+        store.note(id, "correct", "Use Chinese", "请用中文", "session", "turn");
+        assertTrue(store.readSource(ref).contains("请用中文"));
+        Path file = store.root().resolve(ref);
+        var invalid = (ObjectNode) Json.mapper().readTree(Files.readString(file)); invalid.put("id", "f".repeat(64));
+        Files.writeString(file, invalid.toString()); assertThrows(IOException.class, () -> store.readSource(ref));
+        Files.delete(file); Path outside = Files.writeString(temporary.resolve("outside.json"), "must-not-read");
+        Files.createSymbolicLink(file, outside); assertThrows(IOException.class, () -> store.readSource(ref));
+    }
+
+    /** 即使提取模型误写了要求，整理器也拿得到独立原话，能区分非零协议与助手选定的 2。 */
+    @Test void curatorGetsPrimaryUserEvidenceIndependentlyOfExtractedClaims() throws Exception {
+        var store = store(); var calls = new java.util.concurrent.atomic.AtomicInteger();
+        var sessions = new SessionStore(store.paths(), warnings::add);
+        try (var opened = sessions.create("offline"); var memory = service(store, request -> {
+            calls.incrementAndGet();
+            if (request.tools().isEmpty()) return reply("{\"rollout_summary\":\"The user required exit code 2.\",\"rollout_slug\":\"incorrect-claim\"}");
+            try {
+                var input = Json.mapper().readTree(request.messages().getFirst().extractText());
+                String source = input.path("sources").get(0).path("source").asText();
+                var human = input.path("source_user_requests").path(source);
+                assertTrue(human.path("complete").asBoolean());
+                assertTrue(human.path("requests").toString().contains("只要求非零"));
+                assertFalse(human.path("requests").toString().contains("必须是 2"));
+                return reply("The report overstates the user's contract; no durable change.");
+            } catch (IOException failure) { throw new AssertionError(failure); }
+        })) {
+            var journal = opened.journal(); long start = journal.sequence();
+            journal.append(JournalEntry.Kind.APPEND, List.of(Message.userText("外部协议只要求非零，具体失败码由实现选择")), Json.mapper().createArrayNode(), "request");
+            journal.append(JournalEntry.Kind.APPEND, List.of(Message.assistant(List.of(new TextBlock("我选择 2，但并不是用户说必须是 2")))), Json.mapper().createArrayNode(), "reply");
+            memory.enqueue("session", "task", journal.eventsPath(), start, journal.sequence(), List.of(), List.of(), "completed");
+            memory.maintain(); assertEquals(2, calls.get());
+            assertEquals(MemoryStore.EMPTY_HANDBOOK, store.snapshot().handbook());
+        }
+    }
+
     @Test void closingDuringModelCallPreventsLatePublication() throws Exception {
         var store = store(); MemoryMaintenance[] holder = new MemoryMaintenance[1];
         holder[0] = service(store, request -> { holder[0].close(); return reply("{\"rollout_summary\":\"Late reply\",\"rollout_slug\":\"late\"}"); });
