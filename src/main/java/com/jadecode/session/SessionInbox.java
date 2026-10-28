@@ -35,9 +35,14 @@ final class SessionInbox {
      * @param result 给调用者取最终答案或错误用的 future，不会把它发给模型
      */
     record Entry(SessionEvent.Request request, CompletableFuture<String> result,
-            com.jadecode.process.BackgroundManager.Completion background) {
-        Entry(SessionEvent.Request request, CompletableFuture<String> result) { this(request, result, null); }
+            com.jadecode.process.BackgroundManager.Completion background, TeamReceipt team) {
+        Entry(SessionEvent.Request request, CompletableFuture<String> result) { this(request, result, null, null); }
+        Entry(SessionEvent.Request request, CompletableFuture<String> result,
+                com.jadecode.process.BackgroundManager.Completion background) { this(request, result, background, null); }
     }
+
+    /** 必等报告的所属执行由 Harness 登记，不能从模型正文猜测。 */
+    record TeamReceipt(String assignment, String owner, boolean required) { }
 
     /**
      * 把请求加到队尾，立即返回，不等任务执行，也不等队列腾位置。
@@ -46,7 +51,7 @@ final class SessionInbox {
      *         调用者要报告排队失败；定时请求则留到以后重试，不能当成已经送到模型
      */
     synchronized boolean offer(Entry entry) {
-        if (closed || requests.stream().filter(item -> item.background() == null).count() >= CAPACITY) return false;
+        if (closed || requests.stream().filter(item -> item.background() == null && (item.team() == null || !item.team().required())).count() >= CAPACITY) return false;
         requests.add(entry);
         wake();
         return true;
@@ -65,6 +70,18 @@ final class SessionInbox {
     }
 
     /**
+     * 必等报告使用独立槽，普通进度不能挤占；数量由会话的 32 项未收讫派工上限约束。
+     * 相同邮件重试不重复占槽，关闭时明确拒绝。
+     */
+    synchronized boolean offerTeam(Entry entry) {
+        if (closed) return false;
+        if (requests.stream().noneMatch(item -> item.request().incoming() != null
+                && item.request().incoming().id().equals(entry.request().incoming().id()))) requests.add(entry);
+        wake();
+        return true;
+    }
+
+    /**
      * 空闲时优先取允许插入且能唤起的消息，再取其它可唤起消息或普通请求。
      * 不取 wakeWhenIdle=false 的参考消息，否则普通进度也会触发付费模型请求。
      */
@@ -73,7 +90,8 @@ final class SessionInbox {
             for (int i = 0; i < requests.size(); i++) {
                 Entry entry = requests.get(i);
                 var incoming = entry.request().incoming();
-                if (entry.background() != null && entry.background().required()) continue;
+                if (entry.background() != null && entry.background().required()
+                        || entry.team() != null && entry.team().required()) continue;
                 if (incoming != null && !incoming.wakeWhenIdle()) continue;
                 boolean insertion = incoming != null && incoming.allowInsertion();
                 if (insertion != insertionFirst) continue;
@@ -108,12 +126,14 @@ final class SessionInbox {
 
     /** 必等结果只归启动它的当前大轮次，不能偷给别的任务处理。 */
     private static boolean ownRequired(Entry entry, String owner) {
-        return entry.background() != null && entry.background().required() && entry.background().owner().equals(owner);
+        return entry.background() != null && entry.background().required() && entry.background().owner().equals(owner)
+                || entry.team() != null && entry.team().required() && entry.team().owner().equals(owner);
     }
 
     /** 新派工和新用户请求不是参考通知；其它任务的必等结果也不能取走。 */
     private static boolean eligible(Entry entry, String owner) {
-        return isNotice(entry) && (entry.background() == null || !entry.background().required() || ownRequired(entry, owner));
+        return isNotice(entry) && (entry.background() == null || !entry.background().required() || ownRequired(entry, owner))
+                && (entry.team() == null || !entry.team().required() || ownRequired(entry, owner));
     }
 
     /** 最终结束判定与生产者入队用同一把锁：已经入队的插入式消息不能被漏过去。 */
@@ -150,7 +170,7 @@ final class SessionInbox {
             insertion = old.allowInsertion();
             result = buffered.result();
             id = old.id();
-        } else if (requests.stream().filter(item -> item.background() == null).count() >= CAPACITY) return null;
+        } else if (requests.stream().filter(item -> item.background() == null && (item.team() == null || !item.team().required())).count() >= CAPACITY) return null;
         var incoming = new SessionEvent.Incoming(id, "user", "leader", null, null,
                 "user", combined, null, insertion, true);
         Entry updated = new Entry(new SessionEvent.Request(combined, context, null, incoming), result);

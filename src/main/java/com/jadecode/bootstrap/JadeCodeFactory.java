@@ -270,6 +270,7 @@ public final class JadeCodeFactory {
             paths.register();
             TaskStore tasks = new TaskStore(paths);
             TeamManager team = new TeamManager(paths, tasks, errors);
+            team.observe(observer);
             var usage = new com.jadecode.session.SessionUsage(errors);
             if (!client.thinkingChoices().contains(settings.thinking()))
                 throw new IllegalArgumentException("config.thinking.effort is not adapted for the current endpoint or model");
@@ -490,8 +491,9 @@ public final class JadeCodeFactory {
     private static String teammatePrompt(Path cwd, String actor, String role, String catalog,
             String mcpContext, String instructions) {
         // 对象字段和固定文字先组好；变化值只在最后的身份区出现。
+        var parsedRole = com.jadecode.team.TeammateRole.parse(role);
         String identity = Json.mapper().createObjectNode().put("actor", actor).put("cwd", cwd.toString())
-                .put("responsibilities", role).toString();
+                .put("name", parsedRole.name()).put("responsibilities", parsedRole.responsibilities()).toString();
         return "You are JadeCode teammate. Work only on assignments from leader. Read the assignment full body when needed."
                 + " Do not create teammates, modify the task graph, self-claim work or message other teammates."
                 + " Use submit_task_result with the exact assignment_id, completed/failed/blocked, summary and full report."
@@ -568,8 +570,12 @@ public final class JadeCodeFactory {
                 + " Tool calls are checked against the user's current permission profile and rules. Never bypass a denial."
                 + " You are the team Leader. Only you may create up to three persistent teammates and manage the task graph."
                 + " Use spawn_teammate then assign_task for existing ready tasks; assign_task claims on their behalf."
+                + " spawn_teammate role must be a short English name on its first line and responsibilities on following lines."
+                + " assign_task waits for its report by default; use wait_for_completion=false only for explicitly detached work."
+                + " Give each assignment a fixed scope with read_paths/write_paths. Use English names, task titles and UI summaries."
+                + " Reply to questions with send_message reply_to, and record report checks with review_task_result."
                 + " Teammates have independent histories: include necessary context in summary and full body."
-                + " You may continue other work or return after dispatch; reports wake you by default."
+                + " You may continue other work after dispatch; required reports are processed before this turn finishes."
                 + " Review reports and actual changes before declaring the user's overall goal complete."
                 + " task remains available for one-shot subagents and is distinct from Team assignments."
                 + " Workflow runs a saved orchestration synchronously. For review-changes, first collect the actual change text and pass args.changes."

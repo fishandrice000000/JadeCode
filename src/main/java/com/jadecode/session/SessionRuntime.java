@@ -77,6 +77,8 @@ public final class SessionRuntime implements AutoCloseable {
         RUNNING,
         /** 当前任务在等后台命令跑完；不做下一项任务，也不反复问模型。 */
         WAITING_BACKGROUND,
+        /** 等本轮派工报告；界面显示 Waiting，不轮询模型。 */
+        WAITING_TEAM,
         /** 会话日志写入失败，保留内存结果但不再发模型请求或执行工具。 */
         PERSISTENCE_FAILED,
         /** 用户已经退出，不再开始新操作，排队任务也不再执行。 */
@@ -92,6 +94,65 @@ public final class SessionRuntime implements AutoCloseable {
     private List<Message> history;
     /** 用户、cron、邮箱与后台事件统一在这里排队，只有消费线程能采用到历史。 */
     private final SessionInbox inbox = new SessionInbox();
+    /** 派工到原 Leader 执行的映射；在投递前登记，模型采用终态通知后删除。 */
+    private final Map<String, String> requiredTeam = new java.util.concurrent.ConcurrentHashMap<>();
+    private java.util.function.Supplier<List<Map<String, Object>>> teamSnapshot = List::of;
+
+    /** 装配只读 Team 视图；供应方只复制内存，不能在 UI 线程读取邮箱正文。 */
+    public void teamView(java.util.function.Supplier<List<Map<String, Object>>> supplier) {
+        teamSnapshot = java.util.Objects.requireNonNull(supplier);
+    }
+
+    /** 只读报告端口只接受派工 ID；后台服务不接受模型或前端指定任意文件路径。 */
+    @FunctionalInterface public interface TeamReports { String read(String assignment) throws IOException; }
+    private TeamReports teamReports = id -> { throw new IllegalArgumentException("No Team is active"); };
+    /** 工厂安装当前 Team 的只读报告端口，不启动 IO。 */
+    public void teamReports(TeamReports reader) { teamReports = java.util.Objects.requireNonNull(reader); }
+    /** 后端详情页显式请求时才读取正文，普通快照不读磁盘。 */
+    public String teamReport(String assignment) throws IOException { return teamReports.read(assignment); }
+    /** 当前执行编号供只读 Team 统计使用，空闲时为空串。 */
+    public String currentExecutionId() { Active task = active; return task == null ? "" : task.context().id(); }
+    /** 运行中派工来自当前执行上下文；空闲时为空，不借用排队任务冒充当前工作。 */
+    public String currentAssignmentId() {
+        Active current = active;
+        return current == null || current.context().assignment() == null ? "" : current.context().assignment().id();
+    }
+
+    /** 在派工投递前登记本轮义务；上限防止必等报告的独立接收槽无限增长。 */
+    public void expectTeamResult(String assignment, String owner) {
+        synchronized (inbox) {
+            ensureOpen();
+            if (requiredTeam.size() >= 32) throw new IllegalStateException("At most 32 pending required assignments");
+            requiredTeam.put(assignment, owner);
+        }
+    }
+
+    /** 仅撤销尚未交付的派工或已退出轮次；不撤销已执行的业务副作用。 */
+    public void forgetTeamResult(String assignment) {
+        synchronized (inbox) { requiredTeam.remove(assignment); inbox.wake(); }
+    }
+
+    /** 当前任务是否仍欠必要报告；不调用 TeamManager，避免队列锁与管理器锁互等。 */
+    private boolean hasRequiredTeam(String owner) { return requiredTeam.containsValue(owner); }
+
+    /**
+     * 报告使用专用接收槽，身份与所属执行来自 Harness；原任务已经失败则作为普通通知交付。
+     * 返回成功只表示入队，登记义务要等正式模型请求成功采用之后才解除。
+     */
+    public CompletableFuture<String> receiveTeamResult(SessionEvent.Incoming incoming, ExecutionContext origin,
+            String assignment, boolean required) {
+        var result = new CompletableFuture<String>();
+        var scoped = new ExecutionContext("run_" + java.util.UUID.randomUUID(), origin.source(), origin.approval(), () -> closed);
+        synchronized (inbox) {
+            if (closed || persistenceFailed) return null;
+            boolean own = required && origin.id().equals(requiredTeam.get(assignment));
+            var entry = new SessionInbox.Entry(new SessionEvent.Request(incoming.render(), scoped, null, incoming), result,
+                    null, new SessionInbox.TeamReceipt(assignment, origin.id(), own));
+            if (!(own ? inbox.offerTeam(entry) : inbox.offer(entry))) return null;
+        }
+        return result;
+    }
+
     /** 检查定时任务是否到期的对象，REPL 会启动它，单次 run 不启动。 */
     private final CronProducer cron;
     /** 显示回复、接收通知和本轮计数；回复结束不等于所有业务成功。 */
@@ -191,8 +252,15 @@ public final class SessionRuntime implements AutoCloseable {
     /** 界面读取的纯资料，不包含可修改的消息列表、日志写者、线程或审批授权。 */
     public record Display(String id, String title, String model, ModelMetadata metadata, ThinkingSettings thinking,
             String thinkingLabel, List<ThinkingSettings> thinkingChoices, SessionUsage.Snapshot usage, ContextUsage context,
-            Map<String, List<String>> resources) {
+            Map<String, List<String>> resources, List<Map<String, Object>> team) {
+        /** 兼容不装配 Team 的离线显示调用。 */
+        public Display(String id, String title, String model, ModelMetadata metadata, ThinkingSettings thinking,
+                String thinkingLabel, List<ThinkingSettings> thinkingChoices, SessionUsage.Snapshot usage, ContextUsage context,
+                Map<String, List<String>> resources) {
+            this(id, title, model, metadata, thinking, thinkingLabel, thinkingChoices, usage, context, resources, List.of());
+        }
         public Display {
+            team = List.copyOf(team);
             thinkingChoices = List.copyOf(thinkingChoices);
             var copy = new java.util.LinkedHashMap<String, List<String>>();
             resources.forEach((group, names) -> copy.put(group, List.copyOf(names)));
@@ -236,7 +304,7 @@ public final class SessionRuntime implements AutoCloseable {
         return new Display(sessionId(), metadata == null ? "" : metadata.title(), model,
                 profile == null ? new ModelMetadata(ModelMetadata.Limits.unknown(), "") : profile.metadata(), setting,
                 profile == null ? "default" : profile.thinkingLabel(setting),
-                profile == null ? List.of(ThinkingSettings.DEFAULT) : profile.thinkingChoices(), usage.snapshot(), contextUsage, resources);
+                profile == null ? List.of(ThinkingSettings.DEFAULT) : profile.thinkingChoices(), usage.snapshot(), contextUsage, resources, teamSnapshot.get());
     }
 
     /** 只取当前设置，供新队友/一次性子任务在创建时继承；不会改已有队友。 */
@@ -406,7 +474,7 @@ public final class SessionRuntime implements AutoCloseable {
         var result = new CompletableFuture<String>();
         // 已入队的邮件属于接收方，发送者随后退出不能撤回它；仍保留原来源和审批范围。
         var scoped = new ExecutionContext("run_" + java.util.UUID.randomUUID(), context.source(),
-                context.approval(), () -> closed);
+                context.approval(), () -> closed, context.goal(), context.assignment());
         synchronized (inbox) {
             if (closed || switching || persistenceFailed || !inbox.offer(new SessionInbox.Entry(new SessionEvent.Request(incoming.render(), scoped, null, incoming), result)))
                 return null;
@@ -456,7 +524,7 @@ public final class SessionRuntime implements AutoCloseable {
      */
     private void backgroundCompleted(Completion result) {
         var origin = result.context();
-        var context = new ExecutionContext("run_" + java.util.UUID.randomUUID(), origin.source(), origin.approval(), () -> closed);
+        var context = new ExecutionContext("run_" + java.util.UUID.randomUUID(), origin.source(), origin.approval(), () -> closed, origin.goal(), origin.assignment());
         var incoming = new SessionEvent.Incoming(result.id(), "background", "session", result.owner(), null,
                 "background", notification(result), null, result.allowInsertion(), result.wakeWhenIdle());
         var request = new SessionEvent.Request(incoming.render(), context, null, incoming);
@@ -583,6 +651,7 @@ public final class SessionRuntime implements AutoCloseable {
         task.memoryStart = journal == null ? 0 : journal.sequence();
         task.memoryHistoryStart = append ? history.size() : Math.max(0, history.size() - 1);
         task.receipts.addAll(initialResults);
+        if (entry.team() != null) task.teamReceipts.add(entry.team().assignment());
         active = task;
         changeState(State.RUNNING);
         // 实时计数和最终耗时共用 Active 的同一起点，不累加工具或模型的局部耗时。
@@ -735,6 +804,9 @@ public final class SessionRuntime implements AutoCloseable {
             // 2. 模型已收到刚才送出的结果通知，可以删掉后台记录；这不等于业务已经成功。
             if (background != null) background.acknowledge(task.receipts);
             task.receipts.clear();
+            // 报告已随本次请求交给模型，才解除必要等待；只收到或写入 Inbox 尚不足够。
+            task.teamReceipts.forEach(this::forgetTeamResult);
+            task.teamReceipts.clear();
 
             if (!reply.calls().isEmpty()) {
                 // 3. 执行这一批工具，把每个调用的结果一起写入历史；出错也要配齐调用和结果的 ID。
@@ -764,6 +836,13 @@ public final class SessionRuntime implements AutoCloseable {
                 changeState(State.RUNNING);
                 continue;
             }
+            if (hasRequiredTeam(task.context().id())) {
+                task.timer.resumeDisplay();
+                changeState(State.WAITING_TEAM);
+                awaitResults(task);
+                changeState(State.RUNNING);
+                continue;
+            }
             Continue continuation = engine.stop(history);
             if (continuation != null) {
                 task.timer.resumeDisplay();
@@ -778,7 +857,7 @@ public final class SessionRuntime implements AutoCloseable {
             synchronized (inbox) {
                 // Stop/记忆维护也可能耗时。结束判定必须再查一次，并与入队互斥。
                 // 这之后才到达的消息属于下一轮；已有补充则继续当前轮，不漏掉用户空回车升级。
-                pending = inbox.hasCurrentInput(task.context().id());
+                pending = inbox.hasCurrentInput(task.context().id()) || hasRequiredTeam(task.context().id());
                 if (!pending) { active = null; if (!closed) changeState(State.IDLE); }
             }
             if (pending) {
@@ -886,6 +965,7 @@ public final class SessionRuntime implements AutoCloseable {
             var incoming = entry.request().incoming();
             apply(new SessionEvent.Notifications(List.of(incoming.render())));
             if (entry.background() != null) task.receipts.add(entry.background());
+            if (entry.team() != null) task.teamReceipts.add(entry.team().assignment());
             if (incoming.kind().equals("user")) {
                 task.goal = (task.goal == null ? "" : task.goal + "\n\n") + incoming.summary();
                 task.memoryHumans.add(incoming.summary());
@@ -1099,6 +1179,7 @@ public final class SessionRuntime implements AutoCloseable {
             failure.addSuppressed(recording);
         }
         if (background != null) background.cancelRequired(task.context().id());
+        requiredTeam.entrySet().removeIf(entry -> entry.getValue().equals(task.context().id()));
         inbox.discardRequired(task.context().id());
         try { if (!persistenceFailed) record(JournalEntry.Kind.TURN_FAILED, List.of(), "turn"); }
         catch (RuntimeException recording) { failure.addSuppressed(recording); }
@@ -1169,6 +1250,8 @@ public final class SessionRuntime implements AutoCloseable {
         final List<Message> snapshot;
         /** 已加进 history、但还没等到模型正常回复的后台结果。 */
         final List<Completion> receipts = new ArrayList<>();
+        /** 已进入历史、尚未获得正式模型响应的 Team 回执。 */
+        final List<String> teamReceipts = new ArrayList<>();
         /** 已采用的插入消息，随当前大轮次完成其 future，不重复执行原业务。 */
         final List<SessionInbox.Entry> incomingReceipts = new java.util.concurrent.CopyOnWriteArrayList<>();
         /** 展示通知暂存到合适位置，避免 Incoming 抢在刚生成的阶段回复前面显示。 */
@@ -1202,7 +1285,7 @@ public final class SessionRuntime implements AutoCloseable {
             this.entry = entry;
             var origin = entry.request().context();
             timer = new com.jadecode.execution.TurnTimer(origin.id(), notices);
-            execution = new ExecutionContext(origin.id(), origin.source(), timer.track(origin.approval()), origin.sessionClosed(), origin.goal());
+            execution = new ExecutionContext(origin.id(), origin.source(), timer.track(origin.approval()), origin.sessionClosed(), origin.goal(), origin.assignment());
             // 只有定时任务在第一次回复前失败才会重试；普通任务不用多存一份长历史。
             snapshot = entry.request().cronId() == null ? List.of() : List.copyOf(history);
         }

@@ -51,7 +51,8 @@ public record ExecutionNotice(String actor, Kind kind, String id, String name, S
         /** 一次性子代理的额外显示说明。 */ SUBAGENT,
         /** 后台启动、结束或停止，不能偷取其结果队列。 */ BACKGROUND,
         /** Workflow 阶段/步骤/最终状态，只供显示，不写主对话或批准执行。 */ WORKFLOW,
-        /** 目标状态/判断理由；由宿主生成，不是主模型自报业务成功。 */ GOAL
+        /** 目标状态/判断理由；由宿主生成，不是主模型自报业务成功。 */ GOAL,
+        /** Team 派工/问题/报告变化；UPDATED 仅刷新状态，其余为关键通知。 */ TEAM
     }
     /** 创建没有 token 统计的普通通知；正文只用于显示。 */
     public static ExecutionNotice event(Kind kind, String id, String name, String detail, String state) {

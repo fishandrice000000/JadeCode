@@ -60,7 +60,13 @@ public final class ShellCommand implements AutoCloseable {
      * @param command 已校验的 shell 文本
      * @return 只有 exitCode=0 才算成功，失败保留原因
      */
-    public Result run(String command) {
+    public Result run(String command) { return run(command, null); }
+
+    /**
+     * 工具/后台入口传入可信快照，未来进程隔离在 ProcessBuilder 创建前使用此上下文。
+     * 当前仍执行已通过 Gate 的命令；不把元数据伪装成操作系统限制。
+     */
+    public Result run(String command, com.jadecode.execution.ExecutionContext context) {
         Running running;
         try {
             synchronized (processes) {
@@ -72,6 +78,7 @@ public final class ShellCommand implements AutoCloseable {
                     Runtime.getRuntime().addShutdownHook(shutdownHook);
                     hookRegistered = true;
                 }
+                if (context != null && context.isCancelled()) return new Result("Error: Execution source has exited", null, false);
                 Process process = new ProcessBuilder("/usr/bin/setsid", "/bin/sh", "-c", command)
                         .directory(cwd.toFile()).redirectErrorStream(true).start();
                 running = new Running(process);

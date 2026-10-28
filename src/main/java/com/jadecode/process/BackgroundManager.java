@@ -154,7 +154,9 @@ public final class BackgroundManager implements AutoCloseable {
      * @param command BashTool 已检查过的命令原文
      * @return 输出或 Error 文字，不修改消息列表
      */
-    public String runForeground(String command) { return foreground.run(command).text(); }
+    public String runForeground(String command) { return runForeground(command, null); }
+    /** 同步命令也把当前派工快照交给进程入口，不通过可变的成员全局状态读取范围。 */
+    public String runForeground(String command, ExecutionContext context) { return foreground.run(command, context).text(); }
 
     /**
      * 后台线程实际执行命令，收集输出后把结果放进 ready。
@@ -170,7 +172,7 @@ public final class BackgroundManager implements AutoCloseable {
     private void run(Job job) {
         Completion result;
         try (ShellCommand shell = job.shell()) {
-            ShellCommand.Result output = shell.run(job.command());
+            ShellCommand.Result output = shell.run(job.command(), job.context());
             result = new Completion(job.id(), job.owner(), job.required(), job.command(),
                     Integer.valueOf(0).equals(output.exitCode()) ? "completed" : "failed",
                     output.exitCode(), output.text(), output.truncated());

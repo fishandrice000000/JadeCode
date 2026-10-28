@@ -29,10 +29,10 @@ public final class PermissionGate {
     private static final Set<String> INTERNAL = Set.of("glob", "todo_write", "compact", "load_skill", "task", "Workflow", "memory_note",
             "create_task", "get_task", "list_tasks", "update_task", "claim_task", "complete_task",
             "connect_mcp", "schedule_cron", "list_crons", "cancel_cron", "spawn_teammate", "list_teammates", "close_teammate",
-            "shutdown_teammate", "assign_task", "send_message", "submit_task_result", "reopen_task", "retry_team_message");
+            "shutdown_teammate", "assign_task", "send_message", "submit_task_result", "reopen_task", "retry_team_message", "review_task_result");
     private static final Set<String> ADMIN_WRITES = Set.of("memory_note", "create_task", "update_task", "claim_task", "complete_task",
             "schedule_cron", "cancel_cron", "spawn_teammate", "close_teammate", "shutdown_teammate", "assign_task", "send_message", "submit_task_result",
-            "reopen_task", "retry_team_message");
+            "reopen_task", "retry_team_message", "review_task_result");
 
     private Path runtimeRoot;
     private java.util.function.Predicate<Path> artifactReadable = path -> false;

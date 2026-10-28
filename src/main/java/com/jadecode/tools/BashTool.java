@@ -184,10 +184,10 @@ public class BashTool implements Tool {
         }
         // 3. 同步命令直接返回最终结果，不再发后台通知。有管理器就用它，否则执行后关闭局部 shell。
         if (background != null) {
-            return background.runForeground(command.textValue());
+            return background.runForeground(command.textValue(), context);
         }
         try (ShellCommand shell = new ShellCommand(cwd, timeoutSeconds)) {
-            return shell.run(command.textValue()).text();
+            return shell.run(command.textValue(), context).text();
         }
     }
 }

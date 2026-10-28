@@ -21,12 +21,22 @@ import com.jadecode.safety.approval.Approval;
  * @param approval 询问用户的函数，null 表示不能询问
  * @param sessionClosed 检查所属会话是否已退出的函数，由程序提供，不是模型参数
  * @param goal 当前任务说明，供独立审批请求核对操作用途，不传入整段聊天历史
+ * @param assignment Harness 绑定的派工快照；普通用户任务为 null，不从模型正文反解析
  */
-public record ExecutionContext(String id, Source source, Approval approval, BooleanSupplier sessionClosed, String goal) {
+public record ExecutionContext(String id, Source source, Approval approval, BooleanSupplier sessionClosed, String goal,
+        AssignmentContext assignment) {
+    /** 保留非 Team 调用方的构造契约；普通任务没有派工范围。 */
+    public ExecutionContext(String id, Source source, Approval approval, BooleanSupplier sessionClosed, String goal) {
+        this(id, source, approval, sessionClosed, goal, null);
+    }
     /** 旧调用未提供目标时保留原签名；目标由会话在运行时补入，不改变来源。 */
     public ExecutionContext(String id, Source source, Approval approval, BooleanSupplier sessionClosed) { this(id, source, approval, sessionClosed, ""); }
     /** 给辅助审批携带当前真实任务说明，不把整个可变历史交给审批组件。 */
-    public ExecutionContext withGoal(String value) { return new ExecutionContext(id, source, approval, sessionClosed, value == null ? "" : value); }
+    public ExecutionContext withGoal(String value) { return new ExecutionContext(id, source, approval, sessionClosed, value == null ? "" : value, assignment); }
+    /** 工厂/派工路由绑定真实身份；不可变重建保留原权限来源，不扩大授权。 */
+    public ExecutionContext withAssignment(AssignmentContext value) {
+        return new ExecutionContext(id, source, approval, sessionClosed, goal, value);
+    }
     /**
      * 区分用户直接发起和定时触发。后台结果和 Stop 要求继续，都沿用原任务来源。
      */

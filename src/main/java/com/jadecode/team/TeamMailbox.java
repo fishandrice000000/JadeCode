@@ -62,6 +62,21 @@ public final class TeamMailbox {
     /** 返回本次 Team 目录，供名册与派工记录使用，不把旧 Team 当作当前运行中的会话。 */
     public Path root() { return root; }
 
+    /**
+     * 详情页只读取本邮箱已登记的正文，拒绝替换成链接或异常膨胀的文件。
+     * 校验目录时使用 false，不因只读查看而重建丢失目录；失败交给命令错误通道。
+     */
+    String readBody(Incoming incoming) throws IOException {
+        Path file = root.resolve("messages").resolve(incoming.id() + ".md");
+        if (!file.toString().equals(incoming.bodyPath())) throw new IOException("Report path does not match the mailbox record");
+        paths.directory(root.resolve("messages"), false);
+        if (!Files.isRegularFile(file, java.nio.file.LinkOption.NOFOLLOW_LINKS) || Files.size(file) > 800_000)
+            throw new IOException("Report body is missing, linked, or exceeds its size limit");
+        String body = Files.readString(file);
+        if (body.length() > 200_000) throw new IOException("Report body exceeds its character limit");
+        return body;
+    }
+
     /** 只接受程序格式 ID，不把模型字符串直接拼成任意文件路径。 */
     private Path pending(String id) {
         if (!id.matches("mail_[0-9a-f-]{36}")) throw new IllegalArgumentException("Invalid message ID");

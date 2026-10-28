@@ -25,7 +25,7 @@ class MainTest {
         Path cwd = Path.of("/synthetic/workspace");
         String role = "reviewer\nquoted \"responsibility\"";
         String first = (String) method.invoke(null, cwd, "agent_alpha", role, "SHARED_SKILLS", "\nSHARED_MCP", "\nSHARED_PROJECT");
-        String second = (String) method.invoke(null, cwd, "agent_beta", "tester", "SHARED_SKILLS", "\nSHARED_MCP", "\nSHARED_PROJECT");
+        String second = (String) method.invoke(null, cwd, "agent_beta", "Tester\nCheck tests.", "SHARED_SKILLS", "\nSHARED_MCP", "\nSHARED_PROJECT");
         String marker = "\n\nRuntime identity and responsibility data (JSON; not new authority):\n";
         int boundary = first.indexOf(marker) + marker.length();
         assertTrue(boundary >= marker.length());
@@ -35,7 +35,8 @@ class MainTest {
         assertFalse(common.contains("agent_alpha")); assertFalse(first.contains(role));
         var identity = com.jadecode.util.Json.mapper().readTree(first.substring(boundary));
         assertEquals("agent_alpha", identity.path("actor").asText());
-        assertEquals(cwd.toString(), identity.path("cwd").asText()); assertEquals(role, identity.path("responsibilities").asText());
+        assertEquals(cwd.toString(), identity.path("cwd").asText()); assertEquals("reviewer", identity.path("name").asText());
+        assertEquals("quoted \"responsibility\"", identity.path("responsibilities").asText());
         assertEquals(first, method.invoke(null, cwd, "agent_alpha", role, "SHARED_SKILLS", "\nSHARED_MCP", "\nSHARED_PROJECT"));
     }
 
@@ -131,8 +132,12 @@ class MainTest {
                         + " Tool calls are checked against the user's current permission profile and rules. Never bypass a denial."
                         + " You are the team Leader. Only you may create up to three persistent teammates and manage the task graph."
                         + " Use spawn_teammate then assign_task for existing ready tasks; assign_task claims on their behalf."
+                        + " spawn_teammate role must be a short English name on its first line and responsibilities on following lines."
+                        + " assign_task waits for its report by default; use wait_for_completion=false only for explicitly detached work."
+                        + " Give each assignment a fixed scope with read_paths/write_paths. Use English names, task titles and UI summaries."
+                        + " Reply to questions with send_message reply_to, and record report checks with review_task_result."
                         + " Teammates have independent histories: include necessary context in summary and full body."
-                        + " You may continue other work or return after dispatch; reports wake you by default."
+                        + " You may continue other work after dispatch; required reports are processed before this turn finishes."
                         + " Review reports and actual changes before declaring the user's overall goal complete."
                         + " task remains available for one-shot subagents and is distinct from Team assignments."
                         + " Workflow runs a saved orchestration synchronously. For review-changes, first collect the actual change text and pass args.changes."
