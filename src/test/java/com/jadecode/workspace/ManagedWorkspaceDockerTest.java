@@ -18,6 +18,58 @@ import com.jadecode.util.*;
 class ManagedWorkspaceDockerTest {
     @TempDir Path root;
 
+    /** 复现 guest 用户 HOME 与固定容器 HOME 相同产生的 root 挂载点，不要求宿主也有 /home/jade。 */
+    @Test void explicitDeletionRemovesDockerOwnedNestedHomeMountpoints() throws Exception {
+        Assumptions.assumeTrue(Boolean.getBoolean("jade.sandbox.integration"));
+        var paths=new JadePaths(root.resolve("data"));var store=new ManagedWorkspaceStore(paths);var workspace=store.create();
+        Path cache=new com.jadecode.config.WorkspacePaths(workspace.path(),paths).root().resolve("sandbox/cache");
+        WorkspaceFiles.directory(cache);Path fixture=WorkspaceFiles.directory(root.resolve("fixture"));
+        dockerFixture(cache,fixture,"/home/jade/.jadecode-managed-workspaces/fixture/files",false,"true");
+        assertTrue(Files.isDirectory(cache.resolve(".jadecode-managed-workspaces/fixture/files")));
+        store.delete(workspace.id());
+        assertFalse(Files.exists(cache));assertFalse(Files.exists(workspace.path()));
+    }
+
+    /** 维护步骤不能沿链接清理其它数据，也不能借空占位修复删除有实际内容的文件。 */
+    @Test void emptyMountpointMaintenancePreservesNonemptyFilesAndSymlinkTargets() throws Exception {
+        Assumptions.assumeTrue(Boolean.getBoolean("jade.sandbox.integration"));
+        Path cache=WorkspaceFiles.directory(root.resolve("cache")),fixture=WorkspaceFiles.directory(root.resolve("fixture"));
+        dockerFixture(cache,fixture,"/home/jade/legacy/empty",false,"true");
+        Path legacy=cache.resolve("legacy"),outside=WorkspaceFiles.directory(root.resolve("outside"));
+        Files.writeString(outside.resolve("keep"),"outside fixture");Files.createSymbolicLink(cache.resolve("link"),outside);
+        dockerFixture(legacy,null,null,true,"printf preserve > /home/jade/keep");
+        try {
+            DockerRuntime.cleanEmptyCacheMountpoints(cache,SandboxSettings.defaults());
+            assertEquals("preserve",Files.readString(legacy.resolve("keep")));
+            assertEquals("outside fixture",Files.readString(outside.resolve("keep")));assertTrue(Files.isSymbolicLink(cache.resolve("link")));
+            assertFalse(Files.exists(legacy.resolve("empty")));
+        } finally {
+            // 只撤销本测试用 root 写入的已知标记，避免临时目录因夹具权限无法清理。
+            dockerFixture(legacy,null,null,true,"rm /home/jade/keep");
+        }
+    }
+
+    /** 固定 Docker 命令只准备合成 mountpoint；不使用用户项目，不联网，不向容器传递宿主环境。 */
+    private static void dockerFixture(Path cache,Path fixture,String target,boolean ownerRoot,String command) throws Exception {
+        String name="jade-mountpoint-fixture-"+UUID.randomUUID().toString().replace("-","");
+        var args=new ArrayList<String>(List.of("run","--rm","--name",name,"--network=none","--read-only","--cap-drop=ALL",
+                "--security-opt=no-new-privileges:true","--user",ownerRoot?"0:0":localIdentity(),"--mount","type=bind,src="+cache+",dst=/home/jade"));
+        if(fixture!=null)args.addAll(List.of("--mount","type=bind,src="+fixture+",dst="+target));
+        args.addAll(List.of("--entrypoint","/bin/sh",SandboxSettings.defaults().image(),"-c",command));
+        var cli=new DockerCli();cli.initialize();
+        try {
+            var reply=cli.call(args,"",20,()->false);assertEquals(0,reply.exitCode(),reply.output());
+        } finally { cli.call(List.of("rm","--force",name),"",10,()->false); }
+    }
+    /** id 只返回数值身份，测试不依赖固定宿主用户名或 UID。 */
+    private static String localIdentity() throws Exception {
+        var values=new ArrayList<String>();
+        for(String flag:List.of("-u","-g")) {
+            Process id=new ProcessBuilder("id",flag).start();values.add(new String(id.getInputStream().readAllBytes()).strip());assertEquals(0,id.waitFor());
+        }
+        return String.join(":",values);
+    }
+
     @Test void snapshotEnvironmentAndImmutableArtifactWorkAcrossContainerRecreation() throws Exception {
         Assumptions.assumeTrue(Boolean.getBoolean("jade.sandbox.integration"));
         var store=new ManagedWorkspaceStore(new JadePaths(root.resolve("data"))); var workspace=store.create();

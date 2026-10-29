@@ -168,7 +168,7 @@ public final class AgentService implements AutoCloseable {
             var workspace=workspaces.open(input.path("workspaceId").asText());
             if (sessions.values().stream().anyMatch(group->group.workspace.equals(workspace.path())))
                 throw new IOException("Close the owning session before deleting its workspace");
-            workspaces.delete(workspace.id()); return Json.mapper().createObjectNode().put("status","deleted");
+            workspaces.delete(workspace.id(),preferences.state().settings().sandbox()); return Json.mapper().createObjectNode().put("status","deleted");
         }
         return workspaces.command(input);
     }

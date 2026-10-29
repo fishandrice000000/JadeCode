@@ -250,6 +250,52 @@ public final class DockerRuntime implements AutoCloseable {
     private static void require(DockerCli.Reply reply, String operation) throws IOException {
         if (reply.exitCode() != 0) throw new IOException("Docker " + operation + " failed: " + reply.output().strip());
     }
+    /**
+     * 显式删除工作区时清理 Docker 遗留的空挂载占位，不能用于模型工具执行。
+     * 宿主 HOME 若也叫 /home/jade，嵌套挂载会在私有缓存中留下 root 所属目录，
+     * 普通用户不能删除其子项。维护容器只绑定一个已核验的缓存子目录，以 UID 0
+     * 操作自身所属的空目录/零字节占位；断网、只读系统根、cap-drop ALL，不接受 Shell。
+     * 非空文件和符号链接不被维护命令删除；后续普通删除失败时仍明确报错，不假装清理完成。
+     * 调用方须先确认该工作区无存活会话/容器，并持有工作区独占屏障。
+     */
+    public static void cleanEmptyCacheMountpoints(Path cache,SandboxSettings settings) throws IOException {
+        if (Files.notExists(cache,LinkOption.NOFOLLOW_LINKS)) return;
+        if (!Files.isDirectory(cache,LinkOption.NOFOLLOW_LINKS) || !cache.toRealPath().equals(cache.toAbsolutePath().normalize()))
+            throw new IOException("Invalid private cache directory");
+        var roots=new ArrayList<Path>();
+        try (var children=Files.list(cache)) {
+            for(Path child:children.toList()) {
+                // 只处理 Docker 创建的 root 目录；普通缓存以及指向其它位置的链接留给非特权删除。
+                if (!Files.isDirectory(child,LinkOption.NOFOLLOW_LINKS)
+                        || ((Number)Files.getAttribute(child,"unix:uid",LinkOption.NOFOLLOW_LINKS)).longValue()!=0) continue;
+                try(var entries=Files.list(child)) { if(entries.findAny().isPresent()) roots.add(child); }
+            }
+        }
+        if(roots.isEmpty()) return; // 没有遗留占位时无需连接 Docker，未使用工作区也能直接删除。
+        var cli=new DockerCli();cli.initialize();
+        var inspected=cli.call(List.of("image","inspect","--format","{{.Id}} {{index .Config.Labels \"io.jadecode.worker-protocol\"}}",settings.image()),"",15,()->false);
+        if(inspected.exitCode()!=0 || !inspected.output().strip().matches("sha256:[0-9a-f]{64} 1"))
+            throw new IOException("Cache mountpoint cleanup requires an existing sandbox image");
+        String image=inspected.output().strip().split(" ")[0];
+        for(Path child:roots) {
+            if(!child.toRealPath().equals(child) || !child.getParent().equals(cache)) throw new IOException("Cache mountpoint changed before cleanup");
+            String name="jade-cache-clean-"+UUID.randomUUID().toString().replace("-","");
+            try {
+                // find 默认不跟随链接；固定条件只删除空占位，不执行缓存中的任何脚本或程序。
+                require(cli.call(List.of("run","--rm","--name",name,"--label","io.jadecode.maintenance=cache-mountpoints",
+                        "--network=none","--read-only","--user","0:0","--cap-drop=ALL","--security-opt=no-new-privileges:true",
+                        "--memory=64m","--memory-swap=64m","--cpus=1","--pids-limit=32",
+                        "--mount",mount(child,Path.of("/cache-mountpoint"),true),"--entrypoint","/usr/bin/find",image,
+                        "/cache-mountpoint","-mindepth","1","-depth","(","-type","d","-empty","-o","-type","f","-uid","0","-size","0c",
+                        ")","-delete"),"",30,()->false),"empty cache mountpoint cleanup");
+            } finally {
+                // 客户端超时不等于容器结束；按本次确切名称回收，不能遗留一个维护实例。
+                var removed=cli.call(List.of("rm","--force",name),"",15,()->false);
+                if(removed.exitCode()!=0 && !removed.output().contains("No such container"))
+                    throw new IOException("Cache maintenance container cleanup unconfirmed: "+name);
+            }
+        }
+    }
     /** 只解释 cgroup 指标，不将程序输出关键字当成沙箱扩权依据。 */
     private static long oomKills(String events) {
         for (String line : events.split("\n")) if (line.startsWith("oom_kill ")) try { return Long.parseLong(line.substring(9).strip()); }

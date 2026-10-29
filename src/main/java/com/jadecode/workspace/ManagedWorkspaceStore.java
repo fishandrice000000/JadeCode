@@ -68,13 +68,19 @@ public final class ManagedWorkspaceStore {
         return result;
     }
 
-    /** 调用方必须确认没有存活会话；先拒绝活跃操作，再删除这一个明确 ID 的数据。 */
+    /** 调用方须确认没有存活会话；领取独占执行屏障后删除这一个明确 ID 的数据。 */
     public synchronized void delete(String id) throws IOException {
+        delete(id,com.jadecode.sandbox.SandboxSettings.defaults());
+    }
+    /** 使用服务当前已有镜像维护私有缓存，不拉镜像；失败保留实际错误，不绕过会话占用。 */
+    public synchronized void delete(String id,com.jadecode.sandbox.SandboxSettings settings) throws IOException {
         ManagedWorkspace workspace = open(id);
         try (var exclusive = workspace.exclusive()) {
             // 仅清理此真实工作区分区的依赖缓存，既有会话/审计历史独立保留。
             Path cache=new com.jadecode.config.WorkspacePaths(workspace.path(),paths).root().resolve("sandbox/cache");
-            paths.directory(cache,false); WorkspaceFiles.delete(cache);
+            paths.directory(cache,false);
+            com.jadecode.sandbox.DockerRuntime.cleanEmptyCacheMountpoints(cache,settings);
+            WorkspaceFiles.delete(cache);
             WorkspaceFiles.delete(root.resolve(id)); WorkspaceFiles.delete(metadata.resolve(id)); opened.remove(id);
         }
     }
