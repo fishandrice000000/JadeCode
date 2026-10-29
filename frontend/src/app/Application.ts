@@ -410,6 +410,11 @@ export class Application {
 			return this.keymap.matches("tui.input.submit", data) ? { consume: true } : undefined;
 		}
 		if (this.keymap.matches("app.interrupt", data)) {
+			// Esc 先关闭编辑器候选；交还 Pi 处理这一次按键，不能同时取消正在运行的任务。
+			if (this.editor.editor.isShowingAutocomplete() && this.keymap.matches("tui.select.cancel", data)) return undefined;
+			// 只依据后端的主会话状态取消；显示计时在等待审批/后台时可能暂停，不能用动画判断忙闲。
+			const leader = this.session.actors().find((actor) => actor.id === "leader");
+			if (leader && ["RUNNING", "WAITING_BACKGROUND", "WAITING_TEAM"].includes(leader.state)) this.stopCurrentTurn();
 			this.editor.focus(this.host.tui()!);
 			return { consume: true };
 		}
@@ -1213,10 +1218,10 @@ export class Application {
 			}
 			case "/new": this.newSession(); return true;
 			case "/quit": void this.quit(); return true;
-            case "/stop":
+			case "/stop": this.stopCurrentTurn(); return true;
             case "/close": {
                 const client = this.client;
-                if (client) void client.command(name === "/stop" ? "session.stop" : "session.close", {}, this.identity()).then((result) => {
+                if (client) void client.command("session.close", {}, this.identity()).then((result) => {
                     if (!result.ok) this.notify(result.message ?? "Session operation failed", true);
                 }).catch(() => {});
                 return true;
@@ -1234,6 +1239,19 @@ export class Application {
 				this.notify(`Unknown command: ${raw.trim().split(/\s+/)[0]}. The draft was kept.`, true);
 				return false;
 		}
+	}
+
+	/**
+	 * Esc 和 /stop 共用已有服务取消入口，只发出请求，不自行宣告任务已停止。
+	 * 保留草稿、连接和历史；后端后续的任务事件与快照负责更新真实状态。
+	 * 退出过程中不再发送命令；拒绝或连接失败通过界面反馈，不假装取消成功。
+	 */
+	private stopCurrentTurn(): void {
+		const client = this.client;
+		if (!client || this.closing) return;
+		void client.command("session.stop", {}, this.identity()).then((result) => {
+			if (!result.ok) this.notify(result.message ?? "Unable to stop the current turn", true);
+		}).catch(() => this.notify("Unable to send the stop request", true));
 	}
 
 	private newSession(): void {

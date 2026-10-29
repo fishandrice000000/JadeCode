@@ -397,7 +397,7 @@ write 显示前 10 行并标 `Preview · not executed`，edit 显示片段 diff 
 全屏模式支持应用滚轮、PageUp/Down、Ctrl+Home/End、选区复制和右上角浮层搜索（Ctrl+R，兼容Ctrl+Shift+F；上下键或Ctrl+G/Shift+Enter切换匹配并立即定位正文，Enter确认关闭，Esc 关闭）。
 `Ctrl+O` 在空欢迎页展开资源，在对话中展开/收起工具卡；`Ctrl+G` 外部编辑器；`Ctrl+V` 读取文字或图片剪贴板（图片保存为临时文件并插入路径，仍只是文本输入）；
 `Ctrl+J` 可在不区分 Shift+Enter 的终端换行；`Ctrl+X` 复制选区或最近助手回复；`Ctrl+Z` 暂退到 shell，`fg` 后重绘；`Ctrl+C` 清草稿，500ms 内再按退出；空编辑器 Ctrl+D 退出。
-Esc 关闭本地菜单/搜索/候选；审批时拒绝当前申请，不是 Agent 单轮取消。regular 模式不捕获鼠标，滚轮/拖选交给终端。
+Esc 优先关闭本地菜单/搜索/候选；审批时拒绝当前申请；普通对话中有运行任务时，取消当前轮次（与 `/stop` 共用入口，保留草稿和会话）。空闲时不发送取消。regular 模式不捕获鼠标，滚轮/拖选交给终端。
 退出时恢复终端并打印一次 Session/ID/Resume；fullscreen 默认把最终转录重放到主屏，`tui.fullscreenExitOutput=resume-hint` 时只保留恢复提示。
 
 命令只列真实后端：`/settings /name /team /session /hotkeys /copy /new /resume /stop /close /quit /model /thinking /permission /mcp /goal`。
@@ -746,7 +746,7 @@ JadeCode 的持久数据统一位于用户目录：
 ./jade --remote user@server --attach <id>
 ```
 
-`/quit` 和正常退出键断开客户端；`/stop` 停止当前轮次；`/close` 关闭会话及全部所属资源。
+`/quit` 和正常退出键断开客户端；`/stop` 或普通对话中的 Esc 请求停止当前轮次；`/close` 关闭会话及全部所属资源。
 正在审批、无法在编辑器输入命令时，可以从另一个终端使用 `--stop-session` 或 `--close-session`。
 `--resume` / `/resume` 用于恢复磁盘历史；连接存活实例用 `--attach`，它不会重建执行栈。
 显式更换模型配置或权限启动参数时不会静默覆盖已有会话，请连接后使用对应设置，或先关闭再创建。

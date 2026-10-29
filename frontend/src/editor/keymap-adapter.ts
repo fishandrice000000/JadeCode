@@ -73,7 +73,7 @@ const ACTIONS: ActionDefinition[] = [
 	...search("tui.altScreen.searchClose", "Close search", ["escape"]),
 	...alt("tui.altScreen.top", "Scroll to top", ["ctrl+home"]),
 	...alt("tui.altScreen.bottom", "Scroll to bottom", ["ctrl+end"]),
-	...global("app.interrupt", "Close local overlay", ["escape"]),
+	...global("app.interrupt", "Cancel current turn", ["escape"]),
 	...global("app.clear", "Clear draft", ["ctrl+c"]),
 	...global("app.exit", "Exit when editor is empty", ["ctrl+d"]),
 	...global("app.suspend", "Suspend to shell", ["ctrl+z"]),
