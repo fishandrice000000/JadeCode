@@ -137,13 +137,27 @@ public final class ServiceCli {
             Process node=new InteractiveLauncher().spawn(distribution,server.socketPath(),credential);
             try(var channel=server.acceptOne(30_000)){
                 var writer=Thread.ofVirtual().start(()->{
-                    try{ChannelStreams.input(channel).transferTo(peer.output);}catch(IOException ignored){}
+                    try{forwardClientInput(ChannelStreams.input(channel),peer.output);}catch(IOException ignored){}
                     finally{try{peer.close();}catch(IOException ignored){}}
                 });
                 peer.input.transferTo(ChannelStreams.output(channel));
                 writer.interrupt();
             }
             return InteractiveLauncher.finish(0,node);
+        }
+    }
+    /**
+     * 将前端字节及时送到服务，不解析或改写协议，也不关闭调用方持有的流。
+     * SSH 子进程的 stdin 带缓冲；连接保持打开时，较小的 client.hello 不能等到 EOF
+     * 或缓冲区装满才发送，否则前端和服务会一直互相等握手。每次读取后刷新即可保留流式时序。
+     */
+    static void forwardClientInput(InputStream input,OutputStream output) throws IOException {
+        byte[] buffer=new byte[8192];int count;
+        // read 返回当前可用的一段，不要求凑满整个数组；一次小握手也能立即发出。
+        while((count=input.read(buffer))!=-1) {
+            if(count==0)continue;
+            output.write(buffer,0,count);
+            output.flush();
         }
     }
     /** 无界面客户端只安装协议屏障；忽略显示事件，完整组装大结果，绝不询问 stdin。 */
