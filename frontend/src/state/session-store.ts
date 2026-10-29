@@ -148,6 +148,8 @@ export interface StartupIntent {
 }
 
 export interface Bootstrap {
+    executionHost?: string;
+    serviceSessionId?: string;
 	projectVersion: string;
 	buildId: string;
 	protocolVersion: number;
@@ -191,6 +193,8 @@ export class SessionStore {
 		if (typeof tui !== "object" || tui === null) throw new Error("server.bootstrap is missing tui settings");
 		const value: Bootstrap = {
 			projectVersion: text(payload, "projectVersion"),
+            executionHost: text(payload, "executionHost"),
+            serviceSessionId: text(payload, "serviceSessionId"),
 			buildId: text(payload, "buildId"),
 			protocolVersion: numberValue(payload, "protocolVersion", 1),
 			workspace: text(payload, "workspace"),

@@ -23,6 +23,7 @@ import com.jadecode.config.JadeConfigFile;
  * 失败返回 1；正常退出 0。信号（SIGINT/SIGTERM）由 JVM 默认处理，退出码为 130/143。</p>
  */
 public final class InteractiveLauncher {
+    // 根 CLI 由 ServiceCli 连接常驻服务；run 保留进程内兼容装配，spawn/finish 供新入口共用。
     /** 启动 Node 后最多等待其退出的时间（正常关闭会更快）。 */
     private static final long NODE_EXIT_GRACE_MILLIS = 5_000;
 

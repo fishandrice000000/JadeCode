@@ -19,7 +19,7 @@ import com.jadecode.util.TerminalText;
 import com.jadecode.safety.PermissionProfile;
 
 /**
- * 无界面任务入口：持久化新会话、执行一次初始任务、只把最终回答写到 stdout。
+ * 进程内无界面兼容执行器：正式根 CLI 已由 ServiceCli 连接服务，本类保留离线注入与嵌入式调用。
  *
  * <p>契约（M30–M33/M41）：</p>
  * <ul>

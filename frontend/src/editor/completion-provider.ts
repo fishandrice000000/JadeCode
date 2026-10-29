@@ -21,6 +21,7 @@ export interface CompletionContext {
 	sessions: () => Promise<AutocompleteItem[]>;
 	thinking: () => string[];
 	permissions: () => string[];
+    paths?: (prefix: string, signal: AbortSignal) => Promise<AutocompleteSuggestions | null>;
 }
 
 export class JadeCompletionProvider implements AutocompleteProvider {
@@ -54,7 +55,12 @@ export class JadeCompletionProvider implements AutocompleteProvider {
 		const beforeCursor = line.slice(0, cursorCol);
 		// 裸 @ 路径沿 Pi 的目录枚举继续补全；默认 Combined provider 的 @ 分支要求额外 fd，
 		// Jade 并未装配它。只移去本次路径标记，再把标记加回候选，不复制文件扫描算法。
-		const at = beforeCursor.match(/(?:^|[\s(])(@(?:"[^"]*|[^\s]*))$/u)?.[1];
+        // 常驻/远程会话由后端枚举，不能误读客户端本机同名目录。
+        const word = beforeCursor.match(/(?:^|[\s(])([^\s]*)$/u)?.[1] ?? "";
+        const command = beforeCursor.startsWith("/") && COMMANDS.some((item) =>
+            item.name.startsWith(beforeCursor) || beforeCursor.startsWith(`${item.name} `));
+        if (this.context.paths && !command) return this.context.paths(word, options.signal);
+        const at = beforeCursor.match(/(?:^|[\s(])(@(?:"[^"]*|[^\s]*))$/u)?.[1];
 		if (at) {
 			const start = beforeCursor.lastIndexOf(at);
 			const query = [...lines];

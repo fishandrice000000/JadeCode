@@ -36,15 +36,15 @@ public final class WireCodec {
 
     /** Node → Java 命令类型白名单。 */
     public static final Set<String> COMMANDS = Set.of(
-            "client.hello", "session.ready", "session.submit", "session.promoteBuffer", "session.new",
-            "session.list", "session.find", "session.resume", "session.rename", "session.thinking", "team.report",
+            "service.cancel", "service.open", "service.list", "service.stop", "service.close", "client.hello", "session.ready", "session.submit", "session.promoteBuffer", "session.new",
+            "session.list", "session.find", "session.resume", "session.rename", "session.thinking", "workspace.complete", "team.report",
             "settings.patch", "permission.select", "permission.prepareFullAccess", "permission.presented",
             "permission.cancelFullAccess", "permission.default", "approval.presented", "approval.answer",
-            "terminal.suspend", "terminal.resume", "terminal.invalidate", "state.refresh", "client.shutdown");
+            "terminal.suspend", "terminal.resume", "terminal.invalidate", "state.refresh", "session.stop", "session.close", "client.shutdown");
 
     /** Java → Node 事件类型白名单。 */
     public static final Set<String> EVENTS = Set.of(
-            "server.hello", "server.bootstrap", "session.snapshot.begin", "session.snapshot.chunk",
+            "service.opened", "service.result", "client.detached", "server.hello", "server.bootstrap", "session.snapshot.begin", "session.snapshot.chunk",
             "session.snapshot.end", "command.result", "command.error", "stream.started", "stream.delta",
             "stream.preview.started", "stream.preview.delta", "stream.preview.closed", "stream.ended",
             "execution.notice", "display.clock", "state.snapshot", "message", "task.submitted", "task.result",

@@ -65,6 +65,22 @@ public final class SessionUsage {
     public synchronized void ensureOpen() {
         if (closed || failed) throw new IllegalStateException("Session usage ledger is closed or failed to save");
     }
+    /** 仅在新请求开始前检查软预算；在途请求的真实用量始终允许记录。 */
+    public synchronized void ensureRequestAllowed() {
+        ensureOpen();
+        if (tokenCeiling > 0 && Math.addExact(snapshot.total().inputTokens(), snapshot.total().outputTokens()) >= tokenCeiling)
+            throw new IllegalStateException("Execution reported-token budget reached; no further model request was started");
+    }
+
+    private long tokenCeiling;
+    /**
+     * 顶层轮次开始时设置软预算；所有 actor/purpose 共用本账本，不能绕到辅助请求继续花费。
+     * 按已报告用量在下一请求前检查，无法撤回在途请求，不表示服务商计费硬上限。
+     */
+    public synchronized void limitAdditionalTokens(long maximum) {
+        if (maximum < 1) throw new IllegalArgumentException("Token budget must be positive");
+        tokenCeiling = Math.addExact(Math.addExact(snapshot.total().inputTokens(), snapshot.total().outputTokens()),maximum);
+    }
 
     /**
      * 由任意模型调用线程提交。相同 requestId 只保存一次，且不读取该线程不拥有的 Todo。

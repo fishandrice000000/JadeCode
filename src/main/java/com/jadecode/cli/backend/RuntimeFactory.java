@@ -27,6 +27,12 @@ public final class RuntimeFactory {
     private final JadeSettings settings;
     private final PermissionState permissions;
     private final AppConfig modelConfig;
+    private com.jadecode.llm.LlmClient injectedClient;
+    private com.jadecode.config.JadePaths paths = com.jadecode.config.JadePaths.defaults();
+    private long tokenBudget;
+    private boolean created;
+    private Path workspace = Path.of("").toAbsolutePath();
+    private com.jadecode.sandbox.DockerRuntime.WriteScopes writeScopes;
 
     /**
      * 一次启动固定模型配置，恢复/切换会话不重新混入项目文件；不联网，不改变工作区。
@@ -37,6 +43,26 @@ public final class RuntimeFactory {
         this.settings = settings;
         this.permissions = permissions;
         this.modelConfig = ModelConfigLoader.load(selectedModelConfig);
+    }
+
+    /** 服务在装配前绑定真实工作区与同组占用入口；此方法不更改进程工作目录。 */
+    public RuntimeFactory workspace(Path path, com.jadecode.sandbox.DockerRuntime.WriteScopes scopes) {
+        if (created) throw new IllegalStateException("Runtime factory workspace is already fixed");
+        workspace = path; writeScopes = scopes; return this;
+    }
+    /** 常驻服务为每轮设置报告用量软预算，后续 /new 和 /resume 也使用同一装配策略。 */
+    public RuntimeFactory tokenBudget(long value) {
+        if (created || value < 1) throw new IllegalArgumentException("Set a positive budget before creating a runtime");
+        tokenBudget=value; return this;
+    }
+    public Path workspace() { return workspace; }
+    public com.jadecode.config.JadePaths paths() { return paths; }
+
+    /** 离线验证注入客户端和数据根，不读取真实认证或联网查询模型目录。 */
+    public RuntimeFactory(JadeSettings settings, PermissionState permissions, AppConfig config,
+            com.jadecode.llm.LlmClient client, com.jadecode.config.JadePaths paths) {
+        this.settings = settings; this.permissions = permissions; modelConfig = config;
+        injectedClient = client; this.paths = paths;
     }
 
     /** @return 本会话共享的设置快照（只读）。 */
@@ -55,6 +81,12 @@ public final class RuntimeFactory {
      */
     public SessionRuntime create(Consumer<String> output, Consumer<String> errors,
             Supplier<ResponseStream> streams, ExecutionObserver observer) {
-        return JadeCodeFactory.create((hooks, cwd, ignored) -> { }, output, errors, streams, observer, settings, permissions, modelConfig);
+        created = true;
+        SessionRuntime runtime;
+        if (injectedClient != null) runtime = JadeCodeFactory.create(modelConfig, workspace, injectedClient,
+                output, errors, (hooks,cwd,ignored) -> { }, streams, observer, settings, permissions, paths, writeScopes);
+        else runtime = JadeCodeFactory.create((hooks, cwd, ignored) -> { }, output, errors, streams, observer, settings, permissions, modelConfig, workspace, writeScopes);
+        if (tokenBudget > 0) runtime.executionTokenBudget(tokenBudget);
+        return runtime;
     }
 }

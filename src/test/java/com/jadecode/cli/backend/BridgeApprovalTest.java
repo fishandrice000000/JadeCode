@@ -26,6 +26,25 @@ import com.jadecode.util.Json;
  * 重复答复不会作用到下一条申请；关闭时等待中的 Future 得到 DENY。</p>
  */
 class BridgeApprovalTest {
+    /** 展示或审计失败也必须清理等待，避免后续重连复活从未成功公布的请求。 */
+    @Test void failedRequestPublicationDoesNotLeaveAPendingApproval() {
+        var channel=new com.jadecode.service.SessionChannel();
+        channel.audit((kind,payload)->{throw new IllegalStateException("fixture audit failure");});
+        var approval=new BridgeApproval(new WireContext(channel,new PayloadTransfer(channel)));
+        assertThrows(IllegalStateException.class,()->approval.ask(request("failed-publication",null)));
+        assertEquals(0,approval.pendingCount());assertTrue(approval.requests().isEmpty());
+        approval.close();
+    }
+
+    /** 到期是未获许可；迟到答复不能执行已从账本移除的请求。 */
+    @Test void expiredBrokerRequestRejectsLateAnswer() throws Exception {
+        try(var broker=new com.jadecode.safety.approval.ApprovalBroker(java.time.Duration.ofMillis(10))){
+            var pending=broker.register(request("expires",null));
+            assertEquals(ApprovalAnswer.DENY,broker.await(pending));
+            assertTrue(broker.requests().isEmpty());
+            assertFalse(broker.answer("expires",ApprovalAnswer.ALLOW_ONCE));
+        }
+    }
     private static ApprovalRequest request(String id, PermissionRule suggestion) {
         ObjectNode input = Json.mapper().createObjectNode();
         input.put("command", "rm -rf build");

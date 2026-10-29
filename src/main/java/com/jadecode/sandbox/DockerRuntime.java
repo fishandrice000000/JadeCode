@@ -21,6 +21,9 @@ public final class DockerRuntime implements AutoCloseable {
         /** 启动失败没有程序原始输出，保留同一条失败说明。 */
         public Outcome(String content, boolean error, Integer exitCode, boolean truncated) { this(content, error, exitCode, truncated, content); }
     }
+    /** 返回的租约只在容器确认删除后释放；模型不能提供这个入口。 */
+    @FunctionalInterface public interface WriteScopes { AutoCloseable acquire(List<Path> paths) throws IOException; }
+    private final WriteScopes writeScopes;
     private final SandboxSettings settings;
     private final Path cache;
     private final Consumer<String> diagnostics;
@@ -38,6 +41,11 @@ public final class DockerRuntime implements AutoCloseable {
     private volatile boolean closed;
     /** cache 必须由 WorkspacePaths 创建在本项目专属分区；绝不挂载整个宿主 HOME。 */
     public DockerRuntime(SandboxSettings settings, Path cache, Consumer<String> diagnostics) {
+        this(settings, cache, diagnostics, null);
+    }
+    /** 服务注入顶层会话的范围领取器；离线旧调用保持不依赖服务的契约。 */
+    public DockerRuntime(SandboxSettings settings, Path cache, Consumer<String> diagnostics, WriteScopes scopes) {
+        this.writeScopes = scopes;
         this.settings = settings; this.cache = cache.toAbsolutePath().normalize(); this.diagnostics = diagnostics;
         sweeper = Executors.newSingleThreadScheduledExecutor(r -> { Thread t = new Thread(r, "jade-sandbox-reaper"); t.setDaemon(true); return t; });
     }
@@ -61,7 +69,9 @@ public final class DockerRuntime implements AutoCloseable {
                 .filter(value -> value.references == 0).min(Comparator.comparingLong(value -> value.lastUsed)).ifPresent(this::remove);
         if (instances.size() >= settings.maxContainers()) throw new IOException("Sandbox container limit reached; wait for active work to finish");
         String name = "jade-sbx-" + UUID.randomUUID().toString().replace("-", "");
-        var instance = new Instance(name, key, plan.actor(), ownerRun, plan.reusable());
+        AutoCloseable permit = writeScopes == null ? () -> { } : writeScopes.acquire(plan.mounts().stream()
+                .filter(ExecutionPlan.Mount::writable).map(ExecutionPlan.Mount::source).toList());
+        var instance = new Instance(name, key, plan.actor(), ownerRun, plan.reusable(), permit);
         instances.put(name, instance); // 先登记，create/start 超时也有可清理的确定名称。
         try {
             // 直接使用已 inspect 的 sha256 镜像 ID，create 不会按 tag 隐式寻找新版本。
@@ -258,7 +268,11 @@ public final class DockerRuntime implements AutoCloseable {
         instance.retired = true;
         try {
             var reply = cli.call(List.of("rm", "--force", instance.name), "", 10, () -> false);
-            if (reply.exitCode() == 0 || reply.output().contains("No such container")) instances.remove(instance.name);
+            if (reply.exitCode() == 0 || reply.output().contains("No such container")) {
+                try { instance.writePermit.close(); }
+                catch (Exception failure) { throw new IOException("Writable scope release failed", failure); }
+                instances.remove(instance.name);
+            }
             else diagnostics.accept("[Sandbox] cleanup unconfirmed for " + instance.name);
         } catch (IOException failure) { diagnostics.accept("[Sandbox] cleanup unconfirmed for " + instance.name); }
     }
@@ -322,11 +336,16 @@ public final class DockerRuntime implements AutoCloseable {
             Files.deleteIfExists(masks.resolve("directory")); Files.deleteIfExists(masks.resolve("file"));
             Files.deleteIfExists(masks.resolve("passwd")); Files.deleteIfExists(masks.resolve("group")); Files.deleteIfExists(masks);
         } catch (IOException failure) { diagnostics.accept("[Sandbox] temporary mask cleanup unconfirmed: " + masks); }
+        if (!instances.isEmpty()) throw new IllegalStateException("Sandbox cleanup is incomplete; writable scopes remain held");
     }
+    /** 服务回收必须确认所有所属容器已删除；清理失败时不能释放工作区。 */
+    public synchronized boolean cleanupConfirmed() { return closed && instances.isEmpty(); }
     private static final class Instance {
         final String name, key, actor, run; final boolean reusable; final ReentrantLock lock = new ReentrantLock();
+        final AutoCloseable writePermit;
         int references; long lastUsed = System.nanoTime(); long oomCount; volatile boolean retired;
-        Instance(String name, String key, String actor, String run, boolean reusable) {
+        Instance(String name, String key, String actor, String run, boolean reusable, AutoCloseable permit) {
+            this.writePermit = permit;
             this.name = name; this.key = key; this.actor = actor; this.run = run; this.reusable = reusable;
         }
     }

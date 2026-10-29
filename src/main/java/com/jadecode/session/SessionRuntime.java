@@ -385,8 +385,30 @@ public final class SessionRuntime implements AutoCloseable {
     /** 会话清单只保存这份无凭据身份，不将整个 AppConfig 交给日志。 */
     public String backendIdentity() { return backendIdentity; }
 
+    /** 关闭依赖失败时保留失败事实，阻止服务提前释放工作区。 */
+    private volatile boolean cleanupFailed;
+    private long executionTokenBudget;
+    /** 服务在启动前配置每轮报告用量软上限；离线和旧调用默认不限。 */
+    public void executionTokenBudget(long tokens) {
+        if (consumer != null || tokens < 1) throw new IllegalArgumentException("Set a positive budget before starting");
+        executionTokenBudget = tokens;
+    }
     /** 关闭后消费者确实退出才返回 true；不把“已发中断”冒充“线程已停止”。 */
-    public boolean isStopped() { return closed && (consumer == null || !consumer.isAlive()); }
+    public boolean isStopped() { return closed && !cleanupFailed && (consumer == null || !consumer.isAlive()); }
+
+    /** 取消当前轮次；子代理和 Shell 观察同一标记，下一轮仍可执行。 */
+    public void cancelCurrent() {
+        Active task = active;
+        if (task == null) return;
+        task.cancelled.set(true);
+        if (background != null) background.cancelOwned(task.context().id());
+        taskCancellation.accept(task.context().id());
+        inbox.wake();
+        if (consumer != null) consumer.interrupt();
+    }
+    private java.util.function.Consumer<String> taskCancellation = ignored -> { };
+    /** 顶层装配取消该轮所属 Team 派工；不关闭整个协作管理器。 */
+    public void onTaskCancel(java.util.function.Consumer<String> value) { taskCancellation = value; }
 
     /**
      * 启动前采用恢复结果并接管写者所有权。只安装历史和计划，不提交旧请求或执行旧工具。
@@ -442,6 +464,11 @@ public final class SessionRuntime implements AutoCloseable {
 
     /** 是否正处理大轮次；等待后台也算忙，不能把新派工直接当当前工作。 */
     public boolean isBusy() { return active != null; }
+    /** 服务闲置回收只观察真实资源；空闲主 Agent 仍可能拥有队友或非必等后台。 */
+    public boolean idleForReaping() {
+        if (state != State.IDLE || switchBlocked.getAsBoolean() || background != null && background.hasPending()) return false;
+        synchronized (inbox) { return !closed && active == null && !dispatching && inbox.isEmpty(); }
+    }
 
     /** 给提交结果工具检查当前轮次是否仍欠必等后台结果，不把“启动成功”当业务完成。 */
     public boolean hasRequiredBackground() {
@@ -682,6 +709,7 @@ public final class SessionRuntime implements AutoCloseable {
         task.receipts.addAll(initialResults);
         if (entry.team() != null) task.teamReceipts.add(entry.team().assignment());
         active = task;
+        if (ownsUsage && executionTokenBudget > 0) usage.limitAdditionalTokens(executionTokenBudget);
         changeState(State.RUNNING);
         // 实时计数和最终耗时共用 Active 的同一起点，不累加工具或模型的局部耗时。
         engine.notice(ExecutionNotice.event(ExecutionNotice.Kind.TURN_START, task.context().id(), "", "", "RUNNING")
@@ -739,14 +767,17 @@ public final class SessionRuntime implements AutoCloseable {
             deliverIncoming(task, false);
             runTask(task);
         } catch (LlmException | IOException | RuntimeException failure) {
+            if (task.cancelled.get() && !closed) Thread.interrupted();
             fail(task, failure);
         } catch (InterruptedException interrupted) {
-            Thread.currentThread().interrupt();
+            if (!task.cancelled.get() || closed) Thread.currentThread().interrupt();
             fail(task, new IllegalStateException("Session execution interrupted", interrupted));
         } finally {
             try { taskCleanup.accept(task.context().id()); }
             catch (RuntimeException failed) { errors.accept("[Sandbox] Task resource cleanup did not finish"); }
             active = null;
+            // 轮次取消不能让消费者永久退出；关闭会话仍保留中断状态。
+            if (task.cancelled.get() && !closed) Thread.interrupted();
             if (!closed && !persistenceFailed) changeState(State.IDLE);
         }
     }
@@ -813,11 +844,13 @@ public final class SessionRuntime implements AutoCloseable {
      */
     private void runTask(Active task) throws LlmException, InterruptedException {
         while (!closed) {
+            if (task.context().isCancelled()) throw new IllegalStateException("Current execution was cancelled");
             // 1. 请模型继续前，先加入已完成的后台结果；不必等待的命令结果只供参考。
             deliverIncoming(task, true);
             flushNotices(task);
             String system = goalSystem(task);
             ModelReply reply = engine.request(history, task.goal, system, this::adoptHistory);
+            if (task.context().isCancelled()) throw new IllegalStateException("Current execution was cancelled");
             if (reply.calls().isEmpty()) {
                 // 回答先展示一次，再记录显示截止；Memory 还会照常收尾，不能提前宣布业务完成。
                 // 流式时间来自生产端 complete，旧客户端在这里回退输出，不再在多个结束分支重放。
@@ -843,7 +876,10 @@ public final class SessionRuntime implements AutoCloseable {
                 // 3. 执行这一批工具，把每个调用的结果一起写入历史；出错也要配齐调用和结果的 ID。
                 ToolBatch batch = engine.executeTools(reply, task.context(), task.rounds);
                 task.toolCalls += reply.calls().size();
+                // 取消只阻止后续行动，已开始的一批仍须配齐 tool_result 并落盘。
+                if (task.cancelled.get() && !closed) Thread.interrupted();
                 apply(batch);
+                if (task.context().isCancelled()) throw new IllegalStateException("Current execution was cancelled");
                 if (memory != null) memory.observeTools(batch.calls(), Message.userBlocks(batch.results()));
                 task.rounds = batch.roundsSinceTodo();
                 if (batch.failure() != null) throw batch.failure();
@@ -1271,6 +1307,8 @@ public final class SessionRuntime implements AutoCloseable {
      * 只有处理线程修改字段；退出线程只读 entry，用它通知调用者任务未完成。
      */
     private static final class Active {
+        /** 外部线程发出本轮取消，执行上下文和主循环读取同一标记。 */
+        final java.util.concurrent.atomic.AtomicBoolean cancelled = new java.util.concurrent.atomic.AtomicBoolean();
         /** 消费者已经取出任务才创建，故不包含 Inbox 中等待别人做完的排队时间。 */
         final com.jadecode.execution.TurnTimer timer;
         /** 审批已经绑定本轮计时；任务 ID、来源、退出检查不变。 */
@@ -1316,7 +1354,7 @@ public final class SessionRuntime implements AutoCloseable {
             this.entry = entry;
             var origin = entry.request().context();
             timer = new com.jadecode.execution.TurnTimer(origin.id(), notices);
-            execution = new ExecutionContext(origin.id(), origin.source(), timer.track(origin.approval()), origin.sessionClosed(), origin.goal(), origin.assignment());
+            execution = new ExecutionContext(origin.id(), origin.source(), timer.track(origin.approval()), () -> origin.isCancelled() || cancelled.get(), origin.goal(), origin.assignment());
             // 只有定时任务在第一次回复前失败才会重试；普通任务不用多存一份长历史。
             snapshot = entry.request().cronId() == null ? List.of() : List.copyOf(history);
         }
@@ -1396,7 +1434,7 @@ public final class SessionRuntime implements AutoCloseable {
         if (interruptedTask != null) finishMemory(interruptedTask, "interrupted");
         if (memory != null) memory.close();
         try { closeDependents.run(); }
-        catch (RuntimeException failure) { errors.accept("[Error] Dependent session cleanup failed: " + failure.getMessage()); }
+        catch (RuntimeException failure) { cleanupFailed = true; errors.accept("[Error] Dependent session cleanup failed: " + failure.getMessage()); }
         // 先停止执行器和命令，再通知 future 的调用者；对方可能立即运行自己的代码，不能拖延停止工具。
         engine.close();
         if (background != null) background.close();

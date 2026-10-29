@@ -10,13 +10,14 @@ import java.util.*;
  * Docker 目录挂载不是按文件名过滤器；显式拒绝的缺失路径不能精确表达时由调用方拒绝。
  * 本类不承诺抵抗同权限宿主进程在校验与 daemon 挂载之间恶意替换目录。
  */
-final class PathProtection {
+public final class PathProtection {
+    private PathProtection() { }
     record Guard(Path target, boolean hidden, boolean directory) { }
     private static final Set<String> HIDDEN = Set.of(".ssh", ".aws", ".gnupg", ".jadecode", ".codex", ".docker", ".kube",
             ".config", ".m2", ".npmrc", ".pypirc", ".netrc", ".git-credentials");
     private static final Set<String> READ_ONLY = Set.of(".git", ".agents", ".claude", ".vscode", ".idea");
-    /** 精确敏感文件可在单独人工批准后显式挂载；目录授权不隐含内部敏感文件授权。 */
-    static boolean sensitive(Path path) {
+    /** 供服务端文件名补全隐藏已知敏感入口；此判断不代表任意路径已获得访问授权。 */
+    public static boolean sensitive(Path path) {
         if (path.getFileName() == null) return true;
         for (Path part : path) {
             String name = part.toString();

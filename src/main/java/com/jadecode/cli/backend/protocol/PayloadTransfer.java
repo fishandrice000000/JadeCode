@@ -29,10 +29,19 @@ public final class PayloadTransfer {
     /** 发送时每块的目标字节数（JSON 转义后仍远低于单帧上限）。 */
     public static final int CHUNK_BYTES = 32 * 1024;
 
-    private final EventOutbox outbox;
+    private final java.util.function.Consumer<Part> sink;
+    /** 大资料只依赖事件出口，分块过程不需要知道当前有没有客户端。 */
+    private record Part(String type, ObjectNode payload, String sessionId, Long generation) { }
     private final AtomicLong ids = new AtomicLong();
 
-    public PayloadTransfer(EventOutbox outbox) { this.outbox = outbox; }
+    public PayloadTransfer(EventOutbox outbox) {
+        sink = part -> outbox.offer(part.type(), part.payload(), part.sessionId(), part.generation(), null);
+    }
+
+    /** 常驻会话使用的出口；离线分块仍由服务保存/投影，不写失效的 socket。 */
+    public PayloadTransfer(EventEndpoint endpoint) {
+        sink = part -> endpoint.sendEvent(part.type(), part.payload(), part.sessionId(), part.generation());
+    }
 
     /**
      * 把一段文本拆成 blob 事件送出。
@@ -49,7 +58,7 @@ public final class PayloadTransfer {
         begin.put("kind", kind);
         begin.put("totalBytes", bytes.length);
         begin.put("sha256", hash);
-        outbox.offer("payload.begin", begin, sessionId, generation, null);
+        sink.accept(new Part("payload.begin", begin, sessionId, generation));
         int index = 0;
         int offset = 0;
         while (offset < value.length()) {
@@ -67,14 +76,14 @@ public final class PayloadTransfer {
             chunk.put("id", id);
             chunk.put("index", index++);
             chunk.put("text", value.substring(offset, end));
-            outbox.offer("payload.chunk", chunk, sessionId, generation, null);
+            sink.accept(new Part("payload.chunk", chunk, sessionId, generation));
             offset = end;
         }
         ObjectNode end = Json.mapper().createObjectNode();
         end.put("id", id);
         end.put("count", index);
         end.put("sha256", hash);
-        outbox.offer("payload.end", end, sessionId, generation, null);
+        sink.accept(new Part("payload.end", end, sessionId, generation));
         return id;
     }
 

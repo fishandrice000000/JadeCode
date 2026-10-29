@@ -575,6 +575,22 @@ public final class TeamManager implements AutoCloseable {
         }
     }
 
+    /** 主会话取消一轮时关闭该轮所属队友，保留管理器供后续新队友使用。 */
+    public void cancelRun(String runId) {
+        java.util.List<String> owners;
+        synchronized (this) {
+            owners = assignments.values().stream().filter(a -> a.context.id().equals(runId))
+                    .map(a -> a.owner).distinct().toList();
+        }
+        for (String id : owners) try { shutdown(id); }
+        catch (IOException failure) { throw new IllegalStateException("Team cancellation failed", failure); }
+    }
+
+    /** 服务只有确认全部所属消费者已结束后才能释放顶层工作区。 */
+    public synchronized boolean cleanupConfirmed() {
+        return members.values().stream().allMatch(member -> member.runtime.isStopped());
+    }
+
     /** Leader 会话退出时关闭全部成员；即使某份状态写盘失败，也必须停止后续工具与进程。 */
     @Override public void close() {
         List<Member> closing;

@@ -86,6 +86,7 @@ public final class BridgeApproval implements Approval, AutoCloseable {
     private final WireContext wire;
     private final Map<String, Pending> waiting = new HashMap<>();
     private boolean closed;
+    private final com.jadecode.safety.approval.ApprovalBroker broker = new com.jadecode.safety.approval.ApprovalBroker(java.time.Duration.ofHours(1));
 
     public BridgeApproval(WireContext wire) { this.wire = wire; }
 
@@ -96,21 +97,23 @@ public final class BridgeApproval implements Approval, AutoCloseable {
      * 文本，之后模型或工具不能再改写屏幕上已展示的内容。</p>
      */
     @Override public ApprovalAnswer ask(ApprovalRequest request) {
-        CompletableFuture<ApprovalAnswer> result = new CompletableFuture<>();
-        Pending pending = new Pending(request, result, null);
+        com.jadecode.safety.approval.ApprovalBroker.Pending registered;
+        try { registered = broker.register(request); }
+        catch (IllegalStateException closedChannel) { return ApprovalAnswer.DENY; }
+        Pending pending = new Pending(request, registered.result(), null);
         synchronized (this) {
             if (closed) return ApprovalAnswer.DENY;
             waiting.put(request.id(), pending);
         }
-        sendRequested(request);
         ApprovalAnswer answer = ApprovalAnswer.DENY;
         try {
-            answer = result.get();
+            // 展示/审计出口也可能失败；登记后的所有路径都必须回收同一份等待。
+            sendRequested(request);
+            answer = broker.await(registered);
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
-        } catch (ExecutionException failed) {
-            // 等待被异常打断：按拒绝处理，不把“没得到答复”当成允许。
         } finally {
+            broker.answer(request.id(), ApprovalAnswer.DENY);
             synchronized (this) { waiting.remove(request.id()); }
             sendRemoved(request.id(), answer);
         }
@@ -245,7 +248,8 @@ public final class BridgeApproval implements Approval, AutoCloseable {
         synchronized (this) {
             if (waiting.remove(requestId) == null)
                 throw new ProtocolException(ProtocolError.STALE_GENERATION, "This approval request was already answered");
-            pending.result().complete(choice.answer());
+            if (!broker.answer(requestId, choice.answer()))
+                throw new ProtocolException(ProtocolError.STALE_GENERATION, "This approval is no longer pending");
         }
     }
 
@@ -267,7 +271,7 @@ public final class BridgeApproval implements Approval, AutoCloseable {
                 .filter(pending -> pending.request().revision() < revision).toList();
         for (Pending pending : stale) {
             waiting.remove(pending.request().id());
-            pending.result().complete(ApprovalAnswer.RECHECK);
+            broker.answer(pending.request().id(), ApprovalAnswer.RECHECK);
         }
     }
 
@@ -287,13 +291,25 @@ public final class BridgeApproval implements Approval, AutoCloseable {
             waiting.put(entry.getKey(), entry.getValue().withPresentation(null));
     }
 
-    /** 会话关闭/前端断连：所有未答复申请明确 DENY，Future 不会永久悬空。 */
+    /** 会话关闭：所有未答复申请明确 DENY；单纯断连只失效呈现证据，Future 不会永久悬空。 */
     @Override public synchronized void close() {
         if (closed) return;
         closed = true;
-        for (Pending pending : waiting.values()) pending.result().complete(ApprovalAnswer.DENY);
+        broker.close();
         waiting.clear();
     }
+
+    /** 新连接必须重新呈现；只重发仍在等待的请求，不恢复旧按键或批准。 */
+    public synchronized void reconnect() {
+        invalidatePresented();
+        for (var request : broker.requests()) sendRequested(request);
+    }
+
+    /** 取消当前运行时结束人工等待，通道仍可供下一轮使用。 */
+    public synchronized void cancelPending() { broker.cancelAll(ApprovalAnswer.DENY); waiting.clear(); }
+
+    /** 服务状态只保存请求快照，不保存 Future 或终端帧。 */
+    public java.util.List<ApprovalRequest> requests() { return broker.requests(); }
 
     /** @return 当前等待答复的数量；测试与快照诊断使用。 */
     public synchronized int pendingCount() { return waiting.size(); }

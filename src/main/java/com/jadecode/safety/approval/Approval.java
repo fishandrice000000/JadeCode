@@ -3,7 +3,7 @@ package com.jadecode.safety.approval;
 /**
  * 询问用户“是否允许这次操作”的函数，不负责决定哪些命令危险。
  *
- * <p>TUI 使用 ApprovalBroker，run 使用文本适配：执行线程等回答，前端统一接收输入。
+ * <p>运行时通过接口等待会话审批账本或离线适配器；TUI 桥验证呈现证据，headless 无人工通道。
  * 离线检查可以直接返回明确答复。这个函数由程序传给任务，不是模型可填写的参数。</p>
  */
 @FunctionalInterface

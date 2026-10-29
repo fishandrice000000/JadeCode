@@ -1,28 +1,28 @@
 package com.jadecode.cli.backend;
 
 import com.jadecode.cli.backend.protocol.PayloadTransfer;
-import com.jadecode.cli.backend.protocol.ProtocolSession;
+import com.jadecode.cli.backend.protocol.EventEndpoint;
 
 /**
- * 一条控制连接上的共享资料：协议出口、大资料分块器，以及当前会话身份。
+ * 会话展示的共享资料：可替换的事件出口、大资料分块器，以及当前会话身份。
  *
  * <p>为什么单独抽出来：会话切换会同时替换 approval/observer/stream/messages 这些“代次对象”，
- * 而连接与大资料组装跟连接走。把 sessionId/generation 放进一个可更新的上下文，能避免每个
+ * 常驻服务的出口由会话持有；入站大资料组装仍跟连接走。把 sessionId/generation 放进一个可更新的上下文，能避免每个
  * 订阅者构造函数都捕获一份可能过期的会话身份；事件仍必须带上发送时的真实代次。</p>
  */
 public final class WireContext {
-    private final ProtocolSession session;
+    private final EventEndpoint session;
     private final PayloadTransfer payloads;
     private volatile String sessionId = "";
     private volatile long generation;
 
-    public WireContext(ProtocolSession session, PayloadTransfer payloads) {
+    public WireContext(EventEndpoint session, PayloadTransfer payloads) {
         this.session = session;
         this.payloads = payloads;
     }
 
     /** 协议出口；所有业务事件都经它的 outbox 发出。 */
-    public ProtocolSession session() { return session; }
+    public EventEndpoint session() { return session; }
 
     /** 大资料分块器。 */
     public PayloadTransfer payloads() { return payloads; }

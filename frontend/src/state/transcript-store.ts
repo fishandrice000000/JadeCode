@@ -71,6 +71,8 @@ export class TranscriptStore {
 			const copy: Entry = { ...entry, revision: entry.revision ?? 0, expanded: entry.kind === "TOOL" ? this.toolsExpanded : entry.expanded ?? false };
 			this.list.push(copy);
 			this.byId.set(copy.id, copy);
+            if (copy.kind === "TOOL" && copy.requestId && copy.callId)
+                this.previews.set(`${copy.actor}/${copy.requestId}/${copy.callId}`, copy.id);
 			if (copy.kind === "REPLY" && copy.body) this.lastReply = copy.body;
 		}
 		this.revisionValue += 1;

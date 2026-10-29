@@ -26,6 +26,9 @@ import com.jadecode.util.Json;
  * 经过这里，因此不需要 Node。</p>
  */
 public final class FrontendDistribution {
+    /** 服务只读取非秘密构建身份；headless 不定位 Node 资产。 */
+    public static String backendBuildId() { return BuildInfo.load().buildId(); }
+
     /** 缺 Node/缺前端/身份不匹配；调用方返回退出码 2 并打印清楚原因。 */
     public static final class Missing extends Exception {
         public Missing(String message) { super(message); }

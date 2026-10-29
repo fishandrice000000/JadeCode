@@ -110,7 +110,7 @@ public final class BackendObserver implements ExecutionObserver {
             }
             case BACKGROUND -> {
                 String key = notice.actor() + "/" + notice.id();
-                if ("STOPPED".equals(notice.state()) || "DONE".equals(notice.state())) background.remove(key);
+                if ("STOPPED".equals(notice.state()) || "DONE".equals(notice.state()) || "CANCELLED".equals(notice.state())) background.remove(key);
                 else background.put(key, notice.state());
             }
             default -> { }

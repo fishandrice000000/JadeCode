@@ -23,7 +23,8 @@
 ```
 src/main/java/com/jadecode/
 ├── Main              # 根入口：交互 TUI / --headless / help / version
-├── cli/              # 启动选项、后端协议/传输/会话桥、Node 前端监督与 headless
+├── cli/              # 本地/远程客户端、协议/会话桥、Node 前端与 headless
+├── service/          # 常驻会话、UDS/SSH 连接、显示投影、审计和工作区占用
 │   └── backend/      # Java↔Node 私有 UDS 协议、快照、审批证据、设置唯一写者
 ├── bootstrap/        # JadeCodeFactory：生产与离线共用的装配入口
 ├── config/           # 模型环境配置、统一 config.json 与界面／压缩设置
@@ -50,7 +51,7 @@ src/main/java/com/jadecode/
 └── agent/            # AgentExecutor(模型请求、工具批次、压缩步骤及嵌套结果)
 ```
 
-仓库根 `frontend/` 是 Node/Pi 终端前端（固定 vendor、主题/品牌唯一运行资源）；交互模式由 Java 启动并监督它。
+仓库根 `frontend/` 是 Node/Pi 终端前端（固定 vendor、主题/品牌唯一运行资源）；交互客户端由 Java 启动并监督它；Harness 由本机或服务器上的常驻 Agent 服务持有。
 
 仓库根 `skills/<name>/SKILL.md` 存放可被 `load_skill` 加载的真实技能:system prompt 只带 name + description 的目录,完整正文仅在模型调用 `load_skill` 后作为 tool_result 进入消息。
 
@@ -399,7 +400,7 @@ write 显示前 10 行并标 `Preview · not executed`，edit 显示片段 diff 
 Esc 关闭本地菜单/搜索/候选；审批时拒绝当前申请，不是 Agent 单轮取消。regular 模式不捕获鼠标，滚轮/拖选交给终端。
 退出时恢复终端并打印一次 Session/ID/Resume；fullscreen 默认把最终转录重放到主屏，`tui.fullscreenExitOutput=resume-hint` 时只保留恢复提示。
 
-命令只列真实后端：`/settings /name /session /hotkeys /copy /new /resume /quit /model /thinking /permission /mcp /goal`。
+命令只列真实后端：`/settings /name /team /session /hotkeys /copy /new /resume /stop /close /quit /model /thinking /permission /mcp /goal`。
 旧 `/help`、`/exit`、`/usage`、`/theme`、`/rename` 别名已移除；未知 slash 留在本地报英文错误并保留草稿，不发给模型。
 `/model` 只读；`/mcp` 只读服务/工具清单，无连接/配置/OAuth 按钮；缺取消/树/分叉/模型热切换/扩展管理等后端的入口统一隐藏。
 审批以“仅本次/允许此类/拒绝”接管 dock，显示完整真实参数和长期范围，不显示内部 reason；默认无选择；鼠标首次点击只选中，再点同项或按 Enter 才确认；卡片与输入栏同宽，窗口无法安全显示审阅区时不发布批准动作。
@@ -447,7 +448,7 @@ deny → ask → 默认硬保护/强制人工 → allow → 档位普通策略�
 生产配置默认使用 Docker 运行时沙箱，安装和边界见下文。shell 检查器只解释 `/bin/sh` 的有限语法，
 审批不能证明一般程序的真实副作用；容器在执行时限制实际文件、网络和资源访问。
 这些档位检查模型调用的操作，不阻止日志、压缩归档和记忆等 Harness 自身的状态保存。
-配置写入有进程内互斥，不支持多 CLI 同时修改规则；外部手改在下次启动读取，运行中不热加载。
+服务统一管理设置写入，规则保存使用进程内互斥；服务之外的独立写者不共享协调。外部手改请停止服务后重启，运行中不热加载。
 
 ### Docker 运行时沙箱
 
@@ -501,7 +502,7 @@ Maven 使用镜像中的全局 toolchains.xml，不读取宿主 settings.xml；H
 ```sh
 ./jade --resume                              # 选择当前工作区的历史会话
 ./jade --resume=<完整 UUID>                   # 直接恢复
-./jade --resume=<会话名称>                    # 名称匹配，重复时选择
+# TUI 中使用 /resume <会话名称>，重复时选择
 ```
 
 REPL 默认新建并保存主会话。`/resume` 打开可筛选选择器，
@@ -567,7 +568,7 @@ s15 从现有装配、会话事件、工具批次与结束判断串联前面各�
 system 只保留稳定参考边界，路由作为带内部来源的参考消息追加；参考不是用户指令。
 会话格式为版本 5，可读取版本 1–4；新版写入后不要用旧程序继续写该会话。
 
-用户轮次真正结束、失败或普通退出中断时，登记持久作业。后台从已落盘事件区间读取证据，
+用户轮次真正结束、失败或会话关闭中断时，登记持久作业；单纯断开客户端不触发轮次结束。后台从已落盘事件区间读取证据，
 排除思考、压缩替代历史、旧记忆、技能正文和后台通知；忙时真实用户补充单独保留。
 文件工具读取项目指令时只保留成功/失败标记，不复制正文；被过滤或未观测不能推断为“从未读取”。
 整理时还从当前工作区日志区间提取独立的用户原话，与辅助模型总结对照；该证据单独脱敏并受累计预算限制，
@@ -598,7 +599,7 @@ Docker 模式下任意程序和复杂 Shell 同样受挂载边界约束；显式
 `state/jobs/` 的 `phase=extraction`、`status=done` 只表示提取完成；整理的 `running/retry/exhausted/completed`
 另保存在 `state/maintenance-<scope>.json`。只有发布基线已确认才标为 completed，`content_changed` 区分正文变化与正常无变化。
 `--headless` 等待日志与作业登记后退出，不保证退出前整理完成；同一工作区下次启动继续维护。
-退出停止新发布，不承诺立即取消网络请求；进程被强杀时，任务结束到作业登记之间仍存在窄窗口。
+关闭会话停止新发布，不承诺立即取消网络请求；进程被强杀时，任务结束到作业登记之间仍存在窄窗口。
 达到重试上限的作业留在 `state/jobs/`，整理退避留在 `state/maintenance-<scope>.json`，需检查原因后人工重置；
 目前没有重试管理 UI。索引、手册和维护输入均有限额，超限保留旧库并告警，不静默丢弃资料覆盖。
 整理提示词变更会重新评估已有材料；提取作业的失败上限仍需检查原因后处理。
@@ -635,7 +636,7 @@ Background Tasks 沿用 `bash`：`run_in_background` 省略或 false 仍同步�
 `allow_insertion` / `wake_when_idle` 均默认 false，模型可以选择提前接收或空闲后主动处理结果。
 必等结果在结束/等待阶段可以交付，不受禁止提前插入限制。所有开关必须是真实布尔值；
 同步执行时显式传后台通知开关会被拒绝。
-完成通知不复用原 tool_use_id，也不会改 s10 状态。退出 CLI 会终止本会话全部命令，包括脱离任务的命令。
+完成通知不复用原 tool_use_id，也不会改 s10 状态。客户端断开不终止命令；明确关闭会话才停止全部所属命令，明确停止当前轮次会停止该轮所属后台。
 默认每条命令 120 秒，最多 32 个运行中或尚未确认接收结果的后台命令；通知只保留最多 500 字符摘要并标注截断，
 没有完整输出文件，需要可靠产物时由命令显式写入工作区。
 宿主 shell 生命周期面向 Linux，依赖 `/usr/bin/setsid` 与 `/bin/kill`，单独的进程组清理不能约束另开 session 的程序。
@@ -653,7 +654,7 @@ REPL 到期入队，在 Agent 空闲时主动发起 `[Scheduled]` 回合；人�
 Approve for Me 可独立审查普通询问；仍需人工却没有通道时明确拒绝。TUI 使用三项审批，run 对应输入 1/2/3（y/n 为仅本次/拒绝的简写）；
 空 Enter 均不作为审批答复。多行提示词中的批准文字不会被单独取出执行。
 收件箱最多 64 项新请求；满时明确拒收，定时项保留 pending，后台完成结果不与新请求争抢容量。
-REPL 退出会关闭会话而不是等待队列排空；非交互执行使用 `run`。
+交互客户端退出只断开，服务继续持有会话；非交互执行使用 `--headless`，取得结果后关闭专属会话。
 一个工作区的定时库不支持多个 CLI 并发写入。会话重构已通过工程检查和获准代跑的真实 CLI 场景；
 检查范围、模型未按要求传参的重测及终端修复记录见 [验收补查](docs/jobs/s12/terminal-and-acceptance.md)。
 当前学习入口见 [事件化运行指南](docs/notes/s12/session-event-runtime-review.md)；
@@ -685,7 +686,7 @@ TUI `/team` 查看成员与派工详情，左右切换近期派工、Enter 显�
 界面展示每个成员最近八项加当前执行派工；全部派工与范围仍留在磁盘，不承诺跨进程恢复执行。
 队友启用独立压缩与后台，不启用 Memory/cron；Docker 模式下各身份的授权容器共享工作区，
 派工文件范围仍是协作约定，不提供队友之间的独立 worktree 或目录写隔离。
-交互与 `--headless` 都会等待本轮必要报告；退出会关闭队友及命令，显式脱离等待的工作也随之关闭。
+交互与 `--headless` 都会等待本轮必要报告；交互客户端断开后会话继续运行，明确关闭会话才关闭全部队友与命令。headless 取得结果后关闭其专属会话。
 工程任务见 [s13 任务单](docs/jobs/s13/agent-teams.md)与[Team 协作扩展](docs/jobs/s13/team-coordination.md)，学习入口见 [s13 阅读指南](docs/notes/s13/agent-teams-review.md)。
 真实模型的单项与连续三阶段结果见[黑马点评探索评测](docs/jobs/s13/hmdp-multi-agent-benchmark.md)。
 
@@ -696,6 +697,7 @@ JadeCode 的持久数据统一位于用户目录：
 ```text
 ~/.jadecode/
 ├── config/                       # 模型与应用配置
+├── service/                      # 常驻服务发现、会话清单和私有审计
 ├── cache/model-metadata/          # 模型参数缓存
 ├── memory/                       # 全局记忆，内部区分项目与全局作用域
 ├── mcp/fetch/                    # 多项目共享的 Fetch Python 环境
@@ -720,5 +722,55 @@ JadeCode 的持久数据统一位于用户目录：
 模型默认只能读取当前项目的归档、工具结果、邮件正文及 Workflow 最终输出，
 显式 deny/ask 规则优先；状态文件通过 Harness 工具写入，通用文件命令不能改写运行分区。
 应用权限检查与 Docker 边界共同生效；显式宿主执行路径仍不能限制任意程序的内部访问。
-测试统一注入临时 `JadePaths`，不修改 user.home、不访问真实用户状态。
+测试注入临时 `JadePaths`；独立 JVM 验证使用专属临时 user.home，不访问真实用户状态。
 源码阅读见 [用户数据布局阅读指南](docs/notes/s15/global-runtime-storage-review.md)。
+
+
+## 本地与远程 Agent 服务
+
+交互与 headless 根入口共用常驻 Java 服务。默认 `jade` 创建会话，已有相同工作区的存活会话时重新连接；
+`jade "新任务"` 可以连接该会话并提交新一轮。退出界面只断开，模型、Team、后台命令和 cron 继续由服务持有。
+同一会话同时允许一个控制客户端。`/session` 显示实际执行主机、工作区、历史会话 ID 和 Service ID。
+
+```sh
+./jade --workspace /absolute/project
+./jade --sessions
+./jade --attach <Service-ID-or-live-session-UUID>
+./jade --stop-session <id>
+./jade --close-session <id>
+./jade --service-stop
+
+# 远端需要已安装同一成套版本的 jade、配置模型，并准备所需 Docker 镜像。
+./jade --remote user@server --workspace /srv/project
+./jade --remote user@server --sessions
+./jade --remote user@server --attach <id>
+```
+
+`/quit` 和正常退出键断开客户端；`/stop` 停止当前轮次；`/close` 关闭会话及全部所属资源。
+正在审批、无法在编辑器输入命令时，可以从另一个终端使用 `--stop-session` 或 `--close-session`。
+`--resume` / `/resume` 用于恢复磁盘历史；连接存活实例用 `--attach`，它不会重建执行栈。
+显式更换模型配置或权限启动参数时不会静默覆盖已有会话，请连接后使用对应设置，或先关闭再创建。
+headless 保留无人工通道、只输出最终回答的行为；已有交互会话占用工作区时明确拒绝另开 headless 执行。
+
+远程连接使用系统 SSH 的已有非交互认证与主机校验，固定远端命令为 `jade --service-relay`。
+工作区、prompt 和配置路径经协议传递，不拼进 shell；配置和模型凭据留在执行机器。
+远端 `--workspace` 使用服务器路径；文件名补全也由服务器枚举工作区，不读取客户端同名目录。
+两端执行构建握手，不匹配时明确失败；更新程序前应先明确停止旧服务。
+服务进程环境在启动时固定，后来 CLI 上的临时模型环境变量不会转发给已运行服务；更换这类环境前请明确停止并重新启动服务。
+
+服务按用户数据根独占启动锁，通过 0700 临时目录内的 0600 Unix socket 接入。
+发现文件、会话清单与审计在 `~/.jadecode/service/`，含用户输入与工具参数，不应分享或提交。
+同一服务内顶层会话及其 Team/子代理共同持有目录占用；独立会话的相同/嵌套工作区或已知额外可写挂载冲突。
+这不阻止编辑器、其他程序、其他服务数据根或 Full Access 脚本访问未声明的宿主路径，也不隔离 Team 内部写入。
+
+首版固定限制：最多 8 份存活会话、32 条握手/控制连接、主会话单轮到 1 小时请求取消、每次人工审批最长等待 1 小时，
+每轮已报告输入/输出合计 100 万 token 的软预算（包括辅助请求和队友；在途用量仍如实记账，非计费硬限）。
+无控制连接且无队友、后台或待处理输入的会话闲置 30 分钟后关闭；主 Agent 空闲不等于整个 Team 闲置。
+每会话最多登记 4096 份提交，每条输入最多 1 MiB；重连显示缓存按约 16M 字符/10000 张卡裁剪并明确提示，
+完整已采用历史仍落盘。审批请求在会话内保存，断线只作废旧呈现证据，重连必须重新展示才能答复。
+
+服务重启先核对旧进程身份并回收确切归属的 Docker 容器；无法确认时保留清单并拒绝放行。
+旧会话曾可能执行宿主工具时，需要先人工检查残留进程和工作区；审计与原清单保持在 service 目录，
+不能把删除清单当成已经停止进程。历史恢复不重新执行旧工具，未知结果保持中断事实。
+空隔离工作区、Agent 按需获取仓库/导入快照、结果交付属于后续阶段。
+实现与验证边界见 [Agent 服务任务单](docs/jobs/s18/agent-service.md)。

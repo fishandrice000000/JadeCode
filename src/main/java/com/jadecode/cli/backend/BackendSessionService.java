@@ -98,26 +98,39 @@ public final class BackendSessionService implements AutoCloseable {
     private final Map<String, String> blobs = new LinkedHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final Startup startup;
+    private final boolean persistent;
+    private final Map<String, String> submissions = new LinkedHashMap<>();
     private volatile Generation current;
     private Generation pending;
     private RestoredSession restored = null;
     private long snapshotCounter;
-    private boolean startupRegistered;
+    private volatile boolean startupRegistered;
+    private boolean headless;
+    /** 装配阶段选择无人工通道；连接前设置，运行后不从客户端临时改变。 */
+    public void headless(boolean value) { if (startupRegistered) throw new IllegalStateException("Session already started"); headless=value; }
     /** 当前终端代次；resize/模式切换/暂停/编辑器交接后 Node 会递增，旧呈现证据随之作废。 */
     private long terminalEpoch;
     /** 收口阶段的真实失败；非 null 时进程退出码必须是 1。 */
     private volatile String shutdownFailure;
+    private ObjectNode stoppedPayload;
 
     public BackendSessionService(WireContext wire, PreferenceService preferences, RuntimeFactory factory,
             SnapshotSink snapshots, Consumer<String> diagnostics, Startup startup) {
+        this(wire, preferences, factory, snapshots, diagnostics, startup, false);
+    }
+
+    /** 常驻服务拥有 Host，客户端断开只关闭出口；配置写者由服务统一关闭。 */
+    public BackendSessionService(WireContext wire, PreferenceService preferences, RuntimeFactory factory,
+            SnapshotSink snapshots, Consumer<String> diagnostics, Startup startup, boolean persistent) {
+        this.persistent = persistent;
         this.wire = wire;
         this.preferences = preferences;
         this.factory = factory;
         this.snapshots = snapshots;
         this.diagnostics = diagnostics == null ? ignored -> { } : diagnostics;
         this.startup = startup;
-        Path workspace = Path.of("").toAbsolutePath().normalize();
-        this.host = new SessionHost(new WorkspacePaths(workspace), this::createRuntime,
+        Path workspace = factory.workspace();
+        this.host = new SessionHost(new WorkspacePaths(workspace, factory.paths()), this::createRuntime,
                 warning -> diagnostics(warning));
     }
 
@@ -159,6 +172,7 @@ public final class BackendSessionService implements AutoCloseable {
             throw new IOException("The backend session factory did not produce the requested generation");
         generation.sessionId = host.current().sessionId();
         current = generation;
+        submissions.clear();
         restored = opened.restored();
         wire.update(generation.sessionId, generation.generation);
         sendFullSnapshot();
@@ -187,10 +201,12 @@ public final class BackendSessionService implements AutoCloseable {
                     ObjectNode submitted = taskSubmitted(submissionId, prompt);
                     wire.session().sendEvent("task.submitted", submitted, wire.sessionId(), wire.generation());
                     CompletableFuture<String> result = host.startWithInitial(generation.generation, prompt,
-                            generation.approval, true);
+                            headless ? null : generation.approval, !headless);
                     attachResult(result, submissionId);
                 } else {
-                    host.start(generation.generation);
+                    if (!startupRegistered) {
+                        if (headless) host.current().start(false); else host.start(generation.generation);
+                    }
                     startupRegistered = true;
                 }
                 sendStateSnapshot();
@@ -207,9 +223,11 @@ public final class BackendSessionService implements AutoCloseable {
             try {
                 handle(command);
             } catch (ProtocolException rejected) {
+                if (command.commandId() == null) { sendDiagnostic("Task submit rejected: " + rejected.getMessage()); return; }
                 wire.session().sendError(command.commandId(), rejected.error(), rejected.getMessage(),
                         wire.sessionId(), wire.generation());
             } catch (IOException | RuntimeException failure) {
+                if (command.commandId() == null) { sendDiagnostic("Task submit failed: " + failure.getMessage()); return; }
                 wire.session().sendError(command.commandId(), ProtocolError.PERSISTENCE_FAILED,
                         failure.getMessage() == null ? failure.toString() : failure.getMessage(),
                         wire.sessionId(), wire.generation());
@@ -243,6 +261,7 @@ public final class BackendSessionService implements AutoCloseable {
             case "session.rename" -> rename(command);
             case "session.thinking" -> thinking(command);
             case "team.report" -> teamReport(command);
+            case "workspace.complete" -> completePath(command);
             case "settings.patch" -> patchSettings(command);
             case "permission.select" -> selectPermission(command);
             case "permission.prepareFullAccess" -> prepareFullAccess(command);
@@ -256,7 +275,18 @@ public final class BackendSessionService implements AutoCloseable {
                 sendStateSnapshot();
                 wire.session().sendOk(command.commandId(), status("ok"), wire.sessionId(), wire.generation());
             }
-            case "client.shutdown" -> shutdown(command.payload().path("reason").asText("user"));
+            case "session.stop" -> {
+                requireSession(command).cancelCurrent(); current.approval.cancelPending();
+                wire.session().sendOk(command.commandId(), status("stopping"), wire.sessionId(), wire.generation());
+            }
+            case "session.close" -> { requireSession(command); shutdown("session-closed"); }
+            case "client.shutdown" -> {
+                if (persistent) {
+                    wire.session().sendEvent("client.detached", status("detached"), wire.sessionId(), wire.generation());
+                    wire.session().flushAndClose();
+                }
+                else shutdown(command.payload().path("reason").asText("user"));
+            }
             default -> throw new ProtocolException(ProtocolError.UNSUPPORTED,
                     "Unsupported command type: " + command.type());
         }
@@ -267,22 +297,67 @@ public final class BackendSessionService implements AutoCloseable {
         String text = command.payload().hasNonNull("textBlobRef")
                 ? blob(command.payload().path("textBlobRef").asText())
                 : command.payload().path("text").asText("");
+        if (persistent && text.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 1024 * 1024)
+            throw new ProtocolException(ProtocolError.PAYLOAD_TOO_LARGE, "Service prompt limit is 1 MiB");
         if (text.isBlank()) throw new ProtocolException(ProtocolError.INVALID_MESSAGE, "Prompt must not be blank");
         String submissionId = command.payload().path("clientSubmissionId").asText("");
         if (submissionId.isBlank()) submissionId = "sub-" + System.nanoTime();
+        String fingerprint;
+        try { fingerprint = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                .digest(text.getBytes(java.nio.charset.StandardCharsets.UTF_8))); }
+        catch (java.security.NoSuchAlgorithmException impossible) { throw new IllegalStateException(impossible); }
+        if (submissions.containsKey(submissionId)) {
+            if (!submissions.get(submissionId).equals(fingerprint))
+                throw new ProtocolException(ProtocolError.INVALID_MESSAGE, "Submission ID belongs to different text");
+            if (command.commandId() != null) wire.session().sendOk(command.commandId(), status("already-dispatched"), wire.sessionId(), wire.generation());
+            return;
+        }
+        if (submissions.size() >= 4096)
+            throw new ProtocolException(ProtocolError.OVERLOADED, "Submission limit reached; open a new session");
         ObjectNode submitted = taskSubmitted(submissionId, text);
         // 先登记提交意图，Node 才会在 TURN/正文事件之前看到用户卡；这不承诺已入队。
         wire.session().sendEvent("task.submitted", submitted, wire.sessionId(), wire.generation());
         CompletableFuture<String> result;
         try {
-            result = runtime.submitUser(text, current.approval);
+            result = runtime.submitUser(text, headless ? null : current.approval);
         } catch (RuntimeException rejected) {
             wire.session().sendEvent("task.failed", taskFailed(submissionId, rejected.getMessage()),
                     wire.sessionId(), wire.generation());
             throw new ProtocolException(ProtocolError.BUSY, "The session did not accept the prompt: " + rejected.getMessage());
         }
+        submissions.put(submissionId, fingerprint);
         attachResult(result, submissionId);
-        wire.session().sendOk(command.commandId(), status("dispatched"), wire.sessionId(), wire.generation());
+        if (command.commandId() != null) wire.session().sendOk(command.commandId(), status("dispatched"), wire.sessionId(), wire.generation());
+    }
+
+    /** 终端补全在执行机器枚举工作区文件名；不读正文，不跟随链接到外部或敏感目录。 */
+    private void completePath(WireMessage command) throws ProtocolException, IOException {
+        requireSession(command);
+        String prefix = command.payload().path("prefix").asText();
+        if (prefix.length() > 4096) throw new IOException("Completion prefix is too long");
+        boolean at = prefix.startsWith("@");
+        String query = at ? prefix.substring(1) : prefix;
+        Path workspace = factory.workspace().toRealPath();
+        Path full = workspace.resolve(query.isEmpty() ? "." : query).normalize();
+        String leaf = query.endsWith("/") || query.isEmpty() ? "" : full.getFileName().toString();
+        Path parent = (leaf.isEmpty() ? full : full.getParent()).toRealPath();
+        var result = Json.mapper().createObjectNode().put("prefix", prefix);
+        var items = result.putArray("items");
+        if (parent.startsWith(workspace) && !com.jadecode.sandbox.PathProtection.sensitive(parent)) {
+            try (var children = java.nio.file.Files.list(parent)) {
+                for (Path child : children.sorted().limit(1000).toList()) {
+                    String name = child.getFileName().toString();
+                    if (!name.startsWith(leaf) || java.nio.file.Files.isSymbolicLink(child)
+                            || com.jadecode.sandbox.PathProtection.sensitive(child)) continue;
+                    int slash = query.lastIndexOf('/');
+                    String value = (at ? "@" : "") + (slash < 0 ? "" : query.substring(0,slash+1)) + name
+                            + (java.nio.file.Files.isDirectory(child) ? "/" : "");
+                    items.addObject().put("value",value).put("label",name);
+                    if (items.size() >= 100) break;
+                }
+            }
+        }
+        wire.session().sendOk(command.commandId(),result,wire.sessionId(),wire.generation());
     }
 
     private void promoteBuffer(WireMessage command) throws ProtocolException {
@@ -816,6 +891,7 @@ public final class BackendSessionService implements AutoCloseable {
         String lastSession = wire.sessionId();
         try {
             host.close();
+            if (!host.isStopped()) shutdownFailure = "Session resources have not stopped; workspace remains held";
         } catch (RuntimeException failure) {
             shutdownFailure = "Session close failed: " + failure.getMessage();
             sendDiagnostic(shutdownFailure);
@@ -832,12 +908,65 @@ public final class BackendSessionService implements AutoCloseable {
         payload.put("reason", reason == null ? "" : reason);
         payload.put("sessionId", lastSession);
         payload.put("preferencesSaved", saved);
+        payload.put("cleanupConfirmed", host.isStopped());
+        payload.put("cleanupError", shutdownFailure == null ? "" : shutdownFailure);
+        stoppedPayload = payload;
+        // 常驻服务还拥有审计写者和目录占用，外层确认这些资源后才公布关闭回执。
+        if (persistent) return;
         wire.session().sendEvent("server.stopped", payload, wire.sessionId(), wire.generation());
+        wire.session().flushAndClose();
+    }
+
+    /** 服务在释放自身资源后公布最终回执；未知清理结果必须让客户端看见失败。 */
+    public void publishClosed(String outerFailure) {
+        ObjectNode payload = stoppedPayload == null ? Json.mapper().createObjectNode() : stoppedPayload.deepCopy();
+        if (outerFailure != null) payload.put("cleanupError",outerFailure).put("cleanupConfirmed",false);
+        wire.session().sendEvent("server.stopped",payload,wire.sessionId(),wire.generation());
         wire.session().flushAndClose();
     }
 
     /** @return 收口阶段的失败原因；null 表示正常。 */
     public String shutdownFailure() { return shutdownFailure; }
+
+    /** 断连只使旧呈现和票据失效，审批账本仍由当前会话持有。 */
+    public void disconnected() {
+        if (closed.get()) return;
+        serial.execute(() -> {
+            if (current != null) current.approval.invalidatePresented();
+            tickets.clear(); terminalEpoch = 0;
+        });
+    }
+
+    /** 重连同步与命令串行；快照期间不允许事件插入其分块之间。 */
+    public CompletableFuture<Void> reconnect(Runnable synchronizedDisplay) {
+        var result = new CompletableFuture<Void>();
+        serial.execute(() -> {
+            try {
+                if (closed.get()) throw new IllegalStateException("Session is closed");
+                synchronized (wire.session()) {
+                    sendFullSnapshot(); synchronizedDisplay.run(); current.approval.reconnect();
+                }
+                result.complete(null);
+            } catch (Exception failure) { result.completeExceptionally(failure); }
+        });
+        return result;
+    }
+    /** 管理连接可以取消当前轮次；真正的执行停止仍由 runtime 的取消链完成。 */
+    public CompletableFuture<Void> cancelCurrent() {
+        var result = new CompletableFuture<Void>();
+        serial.execute(() -> {
+            try { host.current().cancelCurrent(); current.approval.cancelPending(); result.complete(null); }
+            catch (Exception failure) { result.completeExceptionally(failure); }
+        });
+        return result;
+    }
+    public SessionRuntime runtime() { return host.current(); }
+    public boolean stopped() { return closed.get() && host.isStopped(); }
+    public boolean closed() { return closed.get(); }
+    public boolean started() { return startupRegistered; }
+    public List<com.jadecode.safety.approval.ApprovalRequest> pendingApprovals() {
+        return current == null ? List.of() : current.approval.requests();
+    }
 
     @Override public void close() {
         shutdown("closed");
@@ -847,6 +976,6 @@ public final class BackendSessionService implements AutoCloseable {
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
         }
-        preferences.close();
+        if (!persistent) preferences.close();
     }
 }

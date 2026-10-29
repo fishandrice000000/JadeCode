@@ -63,3 +63,13 @@ test("argument completions are reached for /permission and /thinking", async () 
 	const thinkingSuggestions = await value.getSuggestions(thinking, 0, thinking[0]!.length, options());
 	assert.deepEqual(thinkingSuggestions!.items.map((item) => item.value), ["low", "high"]);
 });
+
+// 远程模式从后端取得候选，禁止到客户端同名工作区枚举文件。
+test("service path completion uses the execution-machine callback", async () => {
+    const requested: string[] = [];
+    const value = new JadeCompletionProvider({ workspace: "/missing-on-client", commandSuggestions: () => true,
+        sessions: async () => [], thinking: () => [], permissions: () => [],
+        paths: async (prefix) => { requested.push(prefix); return { prefix, items: [{ value: "@src/", label: "src" }] }; } });
+    const result = await value.getSuggestions(["read @s"], 0, 7, options());
+    assert.deepEqual(requested, ["@s"]); assert.equal(result?.items[0]?.value, "@src/");
+});

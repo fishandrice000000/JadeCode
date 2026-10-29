@@ -69,3 +69,24 @@ test("a backend that never stops hits a bounded timeout and exits non-zero", asy
 	assert.equal(await waiting, 1);
 	assert.match(app.exitOutput(), /Timed out waiting for the backend to stop/);
 });
+
+// 服务明确确认 detach 后，窗口可以正常退出，远端会话仍由服务持有。
+test("a confirmed detach exits cleanly without claiming the service stopped", async () => {
+    const { app, internals, state } = harness();
+    await internals.quit();
+    (internals as unknown as { detachedReceived: boolean }).detachedReceived = true;
+    internals.onClosed("socket EOF"); state.closed = true;
+    assert.equal(await internals.waitForExit(), 0);
+    assert.equal(app.exitOutput(), "");
+    assert.equal(internals.stoppedReceived, false);
+});
+
+// 服务发送 stopped 也必须保留清理失败，不能把仍占用工作区的关闭显示成成功。
+test("a stopped event with incomplete cleanup preserves a nonzero exit", async () => {
+    const { app, internals, state } = harness();
+    (internals as unknown as { handleEvent(message: { type: string; payload: Record<string, unknown> }): void })
+        .handleEvent({ type: "server.stopped", payload: { cleanupError: "fixture cleanup incomplete" } });
+    state.closed = true;
+    assert.equal(await internals.waitForExit(), 1);
+    assert.match(app.exitOutput(), /fixture cleanup incomplete/);
+});

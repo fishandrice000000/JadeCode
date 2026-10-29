@@ -1,8 +1,5 @@
 package com.jadecode;
 
-import com.jadecode.cli.HeadlessRunner;
-import com.jadecode.cli.InteractiveLauncher;
-import com.jadecode.cli.LaunchOptions;
 
 /**
  * JadeCode 根入口：解析根语法并分派到交互界面或无界面任务。
@@ -28,25 +25,6 @@ public final class Main {
      * @return 进程退出码
      */
     public static int run(String[] args) {
-        LaunchOptions options;
-        try {
-            options = LaunchOptions.parse(args);
-        } catch (LaunchOptions.UsageException invalid) {
-            System.err.println(invalid.getMessage());
-            System.err.println("Run `jade --help` for usage.");
-            return 2;
-        }
-        return switch (options.mode()) {
-            case HELP -> {
-                System.out.println(LaunchOptions.help());
-                yield 0;
-            }
-            case VERSION -> {
-                System.out.println(InteractiveLauncher.version());
-                yield 0;
-            }
-            case HEADLESS -> new HeadlessRunner().run(options);
-            case INTERACTIVE -> new InteractiveLauncher().run(options);
-        };
+        return com.jadecode.cli.ServiceCli.run(args);
     }
 }

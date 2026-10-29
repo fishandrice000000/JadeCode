@@ -125,8 +125,8 @@ public record LaunchOptions(Mode mode, String initialPrompt, String resume, Perm
                 JadeCode - a CLI coding agent
 
                 Usage:
-                  jade                     Open the terminal UI with a new session
-                  jade <prompt>            Open the terminal UI and submit one first turn
+                  jade                     Open the UI; reconnect this workspace if already live
+                  jade <prompt>            Open the UI and submit a turn
                   jade --headless <prompt> Run the task without a UI and print only the final reply
                   jade --resume            Open the UI and choose a saved session
                   jade --resume=<id|name>  Resume a saved session directly

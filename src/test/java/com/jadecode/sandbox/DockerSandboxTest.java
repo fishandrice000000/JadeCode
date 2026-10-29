@@ -26,6 +26,28 @@ class DockerSandboxTest {
         Assumptions.assumeTrue(Boolean.getBoolean("jade.sandbox.integration"), "Explicit Docker integration opt-in required");
         return new DockerRuntime(SandboxSettings.defaults(), temporary.resolve("cache"), System.err::println);
     }
+    /** 顶层占用从真实容器挂载前领取；冲突时无写入，删除后才允许另一组取得范围。 */
+    @Test void serviceWritableMountClaimsAreHeldUntilContainerRemoval() throws Exception {
+        Assumptions.assumeTrue(Boolean.getBoolean("jade.sandbox.integration"));
+        Path a=Files.createDirectory(temporary.resolve("a")), b=Files.createDirectory(temporary.resolve("b"));
+        var claims=new com.jadecode.service.WorkspaceClaims();
+        var first=claims.owner("first");var other=claims.owner("other");
+        var held=other.acquire(List.of(b));
+        try(var root=first.acquire(List.of(a));
+            var runtime=new DockerRuntime(SandboxSettings.defaults(),temporary.resolve("cache"),System.err::println,first::acquire)){
+            var operation=plan(a,"printf fixture > "+b.resolve("result"),false,true,List.of(new ExecutionPlan.Mount(b,b,true)));
+            var refused=runtime.execute(operation,10,()->false);
+            assertTrue(refused.error());assertTrue(refused.content().contains("held by session"),refused.content());
+            assertEquals(0,runtime.containerCount());assertFalse(Files.exists(b.resolve("result")));
+            held.close();
+            var accepted=runtime.execute(operation,10,()->false);
+            assertFalse(accepted.error(),accepted.content());assertEquals("fixture",Files.readString(b.resolve("result")));
+            assertThrows(java.io.IOException.class,()->other.acquire(List.of(b)));
+            runtime.endTask("test-agent","test-run");
+            assertEquals(0,runtime.containerCount());
+            try(var released=other.acquire(List.of(b))){assertNotNull(released);}
+        } finally { held.close(); }
+    }
     /** 验证真实内核视图：可写工作区、只读/隐藏子路径、外部路径和网络隔离以及复用。 */
     @Test void boundariesAndReuse() throws Exception {
         Path workspace = Files.createDirectory(temporary.resolve("workspace"));

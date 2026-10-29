@@ -166,12 +166,19 @@ public final class JadeCodeFactory {
     public static SessionRuntime create(Presentation presentation, Consumer<String> output, Consumer<String> errors,
             Supplier<ResponseStream> streams, ExecutionObserver observer, JadeSettings settings, PermissionState permissions,
             AppConfig config) {
-        Path cwd = Path.of("").toAbsolutePath();
+        return create(presentation, output, errors, streams, observer, settings, permissions, config,
+                Path.of("").toAbsolutePath(), null);
+    }
+
+    /** 常驻服务显式绑定工作区和可写范围领取器；配置在所属机器装配，不依赖进程 cwd。 */
+    public static SessionRuntime create(Presentation presentation, Consumer<String> output, Consumer<String> errors,
+            Supplier<ResponseStream> streams, ExecutionObserver observer, JadeSettings settings, PermissionState permissions,
+            AppConfig config, Path cwd, com.jadecode.sandbox.DockerRuntime.WriteScopes scopes) {
         // 本次生产装配统一发现模型参数；可注入客户端的离线入口不会读用户缓存或自行联网。
         var metadata = new ModelMetadataResolver(ModelMetadataResolver.defaultCacheDirectory()).resolve(config, settings.modelMetadata());
         observer.publish(com.jadecode.execution.ExecutionNotice.event(
                 com.jadecode.execution.ExecutionNotice.Kind.MODEL, "", config.model(), metadata.describe(), "READY").actor(TeamManager.LEADER));
-        return create(config, cwd, new AnthropicSdkLlmClient(config, metadata), output, errors, presentation, streams, observer, settings, permissions, com.jadecode.config.JadePaths.defaults());
+        return create(config, cwd, new AnthropicSdkLlmClient(config, metadata), output, errors, presentation, streams, observer, settings, permissions, com.jadecode.config.JadePaths.defaults(), scopes);
     }
 
     /**
@@ -263,6 +270,14 @@ public final class JadeCodeFactory {
     public static SessionRuntime create(AppConfig config, Path cwd, LlmClient client,
             Consumer<String> output, Consumer<String> errors, Presentation presentation, Supplier<ResponseStream> streams,
             ExecutionObserver observer, JadeSettings settings, PermissionState permissions, com.jadecode.config.JadePaths jade) {
+        return create(config, cwd, client, output, errors, presentation, streams, observer, settings, permissions, jade, null);
+    }
+
+    /** 最底层装配共享一份顶层占用归属；队友与子代理沿用同一 DockerRuntime。 */
+    public static SessionRuntime create(AppConfig config, Path cwd, LlmClient client,
+            Consumer<String> output, Consumer<String> errors, Presentation presentation, Supplier<ResponseStream> streams,
+            ExecutionObserver observer, JadeSettings settings, PermissionState permissions, com.jadecode.config.JadePaths jade,
+            com.jadecode.sandbox.DockerRuntime.WriteScopes scopes) {
         java.util.Objects.requireNonNull(jade, "jade");
         try {
             Path workspace = cwd.toRealPath();
@@ -274,7 +289,7 @@ public final class JadeCodeFactory {
             var usage = new com.jadecode.session.SessionUsage(errors);
             // CLI 共享容量/回收器；实际使用前不连接 daemon，不启动轮询。
             var docker = settings.sandbox().enabled() ? new com.jadecode.sandbox.DockerRuntime(settings.sandbox(),
-                    paths.root().resolve("sandbox/cache"), errors) : null;
+                    paths.root().resolve("sandbox/cache"), errors, scopes) : null;
             if (!client.thinkingChoices().contains(settings.thinking()))
                 throw new IllegalArgumentException("config.thinking.effort is not adapted for the current endpoint or model");
             SessionRuntime leader = assemble(config, workspace, client,
@@ -286,7 +301,11 @@ public final class JadeCodeFactory {
                     text -> errors.accept("[Teammate " + id + "] " + text),
                     presentation, team, id, role, () -> ResponseStream.NONE, observer.scoped(id), settings, usage,
                     new java.util.concurrent.atomic.AtomicReference<>(leader.thinking()), permissions, paths, docker));
-            leader.onClose(team::close);
+            leader.onClose(() -> {
+                team.close();
+                if (!team.cleanupConfirmed()) throw new IllegalStateException("Team cleanup is incomplete; workspace remains held");
+            });
+            leader.onTaskCancel(team::cancelRun);
             return leader;
         } catch (IOException failure) {
             throw new IllegalStateException("Cannot bind the Team task store", failure);
@@ -495,7 +514,7 @@ public final class JadeCodeFactory {
     /** 统计身份来自装配，不来自模型参数；辅助调用没有强度覆盖，保持自己的服务商默认。 */
     private static LlmClient tracked(LlmClient client, String model, String actor, com.jadecode.llm.UsageRecord.Purpose purpose,
             com.jadecode.session.SessionUsage usage, Supplier<com.jadecode.llm.ThinkingSettings> thinking) {
-        return new com.jadecode.llm.UsageTrackingLlmClient(client, model, actor, purpose, usage::record, usage::ensureOpen, thinking);
+        return new com.jadecode.llm.UsageTrackingLlmClient(client, model, actor, purpose, usage::record, usage::ensureRequestAllowed, thinking);
     }
 
     /** 仅加载公共项目说明，不复制 Leader 对话；文件读取失败明确阻止装配。 */

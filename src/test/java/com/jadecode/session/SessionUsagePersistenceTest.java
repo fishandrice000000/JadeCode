@@ -19,6 +19,17 @@ import static org.junit.jupiter.api.Assertions.*;
 /** 使用真实文件通道验证取消后的用量保存，不能用无日志的账本掩盖 NIO 中断语义。 */
 @Timeout(10)
 class SessionUsagePersistenceTest {
+    /** 预算只阻止后续请求，不能拒绝保存已经发生的在途用量。 */
+    @Test void reportedBudgetStopsNewRequestsButKeepsLateUsage() {
+        var ledger=new SessionUsage(ignored->{});
+        ledger.limitAdditionalTokens(5);
+        ledger.record(new UsageRecord("first","fixture","leader",UsageRecord.Purpose.FORMAL,new ModelResponse.Usage(3,3)));
+        assertThrows(IllegalStateException.class,ledger::ensureRequestAllowed);
+        ledger.record(new UsageRecord("late","fixture","teammate",UsageRecord.Purpose.MEMORY,new ModelResponse.Usage(2,2)));
+        assertEquals(5,ledger.snapshot().total().inputTokens());
+        assertEquals(5,ledger.snapshot().total().outputTokens());
+        ledger.limitAdditionalTokens(5);assertDoesNotThrow(ledger::ensureRequestAllowed);
+    }
     @TempDir Path workspace;
 
     /** 已中断的辅助请求仍有费用事实；保存后应保留中断标志，并允许主会话继续写日志。 */

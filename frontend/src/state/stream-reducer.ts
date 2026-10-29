@@ -27,6 +27,18 @@ export class StreamReducer {
 		this.diagnostic = diagnostic;
 	}
 
+    /** 重连采用完整卡片后恢复活动流位置；下一段从真实长度继续，不丢失已收到前缀。 */
+    restore(entries: readonly Entry[]): void {
+        this.offsets.clear(); this.active.clear(); this.segments.clear();
+        for (const entry of entries) {
+            if (!entry.requestId || !["REPLY", "THINKING"].includes(entry.kind) || entry.status !== "STREAMING") continue;
+            const key = `${entry.requestId}:${entry.kind}`;
+            this.offsets.set(key, (this.offsets.get(key) ?? 0) + entry.body.length);
+            this.segments.set(key, (this.segments.get(key) ?? 0) + 1);
+            this.active.set(entry.requestId, { channel: entry.kind, id: entry.id });
+        }
+    }
+
 	started(payload: Payload): void {
 		const requestId = text(payload, "requestId");
 		if (!requestId) return;

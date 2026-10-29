@@ -277,6 +277,17 @@ public final class BackgroundManager implements AutoCloseable {
         for (int i = restored.size() - 1; i >= 0; i--) publish.accept(restored.get(i));
     }
 
+    /** 用户明确停止一轮时连同其“不必等待”后台一起停止，不影响其他轮次。 */
+    public void cancelOwned(String owner) {
+        List<Job> cancelled;
+        synchronized (this) {
+            cancelled = jobs.values().stream().filter(job -> job.owner().equals(owner)).toList();
+            cancelled.forEach(job -> jobs.remove(job.id()));
+            ready.removeIf(result -> result.owner().equals(owner));
+        }
+        cancelled.forEach(job -> { display(job.id(), "CANCELLED", "Owning task was stopped"); job.shell().close(); });
+    }
+
     /**
      * 任务无法继续时，只停掉它必须等待的命令，保留明确“不必等它”的命令。
      *

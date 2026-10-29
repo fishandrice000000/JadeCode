@@ -34,6 +34,8 @@ public final class SessionHost implements AutoCloseable {
     }
 
     public boolean hasCurrent() { return current != null; }
+    /** 关闭后检查不能调用 current()；保留未完成清理的失败状态供服务拒绝释放占用。 */
+    public boolean isStopped() { return current == null || current.isStopped(); }
 
     /** 获取当前运行时只用于提交新输入；未选定会话时不会隐式创建或调用模型。 */
     public SessionRuntime current() {

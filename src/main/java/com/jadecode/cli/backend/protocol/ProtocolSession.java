@@ -27,7 +27,7 @@ import com.jadecode.util.Json;
  * <p>握手只允许在 {@code ACCEPTED} 状态发生一次。{@code session.ready} 只有在 Node 完整安装
  * 了最近一次快照后才被接受，因此首轮任务、cron 和正文事件不会抢在历史清屏之前出现。</p>
  */
-public final class ProtocolSession implements AutoCloseable {
+public final class ProtocolSession implements AutoCloseable, EventEndpoint {
     /** 连接状态；只有 READY 接受会话命令。 */
     public enum State { ACCEPTED, HELLO, SYNC, READY, CLOSING, CLOSED }
 

@@ -59,3 +59,19 @@ test("an output-limit stop preserves incomplete status after the final message",
 	assert.equal(store.entries()[0]!.status, "INCOMPLETE");
 	assert.match(store.entries()[1]!.body, /output limit/);
 });
+
+// 从服务端卡片快照恢复后，保留前缀、工具预览关联和下一段 offset。
+test("reconnection resumes the exact active stream and preview cards", () => {
+    const first = new TranscriptStore(); const before = new StreamReducer(first, assert.fail);
+    before.started({ requestId: "r", actor: "leader" });
+    before.delta({ requestId: "r", channel: "REPLY", offset: 0, text: "prefix " });
+    before.previewStarted({ requestId: "tool", actor: "leader", blockIndex: 1, callId: "call", name: "bash", initialInputJson: "{" });
+    const store = new TranscriptStore(); store.install(first.entries());
+    const reducer = new StreamReducer(store, assert.fail); reducer.restore(store.entries());
+    reducer.delta({ requestId: "r", channel: "REPLY", offset: 7, text: "suffix" });
+    reducer.previewDelta({ requestId: "tool", blockIndex: 1, fragment: "}" });
+    reducer.ended({ requestId: "r", failed: false });
+    assert.equal(store.entries().filter(e => e.kind === "REPLY").length, 1);
+    assert.equal(store.entries().find(e => e.kind === "REPLY")?.body, "prefix suffix");
+    assert.equal(store.entries().find(e => e.kind === "TOOL")?.arguments, "{}");
+});

@@ -92,6 +92,7 @@ export class Application {
 	/** UI（主题/终端/编辑器/host）是否已建立；bootstrap 后的业务事件必须等它完成。 */
 	private readonly uiBarrier = new UiEventBarrier<WireMessage>();
 	private stoppedReceived = false;
+    private detachedReceived = false;
 	private closingAt = 0;
 	private lastClearAt = 0;
 	/** 用户退出后等待后端收尾的有界预算；超时保留错误而非当作成功。 */
@@ -217,6 +218,11 @@ export class Application {
 		setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS, this.keymap.piOverrides() as never));
 		const completion = new JadeCompletionProvider({
 			workspace: bootstrap.workspace,
+            paths: async (prefix, signal) => {
+                const result = await this.client?.command("workspace.complete", { prefix }, this.identity());
+                if (!result?.ok || signal.aborted) return null;
+                return { prefix, items: arrayValue(result.payload, "items") as { value: string; label: string }[] };
+            },
 			commandSuggestions: () => this.session.settings()?.commandSuggestions !== false,
 			sessions: async () => (await this.listSessions()).map((item) => ({
 				value: item.id, label: item.title || item.id, description: item.id.slice(0, 8),
@@ -619,7 +625,7 @@ export class Application {
 			case "session.snapshot.chunk":
 				if (!this.session.bootstrap()) return;
 				if (!this.snapshotBuffer || this.snapshotBuffer.id !== text(message.payload, "snapshotId")) return;
-				this.snapshotBuffer.chunks.push(text(message.payload, "encodedEntries"));
+				this.snapshotBuffer.chunks.push(this.resolveText(message.payload, "encodedEntries", "entriesBlobRef"));
 				return;
 			case "session.snapshot.end":
 				if (!this.session.bootstrap()) return;
@@ -687,7 +693,12 @@ export class Application {
 				return;
 			case "command.error":
 				return;
-			case "server.stopped":
+			case "client.detached":
+                this.detachedReceived = true;
+                this.closing = true;
+                return;
+            case "server.stopped":
+                if (text(message.payload, "cleanupError")) this.reportFailure(text(message.payload, "cleanupError"));
 				this.stoppedReceived = true;
 				this.closing = true;
 				return;
@@ -837,6 +848,8 @@ export class Application {
 		this.clearApprovalResult();
 		this.approval.clear();
 		this.transcript.install(entries);
+        this.streamReducer = new StreamReducer(this.transcript, (diagnostic) => this.notify(diagnostic, true));
+        this.streamReducer.restore(entries);
 		this.session.applySnapshot(this.resolveSnapshot(payload));
 		this.editor.rememberInputs(this.transcript.userTexts());
 		this.syncTranscriptHistoryMessage();
@@ -1200,6 +1213,14 @@ export class Application {
 			}
 			case "/new": this.newSession(); return true;
 			case "/quit": void this.quit(); return true;
+            case "/stop":
+            case "/close": {
+                const client = this.client;
+                if (client) void client.command(name === "/stop" ? "session.stop" : "session.close", {}, this.identity()).then((result) => {
+                    if (!result.ok) this.notify(result.message ?? "Session operation failed", true);
+                }).catch(() => {});
+                return true;
+            }
 			case "/name": {
 				const client = this.client;
 				if (!argument.trim()) { this.notify("Usage: /name <title>", true); return true; }
@@ -1360,7 +1381,7 @@ export class Application {
 		return new Promise((resolve) => {
 			const check = (): void => {
 				// 退出意图不等于收口完成：必须等到 server.stopped 或真实断连。
-				if (this.stoppedReceived || this.client?.isClosed()) {
+				if (this.stoppedReceived || this.detachedReceived || this.client?.isClosed()) {
 					clearInterval(interval);
 					resolve(this.exitMessage ? 1 : 0);
 					return;
@@ -1391,11 +1412,11 @@ export class Application {
 		this.clearApprovalResult();
 		if (this.closing) {
 			// 只有收到 server.stopped 后的关闭才是正常收口；否则保留真实原因。
-			if (!this.stoppedReceived && !this.exitMessage) this.exitMessage = `The backend closed unexpectedly: ${reason}`;
+			if (!this.stoppedReceived && !this.detachedReceived && !this.exitMessage) this.exitMessage = `The backend closed unexpectedly: ${reason}`;
 			return;
 		}
 		this.closing = true;
-		if (!this.stoppedReceived) this.exitMessage = `The backend closed before server.stopped: ${reason}`;
+		if (!this.stoppedReceived && !this.detachedReceived) this.exitMessage = `The backend closed before server.stopped: ${reason}`;
 	}
 
 	private async shutdown(): Promise<void> {
