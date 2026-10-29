@@ -174,15 +174,15 @@ public final class FrontendDistribution {
     record BuildInfo(String version, String buildId, int protocolVersion, boolean paired) {
         static BuildInfo load() {
             try (InputStream stream = FrontendDistribution.class.getResourceAsStream(RESOURCE)) {
-                if (stream == null) return new BuildInfo("1.0.0", "unpaired", 1, false);
+                if (stream == null) return new BuildInfo("1.1.0", "unpaired", 1, false);
                 Properties properties = new Properties();
                 properties.load(stream);
-                return new BuildInfo(properties.getProperty("version", "1.0.0"),
+                return new BuildInfo(properties.getProperty("version", "1.1.0"),
                         properties.getProperty("buildId", "unpaired"),
                         Integer.parseInt(properties.getProperty("protocolVersion", "1")),
                         Boolean.parseBoolean(properties.getProperty("paired", "false")));
             } catch (IOException | NumberFormatException invalid) {
-                return new BuildInfo("1.0.0", "unpaired", 1, false);
+                return new BuildInfo("1.1.0", "unpaired", 1, false);
             }
         }
     }

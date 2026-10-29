@@ -93,7 +93,7 @@ final class McpConnection implements AutoCloseable {
             if (lines.getAndIncrement() < 8) diagnostics.accept("[MCP " + serverName + "] server stderr (" + line.length() + " chars)");
         });
         try {
-            client = McpClient.sync(transport).clientInfo(new McpSchema.Implementation("jadecode", "1.0.0"))
+            client = McpClient.sync(transport).clientInfo(new McpSchema.Implementation("jadecode", "1.1.0"))
                     .initializationTimeout(Duration.ofSeconds(config.startupTimeoutSeconds()))
                     .requestTimeout(Duration.ofSeconds(config.callTimeoutSeconds()))
                     .capabilities(McpSchema.ClientCapabilities.builder().build()).build();

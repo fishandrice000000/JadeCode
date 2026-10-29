@@ -68,7 +68,7 @@ public class AnthropicSdkLlmClient implements LlmClient {
         openCodeGo = config.provider() == com.jadecode.config.ModelProvider.OPENCODE_GO;
         var builder = AnthropicOkHttpClient.builder().baseUrl(config.baseUrl());
         // Console 文档要求 Bearer；旧兼容服务仍用 x-api-key，不把两种认证同时发送。
-        if (openCodeGo) builder.authToken(config.apiKey()).replaceHeaders("User-Agent", "jadecode/1.0.0")
+        if (openCodeGo) builder.authToken(config.apiKey()).replaceHeaders("User-Agent", "jadecode/1.1.0")
                 .putHeader("x-opencode-client", "jadecode");
         else builder.apiKey(config.apiKey());
         this.client = builder.build();

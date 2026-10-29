@@ -97,12 +97,12 @@ public final class BackendApplication implements AutoCloseable {
     /** @return 由构建过滤资源提供的真实项目版本；缺失时使用当前发行基线版本号。 */
     static String projectVersion() {
         try (InputStream stream = BackendApplication.class.getResourceAsStream("/META-INF/jade-build.properties")) {
-            if (stream == null) return "1.0.0";
+            if (stream == null) return "1.1.0";
             java.util.Properties properties = new java.util.Properties();
             properties.load(stream);
-            return properties.getProperty("version", "1.0.0");
+            return properties.getProperty("version", "1.1.0");
         } catch (IOException ignored) {
-            return "1.0.0";
+            return "1.1.0";
         }
     }
 

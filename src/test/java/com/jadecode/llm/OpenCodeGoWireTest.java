@@ -135,7 +135,7 @@ class OpenCodeGoWireTest {
         for (Captured sent : requests) {
             assertEquals("/inference/go/anthropic/v1/messages", sent.path());
             assertEquals("Bearer fixture-go-key", sent.header("Authorization")); assertEquals("", sent.header("x-api-key"));
-            assertEquals("jadecode/1.0.0", sent.header("User-Agent")); assertEquals("jadecode", sent.header("x-opencode-client"));
+            assertEquals("jadecode/1.1.0", sent.header("User-Agent")); assertEquals("jadecode", sent.header("x-opencode-client"));
             assertEquals("stable-conversation", sent.header("x-opencode-session"));
             assertEquals(MODEL, sent.body().path("model").asText()); assertEquals(100, sent.body().path("max_tokens").asInt());
             assertEquals("enabled", sent.body().path("thinking").path("type").asText());

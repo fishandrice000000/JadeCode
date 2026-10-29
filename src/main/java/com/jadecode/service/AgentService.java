@@ -290,9 +290,9 @@ public final class AgentService implements AutoCloseable {
             var reference=new java.util.concurrent.atomic.AtomicReference<ProtocolSession>();
             ProtocolSession protocol=new ProtocolSession(output,credential,connectionId,hello->{
                 var greeting=Json.mapper().createObjectNode().put("connectionId",connectionId)
-                        .put("protocolVersion",WireCodec.PROTOCOL_VERSION).put("buildId",buildId).put("projectVersion","1.0.0");
+                        .put("protocolVersion",WireCodec.PROTOCOL_VERSION).put("buildId",buildId).put("projectVersion","1.1.0");
                 greeting.putArray("capabilities").add("session.submit").add("session.resume").add("approval.presented");
-                var bootstrap=Json.mapper().createObjectNode().put("projectVersion","1.0.0").put("buildId",buildId)
+                var bootstrap=Json.mapper().createObjectNode().put("projectVersion","1.1.0").put("buildId",buildId)
                         .put("protocolVersion",WireCodec.PROTOCOL_VERSION).put("workspace",workspace.toString())
                         .put("themeDirectory",paths.config().resolve("themes").toString())
                         .put("configRevision",Long.toString(preferences.state().revision())).put("serviceSessionId",id).put("executionHost",executionHost);

@@ -1,6 +1,6 @@
 # JadeCode
 
-当前版本：**1.0.0**。本轮TUI真机验收已由用户确认通过；图片粘贴按批准范围暂缓。详见[1.0.0交付记录](docs/tui-pi-replication/10-node-frontend-migration/handover/release-1.0.0.md)。
+当前版本：**1.1.0**。1.0.0 的 TUI 真机验收已由用户确认通过；图片粘贴按批准范围暂缓。详见[1.0.0交付记录](docs/tui-pi-replication/10-node-frontend-migration/handover/release-1.0.0.md)。
 
 个人 CLI coding agent — Java 21 重写 [learn-claude-code](https://github.com/shareAI-lab/learn-claude-code) 课程(s01–s17)。
 
