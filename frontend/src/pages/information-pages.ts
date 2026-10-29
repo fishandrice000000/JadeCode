@@ -131,6 +131,7 @@ export class SessionPage extends InformationPage {
 		lines.push(theme.style("text", `Title: ${singleLine(snapshot.title || "New session")}`));
 		lines.push(theme.style("text", `ID: ${snapshot.sessionId}`));
         const bootstrap = this.context.state.bootstrap();
+        if (bootstrap?.managedWorkspaceId) lines.push(theme.style("text", `Managed workspace: ${bootstrap.managedWorkspaceId}`));
         if (bootstrap?.executionHost) lines.push(theme.style("text", `Execution host: ${singleLine(bootstrap.executionHost)}`));
         if (bootstrap?.serviceSessionId) lines.push(theme.style("text", `Service ID: ${bootstrap.serviceSessionId}`));
 		lines.push(theme.style("text", `Generation: ${snapshot.generation}`));

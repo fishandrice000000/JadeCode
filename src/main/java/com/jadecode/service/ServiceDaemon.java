@@ -86,6 +86,15 @@ public final class ServiceDaemon {
         WireMessage request=WireCodec.readFrame(in);
         if(request==null) return;
         try {
+            // 文件按块往返同一 SSH/UDS 连接，避免每块重新启动 SSH 或把大 ZIP 放进单帧。
+            if (request.type().equals("service.workspace")) {
+                deadline.cancel(false);
+                do {
+                    if (!request.type().equals("service.workspace")) throw new IOException("Expected workspace transfer command");
+                    reply(out,service.workspaceCommand(request.payload()));
+                } while ((request=WireCodec.readFrame(in))!=null);
+                return;
+            }
             switch(request.type()) {
                 case "service.list" -> { reply(out,service.list()); return; }
                 case "service.cancel" -> { service.stopSession(request.payload().path("id").asText());reply(out,Json.mapper().createObjectNode().put("status","stopping"));return; }

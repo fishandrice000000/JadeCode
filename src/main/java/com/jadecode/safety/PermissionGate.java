@@ -26,6 +26,9 @@ public final class PermissionGate {
     private final PermissionRuleMatcher matcher = new PermissionRuleMatcher();
     private final DefaultPermissionRules defaults = new DefaultPermissionRules();
     private boolean sandboxed;
+    private boolean managedWorkspace;
+    /** 独立云端工作区始终走 Docker，不能切换 Full Access 后绕过共享执行屏障。 */
+    public void managedWorkspace(boolean value) { managedWorkspace=value; }
     private final ThreadLocal<CheckedCall> checked = new ThreadLocal<>();
     /** 只将普通越界询问交给沙箱范围审批；显式规则、敏感保护与只读检查仍由 Gate 执行。 */
     public void sandboxed(boolean value) { sandboxed = value; }
@@ -48,7 +51,7 @@ public final class PermissionGate {
     private static final Set<String> INTERNAL = Set.of("glob", "todo_write", "compact", "load_skill", "task", "Workflow", "memory_note",
             "create_task", "get_task", "list_tasks", "update_task", "claim_task", "complete_task",
             "connect_mcp", "schedule_cron", "list_crons", "cancel_cron", "spawn_teammate", "list_teammates", "close_teammate",
-            "shutdown_teammate", "assign_task", "send_message", "submit_task_result", "reopen_task", "retry_team_message", "review_task_result");
+            "shutdown_teammate", "assign_task", "send_message", "submit_task_result", "reopen_task", "retry_team_message", "review_task_result", "workspace_status");
     private static final Set<String> ADMIN_WRITES = Set.of("memory_note", "create_task", "update_task", "claim_task", "complete_task",
             "schedule_cron", "cancel_cron", "spawn_teammate", "close_teammate", "shutdown_teammate", "assign_task", "send_message", "submit_task_result",
             "reopen_task", "retry_team_message", "review_task_result");
@@ -156,10 +159,14 @@ public final class PermissionGate {
         if (Set.of("read_file", "write_file", "edit_file").contains(tool)) return files.analyze(tool, input);
         if (tool.equals("glob")) return files.analyzeGlob(input);
         if (tool.equals("bash")) return shell.analyze(tool, input);
+        if (Set.of("import_resource","publish_result","prepare_environment","workspace_status").contains(tool))
+            return new WorkspacePermissionCheck(resolver).analyze(tool,input);
         return new Analysis(tool, resolver.workspaceReal(), List.of(), List.of(), ADMIN_WRITES.contains(tool), true, !INTERNAL.contains(tool), "");
     }
     /** 显式拒绝/询问优先；默认硬保护不能被普通 allow 推翻。 */
     public PermissionDecision evaluate(Analysis action, PermissionState.Snapshot snapshot) {
+        if (managedWorkspace && snapshot.profile()==PermissionProfile.FULL_ACCESS)
+            return PermissionDecision.deny("workspace.sandbox-required","Managed workspaces require Docker; select Workspace or Approve for Me");
         if (!action.error().isEmpty()) return PermissionDecision.deny("input.invalid", action.error());
         if (memoryRoot != null && action.resources().stream().anyMatch(r -> !r.operation().equals("READ")
                 && (r.path().startsWith(memoryRoot) || memoryRoot.startsWith(r.path()))))
@@ -173,6 +180,8 @@ public final class PermissionGate {
         if (asked != null) return PermissionDecision.ask(asked.id(), "Matched required-ask rule: " + asked.id(), true);
         var protection = defaults.protectedDecision(action, snapshot);
         if (protection != null) return protection;
+        if (action.uncertaintyReason().equals("managed.network"))
+            return PermissionDecision.ask("workspace.network","Repository import requires network access; source and revision are shown in this request",false);
         // 尚未声明检查方式的新工具，不能因 Full Access 绕过集成时的显式确认。
         if (action.commands().isEmpty() && action.resources().isEmpty() && action.uncertain())
             return PermissionDecision.ask("tool.unknown", "This tool has not declared a permission check", true);

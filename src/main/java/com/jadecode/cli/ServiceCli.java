@@ -24,6 +24,8 @@ public final class ServiceCli {
             // 1. 服务连接参数与既有任务语法分开解析；-- 之后保留用户字面内容。
             var remaining=new ArrayList<String>();String remote=null,workspace=null,attach=null,close=null,cancel=null;
             boolean list=false,stop=false;
+            String workspaceId=null,upload=null,artifact=null,output=null;
+            boolean isolated=false,workspaceList=false,workspaceCreate=false,workspaceDelete=false,artifacts=false;
             for(int i=0;i<args.length;i++) {
                 String arg=args[i];
                 if(arg.equals("--")){remaining.addAll(Arrays.asList(args).subList(i,args.length));break;}
@@ -35,25 +37,54 @@ public final class ServiceCli {
                     }
                     case "--sessions"->list=true;
                     case "--service-stop"->stop=true;
+                    case "--isolated"->isolated=true;
+                    case "--managed-workspaces"->workspaceList=true;
+                    case "--create-workspace"->workspaceCreate=true;
+                    case "--delete-workspace"->workspaceDelete=true;
+                    case "--artifacts"->artifacts=true;
+                    case "--workspace-id","--upload-snapshot","--download-artifact","--output" -> {
+                        if (++i>=args.length) throw new LaunchOptions.UsageException(arg+" requires a value");
+                        switch(arg) { case "--workspace-id"->workspaceId=args[i]; case "--upload-snapshot"->upload=args[i];
+                            case "--download-artifact"->artifact=args[i]; default->output=args[i]; }
+                    }
                     default->remaining.add(arg);
                 }
             }
             LaunchOptions options=LaunchOptions.parse(remaining.toArray(String[]::new));
             if(options.mode()==LaunchOptions.Mode.HELP){System.out.println(LaunchOptions.help()+help());return 0;}
             if(options.mode()==LaunchOptions.Mode.VERSION){System.out.println(InteractiveLauncher.version());return 0;}
-            if(remote!=null && workspace==null && attach==null && !list && !stop && close==null && cancel==null)
+            boolean workspaceManagement=workspaceList || workspaceCreate || workspaceDelete || artifacts || upload!=null || artifact!=null;
+            int workspaceActions=(workspaceList?1:0)+(workspaceCreate?1:0)+(workspaceDelete?1:0)+(artifacts?1:0)+(upload!=null?1:0)+(artifact!=null?1:0);
+            if (workspaceActions>1 || workspaceManagement && (isolated || attach!=null || workspace!=null || list || stop || close!=null || cancel!=null || options.hasPrompt()))
+                throw new LaunchOptions.UsageException("Choose one workspace management operation without an Agent task");
+            if (workspaceManagement && (options.headless() || options.resume()!=null || options.permission()!=null || options.modelConfig()!=null))
+                throw new LaunchOptions.UsageException("Workspace management does not accept Agent launch options");
+            if (output!=null && artifact==null) throw new LaunchOptions.UsageException("--output requires --download-artifact");
+            if (attach!=null && workspaceId!=null) throw new LaunchOptions.UsageException("Choose --attach or --workspace-id");
+            if ((workspaceDelete || artifacts || upload!=null || artifact!=null) && workspaceId==null)
+                throw new LaunchOptions.UsageException("This operation requires --workspace-id <id>");
+            if (artifact!=null && output==null) throw new LaunchOptions.UsageException("--download-artifact requires --output <local-file>");
+            if ((isolated && (workspace!=null || workspaceId!=null || attach!=null)) || (workspaceId!=null && workspace!=null))
+                throw new LaunchOptions.UsageException("Choose one of --isolated, --workspace, --workspace-id or --attach");
+            if(remote!=null && workspace==null && workspaceId==null && !isolated && !workspaceManagement && attach==null && !list && !stop && close==null && cancel==null)
                 throw new LaunchOptions.UsageException("--remote requires --workspace <server-path> or --attach <id>");
             if(attach!=null && (options.hasPrompt() || options.resume()!=null || options.permission()!=null || options.modelConfig()!=null))
                 throw new LaunchOptions.UsageException("--attach connects the existing configuration; send new input after connecting");
             // 前端检查发生在启动服务/创建会话之前，缺 TTY 或成套资产不留下无人接收的任务。
             FrontendDistribution distribution=null;
-            boolean management=list || stop || close!=null || cancel!=null;
+            boolean management=list || stop || close!=null || cancel!=null || workspaceManagement;
             if(!management && !options.headless()) {
                 if(System.console()==null) throw new LaunchOptions.UsageException("The interactive UI needs a real terminal; use --headless");
                 distribution=FrontendDistribution.locate();distribution.nodeExecutable();
             }
             // 2. 管理命令只操作服务；普通启动先选择会话，再交给 TUI 或 headless 协议循环。
             try(var peer=ServiceClient.connect(remote)) {
+                if (workspaceManagement) {
+                    if (upload!=null) System.out.println(WorkspaceClient.upload(peer,workspaceId,Path.of(upload)).toPrettyString());
+                    else if (artifact!=null) WorkspaceClient.download(peer,workspaceId,artifact,Path.of(output));
+                    else System.out.println(WorkspaceClient.request(peer,workspaceCreate?"create":workspaceList?"list":workspaceDelete?"delete":"artifacts",workspaceId).toPrettyString());
+                    return 0;
+                }
                 if(management){
                     var p=Json.mapper().createObjectNode();if(close!=null)p.put("id",close);if(cancel!=null)p.put("id",cancel);
                     var answer=ServiceClient.request(peer,stop?"service.stop":close!=null?"service.close":cancel!=null?"service.cancel":"service.list",p);
@@ -64,6 +95,8 @@ public final class ServiceCli {
                 var request=Json.mapper().createObjectNode().put("workspace",workspace==null?Path.of("").toAbsolutePath().toString():remote==null?Path.of(workspace).toAbsolutePath().normalize().toString():workspace)
                         .put("prompt",options.initialPrompt()).put("headless",options.headless()).put("submissionId",UUID.randomUUID().toString());
                 if(attach!=null)request.put("attach",attach);
+                if(isolated)request.put("isolated",true);
+                if(workspaceId!=null)request.put("workspaceId",workspaceId);
                 if(options.resume()!=null) request.put("resume",options.resume());
                 if(options.resume()!=null && options.resume().isEmpty())request.put("picker",true);
                 if(options.permission()!=null)request.put("permission",options.permission().value());
@@ -87,6 +120,14 @@ public final class ServiceCli {
               --stop-session <id>      Cancel a current turn, including a pending approval
               --close-session <id>     Stop and close a service session
               --service-stop           Stop the service and its sessions
+              --isolated               Allocate an empty persistent managed workspace
+              --create-workspace       Allocate a workspace without starting an Agent
+              --managed-workspaces     List retained managed workspaces
+              --workspace-id <id>      Open a retained managed workspace
+              --delete-workspace       Delete --workspace-id after closing its session
+              --upload-snapshot <dir>  Upload local files to --workspace-id (does not import)
+              --artifacts              List published results for --workspace-id
+              --download-artifact <id> Download with --workspace-id and --output <local-file>
 
             Closing the UI detaches. Use /stop to cancel the current turn or /close to close the session.
             """;}

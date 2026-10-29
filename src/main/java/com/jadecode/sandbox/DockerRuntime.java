@@ -17,6 +17,21 @@ import com.jadecode.util.Json;
  * 任何不完整结果都销毁对应实例，不重放；清理失败保留登记并报告，不能假称释放。
  */
 public final class DockerRuntime implements AutoCloseable {
+    /** 受管工作区的执行屏障；租约覆盖实际后台执行，不只覆盖提交工具的那一刻。 */
+    public interface Operations {
+        AutoCloseable enter(ExecutionPlan plan) throws IOException;
+        void completed(ExecutionPlan plan,Outcome outcome) throws IOException;
+    }
+    private Operations operations;
+    /** 工厂在首次执行前绑定共享屏障，旧工作区保持原来的并发语义。 */
+    public synchronized void operations(Operations value) {
+        if (closed || !instances.isEmpty()) throw new IllegalStateException("Execution coordination must be bound before use");
+        operations=value;
+    }
+    /** 成功执行后返回已固定的镜像摘要；未使用时为 null，不为状态查询启动 Docker。 */
+    public synchronized String resolvedImage() { return image; }
+    /** 环境准备先固定镜像身份，再判断保留的 .venv 是否属于同一工具链。 */
+    public synchronized String imageIdentity() throws IOException { initialize(); return image; }
     public record Outcome(String content, boolean error, Integer exitCode, boolean truncated, String rawOutput) {
         /** 启动失败没有程序原始输出，保留同一条失败说明。 */
         public Outcome(String content, boolean error, Integer exitCode, boolean truncated) { this(content, error, exitCode, truncated, content); }
@@ -118,6 +133,17 @@ public final class DockerRuntime implements AutoCloseable {
     }
     /** 调用固定镜像里的执行端；模型不能指定 Docker 参数、entrypoint 或额外环境。 */
     public Outcome execute(ExecutionPlan plan, long timeoutSeconds, BooleanSupplier cancelled) {
+        try (var lease=operations==null ? (AutoCloseable)()->{} : operations.enter(plan)) {
+            Outcome outcome=cancelled.getAsBoolean() ? new Outcome("Error: Execution cancelled before acquiring workspace",true,null,false)
+                    : executeIsolated(plan,timeoutSeconds,cancelled);
+            if (operations!=null) operations.completed(plan,outcome);
+            return outcome;
+        } catch (Exception failure) {
+            return new Outcome("Error: Workspace execution coordination failed: "+failure.getMessage(),true,null,false);
+        }
+    }
+    /** 已领取工作区执行租约后的原有容器流程；清理与取消语义保持在同一个实现中。 */
+    private Outcome executeIsolated(ExecutionPlan plan, long timeoutSeconds, BooleanSupplier cancelled) {
         Instance instance = null;
         boolean entered = false;
         try {

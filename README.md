@@ -772,5 +772,59 @@ headless 保留无人工通道、只输出最终回答的行为；已有交互�
 服务重启先核对旧进程身份并回收确切归属的 Docker 容器；无法确认时保留清单并拒绝放行。
 旧会话曾可能执行宿主工具时，需要先人工检查残留进程和工作区；审计与原清单保持在 service 目录，
 不能把删除清单当成已经停止进程。历史恢复不重新执行旧工具，未知结果保持中断事实。
-空隔离工作区、Agent 按需获取仓库/导入快照、结果交付属于后续阶段。
+空隔离工作区、Agent 按需获取仓库/导入快照、结果交付见下一节。
 实现与验证边界见 [Agent 服务任务单](docs/jobs/s18/agent-service.md)。
+
+### 独立工作区、输入和成果
+
+`--isolated` 创建空的持久工作区，再启动普通可交互会话。Agent 根据任务调用
+`workspace_status`、`import_resource`、`prepare_environment`、`publish_result`；导入不会自动执行项目代码。
+服务创建的工作区 ID 与存活会话 Service ID 分开：前者用于保留输入/成果，后者用于连接、停止和关闭。
+
+```sh
+# 本地独立任务，Agent 自行申请获取任务所需仓库。
+./jade --isolated "获取指定仓库版本，检查并修复问题"
+
+# 远端任务使用客户端选定的本地快照；先分配目录并上传，模型随后决定何时导入。
+./jade --remote user@server --create-workspace
+./jade --remote user@server --workspace-id <workspace-id> --upload-snapshot /client/project
+./jade --remote user@server --workspace-id <workspace-id> "导入已上传快照并完成任务"
+./jade --remote user@server --workspace-id <workspace-id> --artifacts
+./jade --remote user@server --workspace-id <workspace-id> --download-artifact <artifact-id> --output ./result.zip
+
+# 查询保留数据；先用 --close-session 关闭占用者，再明确删除工作文件、上传、成果和依赖缓存。
+./jade --managed-workspaces
+./jade --workspace-id <workspace-id> --delete-workspace
+```
+
+Git 导入只接受无内嵌凭据的 HTTPS URL，在隔离执行器中获取并记录实际 commit，禁用用户/系统 Git 配置和钩子，
+不自动处理子模块/LFS。联网仍走现有审批；现有 Docker bridge 不限制域名或私网访问。
+获取/检出失败时记录操作 ID；如果已解析 commit，显式重试须携带 `retryOperationId` 并把 revision 写成该 commit，
+不能在重试时继续追踪变化的分支。服务重启仅标记中断，不自动重放工具。
+
+快照包含所选目录的普通文件及未跟踪文件，排除 Git/凭据元数据、`.venv`、`venv`、`node_modules` 和 `__pycache__`。
+本阶段不保留快照的 Git 历史，也不支持符号链接/硬链接布局；遇到链接或危险压缩路径明确拒绝。
+每份压缩输入与实际展开总量上限 256 MiB、30000 个条目，传输按 64 KiB 分块并校验 SHA-256。
+同内容上传重试复用已保存偏移；下载中断保留 `.part` 前缀供重试，最终校验发现损坏则清除临时文件，供下次重新下载。
+校验成功后才发布新文件名，拒绝覆盖既有目标。
+本地打包不冻结外部编辑器，上传时应提供不再变化的输入目录。
+
+工作容器仅挂载当前工作区/本次暂存目录，服务元数据不对其开放。
+独立工作区要求开启 Docker，禁止切到 Full Access；普通已有目录会话维持原有权限和并发语义。
+同一独立工作区的 Shell、导入、环境准备和成果复制保守互斥，队友仍可并行思考；
+读文件操作可并行，但会等待独占操作结束。这只协调 Harness 已知执行，不锁住宿主其他进程。
+
+`prepare_environment` 在指定项目下创建/更新 `.venv`，使用明确解释器安装本地 requirements 文件，
+再执行 pip check/list，记录声明摘要、实际输出和执行镜像。联网通过 `network_access=true` 请求原有 bash 审批。
+`.venv` 和包缓存独立于容器保留；失败可能留下部分包，记录为未就绪，不声称回滚。
+普通 bash 也可自行安装依赖，但之后的环境验证状态为 UNVERIFIED；重新绑定运行时同样需要重验。
+不自动改锁文件，也不保证缺少锁定/哈希的依赖未来会解析成相同版本。
+系统库使用预置工具链镜像；私有源凭据代理、按域名限制出口、自动构建镜像尚未提供。
+
+成果 ZIP 包含 `manifest.json`、`files/` 和 `changes.patch`，记录来源、实际修改/删除和命令退出事实；
+命令过长明确标记截断，执行记录不是“测试充分”的认证。补丁相对于独立工作区根应用，使用 `git apply -p2`，
+例如保留 `project/` 子目录布局；下载不自动应用补丁、不推送仓库。发布后继续修改会生成新版本，不改变旧成果。
+关闭/闲置回收会话只释放运行资源；工作数据保留到显式删除，历史会话与审计日志独立保留。
+首版每数据根最多保留 32 份独立工作区，每工作区 64 份上传/输入/成果、1024 条准备操作、4096 条 Shell 尝试记录。
+这些是应用限制，工作文件和包缓存尚无文件系统硬配额。
+契约与实测边界见 [独立工作区任务单](docs/jobs/s18/managed-workspaces.md)。

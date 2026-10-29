@@ -474,6 +474,8 @@ public final class BackendSessionService implements AutoCloseable {
         long expected = longValue(command.payload(), "expectedPermissionRevision", -1);
         if (expected != state.snapshot().revision())
             throw new ProtocolException(ProtocolError.STALE_REVISION, "The permission revision changed");
+        if (profile == PermissionProfile.FULL_ACCESS && factory.managed()!=null)
+            throw new ProtocolException(ProtocolError.INVALID_MESSAGE,"Managed workspaces require the Docker sandbox; Full Access is unavailable");
         if (profile == PermissionProfile.FULL_ACCESS) requireFullAccessEvidence(command, "runtime");
         state.select(profile);
         ObjectNode payload = status("ok");

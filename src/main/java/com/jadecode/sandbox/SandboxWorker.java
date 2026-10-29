@@ -25,7 +25,9 @@ public final class SandboxWorker {
             Path cwd = Path.of(request.path("cwd").asText()).toAbsolutePath().normalize();
             var input = (ObjectNode) request.path("input");
             String tool = request.path("tool").asText();
-            if (tool.equals("bash")) {
+            if (tool.equals("managed.git")) {
+                result.put("content",com.jadecode.workspace.GitWorker.execute(cwd,input)).put("isError",false);
+            } else if (tool.equals("bash")) {
                 // 每个操作单独创建 Shell；后台编排在宿主，不在这里 fork 常驻工作者。
                 try (var shell = new ShellCommand(cwd, request.path("timeout").asLong(120))) {
                     var value = shell.run(input.path("command").asText());
@@ -43,7 +45,10 @@ public final class SandboxWorker {
                 result.put("content", outcome.content()).put("isError", outcome.isError());
             }
         } catch (Exception failure) {
-            result.put("content", "Error: Worker operation failed: " + failure.getClass().getSimpleName()).put("isError", true);
+            String detail=failure.getClass().getSimpleName();
+            if (requestTool(bytes).equals("managed.git") && failure.getMessage()!=null)
+                detail += ": "+failure.getMessage().substring(0,Math.min(2048,failure.getMessage().length()));
+            result.put("content", "Error: Worker operation failed: " + detail).put("isError", true);
         }
         long finalOom = oomKills(); result.put("oomCount", finalOom);
         if (initialOom >= 0 && finalOom > initialOom) {
@@ -67,6 +72,11 @@ public final class SandboxWorker {
         result.put("clean", clean);
         result.put("protocol", 1);
         System.out.write(Json.mapper().writeValueAsString(result).getBytes(StandardCharsets.UTF_8));
+    }
+    /** 仅用于受控 Git 的有界诊断，不把其它工具异常中的参数或环境配置扩展到输出。 */
+    private static String requestTool(byte[] bytes) {
+        try { return Json.mapper().readTree(bytes).path("tool").asText(); }
+        catch (Exception invalid) { return ""; }
     }
     /** cgroup v2 的本容器 OOM 计数；不可读返回未知，不能伪造“没有 OOM”。 */
     private static long oomKills() {

@@ -32,6 +32,7 @@ public final class AgentService implements AutoCloseable {
     private final Map<String, Managed> sessions = new LinkedHashMap<>();
     private final ScheduledExecutorService reaper = Executors.newSingleThreadScheduledExecutor();
     private final String buildId;
+    private final com.jadecode.workspace.ManagedWorkspaceStore workspaces;
     private final String executionHost = hostname();
     /** 主机名仅供确认执行目标；不作为认证或权限依据。 */
     private static String hostname() {
@@ -43,6 +44,7 @@ public final class AgentService implements AutoCloseable {
     public AgentService(JadePaths paths, String buildId, Factories factories) throws IOException {
         this.paths=paths; this.buildId=buildId; directory=paths.root().resolve("service");
         paths.directory(directory,true);
+        workspaces=new com.jadecode.workspace.ManagedWorkspaceStore(paths);
         preferences=new PreferenceService(paths.config().resolve("config.json"));
         this.factories=factories == null ? (workspace, permissions, model) ->
                 new RuntimeFactory(preferences.state().settings(),permissions,model) : factories;
@@ -68,7 +70,11 @@ public final class AgentService implements AutoCloseable {
             return selected;
         }
         // 2. 工作区必须是执行机器上的真实项目目录；别名和父子目录参与同一占用检查。
-        Path workspace=Path.of(request.path("workspace").asText()).toRealPath();
+        if (request.path("isolated").asBoolean() && request.hasNonNull("workspaceId")) throw new IOException("Choose isolated allocation or an existing workspace ID");
+        com.jadecode.workspace.ManagedWorkspace managedWorkspace=request.path("isolated").asBoolean() ? workspaces.create()
+                : request.hasNonNull("workspaceId") ? workspaces.open(request.path("workspaceId").asText()) : null;
+        Path workspace=managedWorkspace==null ? Path.of(request.path("workspace").asText()).toRealPath() : managedWorkspace.path();
+        if (managedWorkspace==null && workspace.startsWith(workspaces.root())) throw new IOException("Open managed directories by workspace ID");
         if (!Files.isDirectory(workspace)) throw new IOException("Workspace must be a directory");
         if(workspace.getNameCount()<2 || workspace.equals(Path.of(System.getProperty("user.home")))
                 || workspace.startsWith(paths.root()) || paths.root().startsWith(workspace))
@@ -93,7 +99,7 @@ public final class AgentService implements AutoCloseable {
             else if (request.path("headless").asBoolean()) permissions.select(PermissionProfile.AUTO_REVIEW);
             Path model=request.hasNonNull("modelConfig") ? Path.of(request.path("modelConfig").asText()) : null;
             if(model!=null && !model.isAbsolute())model=workspace.resolve(model).normalize();
-            RuntimeFactory factory=factories.create(workspace,permissions,model).workspace(workspace,owner::acquire).tokenBudget(1_000_000);
+            RuntimeFactory factory=factories.create(workspace,permissions,model).workspace(workspace,owner::acquire).tokenBudget(1_000_000).managed(managedWorkspace);
             Managed managed=new Managed(id,workspace,lease,factory,request);
             sessions.put(id,managed);
             try { persist(); }
@@ -118,6 +124,7 @@ public final class AgentService implements AutoCloseable {
             var row=array.addObject().put("id",managed.id).put("sessionId",managed.wire.sessionId())
                     .put("workspace",managed.workspace.toString()).put("connected",managed.channel.connected())
                     .put("pendingApprovals",managed.backend.pendingApprovals().size()).put("hostExecutionPossible",managed.hostExecution);
+            if (managed.workspaceId!=null) row.put("workspaceId",managed.workspaceId);
             if (managed.backend.closed()) row.put("state",managed.backend.stopped() && !managed.cleanupPending ? "CLOSED" : "CLEANUP_PENDING");
             else {
                 row.put("model",managed.backend.runtime().model())
@@ -153,6 +160,17 @@ public final class AgentService implements AutoCloseable {
     }
     private synchronized void persist() throws IOException {
         JadePaths.atomicWrite(directory.resolve("sessions.json"),list().toString());
+    }
+    /** 用户管理入口与模型工具分开；删除前检查顶层占用，不因会话窗口关闭而删工作文件。 */
+    public synchronized ObjectNode workspaceCommand(ObjectNode input) throws IOException {
+        if (closed) throw new IOException("Agent service is stopping");
+        if (input.path("action").asText().equals("delete")) {
+            var workspace=workspaces.open(input.path("workspaceId").asText());
+            if (sessions.values().stream().anyMatch(group->group.workspace.equals(workspace.path())))
+                throw new IOException("Close the owning session before deleting its workspace");
+            workspaces.delete(workspace.id()); return Json.mapper().createObjectNode().put("status","deleted");
+        }
+        return workspaces.command(input);
     }
     /**
      * 崩溃恢复先确认旧进程死亡，再回收其确切标签容器；失败保留原清单，不能放行工作区。
@@ -230,6 +248,7 @@ public final class AgentService implements AutoCloseable {
     public final class Managed {
         public final String id;
         public final Path workspace;
+        public final String workspaceId;
         final WorkspaceClaims.Lease lease;
         public final SessionChannel channel=new SessionChannel();
         public final WireContext wire=new WireContext(channel,new PayloadTransfer(channel));
@@ -240,7 +259,7 @@ public final class AgentService implements AutoCloseable {
         volatile boolean hostExecution;
         volatile boolean cleanupPending;
         Managed(String id,Path workspace,WorkspaceClaims.Lease lease,RuntimeFactory factory,ObjectNode request) throws IOException {
-            this.id=id; this.workspace=workspace; this.lease=lease;
+            this.id=id; this.workspace=workspace; this.lease=lease; workspaceId=factory.managed()==null?null:factory.managed().id();
             journal=new ServiceJournal(directory.resolve(id+".jsonl"));
             channel.audit((kind,payload)->{
                 if(!factory.settings().sandbox().enabled() || factory.permissions().snapshot().profile()==PermissionProfile.FULL_ACCESS)
@@ -277,6 +296,7 @@ public final class AgentService implements AutoCloseable {
                         .put("protocolVersion",WireCodec.PROTOCOL_VERSION).put("workspace",workspace.toString())
                         .put("themeDirectory",paths.config().resolve("themes").toString())
                         .put("configRevision",Long.toString(preferences.state().revision())).put("serviceSessionId",id).put("executionHost",executionHost);
+                if (workspaceId!=null) bootstrap.put("managedWorkspaceId",workspaceId);
                 bootstrap.set("tui",BackendSnapshot.capture(0,null,null,preferences.state().settings(),0,List.of(),Map.of(),
                         "","",Map.of(),Map.of()).toJson().get("tui"));
                 bootstrap.putObject("startup").put("mode",!backend.started() && startup.mode().equals("picker") ? "picker" : "new")

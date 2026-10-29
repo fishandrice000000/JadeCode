@@ -33,6 +33,12 @@ public final class RuntimeFactory {
     private boolean created;
     private Path workspace = Path.of("").toAbsolutePath();
     private com.jadecode.sandbox.DockerRuntime.WriteScopes writeScopes;
+    private com.jadecode.workspace.ManagedWorkspace managed;
+    /** 只在运行时装配前绑定独立工作区，/new 和 /resume 继续沿用同一资源身份。 */
+    public RuntimeFactory managed(com.jadecode.workspace.ManagedWorkspace value) {
+        if (created) throw new IllegalStateException("Runtime factory is already fixed"); managed=value; return this;
+    }
+    public com.jadecode.workspace.ManagedWorkspace managed() { return managed; }
 
     /**
      * 一次启动固定模型配置，恢复/切换会话不重新混入项目文件；不联网，不改变工作区。
@@ -84,8 +90,8 @@ public final class RuntimeFactory {
         created = true;
         SessionRuntime runtime;
         if (injectedClient != null) runtime = JadeCodeFactory.create(modelConfig, workspace, injectedClient,
-                output, errors, (hooks,cwd,ignored) -> { }, streams, observer, settings, permissions, paths, writeScopes);
-        else runtime = JadeCodeFactory.create((hooks, cwd, ignored) -> { }, output, errors, streams, observer, settings, permissions, modelConfig, workspace, writeScopes);
+                output, errors, (hooks,cwd,ignored) -> { }, streams, observer, settings, permissions, paths, writeScopes, managed);
+        else runtime = JadeCodeFactory.create((hooks, cwd, ignored) -> { }, output, errors, streams, observer, settings, permissions, modelConfig, workspace, writeScopes, managed);
         if (tokenBudget > 0) runtime.executionTokenBudget(tokenBudget);
         return runtime;
     }
