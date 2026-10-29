@@ -18,8 +18,15 @@ dependency-reduced-pom.xml
 .scheduled_tasks.json
 .scheduled-tasks-*.tmp
 
-# 工作用文档, 与学习内容无关
-docs/SOPs
+# 本地工程、学习与历史审阅资料；公共使用说明集中在 README
+/docs/
+/CONTEXT.md
+
+# 工作区自定义技能不作为项目预装内容分发
+/skills/
+
+# 已退役的 GraalJS 文本引擎工具链，防止旧生成流程重新入库
+/tools/tui-text-engine/
 
 # 临时文件
 tmp.*
@@ -32,7 +39,6 @@ tmp/
 .classpath
 .project
 .settings/
-tools/tui-text-engine/node_modules/
 
 # Node 前端构建产物与依赖（源码、vendor、锁文件入库）
 frontend/node_modules/
