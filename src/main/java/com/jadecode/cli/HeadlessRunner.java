@@ -29,7 +29,7 @@ import com.jadecode.safety.PermissionProfile;
  *   <li>没有人工通道：所有档位遇到“仍需人工”的操作都由现有 Gate 拒绝并交回模型；不读 stdin；</li>
  *   <li>使用与 TUI 相同的会话日志，结束后可被 {@code --resume} 查看；</li>
  *   <li>stdout 只输出最终回答一次；warning/error 走 stderr；初始 Future 包含日志落盘与记忆作业登记，
- *       不等待后台提取/整理；退出后由同一工作区的下一次启动恢复维护，也不等未来 cron 或全部 Team。</li>
+ *       不等待后台提取/整理；退出后由同一工作区的下一次启动恢复维护，本轮后台命令与派工仍遵守交付屏障。</li>
  * </ul>
  *
  * <p>退出码：0 = harness 正常走完（不代表业务目标达成）；1 = 执行/持久化/清理失败；
@@ -104,9 +104,9 @@ public final class HeadlessRunner {
         try {
             host = hostFactory.create(err);
             SessionHost.Opened opened = host.open(null);
-            // approval = null：没有人工通道；enableCron = false：不运行未来定时任务。
+            // approval = null：没有人工通道，必须询问时明确拒绝。
             CompletableFuture<String> result = host.startWithInitial(opened.generation(), options.initialPrompt(),
-                    null, false);
+                    null);
             String answer = result.get();
             if (answer != null && !answer.isBlank()) out.println(TerminalText.display(answer));
             out.flush();

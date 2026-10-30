@@ -118,8 +118,14 @@ public final class ShellCommand implements AutoCloseable {
         try {
             // 不向子进程开放 REPL 输入，防止命令抢走下一条用户输入。
             process.getOutputStream().close();
-            if (!process.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
-                return new Result("Error: Timeout (" + timeoutSeconds + "s)", null, false);
+            // 注入后端可能选择明确的宿主 Full Access 路径；其外层 Shell 关闭通过 context
+            // 传入，因此等待期间也检查取消，不能只在启动前检查一次。后台使用独立取消条件。
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSeconds);
+            while (process.isAlive()) {
+                if (context != null && context.isCancelled()) return new Result("Error: Execution cancelled", null, false);
+                long remaining = deadline - System.nanoTime();
+                if (remaining <= 0) return new Result("Error: Timeout (" + timeoutSeconds + "s)", null, false);
+                process.waitFor(Math.min(remaining, TimeUnit.MILLISECONDS.toNanos(100)), TimeUnit.NANOSECONDS);
             }
             int exitCode = process.exitValue();
             // shell 已结束仍可能有后代持有 stdout，先清理原组，再收尾读取。

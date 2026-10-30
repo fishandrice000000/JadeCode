@@ -12,7 +12,7 @@ import com.jadecode.messages.Message;
  * 它们不会自己修改 history，而由 SessionRuntime.apply 统一写入。
  * 这样不会在一批工具只执行到一半时，突然插入另一个用户任务。</p>
  *
- * <p>外部 Incoming 由 Request 包装后排队，接收会话依据投递设置选择消费时机。
+ * <p>外部 Incoming 独立排队，接收会话依据插入标记选择消费时机；空闲通知不启动工作。
  * 历史替换、工具批次仍同步应用，不需要每步都开线程。
  * 最终很多内容发给模型时都是 USER 消息，但工具结果、后台通知和用户新请求不能混为一谈。</p>
  *
@@ -22,18 +22,11 @@ import com.jadecode.messages.Message;
  */
 public sealed interface SessionEvent {
     /**
-     * 一项待执行的新任务，由用户输入处理代码或定时检查代码创建。
-     * @param prompt 要做的事；正常提交须非空白，旧 run(messages) 已有请求，用空串但不追加它
-     * @param context 程序记录的任务来源、ID 和询问用户的函数，模型不能填写
-     * @param cronId 定时定义 ID，稍后用它标记已送达；非定时任务为 null
-     * @param incoming 外部消息元数据；普通用户/cron 请求为 null
+     * 一项独立工作，由用户提交或显式派工创建；普通通知不包装成本类型。
+     * @param prompt 用户原文或带派工来源的指令，创建后不再修改
+     * @param context Harness 绑定的执行身份、取消和审批能力，不能由模型正文提供
      */
-    record Request(String prompt, ExecutionContext context, String cronId, Incoming incoming) implements SessionEvent {
-        /** 普通用户/cron 请求没有邮箱元数据，保留原有构造方式。 */
-        public Request(String prompt, ExecutionContext context, String cronId) {
-            this(prompt, context, cronId, null);
-        }
-    }
+    record Request(String prompt, ExecutionContext context) implements SessionEvent { }
 
     /**
      * 从会话外送来的消息。身份与路径由 Harness 填写，模型只提供摘要和正文。
@@ -47,11 +40,10 @@ public sealed interface SessionEvent {
      * @param kind assignment 是新任务，其它类型是通知；user 是用户缓冲批次
      * @param summary 直接交给模型的短摘要；用户缓冲则保留合并后的原提示词
      * @param bodyPath Harness 保存的完整正文路径；没有独立正文的事件可为 null
-     * @param allowInsertion 工作途中是否允许接收；不是抢占正在运行的工具
-     * @param wakeWhenIdle 空闲时是否主动请求模型
+     * @param allowInsertion 由入口固定的投递标记；不作为工具参数开放，也不抢占正在运行的工具
      */
     record Incoming(String id, String fromAgentId, String toAgentId, String taskId, String assignmentId,
-            String kind, String summary, String bodyPath, boolean allowInsertion, boolean wakeWhenIdle)
+            String kind, String summary, String bodyPath, boolean allowInsertion)
             implements SessionEvent {
         /** 必需的身份和正文不得为空；路径可为空，用户缓冲没有正文文件。 */
         public Incoming {
@@ -83,7 +75,7 @@ public sealed interface SessionEvent {
 
     /**
      * 后台命令跑完后，准备给模型看的结果说明。
-     * @param texts 当前任务必须处理的结果，或其它“不必等它”的命令结果参考。
+     * @param texts 已筛选的用户补充、后台结果或 Team 通知。
      *              原 bash 调用已经返回启动说明，不能再用同一 tool_use_id 返回第二份结果，
      *              所以这里使用普通文字，并保留来源任务 ID
      */

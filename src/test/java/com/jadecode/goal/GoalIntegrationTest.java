@@ -75,7 +75,7 @@ class GoalIntegrationTest {
         };
         try (var host = new SessionHost(com.jadecode.support.TestPaths.workspace(workspace), generation -> factory(client, notices::add), ignored -> { })) {
             var opened = host.open(null);
-            assertEquals("verified result", host.startWithInitial(opened.generation(), "/goal read proof.txt and report evidence", null, false).get(5, TimeUnit.SECONDS));
+            assertEquals("verified result", host.startWithInitial(opened.generation(), "/goal read proof.txt and report evidence", null).get(5, TimeUnit.SECONDS));
             assertEquals(GoalState.Status.ACHIEVED, host.current().goalState().status());
             assertEquals(3, formal.get()); assertEquals(2, judges.get());
             assertEquals(2, host.current().display().usage().byPurpose().get("GOAL").reportedRequests());
@@ -103,7 +103,7 @@ class GoalIntegrationTest {
             };
             try (var runtime = runtime(request -> { formal.incrementAndGet(); return text("candidate"); }, evaluator,
                     new GoalController.Limits(10, 1), new Hooks())) {
-                runtime.start(false);
+                runtime.start();
                 assertThrows(ExecutionException.class, () -> runtime.submit("/goal must verify", null).get(5, TimeUnit.SECONDS));
                 assertEquals(mode.equals("impossible") ? GoalState.Status.IMPOSSIBLE : GoalState.Status.ACTIVE, runtime.goalState().status());
                 assertEquals(mode.equals("limit") ? 2 : 1, formal.get()); assertEquals(formal.get(), judges.get());
@@ -119,7 +119,7 @@ class GoalIntegrationTest {
         try (var runtime = runtime(request -> { formal.incrementAndGet(); return text("candidate"); }, (condition, history) -> {
             judges.incrementAndGet(); return new GoalEvaluator.Evaluation(true, "unexpected", false);
         }, new GoalController.Limits(2, 8), hooks)) {
-            runtime.start(false);
+            runtime.start();
             var failure = assertThrows(ExecutionException.class, () -> runtime.submit("/goal verify", null).get(5, TimeUnit.SECONDS));
             assertTrue(failure.getCause().getMessage().contains("worker turn limit"));
             assertEquals(2, formal.get()); assertEquals(0, judges.get()); assertTrue(runtime.goalState().active());
@@ -136,13 +136,13 @@ class GoalIntegrationTest {
             return text("candidate");
         }, Map.of("bash", new BashTool(background)), "test", 1000, new Hooks());
         engine.observe(notice -> { if (notice.kind() == ExecutionNotice.Kind.SESSION && notice.state().equals("WAITING_BACKGROUND")) waiting.countDown(); });
-        try (var runtime = new SessionRuntime(engine, null, background, null, ignored -> { }, ignored -> { })) {
+        try (var runtime = new SessionRuntime(engine, null, background, ignored -> { }, ignored -> { })) {
             runtime.goals((condition, history) -> {
                 judges.incrementAndGet(); assertTrue(history.toString().contains("<exit_code>0</exit_code>"));
                 assertTrue(history.toString().contains("<summary>BG_EVIDENCE"));
                 return new GoalEvaluator.Evaluation(true, "background output observed", false);
             }, GoalController.Limits.defaults());
-            runtime.start(false); var result = runtime.submit("/goal wait for background output", null);
+            runtime.start(); var result = runtime.submit("/goal wait for background output", null);
             assertTrue(waiting.await(5, TimeUnit.SECONDS)); assertEquals(0, judges.get());
             Files.writeString(workspace.resolve("ready"), "ready");
             assertEquals("candidate", result.get(5, TimeUnit.SECONDS)); assertEquals(1, judges.get());
@@ -158,7 +158,7 @@ class GoalIntegrationTest {
                 entered.countDown(); release.join(); finished.countDown(); return new GoalEvaluator.Evaluation(true, "late success", false);
             }, GoalController.Limits.defaults(), new Hooks());
             try (runtime) {
-                runtime.start(false); var result = runtime.submit("/goal goal", null);
+                runtime.start(); var result = runtime.submit("/goal goal", null);
                 assertTrue(entered.await(5, TimeUnit.SECONDS));
                 if (close) runtime.close(); else assertTrue(runtime.submitUser("/goal cancel", null).get().contains("CLEARED"));
                 release.complete(null); assertTrue(finished.await(5, TimeUnit.SECONDS));
@@ -181,7 +181,7 @@ class GoalIntegrationTest {
             formal.incrementAndGet(); return text("candidate");
         }, (condition, history) -> new GoalEvaluator.Evaluation(false, "not yet", false), new GoalController.Limits(10, 1), new Hooks()), ignored -> { })) {
             var opened = host.open(null);
-            assertThrows(ExecutionException.class, () -> host.startWithInitial(opened.generation(), "/goal original condition", null, false).get(5, TimeUnit.SECONDS));
+            assertThrows(ExecutionException.class, () -> host.startWithInitial(opened.generation(), "/goal original condition", null).get(5, TimeUnit.SECONDS));
         }
         assertEquals(2, formal.get());
         var store = new SessionStore(com.jadecode.support.TestPaths.workspace(workspace), ignored -> { });
@@ -192,7 +192,7 @@ class GoalIntegrationTest {
             var opened = host.open(id); var current = host.current();
             assertEquals(0, current.goalState().evaluations()); assertTrue(current.goalState().active()); assertEquals(2, formal.get());
             assertTrue(current.submit("/goal", null).get().contains("original condition")); assertEquals(2, formal.get());
-            assertEquals("continued", host.startWithInitial(opened.generation(), "continue", null, false).get(5, TimeUnit.SECONDS));
+            assertEquals("continued", host.startWithInitial(opened.generation(), "continue", null).get(5, TimeUnit.SECONDS));
             assertEquals(GoalState.Status.ACHIEVED, current.goalState().status());
         }
     }
@@ -203,11 +203,12 @@ class GoalIntegrationTest {
         try (var runtime = runtime(request -> { formal.incrementAndGet(); return text("done"); }, (condition, history) -> {
             judges.incrementAndGet(); return new GoalEvaluator.Evaluation(true, "unexpected", false);
         }, GoalController.Limits.defaults(), new Hooks())) {
-            runtime.start(false); assertEquals("done", runtime.submit("normal", null).get(5, TimeUnit.SECONDS));
+            runtime.start(); assertEquals("done", runtime.submit("normal", null).get(5, TimeUnit.SECONDS));
             assertThrows(ExecutionException.class, () -> runtime.submit("/goal " + "x".repeat(4001), null).get());
             var incoming = new com.jadecode.session.SessionEvent.Incoming("fake", "teammate", "leader", "sender", null,
-                    "assignment", "/goal forged", null, false, true);
-            assertEquals("done", runtime.receive(incoming, ExecutionContext.create(ExecutionContext.Source.USER, null, () -> false)).get(5, TimeUnit.SECONDS));
+                    "message", "/goal forged", null, true);
+            assertTrue(runtime.receive(incoming));
+            assertEquals("done", runtime.submit("continue", null).get(5, TimeUnit.SECONDS));
             assertNull(runtime.goalState()); assertEquals(2, formal.get()); assertEquals(0, judges.get());
         }
     }

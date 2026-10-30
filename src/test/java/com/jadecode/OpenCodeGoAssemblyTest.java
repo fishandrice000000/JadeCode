@@ -111,7 +111,7 @@ class OpenCodeGoAssemblyTest {
                 generation -> runtime(workspace, jade, settings, config(), transport), ignored -> { })) {
             var opened = host.open(null); id = opened.restored().metadata().id();
             assertEquals(config().backendIdentity(), opened.restored().metadata().backendIdentity());
-            assertEquals("done", host.startWithInitial(opened.generation(), "/goal Write ../proof.txt and exercise the fixture tools", null, false)
+            assertEquals("done", host.startWithInitial(opened.generation(), "/goal Write ../proof.txt and exercise the fixture tools", null)
                     .get(10, TimeUnit.SECONDS));
             assertTrue(memorySeen.await(5, TimeUnit.SECONDS));
             assertEquals(Set.of("formal", "subagent", "approval", "workflow", "summary", "goal", "memory"), channels);
@@ -125,7 +125,7 @@ class OpenCodeGoAssemblyTest {
             var opened = host.open(id);
             assertEquals(beforeResume, requests.size(), "恢复本身不能重放旧模型请求或工具");
             assertEquals(ThinkingSettings.HIGH, host.current().thinking());
-            assertEquals("done", host.startWithInitial(opened.generation(), "CONTINUE", null, false).get(5, TimeUnit.SECONDS));
+            assertEquals("done", host.startWithInitial(opened.generation(), "CONTINUE", null).get(5, TimeUnit.SECONDS));
         }
         assertTrue(requests.subList(beforeResume, requests.size()).stream().allMatch(request -> request.sessionId().equals(id)));
         assertTrue(requests.stream().filter(request -> !request.tools().isEmpty()).anyMatch(request -> request.thinking() == ThinkingSettings.HIGH));
@@ -147,7 +147,7 @@ class OpenCodeGoAssemblyTest {
         };
         try (var first = runtime(workspace, jade, settings, config(), transport);
              var second = runtime(workspace, jade, settings, config(), transport)) {
-            first.start(false); second.start(false);
+            first.start(); second.start();
             var a = first.submit("FIRST", null); var b = second.submit("SECOND", null);
             a.get(5, TimeUnit.SECONDS); b.get(5, TimeUnit.SECONDS);
             first.submit("NEXT", null).get(5, TimeUnit.SECONDS);
@@ -218,7 +218,7 @@ class OpenCodeGoAssemblyTest {
             return text("done");
         };
         try (var runtime = runtime(workspace, jade, settings, config(), transport)) {
-            runtime.start(false); assertEquals("done", runtime.submit("Delegate the fixture task", null).get(5, TimeUnit.SECONDS));
+            runtime.start(); assertEquals("done", runtime.submit("Delegate the fixture task", null).get(5, TimeUnit.SECONDS));
             assertNotNull(memberId.get()); assertNotEquals(leaderId.get(), memberId.get());
         }
     }

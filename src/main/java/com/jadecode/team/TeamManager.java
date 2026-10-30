@@ -43,8 +43,7 @@ public final class TeamManager implements AutoCloseable {
     private final Map<String, Assignment> assignments = new LinkedHashMap<>();
     private final Map<String, String> current = new LinkedHashMap<>();
     private final Map<String, Incoming> pending = new LinkedHashMap<>();
-    /** 重试沿用原始权限来源，不能把旧定时邮件改成新用户授权。函数不写入文件。 */
-    private final Map<String, ExecutionContext> origins = new LinkedHashMap<>();
+    /** 成功投递的邮件编号用于去重；重试不会把同一通知或派工再次排队。 */
     private final java.util.Set<String> delivered = new java.util.HashSet<>();
     private final Map<String, Incoming> communications = new LinkedHashMap<>();
     private final Map<String, String> replies = new LinkedHashMap<>();
@@ -103,7 +102,7 @@ public final class TeamManager implements AutoCloseable {
         members.put(id, member);
         try {
             saveRoster();
-            runtime.start(false);
+            runtime.start();
         } catch (IOException | RuntimeException failure) {
             members.remove(id);
             runtime.close();
@@ -124,7 +123,7 @@ public final class TeamManager implements AutoCloseable {
      * 新派工固定非插入式，队友正忙时只排队，不能替换它正在做的另一个任务。
      */
     public synchronized String assign(String to, String taskId, String summary, String body, ExecutionContext context) throws IOException {
-        return assign(to, taskId, summary, body, context, true, AssignmentScope.EMPTY);
+        return assign(to, taskId, summary, body, context, AssignmentScope.EMPTY);
     }
 
     /**
@@ -132,22 +131,22 @@ public final class TeamManager implements AutoCloseable {
      * 范围只是分工数据，实际权限仍由 Gate 检查；本方法不重放失败业务。
      */
     public synchronized String assign(String to, String taskId, String summary, String body, ExecutionContext context,
-            boolean required, AssignmentScope scope) throws IOException {
+            AssignmentScope scope) throws IOException {
         ensureOpen();
         if (scope == null) throw new IllegalArgumentException("Assignment scope is required");
         if (context == null || context.isCancelled()) throw new IllegalStateException("Assignment source does not exist or has exited");
         member(to);
         Task task = tasks.claim(taskId, to);
         String id = "assignment_" + UUID.randomUUID();
-        Assignment assignment = new Assignment(id, taskId, to, task.subject(), context, required, scope);
+        Assignment assignment = new Assignment(id, taskId, to, task.subject(), context, scope);
         assignments.put(id, assignment);
         current.put(taskId, id);
         try {
-            if (required) leader.expectTeamResult(id, context.id());
+            leader.expectTeamResult(id, context.id());
             assignment.mail = prepare(LEADER, to, taskId, id, "assignment", summary,
-                    "Task: " + task.subject() + "\n\n" + task.description() + "\n\n" + body + "\n\nAssigned scope: " + Json.mapper().writeValueAsString(scope), false, true);
+                    "Task: " + task.subject() + "\n\n" + task.description() + "\n\n" + body + "\n\nAssigned scope: " + Json.mapper().writeValueAsString(scope), false);
             persist(assignment);
-            CompletableFuture<String> result = deliver(assignment.mail, context);
+            CompletableFuture<String> result = deliver(assignment.mail);
             // 异常完成只表示接单后出错，不能重新执行已经做过的工具。
             result.whenComplete((answer, failure) -> {
                 if (failure != null) executionFailed(id, failure);
@@ -174,13 +173,13 @@ public final class TeamManager implements AutoCloseable {
      * 不允许队友私自给另一个队友派活；也不把通信正文解释成新的权限授权。
      */
     public synchronized String send(String from, String to, String taskId, String assignmentId, String kind,
-            String summary, String body, boolean insertion, boolean wake, ExecutionContext context) throws IOException {
-        return send(from, to, taskId, assignmentId, kind, summary, body, insertion, wake, context, null);
+            String summary, String body) throws IOException {
+        return send(from, to, taskId, assignmentId, kind, summary, body, null);
     }
 
     /** 回复只能关联双方一致、同一派工且已经投递的问题；发送失败不提前标记已回复。 */
     public synchronized String send(String from, String to, String taskId, String assignmentId, String kind,
-            String summary, String body, boolean insertion, boolean wake, ExecutionContext context, String replyTo) throws IOException {
+            String summary, String body, String replyTo) throws IOException {
         ensureOpen();
         if (replyTo != null) {
             Incoming question = communications.get(replyTo);
@@ -200,13 +199,13 @@ public final class TeamManager implements AutoCloseable {
             if (!assignment.owner.equals(from.equals(LEADER) ? to : from)
                     || !assignment.task.equals(taskId)) throw new IllegalArgumentException("Task or assignment does not match the communication target");
         }
-        Incoming incoming = prepare(from, to, taskId, assignmentId, kind, summary, body, insertion, wake);
+        Incoming incoming = prepare(from, to, taskId, assignmentId, kind, summary, body, true);
         if (replyTo != null) {
             // 关联先落盘，只有实际投递后才在快照里视为已答复；重试投递沿用这份关系。
             write(mailbox.root().resolve("threads").resolve(incoming.id() + ".json"), Map.of("reply_to", replyTo, "message_id", incoming.id()));
             replies.put(incoming.id(), replyTo);
         }
-        deliver(incoming, context);
+        deliver(incoming);
         changed(from, incoming.id(), kind.equals("question") ? "Question" : "Team", summary,
                 kind.equals("question") ? "QUESTION" : "UPDATED");
         return incoming.id();
@@ -226,11 +225,11 @@ public final class TeamManager implements AutoCloseable {
         if (status != Task.Status.COMPLETED && status != Task.Status.FAILED && status != Task.Status.BLOCKED) {
             throw new IllegalArgumentException("Report status must be completed/failed/blocked");
         }
-        if (status == Task.Status.COMPLETED && member(actor).runtime.hasRequiredBackground()) {
+        if (status == Task.Status.COMPLETED && member(actor).runtime.hasPendingBackground()) {
             throw new IllegalStateException("The assignment still has required background results; cannot report success yet");
         }
         if (assignment.report == null) {
-            assignment.report = prepare(actor, LEADER, assignment.task, id, "result", summary, body, true, true);
+            assignment.report = prepare(actor, LEADER, assignment.task, id, "result", summary, body, true);
             assignment.status = status;
             assignment.body = body;
             persist(assignment);
@@ -245,7 +244,7 @@ public final class TeamManager implements AutoCloseable {
             throw new IllegalArgumentException("Task status changed; cannot overwrite it");
         }
         persist(assignment);
-        deliver(assignment.report, assignment.context);
+        deliver(assignment.report);
         assignment.finished = true;
         assignment.deliveryError = "";
         persist(assignment);
@@ -268,7 +267,7 @@ public final class TeamManager implements AutoCloseable {
      * 发送失败后只重试投递，不运行报告所描述的业务。旧派工/已撤销派工不能借重试重新启动。
      * 结果报告若任务状态尚未更新，须重试 submit_task_result，不能跳过状态登记。
      */
-    public synchronized String retry(String actor, String messageId, ExecutionContext context) throws IOException {
+    public synchronized String retry(String actor, String messageId) throws IOException {
         Incoming incoming = pending.get(messageId);
         if (incoming == null || !incoming.fromAgentId().equals(actor)) throw new IllegalArgumentException("No retryable message for this sender");
         if (incoming.assignmentId() != null) {
@@ -278,7 +277,7 @@ public final class TeamManager implements AutoCloseable {
                 throw new IllegalStateException("Retry submit_task_result with the original arguments first to register the task status");
             }
         }
-        deliver(incoming, context);
+        deliver(incoming);
         if (incoming.kind().equals("result")) {
             Assignment assignment = assignment(incoming.assignmentId());
             assignment.finished = true;
@@ -330,8 +329,8 @@ public final class TeamManager implements AutoCloseable {
 
     /** 保存正文和 pending 后才登记进程内索引，失败不伪装成已发送。 */
     private Incoming prepare(String from, String to, String task, String assignment, String kind,
-            String summary, String body, boolean insertion, boolean wake) throws IOException {
-        Incoming incoming = mailbox.prepare(from, to, task, assignment, kind, summary, body, insertion, wake);
+            String summary, String body, boolean insertion) throws IOException {
+        Incoming incoming = mailbox.prepare(from, to, task, assignment, kind, summary, body, true);
         pending.put(incoming.id(), incoming);
         communications.put(incoming.id(), incoming);
         return incoming;
@@ -341,23 +340,22 @@ public final class TeamManager implements AutoCloseable {
      * Harness 取出已持久化的邮件，送进接收方 Inbox。入队失败时保留 pending 和正文。
      * 成功后先记录 delivered，再清 pending，清理失败不会重复发送已入队消息。
      */
-    private CompletableFuture<String> deliver(Incoming incoming, ExecutionContext context) throws IOException {
+    private CompletableFuture<String> deliver(Incoming incoming) throws IOException {
         if (delivered.contains(incoming.id())) return CompletableFuture.completedFuture("Already enqueued");
         SessionRuntime target = incoming.toAgentId().equals(LEADER) ? leader : member(incoming.toAgentId()).runtime;
         // 投递前重新读取并检查文件里的元数据，正文仍留给接收模型按需读取。
         Path pendingPath = mailbox.root().resolve("pending").resolve(incoming.id() + ".json");
         Incoming stored = Json.mapper().readValue(Files.readString(pendingPath), Incoming.class);
         if (!stored.equals(incoming)) throw new IOException("Mailbox metadata changed; delivery refused");
-        ExecutionContext origin = origins.computeIfAbsent(incoming.id(), id -> context);
-        // 向队友投递时绑定该次派工的固定范围；给 Leader 的报告不继承队友的执行身份。
-        ExecutionContext routed = origin.withAssignment(null);
-        if (!incoming.toAgentId().equals(LEADER) && incoming.assignmentId() != null) {
+        // 只有显式派工需要执行上下文；普通通知不继承发送者的审批函数，也不创建接收方 run。
+        CompletableFuture<String> accepted;
+        if (incoming.kind().equals("assignment")) {
             Assignment a = assignment(incoming.assignmentId());
-            routed = routed.withAssignment(new AssignmentContext(a.id, a.task, a.owner, a.context.id(), a.scope));
+            var routed = a.context.withAssignment(new AssignmentContext(a.id, a.task, a.owner, a.context.id(), a.scope));
+            accepted = target.receiveTask(stored, routed);
+        } else {
+            accepted = target.receive(stored) ? CompletableFuture.completedFuture("Enqueued") : null;
         }
-        var accepted = incoming.kind().equals("result") && incoming.toAgentId().equals(LEADER)
-                ? target.receiveTeamResult(stored, origin, incoming.assignmentId(), assignment(incoming.assignmentId()).required)
-                : target.tryReceive(stored, routed);
         if (accepted == null) throw new IllegalStateException("Message " + incoming.id() + " was not delivered: the receiver is closed or the Inbox is full; "
                 + (incoming.kind().equals("assignment") ? "the claim will be rolled back; assign_task again for a new assignment id" : "submission or delivery can be retried"));
         delivered.add(incoming.id());
@@ -386,8 +384,8 @@ public final class TeamManager implements AutoCloseable {
     }
 
     /**
-     * 一次执行正常返回后记录非唤起式空闲通知；返回文字本身不会自动把任务标记 completed。
-     * 正式报告仍须 submit_task_result。通知失败只告警，不能因此重新执行队友工作。
+     * 一次执行正常返回后核对正式报告；返回文字本身不会自动把任务标记 completed。
+     * 正式报告仍须 submit_task_result，缺报告记为 blocked；不再发送额外的空闲唤起通知。
      */
     private synchronized void returned(String id, String answer) {
         Assignment assignment = assignments.get(id);
@@ -405,14 +403,7 @@ public final class TeamManager implements AutoCloseable {
             catch (IOException | RuntimeException failure) { deliveryFailure(assignment, failure); }
             return;
         }
-        try {
-            Incoming incoming = prepare(assignment.owner, LEADER, assignment.task, id, "idle",
-                    "The teammate returned this turn; this is not task acceptance. Use the formal report and task status.",
-                    answer == null || answer.isBlank() ? "No final text" : answer, false, false);
-            deliver(incoming, assignment.context);
-        } catch (IOException | RuntimeException failure) {
-            errors.accept("[Warning] Teammate return notification not delivered: " + failure.getMessage());
-        }
+
     }
 
     /**
@@ -423,8 +414,8 @@ public final class TeamManager implements AutoCloseable {
         a.deliveryError = "Report recording/delivery failed: " + failure.getMessage();
         errors.accept("[Error] " + a.id + ": " + a.deliveryError);
         Incoming notice = new Incoming("failure_" + a.id, a.owner, LEADER, a.task, a.id, "result_error",
-                a.deliveryError, null, true, true);
-        leader.receiveTeamResult(notice, a.context, a.id, a.required);
+                a.deliveryError, null, true);
+        leader.receive(notice);
         changed(a.owner, a.id, "Report delivery failed", a.deliveryError, "ERROR");
     }
 
@@ -469,7 +460,7 @@ public final class TeamManager implements AutoCloseable {
                 // 3. 每项复制自己的标题、范围和报告事实，不能借用成员最新派工的范围。
                 var entry = new LinkedHashMap<String, Object>();
                 entry.put("id", a.id); entry.put("taskId", a.task); entry.put("subject", a.subject);
-                entry.put("leaderRunId", a.context.id()); entry.put("required", a.required);
+                entry.put("leaderRunId", a.context.id());
                 entry.put("scope", a.scope); entry.put("finished", a.finished); entry.put("abandoned", a.abandoned);
                 entry.put("outcome", a.status == null ? "" : a.status.name());
                 entry.put("reportId", a.report == null ? "" : a.report.id());
@@ -486,7 +477,7 @@ public final class TeamManager implements AutoCloseable {
                 history.add(entry);
             }
             // 5. 计数基于完整记录，不受显示窗口裁剪影响；必要等待只计算当前 Leader 轮次。
-            row.put("pendingReports", owned.stream().filter(a -> a.required && !a.finished && !a.abandoned
+            row.put("pendingReports", owned.stream().filter(a -> !a.finished && !a.abandoned
                     && a.deliveryError.isEmpty() && a.context.id().equals(leader.currentExecutionId())).count());
             row.put("toReview", owned.stream().filter(a -> a.finished && a.reviewNotes.isEmpty()).count());
             row.put("openQuestions", communications.values().stream().filter(mail -> mail.kind().equals("question")
@@ -524,7 +515,7 @@ public final class TeamManager implements AutoCloseable {
                 .put("finished", assignment.finished).put("abandoned", assignment.abandoned)
                 .put("close_reason", assignment.closeReason)
                 .put("subject", assignment.subject).put("leader_run_id", assignment.context.id())
-                .put("wait_for_completion", assignment.required).put("review_notes", assignment.reviewNotes);
+                .put("review_notes", assignment.reviewNotes);
         record.set("scope", Json.mapper().valueToTree(assignment.scope));
         if (assignment.mail != null) record.put("task_mail", assignment.mail.id());
         if (assignment.report != null) record.put("report_mail", assignment.report.id()).put("outcome", assignment.status.name());
@@ -560,7 +551,6 @@ public final class TeamManager implements AutoCloseable {
     /** 可重试提交的进程内进度，context 不写盘；原始业务不会因提交重试再次执行。 */
     private static final class Assignment {
         final String id, task, owner, subject;
-        final boolean required;
         final AssignmentScope scope;
         final ExecutionContext context;
         Incoming mail, report;
@@ -569,9 +559,9 @@ public final class TeamManager implements AutoCloseable {
         String reviewNotes = "", deliveryError = "";
         boolean finished, abandoned;
         Assignment(String id, String task, String owner, String subject, ExecutionContext context,
-                boolean required, AssignmentScope scope) {
+                AssignmentScope scope) {
             this.id = id; this.task = task; this.owner = owner; this.subject = subject; this.context = context;
-            this.required = required; this.scope = scope;
+            this.scope = scope;
         }
     }
 

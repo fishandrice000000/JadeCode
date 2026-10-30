@@ -24,9 +24,9 @@ function fixture(): { context: PageContext; state: SessionStore; opened: Page[];
 		team: [{ id: "agent_12345678", name: "Explorer", responsibilities: "Read source.", state: "RUNNING", closed: false,
 			currentAssignment: "old", historyCount: 2, pendingReports: 1, toReview: 1, openQuestions: 1,
 			assignments: [
-				{ id: "old", taskId: "task_a", subject: "Trace flow", required: true, scope: { readPaths: ["src"], writePaths: [] },
+				{ id: "old", taskId: "task_a", subject: "Trace flow", scope: { readPaths: ["src"], writePaths: [] },
 					finished: true, reportId: "report_1", reportSummary: "Evidence collected", reviewNotes: "", questions: [], outcome: "COMPLETED" },
-				{ id: "queued", taskId: "task_b", subject: "Queued work", required: true, scope: { readPaths: [], writePaths: ["src/B.java"] },
+				{ id: "queued", taskId: "task_b", subject: "Queued work", scope: { readPaths: [], writePaths: ["src/B.java"] },
 					finished: false, reportId: "", questions: [] },
 			] }],
 	} } as never);

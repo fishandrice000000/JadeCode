@@ -66,7 +66,7 @@ class TeamCoordinationTest {
             @Override public String execute(com.fasterxml.jackson.databind.node.ObjectNode input, ExecutionContext context) {
                 try {
                     String member = team.spawn("Explorer\nInspect the assigned source.");
-                    assignment.set(team.assign(member, task.id(), "Trace flow", "Read source", context, true,
+                    assignment.set(team.assign(member, task.id(), "Trace flow", "Read source", context,
                             new AssignmentScope(List.of("src"), List.of("src/Flow.java"))));
                     return assignment.get();
                 } catch (Exception failure) { throw new IllegalStateException(failure); }
@@ -95,7 +95,7 @@ class TeamCoordinationTest {
                     default -> text("Available");
                 }, tools);
             });
-            leader.onClose(team::close); leader.start(false);
+            leader.onClose(team::close); leader.start();
             assertEquals("Final answer", leader.submit("Leader-only background", null).get(5, TimeUnit.SECONDS));
             assertEquals(3, leaderCalls.get()); assertEquals(1, firstMember.get().size());
             assertFalse(firstMember.get().getFirst().extractText().contains("Leader-only background"));
@@ -104,6 +104,75 @@ class TeamCoordinationTest {
             assertEquals(Task.Status.COMPLETED, tasks.load(task.id()).status());
             assertEquals("Checked the actual call chain.", leader.teamReport(assignment.get()));
         } finally { waiting.countDown(); team.close(); }
+    }
+
+    /** 等待中问题先插入；受阻报告交给 Leader 后可以再派工，所有结果处理后才结束。 */
+    @Test void questionDuringWaitAndReassignmentAfterBlockedReport() throws Exception {
+        var waiting = new CountDownLatch(1); var answered = new CountDownLatch(1);
+        var paths = TestPaths.workspace(dir); var tasks = new TaskStore(paths);
+        var first = tasks.create("First", "Need clarification"); var second = tasks.create("Second", "Follow-up work");
+        var team = new TeamManager(paths, tasks, ignored -> { });
+        var member = new AtomicReference<String>(); var question = new AtomicReference<String>();
+        var secondAssigned = new java.util.concurrent.atomic.AtomicBoolean();
+        var parentCalls = new AtomicInteger(); var memberCalls = new AtomicInteger();
+        Tool dispatch = new TestTool("dispatch") {
+            @Override public String execute(com.fasterxml.jackson.databind.node.ObjectNode input, ExecutionContext context) {
+                try {
+                    if (member.get() == null) member.set(team.spawn("Explorer\nInspect work and report."));
+                    String task = input.path("second").asBoolean() ? second.id() : first.id();
+                    String id = team.assign(member.get(), task, "Assigned work", "Read the assigned source", context);
+                    if (input.path("second").asBoolean()) secondAssigned.set(true);
+                    return id;
+                } catch (Exception e) { throw new IllegalStateException(e); }
+            }
+        };
+        Tool reply = new TestTool("reply") {
+            @Override public String execute(com.fasterxml.jackson.databind.node.ObjectNode input, ExecutionContext context) {
+                try { team.send("leader", member.get(), null, null, "message", "ANSWER_CHOICE", "Use option X", question.get()); }
+                catch (Exception e) { throw new IllegalStateException(e); }
+                answered.countDown(); return "Replied";
+            }
+        };
+        LlmClient parent = request -> {
+            int call = parentCalls.getAndIncrement();
+            if (call == 0) return call("dispatch", "{}");
+            if (call == 1) return text("Candidate");
+            String history = request.messages().toString();
+            if (call == 2) { assertTrue(history.contains("NEED_CHOICE")); return call("reply", "{}"); }
+            if (!history.contains("BLOCKED_REPORT")) return text("Still waiting");
+            if (!secondAssigned.get()) return call("dispatch", "{\"second\":true}");
+            return text(history.contains("SECOND_REPORT") ? "All reports handled" : "Waiting for follow-up");
+        };
+        try (var leader = session(parent, Map.of("dispatch", dispatch, "reply", reply))) {
+            leaderObserver(leader, waiting);
+            team.bind(leader, (id, role) -> {
+                Tool ask = new TestTool("ask") {
+                    @Override public String execute(com.fasterxml.jackson.databind.node.ObjectNode input, ExecutionContext context) {
+                        try { question.set(team.send(id, "leader", null, null, "question", "NEED_CHOICE", "Which option?")); return question.get(); }
+                        catch (Exception e) { throw new IllegalStateException(e); }
+                    }
+                };
+                Tool report = new TestTool("report") {
+                    @Override public String execute(com.fasterxml.jackson.databind.node.ObjectNode input, ExecutionContext context) {
+                        boolean followUp = context.assignment().taskId().equals(second.id());
+                        try { return team.submitResult(id, context.assignment().id(), followUp ? Task.Status.COMPLETED : Task.Status.BLOCKED,
+                                followUp ? "SECOND_REPORT" : "BLOCKED_REPORT", "Checked the assigned task"); }
+                        catch (Exception e) { throw new IllegalStateException(e); }
+                    }
+                };
+                return session(request -> switch (memberCalls.getAndIncrement()) {
+                    case 0 -> { await(waiting); yield call("ask", "{}"); }
+                    case 1 -> { await(answered); yield text("Candidate before answer adopted"); }
+                    case 2 -> { assertTrue(request.messages().toString().contains("ANSWER_CHOICE")); yield call("report", "{}"); }
+                    case 4 -> call("report", "{}");
+                    default -> text("Available");
+                }, Map.of("ask", ask, "report", report));
+            });
+            leader.onClose(team::close); leader.start();
+            assertEquals("All reports handled", leader.submit("Inspect and follow up", null).get(5, TimeUnit.SECONDS));
+            assertTrue(secondAssigned.get()); assertEquals(Task.Status.BLOCKED, tasks.load(first.id()).status());
+            assertEquals(Task.Status.COMPLETED, tasks.load(second.id()).status());
+        } finally { waiting.countDown(); answered.countDown(); team.close(); }
     }
 
     /** 缺报告与异常都是明确的终态说明，不能把一次性返回误当完成，也不能让 Leader 永久等待。 */
@@ -124,7 +193,7 @@ class TeamCoordinationTest {
                     if (crash) throw new IllegalStateException("synthetic failure");
                     return text("Forgot the report");
                 }, Map.of()));
-                leader.onClose(team::close); leader.start(false);
+                leader.onClose(team::close); leader.start();
                 assertEquals("Handled", leader.submit("Inspect", null).get(5, TimeUnit.SECONDS));
                 assertEquals(crash ? Task.Status.FAILED : Task.Status.BLOCKED, tasks.load(task.id()).status());
             } finally { team.close(); }
@@ -140,13 +209,13 @@ class TeamCoordinationTest {
             team.bind(leader, (id, role) -> session(request -> { started.countDown(); await(release); return text("done"); }, Map.of()));
             String member = team.spawn("Explorer\nInspect code.");
             var origin = ExecutionContext.create(ExecutionContext.Source.USER, null);
-            String first = team.assign(member, task.id(), "Inspect A", "A", origin, false, new AssignmentScope(List.of("a"), List.of("a/A.java")));
+            String first = team.assign(member, task.id(), "Inspect A", "A", origin, new AssignmentScope(List.of("a"), List.of("a/A.java")));
             assertTrue(started.await(5, TimeUnit.SECONDS));
             String report = team.submitResult(member, first, Task.Status.BLOCKED, "Need input", "Question evidence");
             assertEquals(report, team.submitResult(member, first, Task.Status.BLOCKED, "Need input", "Question evidence"));
             assertEquals("Question evidence", team.reportText(first));
             team.review(first, report, "Checked the evidence."); team.reopen(task.id());
-            String second = team.assign(member, task.id(), "Inspect B", "B", origin, false, new AssignmentScope(List.of("b"), List.of("b/B.java")));
+            String second = team.assign(member, task.id(), "Inspect B", "B", origin, new AssignmentScope(List.of("b"), List.of("b/B.java")));
             assertThrows(IllegalArgumentException.class, () -> team.submitResult(member, first, Task.Status.COMPLETED, "Old", "Old"));
             try (var records = Files.walk(paths.teams())) {
                 var files = records.filter(file -> file.getFileName().toString().equals(first + ".json") || file.getFileName().toString().equals(second + ".json")).toList();
@@ -167,11 +236,11 @@ class TeamCoordinationTest {
         try (var leader = session(request -> { await(hold); return text("done"); }, Map.of())) {
             team.bind(leader, (id, role) -> session(request -> { await(hold); return text("done"); }, Map.of()));
             String member = team.spawn("Explorer\nInspect code."); var origin = ExecutionContext.create(ExecutionContext.Source.USER, null);
-            String question = team.send(member, "leader", null, null, "question", "Need input", "Which path?", true, true, origin);
-            team.send("leader", member, null, null, "message", "Progress", "Still checking", true, true, origin);
+            String question = team.send(member, "leader", null, null, "question", "Need input", "Which path?");
+            team.send("leader", member, null, null, "message", "Progress", "Still checking");
             assertEquals(1L, team.snapshot().getFirst().get("openQuestions"));
-            assertThrows(IllegalArgumentException.class, () -> team.send(member, "leader", null, null, "message", "Wrong", "Wrong", true, true, origin, question));
-            team.send("leader", member, null, null, "message", "Use src", "Read src", true, true, origin, question);
+            assertThrows(IllegalArgumentException.class, () -> team.send(member, "leader", null, null, "message", "Wrong", "Wrong", question));
+            team.send("leader", member, null, null, "message", "Use src", "Read src", question);
             assertEquals(0L, team.snapshot().getFirst().get("openQuestions"));
         } finally { hold.countDown(); team.close(); }
     }
@@ -192,7 +261,7 @@ class TeamCoordinationTest {
             try (var leader = session(request -> calls.getAndIncrement() == 0 ? call("dispatch", "{}") : text("Handled"), Map.of("dispatch", dispatch))) {
                 leaderObserver(leader, waiting);
                 team.bind(leader, (id, role) -> session(request -> { await(release); return text("Returned without report"); }, Map.of()));
-                leader.onClose(team::close); leader.start(false); var result = leader.submit("Inspect", null);
+                leader.onClose(team::close); leader.start(); var result = leader.submit("Inspect", null);
                 assertTrue(waiting.await(5, TimeUnit.SECONDS));
                 if (diskFailure) {
                     Path messages;
@@ -253,7 +322,7 @@ class TeamCoordinationTest {
                     return null;
                 }), () -> com.jadecode.llm.ResponseStream.NONE, com.jadecode.execution.ExecutionObserver.NONE,
                 settings, settings.permissions().state(null), TestPaths.jade(dir))) {
-            runtime.start(false);
+            runtime.start();
             assertEquals("Final answer", runtime.submit("Verify evidence using Team", null).get(5, TimeUnit.SECONDS));
             assertNotNull(nestedContext.get()); assertEquals(assignment.get(), nestedContext.get().assignment().id());
             assertEquals(List.of("proof.txt"), nestedContext.get().assignment().scope().readPaths());
@@ -267,12 +336,17 @@ class TeamCoordinationTest {
         var context = ExecutionContext.create(ExecutionContext.Source.USER, null).withAssignment(
                 new com.jadecode.execution.AssignmentContext("assignment_1", "task_1", "agent_1", "run_leader", scope));
         var completed = new CompletableFuture<com.jadecode.process.BackgroundManager.Completion>();
-        try (var background = new com.jadecode.process.BackgroundManager(dir)) {
+        var execution = new java.util.concurrent.atomic.AtomicReference<ExecutionContext>();
+        try (var background = new com.jadecode.process.BackgroundManager(dir, 10, (command, cwd, timeout, snapshot) -> {
+            execution.set(snapshot);
+            return new com.jadecode.process.ShellCommand.Result("evidence", 0, false);
+        })) {
             background.onResult(completed::complete);
-            background.start("printf evidence", context.withGoal("Read evidence"), true, false, false);
+            background.start("printf evidence", context.withGoal("Read evidence"));
             var result = completed.get(5, TimeUnit.SECONDS);
-            assertEquals(context.assignment(), result.context().assignment());
-            assertEquals(List.of("src/A.java"), result.context().assignment().scope().writePaths());
+            assertEquals(context.id(), result.owner());
+            assertEquals(context.assignment(), execution.get().assignment());
+            assertEquals(List.of("src/A.java"), execution.get().assignment().scope().writePaths());
         }
     }
 

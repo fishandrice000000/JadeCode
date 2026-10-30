@@ -41,8 +41,8 @@ class SessionDisplayTimingTest {
         var notices = new CopyOnWriteArrayList<ExecutionNotice>();
         var engine = new AgentExecutor(new ScriptedLlmClient(response("first"), response("last")), Map.of(), "test", 1000, hooks);
         engine.observe(notices::add);
-        try (var runtime = new SessionRuntime(engine, memory, null, null, ignored -> { }, ignored -> { })) {
-            runtime.start(false); var first = runtime.submit("question", null);
+        try (var runtime = new SessionRuntime(engine, memory, null, ignored -> { }, ignored -> { })) {
+            runtime.start(); var first = runtime.submit("question", null);
             assertTrue(entered.await(5, TimeUnit.SECONDS)); assertEquals(0, calls.get());
             var late = runtime.submitUser("more detail", null); assertTrue(runtime.promoteUserBuffer()); release.countDown();
             assertEquals("last", first.get(5, TimeUnit.SECONDS)); assertEquals("last", late.get(5, TimeUnit.SECONDS));
@@ -70,8 +70,8 @@ class SessionDisplayTimingTest {
         }, com.jadecode.support.TestPaths.workspace(dir), new JadeSettings.Memory(1000), output::add, errors::add);
         var engine = new AgentExecutor(new ScriptedLlmClient(response("final answer")), Map.of(), "test", 1000, new Hooks());
         engine.observe(notices::add);
-        try (var runtime = new SessionRuntime(engine, memory, null, null, output::add, errors::add)) {
-            runtime.start(false);
+        try (var runtime = new SessionRuntime(engine, memory, null, output::add, errors::add)) {
+            runtime.start();
             var future = runtime.submit("question", null);
             try {
                 assertTrue(entered.await(5, TimeUnit.SECONDS));

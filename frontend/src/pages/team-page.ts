@@ -105,7 +105,7 @@ export class TeamDetailPage implements Page {
 		const a = this.assignment();
 		if (!a) { field("Assignments", "No assignment selected."); return lines; }
 		field("Task", `${a.subject}\n${a.taskId}`);
-		field("Assignment", `${a.id}\n${member.currentAssignment === a.id ? "Current" : "History / queued"} · ${a.required ? "Required" : "Detached"}`);
+		field("Assignment", `${a.id}\n${member.currentAssignment === a.id ? "Current" : "History / queued"}`);
 		field("Assigned scope · read", a.scope.readPaths.join("\n") || "Not specified");
 		field("Assigned scope · write", a.scope.writePaths.join("\n") || "Not specified");
 		if (a.progress) field("Latest update", a.progress);

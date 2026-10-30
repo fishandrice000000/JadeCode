@@ -152,7 +152,7 @@ class WorkflowIntegrationTest {
             return reply(new TextBlock(turn == 1 ? "workflow failure handled" : "still alive"));
         }, PermissionState.defaults(), ExecutionObserver.NONE, 8192), ignored -> { })) {
             var opened = host.open(null);
-            assertEquals("workflow failure handled", host.startWithInitial(opened.generation(), "review", null, false).get(5, TimeUnit.SECONDS));
+            assertEquals("workflow failure handled", host.startWithInitial(opened.generation(), "review", null).get(5, TimeUnit.SECONDS));
             // 主 Future 先完成也不表示兄弟分支都记完账；等三个取消请求的缺报告事实进入共享账本。
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
             while (host.current().display().usage().total().missingRequests() < 3 && System.nanoTime() < deadline) Thread.sleep(5);
@@ -220,7 +220,7 @@ class WorkflowIntegrationTest {
             return reply(new TextBlock("{\"findings\":[]}"));
         }, PermissionState.defaults(), ExecutionObserver.NONE);
         try {
-            runtime.start(false); var answer = runtime.submit("review", null);
+            runtime.start(); var answer = runtime.submit("review", null);
             assertTrue(entered.await(3, TimeUnit.SECONDS)); runtime.close(); release.countDown();
             assertThrows(ExecutionException.class, () -> answer.get(3, TimeUnit.SECONDS)); assertEquals(1, formal.get());
             try (var files = Files.walk(com.jadecode.support.TestPaths.workspace(workspace).workflows())) {

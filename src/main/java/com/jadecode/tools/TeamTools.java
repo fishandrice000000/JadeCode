@@ -36,13 +36,13 @@ public final class TeamTools {
             return switch (name) {
                 case "spawn_teammate" -> "Create an idle persistent teammate with empty independent history. Max 3. role MUST be a short English name on line 1, newline, then responsibilities. Example: Explorer\\nInvestigate execution flow. Returns agent_id; assign separately.";
                 case "list_teammates" -> "List actual teammate runtime states. IDLE is not evidence of business success.";
-                case "assign_task" -> "Claim an existing ready task for a teammate, persist instructions, then enqueue. Returns assignment_id. A busy teammate queues it. wait_for_completion defaults true: the current leader turn waits for the report. scope is a fixed snapshot with read_paths and write_paths relative to the workspace. Use English task titles and summaries.";
+                case "assign_task" -> "Claim an existing ready task for a teammate, persist instructions, then enqueue. Returns assignment_id. A busy teammate queues it. The current leader turn waits for the terminal report. scope is a fixed snapshot with read_paths and write_paths relative to the workspace. Use English task titles and summaries.";
                 case "shutdown_teammate" -> "Close a teammate and its processes. Unfinished assignments become blocked. Does not undo file changes.";
                 case "reopen_task" -> "Explicitly restore a failed/blocked task to pending before reassignment. Does not execute business work.";
                 case "submit_task_result" -> "Submit outcome completed/failed/blocked, short summary and full report. Persists body, updates task, notifies leader. Retry with identical arguments after partial failure; do not redo business.";
                 case "review_task_result" -> "Record leader review notes for the exact assignment_id and report_id. Does not change task dependencies or prove correctness.";
                 case "retry_team_message" -> "Retry only a previously failed delivery by message_id. Does not rerun commands or overwrite message bodies.";
-                default -> "Send summary plus persisted full body to leader/a teammate. kind=message/question/progress/supplement. Defaults: insertion=true; wake=true except progress=false. Teammates may only message leader. Include task_id and assignment_id for task-specific messages. Set reply_to to the original question message_id when replying. Use short English UI summaries.";
+                default -> "Send summary plus persisted full body to leader/a teammate. kind=message/question/progress/supplement. Messages are always inserted into an active turn; an idle recipient stores them until explicit work starts. Teammates may only message leader. Include task_id and assignment_id for task-specific messages. Set reply_to to the original question message_id when replying. Use short English UI summaries.";
             };
         }
 
@@ -52,15 +52,14 @@ public final class TeamTools {
                 case "spawn_teammate" -> Map.of("role", "string");
                 case "list_teammates" -> Map.of();
                 case "assign_task" -> Map.of("agent_id", "string", "task_id", "string", "summary", "string", "body", "string",
-                        "wait_for_completion", "boolean", "scope", "object");
+                        "scope", "object");
                 case "shutdown_teammate" -> Map.of("agent_id", "string");
                 case "reopen_task" -> Map.of("task_id", "string");
                 case "review_task_result" -> Map.of("assignment_id", "string", "report_id", "string", "notes", "string");
                 case "retry_team_message" -> Map.of("message_id", "string");
                 case "submit_task_result" -> Map.of("assignment_id", "string", "status", "string", "summary", "string", "body", "string");
                 default -> Map.of("to_agent", "string", "task_id", "string", "assignment_id", "string",
-                        "kind", "string", "summary", "string", "body", "string", "reply_to", "string",
-                        "allow_insertion", "boolean", "wake_when_idle", "boolean");
+                        "kind", "string", "summary", "string", "body", "string", "reply_to", "string");
             };
         }
 
@@ -148,12 +147,12 @@ public final class TeamTools {
                     case "list_teammates" -> team.list();
                     case "assign_task" -> Map.of("assignment_id", team.assign(input.path("agent_id").asText(),
                             input.path("task_id").asText(), input.path("summary").asText(), input.path("body").asText(), context,
-                            input.path("wait_for_completion").asBoolean(true), scope(input)));
+                            scope(input)));
                     case "shutdown_teammate" -> { team.shutdown(input.path("agent_id").asText()); yield "Teammate closed"; }
                     case "reopen_task" -> team.reopen(input.path("task_id").asText());
                     case "review_task_result" -> Map.of("report_id", team.review(input.path("assignment_id").asText(),
                             input.path("report_id").asText(), input.path("notes").asText()));
-                    case "retry_team_message" -> Map.of("message_id", team.retry(actor, input.path("message_id").asText(), context));
+                    case "retry_team_message" -> Map.of("message_id", team.retry(actor, input.path("message_id").asText()));
                     case "submit_task_result" -> {
                         if (context.assignment() == null || !context.assignment().actor().equals(actor)
                                 || !context.assignment().id().equals(input.path("assignment_id").asText()))
@@ -176,8 +175,7 @@ public final class TeamTools {
                         yield Map.of("message_id", team.send(actor, input.path("to_agent").asText(),
                                 input.path("task_id").asText(null), input.path("assignment_id").asText(null), kind,
                                 input.path("summary").asText(), input.path("body").asText(),
-                                input.path("allow_insertion").asBoolean(true),
-                                input.path("wake_when_idle").asBoolean(!kind.equals("progress")), context, input.path("reply_to").asText(null)));
+                                input.path("reply_to").asText(null)));
                     }
                 };
                 return Json.mapper().writeValueAsString(result);

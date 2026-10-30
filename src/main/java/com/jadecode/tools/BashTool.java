@@ -3,204 +3,100 @@ package com.jadecode.tools;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
-
-import com.fasterxml.jackson.databind.JsonNode;
+import java.util.Objects;
+import java.util.Set;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jadecode.execution.ExecutionContext;
 import com.jadecode.process.BackgroundManager;
 import com.jadecode.process.ShellCommand;
 
 /**
- * 把模型给出的 shell 命令交给 ShellCommand 或 BackgroundManager 运行。
- *
- * <p>默认等命令结束再返回。父 Agent 可以设置 run_in_background=true，
- * 让工具先返回 bg_id，命令继续在后台跑。wait_for_completion 则决定当前任务是否必须
- * 处理它的结果，默认是 true；工具仍立即返回，只是 SessionRuntime 不能提前宣布任务结束。</p>
- *
- * <p>两种方式都要先经过 PreToolUse 检查权限。这里不询问用户、不写 history，也不调用模型。
- * 当前子代理没有后台结果处理功能，所以只提供同步命令。</p>
+ * 权限检查之后的 Shell 工具：同步返回最终结果，后台立即返回启动回执并由 Inbox 交付最终文本。
+ * 后台结果始终允许插入，只有启动它的大轮次正常结束前必须等待；取消轮次不终止已接纳命令。
+ * 本类不写历史、不请求模型、不重新审批；子代理没有结果接收端时只提供同步模式。
  */
 public class BashTool implements Tool {
-    /** 没有管理器时 shell 使用的工作目录，有管理器则用它自己的目录。 */
     private final Path cwd;
-    /** 没有管理器时，每条同步命令的超时秒数。 */
     private final long timeoutSeconds;
-    /** null 表示只支持同步执行，例如当前的子代理。 */
     private final BackgroundManager background;
-    private ShellCommand.Runner runner;
-    /** 子代理使用受限后端；构造不执行操作，后端由工厂提供。 */
-    public BashTool(Path cwd, ShellCommand.Runner runner) { this(cwd); this.runner = runner; }
+    private final ShellCommand.Runner runner;
 
-    /**
-     * 在当前进程目录执行同步命令，默认最多 120 秒；不提供后台功能，也不立即执行命令。
-     */
-    public BashTool() {
-        this(120);
+    /** 当前目录的同步 Shell，默认 120 秒；构造不执行命令。 */
+    public BashTool() { this(120); }
+    /** 当前目录的同步 Shell；非正数超时在构造时失败。 */
+    public BashTool(long timeoutSeconds) { this(Path.of(""), timeoutSeconds, null, null); }
+    /** 指定每次调用的初始目录；命令中的 cd 不影响后续调用。 */
+    public BashTool(Path cwd) { this(cwd, 120, null, null); }
+    /** 子代理注入受限后端；执行许可从每次上下文取得，不跨调用复用。 */
+    public BashTool(Path cwd, ShellCommand.Runner runner) { this(cwd, 120, null, Objects.requireNonNull(runner)); }
+    /** 会话和工具必须共用管理器，保证启动记录、通知交付和关闭资源对应。 */
+    public BashTool(BackgroundManager background) { this(Path.of(""), 120, Objects.requireNonNull(background), null); }
+    /** 保存不可变依赖；仅明确装配的宿主/离线入口允许 runner=null。 */
+    private BashTool(Path cwd, long timeoutSeconds, BackgroundManager background, ShellCommand.Runner runner) {
+        if (timeoutSeconds <= 0) throw new IllegalArgumentException("timeoutSeconds must be positive");
+        this.cwd = Objects.requireNonNull(cwd); this.timeoutSeconds = timeoutSeconds;
+        this.background = background; this.runner = runner;
     }
 
-    /**
-     * 使用当前进程目录，只提供同步命令。
-     * @param timeoutSeconds 每条命令最多执行多少秒
-     * @throws IllegalArgumentException 不是正数
-     */
-    public BashTool(long timeoutSeconds) {
-        this(Path.of(""), timeoutSeconds, null);
-    }
-
-    /**
-     * 在给定目录提供同步命令，默认 120 秒，供子代理使用。
-     * @param cwd shell 工作目录；某次命令里 cd 不改变其它命令的初始目录
-     */
-    public BashTool(Path cwd) {
-        this(cwd, 120, null);
-    }
-
-    /**
-     * 父 Agent 使用：同步和后台命令都交给同一个管理器，退出时一起停止。
-     * @param background 必须与 SessionRuntime 使用同一对象，才能找到本工具启动的后台命令
-     * @throws NullPointerException background 为 null
-     */
-    public BashTool(BackgroundManager background) {
-        this(Path.of(""), 120, java.util.Objects.requireNonNull(background));
-    }
-
-    /**
-     * 保存执行命令要用的对象和设置，不启动线程或命令。
-     * @param cwd 没有管理器时，局部 shell 使用的工作目录
-     * @param timeoutSeconds 没有管理器时，每条命令的超时秒数，必须大于零
-     * @param background 可以为 null；提供它时才支持后台命令
-     * @throws IllegalArgumentException timeoutSeconds 不是正数
-     */
-    private BashTool(Path cwd, long timeoutSeconds, BackgroundManager background) {
-        if (timeoutSeconds <= 0) {
-            throw new IllegalArgumentException("timeoutSeconds must be positive");
-        }
-        this.cwd = cwd;
-        this.timeoutSeconds = timeoutSeconds;
-        this.background = background;
-    }
-
-    /** @return 仍叫 bash，后台也适用原命令权限规则。 */
-    @Override
-    public String name() {
-        return "bash";
-    }
-
-    /**
-     * @return 给模型的用法说明；没有后台管理器时，只告诉模型能执行同步命令
-     */
-    @Override
-    public String description() {
+    /** 工具名也是权限规则匹配键，同步和后台共用同一入口。 */
+    @Override public String name() { return "bash"; }
+    /** 按本实例实际是否有结果接收端，向模型说明可用执行模式。 */
+    @Override public String description() {
         return background == null ? "Run a shell command synchronously."
-                : "Run a shell command. run_in_background=true returns an ID immediately, not completion."
-                + " wait_for_completion defaults to true for background commands: the current task waits for"
-                + " their results and resumes automatically. Set it to false only to detach from the task;"
-                + " allow_insertion=false by default defers results until the finishing/waiting phase."
-                + " wake_when_idle=false by default does not start a new turn for detached results."
-                + " Set wake_when_idle=true when a detached result needs an automatic follow-up."
-                + " All commands stop when the CLI exits.";
+                : "Run a shell command. run_in_background=true returns an ID immediately; the final result"
+                + " is inserted at a safe tool boundary. The starting turn waits for it before completing."
+                + " Interrupting the turn releases its wait but leaves accepted commands running; closing the session stops them.";
     }
-
-    /**
-     * 告诉模型可以传哪些参数。有后台管理器才提供后台模式及三项结果处理设置。
-     * @return command，以及 run_in_background/wait_for_completion/allow_insertion/wake_when_idle
-     */
-    @Override
-    public Map<String, String> properties() {
+    /** 只暴露真实支持的模式参数；沙箱额外字段由外层包装器添加。 */
+    @Override public Map<String, String> properties() {
         return background == null ? Map.of("command", "string")
-                : Map.of("command", "string", "run_in_background", "boolean", "wait_for_completion", "boolean",
-                        "allow_insertion", "boolean", "wake_when_idle", "boolean");
+                : Map.of("command", "string", "run_in_background", "boolean");
     }
-
-    /** @return command 必填；省略后台参数保持同步默认。 */
-    @Override
-    public List<String> required() {
-        return List.of("command");
-    }
-
-    /**
-     * 旧调用者不传任务信息时使用，直接调用双参数 execute，不单独写一份执行代码。
-     * @param input 非 null 参数对象，不修改；command 必须是非空白字符串
-     * @return 同步输出或 Error 文字；即使有管理器，请求后台也会因没有任务信息而被拒绝
-     * @see #execute(ObjectNode, ExecutionContext)
-     */
-    @Override
-    public String execute(ObjectNode input) {
-        // 普通同步命令不需要任务 ID；后台命令要用双参数版本，程序才能记住它属于谁。
-        return execute(input, null);
-    }
+    /** command 必填，省略后台模式保持同步默认。 */
+    @Override public List<String> required() { return List.of("command"); }
+    /** 离线同步兼容入口；后台模式仍要求正式执行身份。 */
+    @Override public String execute(ObjectNode input) { return execute(input, null); }
+    /** 文字入口复用同一实现；正式调用方通过 ToolOutcome 保留错误标志。 */
+    @Override public String execute(ObjectNode input, ExecutionContext context) { return executeOutcome(input, context).content(); }
 
     /**
-     * 检查参数，再同步运行或放到后台，结果由调用者写进 history。
-     *
-     * <p>比如模型要后台构建再检查报告：设置 run_in_background=true，
-     * 本方法立即返回 bg_id，模型可以先调用 read_file。wait_for_completion 默认 true，
-     * 表示之后必须处理构建结果才能结束任务。不是在本方法里等，而是 SessionRuntime
-     * 等结果后再次请模型继续。设 false 才表示这项任务不用等，但退出 CLI 时命令仍会停止。</p>
-     *
-     * <p>只接受真正的 JSON boolean，不接受字符串 "true" 或显式 null。
-     * wait_for_completion 只有后台模式才能传，不能默默忽略它，让模型误以为设置生效。
-     * 调用者必须先做权限检查；这里不再次询问用户，也不请求模型。</p>
-     * @param input 非 null 参数对象，不修改；command 必填，后台模式及结果处理开关可选
-     * @param context 程序记录的任务信息；后台必须提供，用来找回所属任务的结果，同步可为 null
-     * @return 同步时为输出或错误；后台时为 bg_id 和启动说明，不代表跑完。
-     *         参数不对、当前 Agent 不支持后台或管理器不能接收时，返回 Error 文字
+     * 完整校验后执行一次；不修改输入，旧策略参数或未知字段在任何命令启动前明确拒绝。
+     * network_access/access_paths 由外层沙箱解释，本层允许传递但不自行授予权限。
+     * 后台返回启动说明，不用同一个 tool_use_id 再返回第二份 tool_result；最终输出交给通知链。
+     * @param input 非 null，command 为非空白文本；run_in_background 如提供必须是真正 boolean
+     * @param context 正式身份和取消条件；同步离线入口可为 null，后台必须提供
+     * @return 同步最终输出/状态，或后台启动回执；校验失败没有执行副作用
      */
-    @Override
-    public String execute(ObjectNode input, ExecutionContext context) {
-        return executeOutcome(input, context).content();
-    }
-
-    /** 参数错误显式标记失败，命令结果依据退出码；正常输出即使以 Error 开头也仍然成功。 */
-    @Override
-    public ToolOutcome executeOutcome(ObjectNode input, ExecutionContext context) {
-        // 1. 所有开关都检查完再执行；不适用的参数报错，不能让模型以为设置已经生效。
-        JsonNode command = input.get("command");
-        if (command == null) {
-            return error("Missing required parameter: command");
+    @Override public ToolOutcome executeOutcome(ObjectNode input, ExecutionContext context) {
+        var command = input.get("command");
+        if (command == null) return error("Missing required parameter: command");
+        if (!command.isTextual() || command.textValue().isBlank()) return error("command must be a non-empty string");
+        var fields = input.fieldNames();
+        while (fields.hasNext()) {
+            String field = fields.next();
+            if (!Set.of("command", "run_in_background", "network_access", "access_paths").contains(field))
+                return error("Unsupported bash parameter: " + field);
         }
-        if (!command.isTextual() || command.textValue().isBlank()) {
-            return error("command must be a non-empty string");
-        }
-        JsonNode requested = input.get("run_in_background");
-        if (requested != null && !requested.isBoolean()) {
-            return error("run_in_background must be a boolean");
-        }
+        var requested = input.get("run_in_background");
+        if (requested != null && !requested.isBoolean()) return error("run_in_background must be a boolean");
         boolean asynchronous = requested != null && requested.booleanValue();
-        JsonNode waiting = input.get("wait_for_completion");
-        if (waiting != null && !waiting.isBoolean()) return error("wait_for_completion must be a boolean");
-        if (waiting != null && !asynchronous) return error("wait_for_completion requires run_in_background=true");
-        for (String flag : List.of("allow_insertion", "wake_when_idle")) {
-            if (input.has(flag) && !input.get(flag).isBoolean()) return error(flag + " must be a boolean");
-            if (input.has(flag) && !asynchronous) return error(flag + " requires run_in_background=true");
-        }
-        if (asynchronous && background == null) {
-            return error("Background execution is not available in this agent");
-        }
         if (asynchronous) {
-            // 2. 所属任务由程序另外传入，不能由模型填写；调用这里前已经检查过权限。
+            if (background == null) return error("Background execution is not available in this agent");
             if (context == null) return error("Background execution requires a Harness task context");
             try {
-                boolean required = waiting == null || waiting.booleanValue();
-                String id = background.start(command.textValue(), context, required,
-                        input.path("allow_insertion").asBoolean(false), input.path("wake_when_idle").asBoolean(false));
-                return new ToolOutcome("[Background task " + id + " started] " + (required
-                        ? "The current task must process its result before finishing; it will resume automatically."
-                        : "Detached from the current task. Its result is a later session notification."), false);
-            } catch (IllegalArgumentException | IllegalStateException failure) {
-                return error(failure.getMessage());
-            }
+                String id = background.start(command.textValue(), context);
+                return new ToolOutcome("[Background task " + id + " started] Final output will be delivered as a notification."
+                        + " The current turn must adopt it before completing.", false);
+            } catch (IllegalArgumentException | IllegalStateException failure) { return error(failure.getMessage()); }
         }
-        // 3. 同步命令直接返回最终结果，不再发后台通知。有管理器就用它，否则执行后关闭局部 shell。
-        if (background != null) {
-            var result = background.runForegroundResult(command.textValue(), context);
-            return new ToolOutcome(result.text(), result.exitCode() == null || result.exitCode() != 0);
-        }
-        try (ShellCommand shell = new ShellCommand(cwd, timeoutSeconds, runner)) {
-            var result = shell.run(command.textValue(), context);
-            return new ToolOutcome(result.text(), result.exitCode() == null || result.exitCode() != 0);
-        }
+        // 同步模式不投递通知；退出码而非 stdout 文本决定成功，正常 Error 开头输出不被误判。
+        if (background != null) return outcome(background.runForegroundResult(command.textValue(), context));
+        try (var shell = new ShellCommand(cwd, timeoutSeconds, runner)) { return outcome(shell.run(command.textValue(), context)); }
     }
-    /** 参数校验失败还没有启动程序；统一保留原 Error 文本协议。 */
+    /** 缺失退出码也属于失败；保留真实的工具输出。 */
+    private static ToolOutcome outcome(ShellCommand.Result result) {
+        return new ToolOutcome(result.text(), result.exitCode() == null || result.exitCode() != 0);
+    }
+    /** 参数错误发生在执行之前，沿用工具错误格式。 */
     private static ToolOutcome error(String message) { return new ToolOutcome("Error: " + message, true); }
 }

@@ -313,11 +313,12 @@ class DockerSandboxTest {
     }
 
     /** 强制让后台线程晚于任务结束再启动，确认已接收操作保留许可，完成后仍回收实例。 */
-    @Test void acceptedDetachedBackgroundSurvivesTaskEndBeforeWorkerStarts() throws Exception {
+    @Test void acceptedBackgroundSurvivesCancelledTurnBeforeWorkerStarts() throws Exception {
         Path workspace = Files.createDirectory(temporary.resolve("workspace"));
         var state = PermissionState.defaults();
         var gate = new PermissionGate(new PathResolver(workspace), state, request -> ApprovalAnswer.DENY); gate.sandboxed(true);
-        var context = ExecutionContext.create(ExecutionContext.Source.USER, request -> ApprovalAnswer.DENY);
+        var cancelled = new java.util.concurrent.atomic.AtomicBoolean();
+        var context = ExecutionContext.create(ExecutionContext.Source.USER, request -> ApprovalAnswer.DENY, cancelled::get);
         var entered = new java.util.concurrent.CountDownLatch(1);
         var proceed = new java.util.concurrent.CountDownLatch(1);
         var completed = new java.util.concurrent.CountDownLatch(1);
@@ -335,11 +336,11 @@ class DockerSandboxTest {
                 background.onResult(value -> { result.set(value); completed.countDown(); });
                 var bash = session.wrap(new com.jadecode.tools.BashTool(background));
                 var input = Json.mapper().createObjectNode().put("command", "printf completed > completed.txt")
-                        .put("run_in_background", true).put("wait_for_completion", false);
+                        .put("run_in_background", true);
                 assertNull(gate.check("bash", input, context));
                 assertFalse(bash.executeOutcome(input, context).isError());
                 assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS));
-                session.endTask(context.id()); proceed.countDown();
+                cancelled.set(true); session.endTask(context.id()); proceed.countDown();
                 assertTrue(completed.await(20, java.util.concurrent.TimeUnit.SECONDS));
                 assertEquals(0, result.get().exitCode(), result.get().output());
                 assertEquals("completed", Files.readString(workspace.resolve("completed.txt")));
@@ -348,8 +349,8 @@ class DockerSandboxTest {
         }
     }
 
-    /** 父任务失败取消必需后台时，应终止实际 Docker 进程，不能只从宿主结果队列删除它。 */
-    @Test void cancellingRequiredBackgroundStopsItsContainer() throws Exception {
+    /** 显式停止后台命令时，应终止实际 Docker 进程，不能只从宿主结果队列删除它。 */
+    @Test void explicitlyStoppingBackgroundStopsItsContainer() throws Exception {
         Path workspace = Files.createDirectory(temporary.resolve("workspace"));
         var state = PermissionState.defaults();
         var gate = new PermissionGate(new PathResolver(workspace), state, request -> ApprovalAnswer.DENY); gate.sandboxed(true);
@@ -364,7 +365,7 @@ class DockerSandboxTest {
                 long startDeadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(10);
                 while (!Files.exists(workspace.resolve("started.txt")) && System.nanoTime() < startDeadline) Thread.sleep(20);
                 assertTrue(Files.exists(workspace.resolve("started.txt")), "background command did not start");
-                background.cancelRequired(context.id());
+                background.stop(background.pendingIds().getFirst());
                 long stopDeadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(10);
                 while (runtime.containerCount() != 0 && System.nanoTime() < stopDeadline) Thread.sleep(20);
                 assertEquals(0, runtime.containerCount()); assertFalse(Files.exists(workspace.resolve("late.txt")));

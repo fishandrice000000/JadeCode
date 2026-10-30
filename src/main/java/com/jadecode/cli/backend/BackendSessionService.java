@@ -179,7 +179,7 @@ public final class BackendSessionService implements AutoCloseable {
     }
 
     /**
-     * Node 已完整安装快照并确认 ready：登记首轮任务（若有）再启动消费者/cron。
+     * Node 已完整安装快照并确认 ready：登记首轮任务（若有）再启动消费者。
      *
      * <p>重复 ready 由协议层过滤；这里再加一道 {@link #startupRegistered} 幂等保护，
      * 保证重绘/fg 不会重放用户首轮 prompt。</p>
@@ -201,11 +201,11 @@ public final class BackendSessionService implements AutoCloseable {
                     ObjectNode submitted = taskSubmitted(submissionId, prompt);
                     wire.session().sendEvent("task.submitted", submitted, wire.sessionId(), wire.generation());
                     CompletableFuture<String> result = host.startWithInitial(generation.generation, prompt,
-                            headless ? null : generation.approval, !headless);
+                            headless ? null : generation.approval);
                     attachResult(result, submissionId);
                 } else {
                     if (!startupRegistered) {
-                        if (headless) host.current().start(false); else host.start(generation.generation);
+                        if (headless) host.current().start(); else host.start(generation.generation);
                     }
                     startupRegistered = true;
                 }

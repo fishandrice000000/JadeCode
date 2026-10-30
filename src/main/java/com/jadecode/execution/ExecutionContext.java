@@ -9,9 +9,9 @@ import com.jadecode.safety.approval.Approval;
 /**
  * 记录这项任务由谁发起，以及程序如何处理它的权限和退出。
  *
- * <p>用户和定时器都用同一线程执行任务，不能靠线程判断要不要询问用户。
+ * <p>执行来源由 Harness 确定，不能靠线程或消息的 USER role 判断是否可以询问用户。
  * 所以程序在排队前记录 source，再原样传给工具和子代理；模型不能在 JSON 里填写它。
- * 子代理接到定时任务仍然是 SCHEDULED，不能因此获得人工批准。</p>
+ * 非人类来源仍不得获得人工批准；当前 cron 不接线，保留来源标记供权限边界校验。</p>
  *
  * <p>id 用于找回这项任务启动的后台命令。approval 是询问用户的函数，不负责判断哪些命令
  * 需要批准；那由 PermissionGate 决定。sessionClosed 是一个检查函数，调用时才读取
@@ -45,6 +45,14 @@ public record ExecutionContext(String id, Source source, Approval approval, Bool
         return new ExecutionContext(id, source, approval, () -> sessionClosed.getAsBoolean() || cancelled.getAsBoolean(),
                 goal, assignment, sandboxPlan, actorScope);
     }
+    /**
+     * 已接纳的后台调用派生独立取消生命周期；仅可信执行端调用，不从模型参数取得。
+     * 身份、审批来源、派工与调用级许可保持不变，原轮次结束不扩大已有授权。
+     */
+    public ExecutionContext withCancellation(BooleanSupplier cancelled) {
+        return new ExecutionContext(id, source, approval, Objects.requireNonNull(cancelled), goal,
+                assignment, sandboxPlan, actorScope);
+    }
     /** 子代理一次委派的隔离编号由 Harness 生成，保留父 run/source，丢弃父工具的调用级许可。 */
     public ExecutionContext withActorScope(String scope) {
         return new ExecutionContext(id, source, approval, sessionClosed, goal, assignment, null, scope);
@@ -67,7 +75,7 @@ public record ExecutionContext(String id, Source source, Approval approval, Bool
     public enum Source {
         /** 用户直接提交的任务；还需要有询问用户的函数，且会话没退出，才能申请批准。 */
         USER,
-        /** 时间到了自动触发的任务，工具和子代理都不能向用户申请批准。 */
+        /** 保留的非人工来源标记，工具和子代理不得申请人工批准；当前运行时不生产定时请求。 */
         SCHEDULED
     }
 

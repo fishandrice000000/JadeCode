@@ -33,7 +33,7 @@ public final class TeamMailbox {
      * @return 已保存的短摘要、正文路径及来源信息；尚未进入接收方 Inbox
      */
     public Incoming prepare(String from, String to, String task, String assignment, String kind,
-            String summary, String body, boolean insertion, boolean wake) throws IOException {
+            String summary, String body, boolean insertion) throws IOException {
         if (summary == null || summary.isBlank() || summary.length() > 2000
                 || body == null || body.isBlank() || body.length() > 200_000) {
             throw new IllegalArgumentException("Summary must be 1–2000 characters and body must be 1–200000 characters");
@@ -45,7 +45,7 @@ public final class TeamMailbox {
         Path path = root.resolve("messages").resolve(id + ".md");
         // CREATE_NEW 保护这份快照；重复提交不能覆盖模型曾经看到的原文。
         Files.writeString(path, body, StandardCharsets.UTF_8, StandardOpenOption.CREATE_NEW);
-        Incoming incoming = new Incoming(id, from, to, task, assignment, kind, summary, path.toString(), insertion, wake);
+        Incoming incoming = new Incoming(id, from, to, task, assignment, kind, summary, path.toString(), insertion);
         Files.writeString(pending(id), Json.mapper().writeValueAsString(incoming), StandardOpenOption.CREATE_NEW);
         return incoming;
     }

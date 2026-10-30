@@ -53,7 +53,7 @@ class MemoryIntegrationTest {
                 new AppConfig("offline", "http://127.0.0.1:1", "fixture", 8000), workspace, fake,
                 ignored -> { }, warnings::add, (hooks, cwd, output) -> { }, () -> ResponseStream.NONE,
                 ExecutionObserver.NONE, settings, settings.permissions().state(null), new com.jadecode.config.JadePaths(root.getParent()))) {
-            runtime.restore(opened.journal(), opened.restored()); runtime.start(false);
+            runtime.restore(opened.journal(), opened.restored()); runtime.start();
             assertTrue(runtime.submit("Check the project fact", null).get(5, TimeUnit.SECONDS).contains("Verified"));
             assertTrue(completed.await(1, TimeUnit.SECONDS));
             String evidence = extractionInput.get(5, TimeUnit.SECONDS);
@@ -97,7 +97,7 @@ class MemoryIntegrationTest {
                     }, ignored -> { }, ignored -> { }, (hooks, cwd, output) -> { }, () -> ResponseStream.NONE,
                     ExecutionObserver.NONE, settings, settings.permissions().state(null), new com.jadecode.config.JadePaths(root.getParent()));
             try {
-                runtime.restore(opened.journal(), opened.restored()); runtime.start(false);
+                runtime.restore(opened.journal(), opened.restored()); runtime.start();
                 runtime.submit("An unfinished human task", null); assertTrue(entered.await(2, TimeUnit.SECONDS));
             } finally { runtime.close(); release.countDown(); }
         }

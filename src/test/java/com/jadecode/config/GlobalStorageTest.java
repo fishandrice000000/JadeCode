@@ -43,7 +43,7 @@ class GlobalStorageTest {
         try (var opened = sessions.create("offline")) { id = opened.journal().metadata().id(); }
         try (var reopened = sessions.open(id)) { assertEquals(paths.workspace().toString(), reopened.restored().metadata().workspace()); }
         var task = new TaskStore(paths).create("fixture", "project task");
-        var incoming = new TeamMailbox(paths).prepare("leader", "agent", task.id(), null, "progress", "summary", "body", false, false);
+        var incoming = new TeamMailbox(paths).prepare("leader", "agent", task.id(), null, "progress", "summary", "body", true);
         new CronScheduler(paths).schedule("0 * * * *", "fixture", true, true);
         assertTrue(Files.exists(paths.tasks().resolve(task.id() + ".json")));
         assertTrue(Path.of(incoming.bodyPath()).startsWith(paths.teams()));

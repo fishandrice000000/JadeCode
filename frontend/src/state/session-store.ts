@@ -69,7 +69,7 @@ export interface PermissionSnapshot {
 /** Team 展示只采用后端事实；运行状态、报告与核对状态分别保存。 */
 export interface TeamQuestion { id: string; summary: string; to: string; answered: boolean; }
 export interface TeamAssignment {
-	id: string; taskId: string; subject: string; leaderRunId: string; required: boolean;
+	id: string; taskId: string; subject: string; leaderRunId: string;
 	scope: { readPaths: string[]; writePaths: string[] };
 	finished: boolean; abandoned: boolean; outcome: string; reportId: string; reportSummary: string;
 	reportPath: string; reviewNotes: string; deliveryError: string; progress: string; questions: TeamQuestion[];
@@ -497,7 +497,7 @@ function parseTeam(value: unknown): TeamMember[] {
 		assignments: objects(member.assignments).map((a) => {
 			const scope = typeof a.scope === "object" && a.scope !== null ? a.scope as Payload : {};
 			return { id: text(a, "id"), taskId: text(a, "taskId"), subject: text(a, "subject"), leaderRunId: text(a, "leaderRunId"),
-				required: a.required === true, scope: { readPaths: strings(scope.readPaths), writePaths: strings(scope.writePaths) },
+				scope: { readPaths: strings(scope.readPaths), writePaths: strings(scope.writePaths) },
 				finished: a.finished === true, abandoned: a.abandoned === true, outcome: text(a, "outcome"),
 				reportId: text(a, "reportId"), reportSummary: text(a, "reportSummary"), reportPath: text(a, "reportPath"),
 				reviewNotes: text(a, "reviewNotes"), deliveryError: text(a, "deliveryError"), progress: text(a, "progress"),

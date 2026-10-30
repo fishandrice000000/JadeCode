@@ -52,7 +52,7 @@ class ManagedAgentServiceTest {
             service.workspaceCommand(base.deepCopy().put("action","upload.finish").put("resourceId",resource.get()));
             var group=service.open(base); assertEquals(id,group.workspaceId);
             assertThrows(java.io.IOException.class,()->service.workspaceCommand(base.deepCopy().put("action","delete")));
-            group.backend.runtime().start(false);
+            group.backend.runtime().start();
             assertEquals("fixture completed",group.backend.runtime().submitUser("fixture task",request->ApprovalAnswer.ALLOW_ONCE).get(45,TimeUnit.SECONDS));
             assertEquals(5,calls.get()); assertEquals("fixture",Files.readString(group.workspace.resolve("project/from-agent.txt")));
             assertEquals(1,service.workspaceCommand(base.deepCopy().put("action","artifacts")).path("artifacts").size());

@@ -122,7 +122,7 @@ class MemoryReferenceIntegrationTest {
         String id;
         try (var opened = store.create("fixture"); var runtime = runtime(fake)) {
             id = opened.journal().metadata().id();
-            runtime.restore(opened.journal(), opened.restored()); runtime.start(false);
+            runtime.restore(opened.journal(), opened.restored()); runtime.start();
             assertEquals("done", runtime.submit("first persisted task", null).get(5, TimeUnit.SECONDS));
         }
         try (var opened = store.open(id); var runtime = runtime(fake)) {
@@ -134,7 +134,7 @@ class MemoryReferenceIntegrationTest {
                     List.of(reference), Json.mapper().createArrayNode(), "memory_reference"));
             runtime.restore(opened.journal(), opened.restored());
             assertEquals(1, fake.formal.size(), "恢复本身不请求模型");
-            runtime.start(false);
+            runtime.start();
             assertEquals("done", runtime.submit("second persisted task", null).get(5, TimeUnit.SECONDS));
             assertTrue(fake.extracted.await(5, TimeUnit.SECONDS));
         }
@@ -148,8 +148,7 @@ class MemoryReferenceIntegrationTest {
         seed(); var fake = new Fake(false);
         try (var runtime = runtime(fake)) {
             runtime.receive(new SessionEvent.Incoming("notice-1", "fixture", "leader", null, null,
-                    "progress", "background done", null, true, false),
-                    com.jadecode.execution.ExecutionContext.create(com.jadecode.execution.ExecutionContext.Source.USER, null));
+                    "progress", "background done", null, true));
             runtime.run(new ArrayList<>(List.of(Message.userText("actual user task"))));
         }
         List<Message> sent = fake.formal.getFirst().messages();
@@ -168,7 +167,7 @@ class MemoryReferenceIntegrationTest {
         var compactor = new ContextCompactor(request -> reply("Memory is reference material only."),
                 workspace.resolve("transcripts"), workspace.resolve("results"), limits);
         var engine = new AgentExecutor(fake, Map.of(), "fixed rules", 8000, new Hooks(), compactor);
-        try (var runtime = new SessionRuntime(engine, memory, null, null, ignored -> { }, ignored -> { })) {
+        try (var runtime = new SessionRuntime(engine, memory, null, ignored -> { }, ignored -> { })) {
             runtime.run(new ArrayList<>(List.of(Message.userText("actual user task"))));
         }
         String compacted = fake.formal.getFirst().messages().getFirst().extractText();

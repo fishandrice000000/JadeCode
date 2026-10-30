@@ -10,11 +10,22 @@ import com.jadecode.llm.UsageRecord;
  * 一次已经发生的历史变化，不是可以重新执行的 SessionEvent。
  * 不包含 ExecutionContext、审批函数、线程、future 或模型客户端。
  * messages 的含义由 kind 决定；todos 是当时真正生效的计划，不是工具调用建议。
+ * runId 表示本次变更被哪个大轮次采用，旧记录可为空；通知的原始来源保留在正文中。
  */
 public record JournalEntry(int version, String sessionId, long sequence, String time, Kind kind,
         List<Message> messages, ArrayNode todos, String reason, UsageRecord usage, String title, ThinkingSettings thinking,
-        com.jadecode.goal.GoalState goal) {
+        com.jadecode.goal.GoalState goal, String runId) {
     public enum Kind { APPEND, REPLACE_LAST, REPLACE_HISTORY, TURN_STARTED, TURN_FINISHED, TURN_FAILED, USAGE, RENAMED, THINKING, GOAL }
+
+    /**
+     * 旧日志没有 runId，按 null 恢复；该可选关联信息不参与历史重放、权限或线程恢复。
+     * 新会话历史事件记录真实采用轮次，后台通知正文仍保留原来源 run，可追踪跨轮次采用。
+     */
+    public JournalEntry(int version, String sessionId, long sequence, String time, Kind kind,
+            List<Message> messages, ArrayNode todos, String reason, UsageRecord usage, String title,
+            ThinkingSettings thinking, com.jadecode.goal.GoalState goal) {
+        this(version, sessionId, sequence, time, kind, messages, todos, reason, usage, title, thinking, goal, null);
+    }
 
     /** 版本 1/2 的调用者没有目标字段；保留旧构造，恢复旧记录时新增字段为 null。 */
     public JournalEntry(int version, String sessionId, long sequence, String time, Kind kind,
@@ -34,6 +45,7 @@ public record JournalEntry(int version, String sessionId, long sequence, String 
     /** 检查日志操作本身的形状；历史中的工具配对在全部重放后检查。 */
     public JournalEntry {
         SessionMetadata.requireId(sessionId);
+        if (runId != null && runId.isBlank()) throw new IllegalArgumentException("Run identity cannot be blank");
         if (version < 1 || version > SessionMetadata.VERSION || sequence < 1 || kind == null || reason == null)
             throw new IllegalArgumentException("Invalid session journal fields");
         boolean metadataOnly = kind == Kind.USAGE || kind == Kind.RENAMED || kind == Kind.THINKING || kind == Kind.GOAL;

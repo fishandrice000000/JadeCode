@@ -1,361 +1,150 @@
 package com.jadecode.process;
 
 import java.nio.file.Path;
-import java.util.ArrayDeque;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.function.Consumer;
 import com.jadecode.execution.ExecutionContext;
-
+import com.jadecode.execution.ExecutionNotice;
+import com.jadecode.execution.ExecutionObserver;
 
 /**
- * 运行 shell 命令，并在内存中保存后台命令的结果，等待 Agent 读取。
- *
- * <p>例如 bash 启动构建后，立刻返回 bg_id，模型就可以先读别的文件。
- * 构建线程只负责跑命令、保存结果、叫醒 SessionRuntime，不直接请求模型或改 history。
- * required=true 表示当前任务做完前必须处理这个结果，不要求命令必须成功；
- * 失败结果也交给模型决定下一步。</p>
- *
- * <p>jobs 保存所有还没处理完的命令记录；ready 暂存已经跑完、尚未排进 Inbox 的结果。
- * 正式 Session 通过 onResult 收事件，queued 后删除 ready 引用，模型正常回答后才 acknowledge 删除 jobs。
- * 旧的 collect 调用方式仍可用于没有事件接收方的调用者。
- * 所以命令跑完、结果取出、结果交给模型，是三件不同的事，不能只看进程是否还活着。</p>
- *
- * <p>这些记录总共最多 32 项，每条后台命令有自己的 ShellCommand，任务失败时可以只停自己
- * 必须等待的命令，不影响别的任务。通知只发前 500 字符，没有完整输出文件；
- * 退出后内存结果不会恢复。</p>
+ * 会话拥有的 Shell 服务：后台命令立即返回编号，完成后只投递一次结果，不请求模型或写历史。
+ * 每条命令属于启动它的 run，只有该轮正常完成前需要等待；结果可被任意后续轮次采用。
+ * 大轮次取消不停止已接纳命令，会话关闭/显式停止/超时仍停止；所有记录只在本进程保存。
+ * jobs 包含运行中和结果尚未采用的命令，最多 32 项；历史正式采用结果后释放记录。
  */
 public final class BackgroundManager implements AutoCloseable {
-    /** 运行中及未确认接收的结果都属于旧会话；切换会话前必须处理完。 */
-    public synchronized boolean hasPending() { return !jobs.isEmpty(); }
-    /** 压缩后只恢复尚未确认接收的工作编号；不读取命令输出，也不暗示这些工作已经成功。 */
-    public synchronized List<String> pendingIds() { return List.copyOf(jobs.keySet()); }
-    /** 独立的只读显示通道，不能覆盖用于向 Inbox 投递结果的 resultListener。 */
-    private com.jadecode.execution.ExecutionObserver observer = com.jadecode.execution.ExecutionObserver.NONE;
-    public void observe(com.jadecode.execution.ExecutionObserver value) { observer = value; }
-    private void display(String id, String state, String detail) {
-        observer.publish(com.jadecode.execution.ExecutionNotice.event(com.jadecode.execution.ExecutionNotice.Kind.BACKGROUND,
-                id, "bash", detail, state));
-    }
-    /** 还在运行或结果尚未处理完的命令总数上限，避免一直占内存。 */
     private static final int MAX_PENDING = 32;
-    /** 创建对象时确定的工作目录，模型不能通过后台参数换成另一个目录。 */
     private final Path cwd;
-    /** 每条命令最多运行多少秒，超过后由 ShellCommand 停止。 */
     private final long timeoutSeconds;
-    /** 执行同步命令的 ShellCommand；用户退出时也要停止。 */
-    private final ShellCommand foreground;
-    /** 所有尚未处理完的命令，读写要拿 synchronized 锁；跑完但模型没收到结果的也留在这里。 */
-    private final Map<String, Job> jobs = new LinkedHashMap<>();
-    /** 跑完且还没取走的结果，按完成顺序放；不放到新任务的排队队列。 */
-    private final ArrayDeque<Completion> ready = new ArrayDeque<>();
-    /** 命令跑完时调用的函数，默认什么也不做；结果仍会保存在 ready 中。 */
-    private Runnable listener = () -> { };
-    /** 正式 Session 用它把完成事实排进自己的 Inbox；默认保留旧 collect 调用方式。 */
-    private java.util.function.Consumer<Completion> resultListener = result -> { };
-    /** 生成本次会话的 bg_id；重启后重新计数，不保证不同进程的 ID 不同。 */
-    private long counter;
-    /** 用户退出时设为 true，工作线程之后不能再添加结果；访问要拿锁。 */
-    private boolean closed;
-
-    /**
-     * 使用默认的每条命令 120 秒超时，不启动线程、进程或读写文件。
-     * @param cwd 同步和后台命令共同使用的工作目录
-     */
-    public BackgroundManager(Path cwd) { this(cwd, 120); }
-
-    /**
-     * 记住工作目录和命令超时时间，此时不执行命令。
-     * 真正启动后台命令时，每条命令各用一个 ShellCommand，方便单独停止。
-     * @param cwd 命令的工作目录
-     * @param timeoutSeconds 每条命令最多运行多少秒，必须大于零；不是整个会话的等待时长
-     * @throws IllegalArgumentException 超时不是正数
-     */
-    public BackgroundManager(Path cwd, long timeoutSeconds) {
-        this(cwd, timeoutSeconds, null);
-    }
     private final ShellCommand.Runner runner;
-    /** 每个后台任务沿用同一受限后端，但拥有自己的执行实例和取消责任。 */
+    private final ShellCommand foreground;
+    private final Map<String, Job> jobs = new LinkedHashMap<>();
+    private Consumer<Completion> resultListener = result -> { };
+    private volatile ExecutionObserver observer = ExecutionObserver.NONE;
+    private long counter;
+    private volatile boolean closed;
+
+    /** 保存工作目录和默认超时，不执行命令。 */
+    public BackgroundManager(Path cwd) { this(cwd, 120); }
+    /** 保存正数超时，宿主执行仅用于明确装配的宿主/离线路径。 */
+    public BackgroundManager(Path cwd, long timeoutSeconds) { this(cwd, timeoutSeconds, null); }
+    /** 每个后台命令有独立 Shell；共享可信 runner，许可来自每次调用的上下文快照。 */
     public BackgroundManager(Path cwd, long timeoutSeconds, ShellCommand.Runner runner) {
-        this.cwd = cwd;
-        this.timeoutSeconds = timeoutSeconds;
-        this.runner = runner;
+        this.cwd = Objects.requireNonNull(cwd);
+        if (timeoutSeconds <= 0) throw new IllegalArgumentException("timeoutSeconds must be positive");
+        this.timeoutSeconds = timeoutSeconds; this.runner = runner;
         foreground = new ShellCommand(cwd, timeoutSeconds, runner);
     }
 
-    /**
-     * 设置“命令跑完后做什么”的函数，SessionRuntime 传入的函数会叫醒处理线程。
-     *
-     * <p>更换函数不会取走或丢掉已有结果，也不会为已有结果重新调用一次。
-     * 工作线程可能在任何时刻调用它，所以要尽快返回，不应抛异常；这里只叫醒线程，
-     * 不能在函数里直接改 history 或调用模型。</p>
-     * @param listener 命令跑完时调用的函数，不可为 null
-     * @throws NullPointerException listener 为 null
-     */
-    public synchronized void onCompletion(Runnable listener) {
-        this.listener = java.util.Objects.requireNonNull(listener);
-    }
-
-    /** 安装完成事件生产者；函数只负责排队，不能请求模型或修改 history。 */
-    public synchronized void onResult(java.util.function.Consumer<Completion> listener) {
-        resultListener = java.util.Objects.requireNonNull(listener);
-    }
-
-    /** 结果已排进 Inbox，移除旧待取队列中的同一引用；jobs 仍等模型确认后才删除。 */
-    public synchronized void queued(Completion result) { ready.removeIf(item -> item.id().equals(result.id())); }
-
-    /**
-     * 记录一条后台命令并启动线程，立即返回 bg_id，不等命令跑完。
-     *
-     * <p>调用者必须已经检查过权限；这里不再次询问用户。先把 Job 放进 jobs，再启动虚拟线程，
-     * 这样命令很快跑完或用户同时退出时，都能找到这条命令。线程没能启动就移除 Job、关闭
-     * 它的 shell，再抛出异常。返回 ID 时，线程可能还没来得及真正启动 shell 进程。</p>
-     * @param command 已经过权限检查的非空白命令
-     * @param owner 程序提供的当前任务 ID，不从模型参数获取，记录这条命令属于谁
-     * @param required 当前任务结束前是否必须让模型看见这条命令的结果
-     * @return bg_id，只表示程序接下了这条命令，不表示命令或业务成功
-     * @throws IllegalStateException 已退出，或已有 32 项记录尚未删除
-     * @throws IllegalArgumentException command 为 null 或空白
-     * @throws NullPointerException owner 为 null
-     */
-    public synchronized String start(String command, String owner, boolean required) {
-        return start(command, new ExecutionContext(owner, ExecutionContext.Source.USER, null), required, false, false);
+    /** 安装非阻塞显示端；不影响结果交付端。 */
+    public void observe(ExecutionObserver value) { observer = Objects.requireNonNull(value); }
+    /** 安装只负责 Inbox 投递的函数；在启动任何命令之前由会话装配。 */
+    public synchronized void onResult(Consumer<Completion> listener) { resultListener = Objects.requireNonNull(listener); }
+    /** 用于切换/回收检查；已完成但未采用的通知仍属于当前会话。 */
+    public synchronized boolean hasPending() { return !jobs.isEmpty(); }
+    /** 压缩快照保留工作编号，不读取命令输出或声称命令成功。 */
+    public synchronized List<String> pendingIds() { return List.copyOf(jobs.keySet()); }
+    /** 只判断本轮发出的命令，不把以前轮次遗留命令变成新轮次的等待义务。 */
+    public synchronized boolean hasPending(String runId) {
+        return jobs.values().stream().anyMatch(job -> job.context().id().equals(runId));
     }
 
     /**
-     * 启动带通知规则的命令。规则在启动时保存，不能等运行结束才决定原任务是否需要等待。
-     * context 由 Harness 提供，通知唤起新轮次时仍沿用原来源与审批权限，不冒充新的用户授权。
-     * @param required 原轮次是否必须处理结果
-     * @param allowInsertion 工作途中是否可以提前交付
-     * @param wakeWhenIdle 空闲时是否启动一轮结果处理
-     * @return 实际登记的 bg_id，不是成功完成的证明
+     * 在权限检查后接纳后台命令；登记先于启动虚拟线程，极快结果也能找到对应 Job。
+     * 只在接纳前检查本轮取消；接纳后替换取消条件为管理器关闭，保留身份和不可变执行许可。
+     * 返回 bg_id 只表示启动成功，不代表命令完成。线程启动失败会撤销登记并关闭资源。
      */
-    public synchronized String start(String command, ExecutionContext context, boolean required,
-            boolean allowInsertion, boolean wakeWhenIdle) {
+    public String start(String command, ExecutionContext origin) {
         if (command == null || command.isBlank()) throw new IllegalArgumentException("Bash command cannot be empty");
-        java.util.Objects.requireNonNull(context, "context");
-        if (closed || jobs.size() >= MAX_PENDING) {
-            throw new IllegalStateException(closed ? "Background session is closed" : "Too many pending background tasks");
+        Objects.requireNonNull(origin, "context");
+        Job job;
+        synchronized (this) {
+            if (closed || origin.isCancelled()) throw new IllegalStateException("Background execution is cancelled");
+            if (jobs.size() >= MAX_PENDING) throw new IllegalStateException("Too many pending background tasks");
+            var context = origin.withCancellation(() -> closed);
+            String id = "bg_%04d".formatted(++counter);
+            job = new Job(id, command, new ShellCommand(cwd, timeoutSeconds, runner), context);
+            jobs.put(id, job);
         }
-        String id = "bg_%04d".formatted(++counter);
-        Job job = new Job(id, context.id(), required, command, new ShellCommand(cwd, timeoutSeconds, runner),
-                allowInsertion, wakeWhenIdle, context);
-        // 先存 Job 再开线程，免得命令很快跑完或用户同时退出时，管理器里还找不到它。
-        jobs.put(id, job);
-        display(id, "RUNNING", "Background command registered; this does not mean it succeeded");
+        // 外部显示和结果回调不持管理器锁，避免与 Inbox 的完成检查反向等待。
         try {
-            Thread.ofVirtual().name("jade-" + id).start(() -> run(job));
-        } catch (RuntimeException failure) {
-            jobs.remove(id);
-            display(id, "ERROR", "Failed to start");
+            display(job.id(), "RUNNING", "Background command accepted; final result will follow");
+            Thread.ofVirtual().name("jade-" + job.id()).start(() -> run(job));
+        }
+        catch (RuntimeException failure) {
+            synchronized (this) { jobs.remove(job.id()); }
             job.shell().close();
             throw failure;
         }
-        return id;
+        return job.id();
+    }
+
+    /** 同步调用直接等待，不产生通知，沿用调用方的取消信号。 */
+    public ShellCommand.Result runForegroundResult(String command, ExecutionContext context) {
+        return foreground.run(command, context);
     }
 
     /**
-     * 在当前线程运行一条同步命令，等它结束、失败或超时再返回，不产生后台通知。
-     * @param command BashTool 已检查过的命令原文
-     * @return 输出或 Error 文字，不修改消息列表
-     */
-    public String runForeground(String command) { return runForeground(command, null); }
-    /** 同步命令也把当前派工快照交给进程入口，不通过可变的成员全局状态读取范围。 */
-    public String runForeground(String command, ExecutionContext context) { return foreground.run(command, context).text(); }
-    /** 保留真实退出状态供 ToolOutcome 使用，不能把以 Error 开头的正常 stdout 猜成失败。 */
-    public ShellCommand.Result runForegroundResult(String command, ExecutionContext context) { return foreground.run(command, context); }
-
-    /**
-     * 后台线程实际执行命令，收集输出后把结果放进 ready。
-     *
-     * <p>退出码为 0 记 completed，其它情况记 failed；拿不到退出码就保留 null，
-     * 不能编造成功。意外运行异常也记成失败。若任务出错或用户退出时已经删掉这条 Job，
-     * 现在才返回的结果就不要再放回来。</p>
-     *
-     * <p>结果放好后先松开管理器的锁，再调用叫醒函数。这样不会拿着这里的锁又去等队列的锁，
-     * 避免两个线程互相卡住。这里不请求模型或修改历史。</p>
-     * @param job 已登记的命令，带它自己使用的 shell，执行后会关闭这个 shell
+     * 执行一次命令，保留实际退出状态和有界输出，异常也形成终态结果；绝不自动重跑。
+     * Job 在正式历史采用前保留，保证进程退出与结果入队之间不会提前解除等待。
      */
     private void run(Job job) {
         Completion result;
-        try (ShellCommand shell = job.shell()) {
-            ShellCommand.Result output = shell.run(job.command(), job.context());
-            result = new Completion(job.id(), job.owner(), job.required(), job.command(),
+        try (var shell = job.shell()) {
+            var output = shell.run(job.command(), job.context());
+            result = new Completion(job.id(), job.context().id(), job.command(),
                     Integer.valueOf(0).equals(output.exitCode()) ? "completed" : "failed",
                     output.exitCode(), output.text(), output.truncated());
         } catch (RuntimeException failure) {
-            result = new Completion(job.id(), job.owner(), job.required(), job.command(),
-                    "failed", null, "Error: " + failure.getMessage(), false);
+            result = new Completion(job.id(), job.context().id(), job.command(), "failed", null,
+                    "Error: " + failure.getMessage(), false);
         }
-        Runnable signal;
-        java.util.function.Consumer<Completion> publish;
-        Completion event;
+        Consumer<Completion> publish;
         synchronized (this) {
-            // 任务失败或用户退出时可能已删掉 Job；现在才返回的结果不要再加回去。
             if (closed || !jobs.containsKey(job.id())) return;
-            // ShellCommand 只报告执行事实；投递设置和可信来源从原始 Job 复制，不能从输出猜。
-            event = new Completion(result.id(), result.owner(), result.required(), result.command(),
-                    result.status(), result.exitCode(), result.output(), result.truncated(),
-                    job.allowInsertion(), job.wakeWhenIdle(), job.context());
-            ready.addLast(event);
-            signal = listener;
             publish = resultListener;
         }
-        display(event.id(), event.status(), "exit=" + event.exitCode());
-        publish.accept(event);
-        signal.run();
+        // 展示端故障不能吞掉终态事实；Inbox 投递仍然必须执行。
+        try { display(result.id(), result.status(), "exit=" + result.exitCode()); }
+        finally { publish.accept(result); }
     }
 
+    /** 结果已正式写入历史后释放记录；按可信通知 ID 查找，不重跑命令，不限制采用轮次。 */
+    public synchronized void adopted(String id) { jobs.remove(id); }
+
     /**
-     * 取出现在已完成、适合交给当前任务的结果，暂时没有结果就直接返回空列表。
-     *
-     * <p>取走时从 ready 移除，所以再调用不会重复取到；但 jobs 中先保留记录。
-     * 模型正常回复后用 acknowledge 删除，第一次回复前失败则可 restore 放回。
-     * 不这样做，就无法区分“刚取出来”和“已经交给模型”。调用者不能一直取着不处理。</p>
-     * @param owner 当前任务的 run_ ID，必须等待的结果只取同一任务的
-     * @param includeDetached true 时也取以前“不必等它”的命令结果，作为参考；
-     *                        false 时只取当前任务必须等待的结果
-     * @return 这次取出的结果列表，不等仍在运行的命令
+     * 显式停止一条命令。保持 Job 到执行线程返回终态，等待中的原轮次仍能收到通知。
+     * 大轮次取消不调用本方法；调用方需要按命令 ID 明确选择停止对象。
      */
-    public synchronized List<Completion> collect(String owner, boolean includeDetached) {
-        List<Completion> collected = new ArrayList<>();
-        var iterator = ready.iterator();
-        while (iterator.hasNext()) {
-            Completion result = iterator.next();
-            if (result.required() ? result.owner().equals(owner) : includeDetached) {
-                iterator.remove();
-                collected.add(result);
-            }
-        }
-        return List.copyOf(collected);
+    public void stop(String id) {
+        Job job;
+        synchronized (this) { job = jobs.get(id); }
+        if (job != null) { job.shell().close(); display(id, "STOPPING", "Cancellation requested; final process result will follow"); }
     }
 
-    /**
-     * 看当前任务是否还有必须让模型处理的后台结果，不是只看进程是否仍在跑。
-     * @param owner 当前任务的 run_ ID
-     * @return 运行中、跑完没取走、取走没确认的命令都算；明确说“不必等它”的命令不算
-     */
-    public synchronized boolean hasRequired(String owner) {
-        return jobs.values().stream().anyMatch(job -> job.required() && job.owner().equals(owner));
+    /** Job 只持身份、命令和资源；不携带可选投递策略，也不重复保存一份结果队列。 */
+    private record Job(String id, String command, ShellCommand shell, ExecutionContext context) { }
+    /** 完成事实只保存来源编号与执行结果；无需把审批函数/执行上下文送进 Inbox。 */
+    public record Completion(String id, String owner, String command, String status,
+            Integer exitCode, String output, boolean truncated) { }
+
+    /** 后台状态只是展示事实，结果仍由独立 Inbox 路径交付。 */
+    private void display(String id, String state, String detail) {
+        observer.publish(ExecutionNotice.event(ExecutionNotice.Kind.BACKGROUND, id, "bash", detail, state));
     }
 
-    /**
-     * 删除这些命令在 jobs 中的记录，腾出可启动新命令的名额，不再运行任何命令。
-     * @param results collect 取出的原记录。通常是模型已正常回复后删除；任务失败时，
-     *                若通知仍留在历史中也可以删除。不能根据模型输出编造记录来调用这里。
-     *                删除不表示模型已正确完成业务
-     */
-    public synchronized void acknowledge(List<Completion> results) {
-        results.forEach(result -> jobs.remove(result.id()));
-    }
-
-    /**
-     * 把取出但没能交给模型的结果放回 ready，不重新执行命令。
-     *
-     * <p>主要用于定时任务在第一次模型回复前失败的情况。原 Job 仍在 jobs，
-     * 所以只是放回结果，不新占一个名额。按原顺序放到队首，已经在队列中的不重复放，
-     * 已经删掉的 Job 不再恢复；整个会话退出后也不恢复。</p>
-     * @param results 原先 collect 取出的结果，不是模型生成的通知文字
-     */
-    public void restore(List<Completion> results) {
-        List<Completion> restored = new ArrayList<>();
-        java.util.function.Consumer<Completion> publish;
-        synchronized (this) {
-            if (closed) return;
-            // 从后往前 addFirst：原来取出 [A,B]，放回后仍是 A 在 B 前面。
-            for (int i = results.size() - 1; i >= 0; i--) {
-                Completion result = results.get(i);
-                if (jobs.containsKey(result.id()) && ready.stream().noneMatch(item -> item.id().equals(result.id()))) {
-                    ready.addFirst(result);
-                    restored.add(result);
-                }
-            }
-            publish = resultListener;
-        }
-        // 正式 Session 重新排队的是结果，不是重新启动 shell。不能拿进程锁调用其它组件。
-        for (int i = restored.size() - 1; i >= 0; i--) publish.accept(restored.get(i));
-    }
-
-    /** 用户明确停止一轮时连同其“不必等待”后台一起停止，不影响其他轮次。 */
-    public void cancelOwned(String owner) {
-        List<Job> cancelled;
-        synchronized (this) {
-            cancelled = jobs.values().stream().filter(job -> job.owner().equals(owner)).toList();
-            cancelled.forEach(job -> jobs.remove(job.id()));
-            ready.removeIf(result -> result.owner().equals(owner));
-        }
-        cancelled.forEach(job -> { display(job.id(), "CANCELLED", "Owning task was stopped"); job.shell().close(); });
-    }
-
-    /**
-     * 任务无法继续时，只停掉它必须等待的命令，保留明确“不必等它”的命令。
-     *
-     * <p>先在锁内删 Job 和待取结果，再到锁外关闭每条命令的 shell。
-     * 以后工作线程即使才返回，也因 Job 已删除而不会再添加结果。已经写入的文件不会还原。</p>
-     * @param owner 失败任务的 run_ ID，不是定时定义 ID 或某个 bg_id
-     */
-    public void cancelRequired(String owner) {
-        List<Job> cancelled;
-        synchronized (this) {
-            cancelled = jobs.values().stream().filter(job -> job.required() && job.owner().equals(owner)).toList();
-            cancelled.forEach(job -> jobs.remove(job.id()));
-            ready.removeIf(result -> result.required() && result.owner().equals(owner));
-        }
-        cancelled.forEach(job -> { display(job.id(), "CANCELLED", "Owning task cannot continue"); job.shell().close(); });
-    }
-
-    /**
-     * 记住一条命令属于哪项任务，以及如何单独停止它；不会把这个对象发给模型。
-     * @param id 命令的 bg_id
-     * @param owner 启动它的任务 run_ ID
-     * @param required 任务做完前是否必须处理结果
-     * @param command 实际命令原文
-     * @param shell 仅这条命令使用的 ShellCommand，不与其它后台命令共用
-     */
-    private record Job(String id, String owner, boolean required, String command, ShellCommand shell,
-            boolean allowInsertion, boolean wakeWhenIdle, ExecutionContext context) { }
-
-    /**
-     * 后台命令跑完后的记录，保存在内存中，不是会话日志。
-     * @param id 启动时返回的 bg_id
-     * @param owner 启动它的任务 run_ ID，供查找结果和在通知中注明来源
-     * @param required true 表示原任务必须处理，false 表示以后顺便给模型看
-     * @param command 执行过的命令原文
-     * @param status 退出码为零是 completed；非零或没正常完成是 failed，不代表业务结论正确
-     * @param exitCode 实际退出码，超时、IO 或中断等情况可能为 null，不能假写成 0
-     * @param output ShellCommand 留下的输出，有长度限制，不一定完整，也没有另存文件
-     * @param truncated ShellCommand 是否已截断输出，发通知时也要告知模型
-     */
-    public record Completion(String id, String owner, boolean required, String command,
-            String status, Integer exitCode, String output, boolean truncated,
-            boolean allowInsertion, boolean wakeWhenIdle, ExecutionContext context) {
-        /** 旧检查构造的结果沿用旧投递方式；正式工具使用完整构造器。 */
-        public Completion(String id, String owner, boolean required, String command,
-                String status, Integer exitCode, String output, boolean truncated) {
-            this(id, owner, required, command, status, exitCode, output, truncated, false, false,
-                    new ExecutionContext(owner, ExecutionContext.Source.USER, null));
-        }
-    }
-
-    /**
-     * 用户退出时停止全部同步和后台命令，清空内存记录，重复调用也可以。
-     *
-     * <p>先标记已退出、清掉 Job 和 ready，再到锁外关闭 shell。
-     * 设置“不必等它”的命令也要停，因为它只是当前任务不用等，不是退出 CLI 后还要继续。
-     * 不等命令自然跑完，不删除或还原命令生成的文件，也不保存记录供下次恢复。</p>
-     */
-    @Override
-    public void close() {
+    /** 会话关闭时取出全部资源后锁外终止；重复关闭安全，禁止新工作与迟到结果发布。 */
+    @Override public void close() {
         List<Job> active;
         synchronized (this) {
             if (closed) return;
-            closed = true;
-            active = List.copyOf(jobs.values());
-            jobs.clear();
-            ready.clear();
+            closed = true; active = List.copyOf(jobs.values()); jobs.clear();
         }
         foreground.close();
-        active.forEach(job -> { display(job.id(), "CLOSED", "Session exited"); job.shell().close(); });
+        active.forEach(job -> job.shell().close());
     }
 }

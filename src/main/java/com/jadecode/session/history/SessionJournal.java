@@ -69,6 +69,16 @@ public final class SessionJournal implements AutoCloseable {
         write(new JournalEntry(SessionMetadata.VERSION, metadata.id(), sequence + 1, Instant.now().toString(), kind, messages, todos, reason));
     }
 
+    /**
+     * 保存真实采用轮次；只增加审计关联，不把上下文中的函数、许可或临时状态序列化。
+     * 与旧 append 使用同一写入/force 路径；失败仍封住日志，不重跑已执行工具。
+     */
+    public synchronized void append(JournalEntry.Kind kind, List<Message> messages, ArrayNode todos,
+            String reason, String runId) throws IOException {
+        write(new JournalEntry(SessionMetadata.VERSION, metadata.id(), sequence + 1, Instant.now().toString(),
+                kind, messages, todos, reason, null, null, null, null, runId));
+    }
+
     /** 统计线程只写用量事实，不读取或修改会话消费者拥有的 Todo。 */
     public synchronized void usage(com.jadecode.llm.UsageRecord value) throws IOException {
         write(new JournalEntry(SessionMetadata.VERSION, metadata.id(), sequence + 1, Instant.now().toString(),
