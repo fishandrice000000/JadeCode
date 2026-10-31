@@ -15,7 +15,7 @@ import com.jadecode.util.Json;
 /**
  * 把 Team 的固定操作开放给模型，调用者身份在装配时绑定，不接受 from_agent 参数。
  * Leader 有管理与派工工具，队友只有通信和提交结果工具；任务图只由 Leader 管理。
- * 这是工具层的弱隔离，不阻止共享工作区 bash 直接改文件，不声称实现了沙箱。
+ * 工具表固定管理身份；Assignment 文件限制由 SandboxSession 与 Docker 执行。
  */
 public final class TeamTools {
     private TeamTools() { }
@@ -24,7 +24,7 @@ public final class TeamTools {
     public static List<Tool> forActor(TeamManager team, String actor) {
         List<String> names = new ArrayList<>(List.of("send_message", "retry_team_message"));
         if (actor.equals(TeamManager.LEADER)) names.addAll(List.of("spawn_teammate", "list_teammates",
-                "assign_task", "shutdown_teammate", "reopen_task", "review_task_result"));
+                "assign_task", "shutdown_teammate", "reopen_task", "review_task_result", "resolve_scope_request"));
         else names.add("submit_task_result");
         return names.stream().map(name -> (Tool) new TeamTool(team, actor, name)).toList();
     }
@@ -40,6 +40,7 @@ public final class TeamTools {
                 case "shutdown_teammate" -> "Close a teammate and its processes. Unfinished assignments become blocked. Does not undo file changes.";
                 case "reopen_task" -> "Explicitly restore a failed/blocked task to pending before reassignment. Does not execute business work.";
                 case "submit_task_result" -> "Submit outcome completed/failed/blocked, short summary and full report. Persists body, changes success to submitted pending Leader acceptance, notifies leader. Retry with identical arguments after partial failure; do not redo business.";
+                case "resolve_scope_request" -> "Resolve a registered immutable scope request: approve_once/deny/ask_user. Approval applies only to the original operation and cannot bypass user permissions. A delayed or cancelled request is invalid.";
                 case "review_task_result" -> "Review exact assignment_id/report_id: decision=accept unlocks dependencies, reject returns submitted work to pending for rework, note records failed/blocked report feedback. Successful reports require accept/reject. Retry with identical decision and notes.";
                 case "retry_team_message" -> "Retry only a previously failed delivery by message_id. Does not rerun commands or overwrite message bodies.";
                 default -> "Send summary plus persisted full body to leader/a teammate. kind=message/question/progress/supplement. Messages are always inserted into an active turn; an idle recipient stores them until explicit work starts. Teammates may only message leader. Include task_id and assignment_id for task-specific messages. Set reply_to to the original question message_id when replying. Use short English UI summaries.";
@@ -56,6 +57,7 @@ public final class TeamTools {
                 case "shutdown_teammate" -> Map.of("agent_id", "string");
                 case "reopen_task" -> Map.of("task_id", "string");
                 case "review_task_result" -> Map.of("assignment_id", "string", "report_id", "string", "decision", "string", "notes", "string");
+                case "resolve_scope_request" -> Map.of("request_id", "string", "decision", "string", "reason", "string");
                 case "retry_team_message" -> Map.of("message_id", "string");
                 case "submit_task_result" -> Map.of("assignment_id", "string", "status", "string", "summary", "string", "body", "string");
                 default -> Map.of("to_agent", "string", "task_id", "string", "assignment_id", "string",
@@ -68,10 +70,11 @@ public final class TeamTools {
             return switch (name) {
                 case "spawn_teammate" -> List.of("role");
                 case "list_teammates" -> List.of();
-                case "assign_task" -> List.of("agent_id", "task_id", "summary", "body");
+                case "assign_task" -> List.of("agent_id", "task_id", "summary", "body", "scope");
                 case "shutdown_teammate" -> List.of("agent_id");
                 case "reopen_task" -> List.of("task_id");
                 case "review_task_result" -> List.of("assignment_id", "report_id", "decision", "notes");
+                case "resolve_scope_request" -> List.of("request_id", "decision", "reason");
                 case "retry_team_message" -> List.of("message_id");
                 case "submit_task_result" -> List.of("assignment_id", "status", "summary", "body");
                 default -> List.of("to_agent", "summary", "body");
@@ -158,6 +161,11 @@ public final class TeamTools {
                     case "reopen_task" -> team.reopen(input.path("task_id").asText());
                     case "review_task_result" -> Map.of("report_id", team.review(input.path("assignment_id").asText(),
                             input.path("report_id").asText(), input.path("decision").asText(), input.path("notes").asText()));
+                    case "resolve_scope_request" -> {
+                        team.resolveScope(input.path("request_id").asText(), TeamManager.ScopeDecision.valueOf(
+                                input.path("decision").asText().toUpperCase(java.util.Locale.ROOT)), input.path("reason").asText(), context);
+                        yield "Scope request resolved";
+                    }
                     case "retry_team_message" -> Map.of("message_id", team.retry(actor, input.path("message_id").asText()));
                     case "submit_task_result" -> {
                         if (context.assignment() == null || !context.assignment().actor().equals(actor)

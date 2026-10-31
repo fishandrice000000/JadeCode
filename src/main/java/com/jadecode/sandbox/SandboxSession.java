@@ -33,6 +33,13 @@ public final class SandboxSession {
     private final Map<String, List<Grant>> grants = new HashMap<>();
     private final Map<String, Set<Path>> visits = new HashMap<>();
     private final Set<String> declined = new HashSet<>();
+    /** 由 Team 管理器路由到 Leader；无路由明确拒绝，不把人工批准当作分工批准。 */
+    @FunctionalInterface public interface ScopeApproval {
+        com.jadecode.team.TeamManager.ScopeDecision request(ApprovalRequest request, ExecutionContext context) throws IOException;
+    }
+    private ScopeApproval scopeApproval = (request, context) -> { throw new IOException("No Leader scope approval route"); };
+    /** 装配时绑定；执行中的申请只使用不可变 ApprovalRequest，不修改 AssignmentScope。 */
+    public void scopeApproval(ScopeApproval value) { scopeApproval = Objects.requireNonNull(value); }
     /** 工厂注入真实身份和专属数据根；dataRoot 中只有精确的内部可读产物可挂载。 */
     public SandboxSession(String actor, Path workspace, Path dataRoot, PermissionState state, PermissionGate gate,
             ApprovalCoordinator approvals, DockerRuntime runtime) {
@@ -68,7 +75,7 @@ public final class SandboxSession {
                     var checked = gate.consume(name(), input, context);
                     // 范围审批也可能等待；后续只用 Gate 保存的副本，不让等待中的原参数变化混入计划。
                     ObjectNode exact = checked.input();
-                    if (state.snapshot().profile() == PermissionProfile.FULL_ACCESS) return delegate.executeOutcome(exact, context);
+                    if (context.assignment() == null && state.snapshot().profile() == PermissionProfile.FULL_ACCESS) return delegate.executeOutcome(exact, context);
                     ExecutionPlan plan = prepare(name(), exact, context, checked);
                     if (!input.equals(exact)) throw new IOException("Tool parameters changed during sandbox approval; re-issue the operation");
                     if (name().equals("bash")) {
@@ -93,7 +100,7 @@ public final class SandboxSession {
                 if (plan != null) runtime.discardBackground(plan);
                 return new ShellCommand.Result("Error: Missing or cancelled execution context", null, false);
             }
-            if (plan == null && state.snapshot().profile() == PermissionProfile.FULL_ACCESS) {
+            if (plan == null && context.assignment() == null && state.snapshot().profile() == PermissionProfile.FULL_ACCESS) {
                 try (var host = new ShellCommand(cwd, timeout)) { return host.run(command, context); }
             }
             if (plan == null || !plan.actor().equals(actor(context)) || !plan.runId().equals(context.id())
@@ -112,29 +119,14 @@ public final class SandboxSession {
             throw new IOException("Sandbox workspace and Harness data must be separate directories");
         if (workspace.getNameCount() < 2 || workspace.equals(Path.of(System.getProperty("user.home"))))
             throw new IOException("Choose a project directory rather than a filesystem root or the whole HOME as sandbox workspace");
-        long revision = state.snapshot().revision();
+        long revision = checked.revision();
+        if (revision != state.snapshot().revision()) throw new IOException("Tool authorization changed before sandbox preparation");
         boolean readOnly = state.snapshot().profile() == PermissionProfile.READ_ONLY;
         boolean network = false, reusable = !input.path("run_in_background").asBoolean();
-        var needed = new LinkedHashMap<Path, Boolean>();
-        if (Set.of("read_file", "write_file", "edit_file").contains(tool)) {
-            if (!input.path("path").isTextual()) throw new IOException("A textual file path is required");
-            needed.put(resolver.resolve(input.path("path").asText()), !tool.equals("read_file"));
-        } else if (tool.equals("glob")) {
-            needed.put(resolver.resolve(input.path("root").asText(".")), false);
-        } else if (tool.equals("bash")) {
-            var analysis = new ShellPermissionCheck(resolver).analyze(tool, input);
-            for (var resource : analysis.resources()) needed.merge(resource.path(), !resource.operation().equals("READ"), Boolean::logicalOr);
-            if (input.has("network_access") && !input.path("network_access").isBoolean()) throw new IOException("network_access must be boolean");
-            network = input.path("network_access").asBoolean(false);
-            if (input.has("access_paths")) {
-                if (!input.path("access_paths").isArray()) throw new IOException("access_paths must be an array");
-                for (JsonNode item : input.path("access_paths")) {
-                    if (!item.isObject() || !item.path("path").isTextual() || item.has("write") && !item.path("write").isBoolean())
-                        throw new IOException("Each access_paths entry requires a path and optional boolean write");
-                    needed.merge(resolver.resolve(item.path("path").asText()), item.path("write").asBoolean(), Boolean::logicalOr);
-                }
-            }
-        }
+        var needed = neededPaths(tool, input);
+        network = tool.equals("bash") && input.path("network_access").asBoolean(false);
+        // 队友只从固定 Assignment 和本次明确资源编译视图；不解析 Leader 的 goal 自动扩大目录。
+        if (context.assignment() != null) return prepareAssignment(tool, input, context, checked, needed, network, revision);
         // 用户任务已经明确外部目录时，在首次 rg/glob/脚本前主动申请，避免等待模型选对工具。
         for (Path directory : declaredDirectories(context)) if (!directory.startsWith(workspace)) needed.putIfAbsent(directory, false);
         var mounts = new LinkedHashMap<Path, ExecutionPlan.Mount>();
@@ -191,6 +183,127 @@ public final class SandboxSession {
         if (checked.explicitlyApproved()) reusable = false;
         return new ExecutionPlan(actor(context), context.id(), revision, tool, input, workspace, readOnly, network, reusable,
                 List.copyOf(mounts.values()), restrictions);
+    }
+
+    /** 解析明确资源，不运行命令；审批前后共用同一解释，符号链接改向也会使旧批准失效。 */
+    private LinkedHashMap<Path, Boolean> neededPaths(String tool, ObjectNode input) throws IOException {
+        var needed = new LinkedHashMap<Path, Boolean>();
+        if (Set.of("read_file", "write_file", "edit_file").contains(tool)) {
+            if (!input.path("path").isTextual()) throw new IOException("A textual file path is required");
+            needed.put(resolver.resolve(input.path("path").asText()), !tool.equals("read_file"));
+        } else if (tool.equals("glob")) {
+            needed.put(resolver.resolve(input.path("root").asText(".")), false);
+        } else if (tool.equals("bash")) {
+            var analysis = new ShellPermissionCheck(resolver).analyze(tool, input);
+            for (var resource : analysis.resources()) needed.merge(resource.path(), !resource.operation().equals("READ"), Boolean::logicalOr);
+            if (input.has("network_access") && !input.path("network_access").isBoolean()) throw new IOException("network_access must be boolean");
+            if (input.has("access_paths")) {
+                if (!input.path("access_paths").isArray()) throw new IOException("access_paths must be an array");
+                for (JsonNode item : input.path("access_paths")) {
+                    if (!item.isObject() || !item.path("path").isTextual() || item.has("write") && !item.path("write").isBoolean())
+                        throw new IOException("Each access_paths entry requires a path and optional boolean write");
+                    needed.merge(resolver.resolve(item.path("path").asText()), item.path("write").asBoolean(), Boolean::logicalOr);
+                }
+            }
+        }
+        return needed;
+    }
+
+    /**
+     * 为队友编译独立分工边界。未声明路径不挂载；读写权限取用户上限与派工范围的交集。
+     * 普通 Shell 的隐式访问由内核拒绝，模型须显式声明 access_paths 后重新调用，绝不自动重放。
+     */
+    private ExecutionPlan prepareAssignment(String tool, ObjectNode input, ExecutionContext context,
+            PermissionGate.CheckedCall checked, Map<Path, Boolean> needed, boolean network, long revision) throws IOException {
+        boolean readOnly = state.snapshot().profile() == PermissionProfile.READ_ONLY;
+        boolean reusable = !network && !input.path("run_in_background").asBoolean() && !checked.explicitlyApproved();
+        var mounts = new LinkedHashMap<Path, ExecutionPlan.Mount>();
+        var scope = context.assignment().scope();
+        for (String path : scope.readPaths()) addAssignedMount(mounts, path, false);
+        for (String path : scope.writePaths()) addAssignedMount(mounts, path, !readOnly);
+        // 内部邮件仅有精确只读特许；不会把 Harness 数据根或整个邮箱目录暴露给 Shell。
+        for (var entry : needed.entrySet()) {
+            Path target = entry.getKey(); boolean write = entry.getValue();
+            if (target.equals(Path.of("/dev/null"))) continue;
+            if (tool.equals("glob") && target.equals(workspace)) continue; // 仅遍历已经暴露的局部目录。
+            if (!PathProtection.sensitive(target) && covered(mounts.values(), target, write)) continue;
+            // 基线视图可按完整挂载策略复用；任何本次额外路径都必须使用一次性实例。
+            reusable = false;
+            boolean internal = !write && gate.internalReadable(target);
+            if (target.startsWith(dataRoot) && !internal) throw new IOException("Harness state cannot be exposed to teammates");
+            Path source = mountSource(target, write);
+            if (!internal) {
+                var action = new com.jadecode.safety.checks.ToolPermissionCheck.Analysis(tool, workspace,
+                        List.of(new com.jadecode.safety.checks.ToolPermissionCheck.Resource(source, write ? "WRITE" : "READ")),
+                        List.of(), write, !write, false, "");
+                var userDecision = gate.evaluate(action, state.snapshot());
+                if (userDecision.kind() == PermissionDecision.Kind.DENY) throw new IOException(userDecision.reason());
+                // 展示真实挂载源：新文件可能需要父目录，不能以文件名掩盖扩大后的目录权限。
+                var display = Json.mapper().createObjectNode().put("assignment_id", context.assignment().id())
+                        .put("host_path", source.toString()).put("access", write ? "READ_WRITE" : "READ_ONLY")
+                        .put("within_user_permissions", userDecision.kind() == PermissionDecision.Kind.ALLOW);
+                display.set("operation", input.deepCopy());
+                var allowed = pathAllowance(tool, source, write);
+                boolean withinUser = userDecision.kind() == PermissionDecision.Kind.ALLOW
+                        && (source.startsWith(workspace) || state.snapshot().profile() == PermissionProfile.FULL_ACCESS
+                            || allowed != null && (!Files.isDirectory(source) || allowed.recursive()));
+                display.put("within_user_permissions", withinUser);
+                var request = new ApprovalRequest("scope_" + UUID.randomUUID(), actor(context), context.id(), tool,
+                        display, workspace, "Operation exceeds Assignment scope", revision, null);
+                var decision = scopeApproval.request(request, context.withAdditionalCancellation(() -> state.snapshot().revision() != revision));
+                if (decision == null || decision == com.jadecode.team.TeamManager.ScopeDecision.DENY)
+                    throw new IOException("Leader did not authorize Assignment scope extension");
+                // Leader 无权提升用户授权；ask_user 也强制走人工，不交给辅助审批模型代批。
+                if (decision == com.jadecode.team.TeamManager.ScopeDecision.ASK_USER
+                        || !withinUser) {
+                    Approval human = context.source() == ExecutionContext.Source.USER ? context.approval() : null;
+                    var result = approvals.request(request, PermissionDecision.ask("assignment.user", request.reason(), true), state, human, context.goal());
+                    if (result.answer() != ApprovalAnswer.ALLOW_ONCE) throw new IOException("User did not authorize Assignment scope extension");
+                }
+                ensureAssignmentFresh(context, revision, source);
+            }
+            // 一次性补充挂载只属于本次计划，不缓存、不覆盖原 scope。
+            mounts.merge(source, new ExecutionPlan.Mount(source, source, write), (old, value) -> old.writable() ? old : value);
+        }
+        if (network) { approve(tool, input, context, null, false, false, true, revision); }
+        ensureAssignmentFresh(context, revision, workspace);
+        if (!needed.equals(neededPaths(tool, input))) throw new IOException("Tool targets changed during scope approval");
+        // 祖先先挂载、子目录后覆盖；read_paths=[.] + write_paths=[src] 得到项目只读、src 可写。
+        var ordered = mounts.values().stream().sorted(Comparator.comparingInt(m -> m.target().getNameCount())).toList();
+        return new ExecutionPlan(actor(context), context.id(), revision, tool, input, workspace, readOnly, network, reusable,
+                ordered, restrictions(tool, input, checked, ordered));
+    }
+
+    /** 编译声明路径；缺失范围不退化为父目录，敏感入口不能靠派工重开，须在具体调用中审批。 */
+    private void addAssignedMount(Map<Path, ExecutionPlan.Mount> mounts, String relative, boolean write) throws IOException {
+        Path path = workspace.resolve(relative).normalize();
+        if (!path.startsWith(workspace) || PathProtection.sensitive(path)
+                || !Files.exists(path, LinkOption.NOFOLLOW_LINKS) || !path.toRealPath().equals(path))
+            throw new IOException("Assignment mount must exist, be non-sensitive and contain no symbolic-link aliases: " + path
+                    + "; assign an existing parent directory for new files");
+        mounts.merge(path, new ExecutionPlan.Mount(path, path, write), (old, value) -> old.writable() ? old : value);
+    }
+
+    /** 目录声明覆盖子树，单文件声明只覆盖自身；写操作必须落在可写挂载中。 */
+    private static boolean covered(Collection<ExecutionPlan.Mount> mounts, Path target, boolean write) {
+        return mounts.stream().anyMatch(m -> (!write || m.writable()) &&
+                (target.equals(m.source()) || Files.isDirectory(m.source()) && target.startsWith(m.source())));
+    }
+
+    /** 新文件必须挂载最近存在的父目录；拒绝根目录、HOME、Harness 数据及可变链接。 */
+    private Path mountSource(Path target, boolean write) throws IOException {
+        Path source = target;
+        while (!Files.exists(source, LinkOption.NOFOLLOW_LINKS) && write) source = source.getParent();
+        if (!Files.exists(source, LinkOption.NOFOLLOW_LINKS) || !source.toRealPath().equals(source)
+                || source.getNameCount() < 2 || source.equals(Path.of(System.getProperty("user.home"))) || dataRoot.startsWith(source))
+            throw new IOException("Cannot grant this mount source: " + source);
+        return source;
+    }
+
+    /** 等待批准后重新核对版本与真实路径；仅本次计划可继续，不把旧批准带入新配置。 */
+    private void ensureAssignmentFresh(ExecutionContext context, long revision, Path path) throws IOException {
+        if (context.isCancelled() || revision != state.snapshot().revision() || !path.toRealPath().equals(path))
+            throw new IOException("Assignment execution scope changed during approval; re-issue operation");
     }
     /** 用户明确目录优先；否则同一仓库第二个不同文件触发目录级候选，仍须明确审批。 */
     private Path candidate(Path target, ExecutionContext context) throws IOException {

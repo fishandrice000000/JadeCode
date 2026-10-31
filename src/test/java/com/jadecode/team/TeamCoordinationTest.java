@@ -17,6 +17,7 @@ import com.jadecode.agent.AgentExecutor;
 import com.jadecode.execution.AssignmentScope;
 import com.jadecode.execution.ExecutionContext;
 import com.jadecode.execution.ExecutionNotice;
+import com.jadecode.execution.ExecutionObserver;
 import com.jadecode.hooks.Hooks;
 import com.jadecode.llm.CompleteRequest;
 import com.jadecode.llm.LlmClient;
@@ -301,7 +302,7 @@ class TeamCoordinationTest {
                     return call("task", "{\"prompt\":\"Read proof.txt and report evidence.\"}");
                 }
                 if (member.get() == 2) return call("submit_task_result", "{\"assignment_id\":\"" + assignment.get()
-                        + "\",\"status\":\"completed\",\"summary\":\"Evidence verified\",\"body\":\"Read proof.txt successfully.\"}");
+                        + "\",\"status\":\"completed\",\"summary\":\"Evidence verified\",\"body\":\"Nested scope inspected; fixture intercepted file execution.\"}");
                 return text("Available");
             }
             int phase = parent.getAndIncrement();
@@ -323,13 +324,19 @@ class TeamCoordinationTest {
             return text("Final answer");
         };
         var defaults = com.jadecode.config.JadeSettings.defaults();
+        // 此用例验证实际生产装配的身份传递；显式接线沙箱，展示 hook 在执行前拦下，不访问 daemon。
         var settings = new com.jadecode.config.JadeSettings(defaults.tui(), defaults.compaction(), defaults.limits(),
-                new com.jadecode.config.JadeSettings.Memory(false, 8000, 16384, 128000));
+                new com.jadecode.config.JadeSettings.Memory(false, 8000, 16384, 128000), defaults.modelMetadata(),
+                defaults.thinking(), defaults.permissions(), defaults.mcp(), defaults.contextCompaction(),
+                com.jadecode.sandbox.SandboxSettings.defaults());
         try (var runtime = com.jadecode.bootstrap.JadeCodeFactory.create(
                 new com.jadecode.config.AppConfig("fixture", "http://localhost:1", "fixture", 4000), dir, model,
                 ignored -> { }, ignored -> { }, (hooks, cwd, output) -> hooks.register(Hooks.PRE_TOOL_USE, params -> {
                     var call = (ToolUseBlock) params.get(Hooks.PARAM_BLOCK);
-                    if (call.name().equals("read_file")) nestedContext.set((ExecutionContext) params.get(Hooks.PARAM_CONTEXT));
+                    if (call.name().equals("read_file")) {
+                        nestedContext.set((ExecutionContext) params.get(Hooks.PARAM_CONTEXT));
+                        return "Fixture intercepted before Docker execution";
+                    }
                     return null;
                 }), () -> com.jadecode.llm.ResponseStream.NONE, com.jadecode.execution.ExecutionObserver.NONE,
                 settings, settings.permissions().state(null), TestPaths.jade(dir))) {
@@ -338,6 +345,72 @@ class TeamCoordinationTest {
             assertNotNull(nestedContext.get()); assertEquals(assignment.get(), nestedContext.get().assignment().id());
             assertEquals(List.of("proof.txt"), nestedContext.get().assignment().scope().readPaths());
             assertEquals("Explorer", runtime.display().team().getFirst().get("name"));
+        }
+    }
+
+    /** 生产工厂把沙箱、插入审批、报告和验收串成完整路径；只用脚本模型与真实 Docker。 */
+    @Test void dockerFactoryRoutesScopeApprovalThenRequiresReportAcceptance() throws Exception {
+        org.junit.jupiter.api.Assumptions.assumeTrue(Boolean.getBoolean("jade.sandbox.integration"));
+        Path workspace = Files.createDirectory(dir.resolve("workspace")); Files.createDirectory(workspace.resolve("visible"));
+        Files.writeString(workspace.resolve("extra.txt"), "EXTRA_SCOPE_EVIDENCE");
+        var assignment = new AtomicReference<String>(); var agent = new AtomicReference<String>();
+        var parent = new AtomicInteger(); var member = new AtomicInteger();
+        var approved = new java.util.concurrent.atomic.AtomicBoolean(); var accepted = new java.util.concurrent.atomic.AtomicBoolean();
+        LlmClient model = request -> {
+            String history = request.messages().stream().map(Message::extractText).collect(java.util.stream.Collectors.joining("\n"));
+            if (request.system().startsWith("You are JadeCode teammate.")) {
+                int phase = member.getAndIncrement();
+                if (phase == 0) {
+                    var id = java.util.regex.Pattern.compile("assignment=(assignment_[a-z0-9-]+)").matcher(history);
+                    assertTrue(id.find()); assignment.set(id.group(1));
+                    return call("read_file", "{\"path\":\"extra.txt\"}");
+                }
+                if (phase == 1) {
+                    var result = request.messages().getLast().blocksOfType(com.jadecode.messages.ToolResultBlock.class).getFirst();
+                    assertFalse(result.isError(), result.content()); assertTrue(result.content().contains("EXTRA_SCOPE_EVIDENCE"));
+                    return call("submit_task_result", Json.mapper().createObjectNode().put("assignment_id", assignment.get())
+                            .put("status", "completed").put("summary", "Evidence read").put("body", "Docker read EXTRA_SCOPE_EVIDENCE").toString());
+                }
+                return text("Available");
+            }
+            int phase = parent.getAndIncrement();
+            if (phase == 0) return call("spawn_teammate", "{\"role\":\"Explorer\\nRead evidence.\"}");
+            try {
+                if (phase == 1) {
+                    agent.set(Json.mapper().readTree(request.messages().getLast().blocksOfType(com.jadecode.messages.ToolResultBlock.class).getFirst().content()).path("agent_id").asText());
+                    return call("create_task", "{\"subject\":\"Read evidence\",\"description\":\"Read extra.txt\"}");
+                }
+                if (phase == 2) {
+                    String id = Json.mapper().readTree(request.messages().getLast().blocksOfType(com.jadecode.messages.ToolResultBlock.class).getFirst().content()).path("id").asText();
+                    var input = Json.mapper().createObjectNode().put("agent_id", agent.get()).put("task_id", id).put("summary", "Read evidence").put("body", "Ask for extra.txt");
+                    var scope = input.putObject("scope"); scope.putArray("read_paths").add("visible"); scope.putArray("write_paths");
+                    return call("assign_task", input.toString());
+                }
+            } catch (java.io.IOException failure) { throw new IllegalStateException(failure); }
+            if (!approved.get()) {
+                var id = java.util.regex.Pattern.compile("Scope approval required: (scope_[a-z0-9-]+)").matcher(history);
+                if (id.find()) {
+                    approved.set(true);
+                    return call("resolve_scope_request", Json.mapper().createObjectNode().put("request_id", id.group(1))
+                            .put("decision", "approve_once").put("reason", "Read the exact evidence file").toString());
+                }
+            }
+            if (!accepted.get() && history.contains("[Incoming result]")) { accepted.set(true); return acceptReport(request); }
+            return text("Final answer");
+        };
+        var d = com.jadecode.config.JadeSettings.defaults();
+        var settings = new com.jadecode.config.JadeSettings(d.tui(), d.compaction(), d.limits(),
+                new com.jadecode.config.JadeSettings.Memory(false, 8000, 16384, 128000), d.modelMetadata(), d.thinking(),
+                d.permissions(), new com.jadecode.config.JadeSettings.Mcp(Map.of()), d.contextCompaction(), com.jadecode.sandbox.SandboxSettings.defaults());
+        try (var runtime = com.jadecode.bootstrap.JadeCodeFactory.create(
+                new com.jadecode.config.AppConfig("fixture", "http://localhost:1", "fixture", 4000), workspace, model,
+                ignored -> { }, ignored -> { }, (hooks, cwd, output) -> { }, () -> com.jadecode.llm.ResponseStream.NONE,
+                ExecutionObserver.NONE, settings, settings.permissions().state(null), new com.jadecode.config.JadePaths(dir.resolve("private")))) {
+            runtime.start(); assertEquals("Final answer", runtime.submit("Delegate evidence reading", null).get(30, TimeUnit.SECONDS));
+            assertTrue(approved.get()); assertTrue(accepted.get());
+            var snapshot = runtime.display().team().getFirst();
+            var entry = ((List<?>) snapshot.get("assignments")).getFirst();
+            assertEquals("accept", ((Map<?, ?>) entry).get("reviewDecision"));
         }
     }
 

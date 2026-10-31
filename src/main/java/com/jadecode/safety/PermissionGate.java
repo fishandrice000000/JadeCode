@@ -51,10 +51,10 @@ public final class PermissionGate {
     private static final Set<String> INTERNAL = Set.of("glob", "todo_write", "compact", "load_skill", "task", "Workflow", "memory_note",
             "create_task", "get_task", "list_tasks", "update_task", "claim_task", "complete_task",
             "connect_mcp", "schedule_cron", "list_crons", "cancel_cron", "spawn_teammate", "list_teammates", "close_teammate",
-            "shutdown_teammate", "assign_task", "send_message", "submit_task_result", "reopen_task", "retry_team_message", "review_task_result", "workspace_status");
+            "shutdown_teammate", "assign_task", "send_message", "submit_task_result", "reopen_task", "retry_team_message", "review_task_result", "resolve_scope_request", "workspace_status");
     private static final Set<String> ADMIN_WRITES = Set.of("memory_note", "create_task", "update_task", "claim_task", "complete_task",
             "schedule_cron", "cancel_cron", "spawn_teammate", "close_teammate", "shutdown_teammate", "assign_task", "send_message", "submit_task_result",
-            "reopen_task", "retry_team_message", "review_task_result");
+            "reopen_task", "retry_team_message", "review_task_result", "resolve_scope_request");
 
     private Path runtimeRoot;
     private java.util.function.Predicate<Path> artifactReadable = path -> false;
@@ -106,6 +106,14 @@ public final class PermissionGate {
     /** 使用固定目录中的身份解释外部工具；模型输入内同名字段无法替代此参数。 */
     public String check(String tool, ObjectNode input, ExecutionContext context, com.jadecode.execution.ToolIdentity identity) {
         checked.remove();
+        // 常驻 MCP 服务尚不具备逐 Assignment 挂载；受限队友不能借它或工作区管理工具绕过文件边界。
+        if (context != null && context.assignment() != null && (identity.kind() == com.jadecode.execution.ToolIdentity.Kind.MCP
+                || Set.of("connect_mcp", "import_resource", "publish_result", "prepare_environment").contains(tool)))
+            return "This capability is not integrated with Assignment isolation; ask the Leader to perform it";
+        // Assignment 是独立权限边界；没有 OS 沙箱时拒绝文件/Shell，而非 Full Access 宿主直通。
+        if (context != null && context.assignment() != null && !sandboxed
+                && Set.of("read_file", "write_file", "edit_file", "glob", "bash").contains(tool))
+            return "Assignment file and Shell operations require an enabled Docker sandbox";
         ObjectNode exact = input.deepCopy();
         while (!Thread.currentThread().isInterrupted() && (context == null || !context.isCancelled())) {
             if (!input.equals(exact)) return "The pending parameters changed; re-issue the tool call";

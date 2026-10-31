@@ -23,6 +23,7 @@ import com.jadecode.session.SessionRuntime;
 import com.jadecode.tasks.Task;
 import com.jadecode.tasks.TaskStore;
 import com.jadecode.util.Json;
+import com.jadecode.safety.approval.ApprovalRequest;
 
 /**
  * 管理一个 Leader 的常驻队友、派工记录和文件邮箱，不执行模型循环。
@@ -47,6 +48,8 @@ public final class TeamManager implements AutoCloseable {
     private final java.util.Set<String> delivered = new java.util.HashSet<>();
     private final Map<String, Incoming> communications = new LinkedHashMap<>();
     private final Map<String, String> replies = new LinkedHashMap<>();
+    /** 审批只在进程内等待，磁盘记录仅供追溯；重启不会恢复或自动执行旧申请。 */
+    private final Map<String, ScopeRequest> scopeRequests = new LinkedHashMap<>();
     private ExecutionObserver observer = ExecutionObserver.NONE;
     private SessionRuntime leader;
 
@@ -80,6 +83,131 @@ public final class TeamManager implements AutoCloseable {
 
     /** 共享同一存储实例，让 Leader 与队友的状态更新使用同一进程锁。 */
     public TaskStore tasks() { return tasks; }
+
+    /** Leader 只能决定任务分工；ASK_USER 表示仍需原人工通道授权，不是许可本身。 */
+    public enum ScopeDecision { APPROVE_ONCE, DENY, ASK_USER }
+
+    /** 冻结申请与派工，Future 不序列化；只有持有原申请的执行线程可以使用答复。 */
+    private static final class ScopeRequest {
+        final ApprovalRequest request;
+        final ExecutionContext context;
+        final CompletableFuture<ScopeDecision> result = new CompletableFuture<>();
+        ScopeDecision decision;
+        String reason = "";
+        ScopeRequest(ApprovalRequest request, ExecutionContext context) { this.request = request; this.context = context; }
+    }
+
+    /**
+     * 沙箱在执行越界操作前调用。先落盘并投递插入通知，再在锁外等待 Leader。
+     * 取消、派工失效、投递失败都按拒绝结束；不启动空闲 Leader，也不重放业务命令。
+     */
+    public ScopeDecision requestScope(ApprovalRequest request, ExecutionContext context) throws IOException {
+        ScopeRequest pendingRequest = new ScopeRequest(request, context);
+        synchronized (this) {
+            ensureOpen();
+            validateScopeRequest(pendingRequest);
+            if (scopeRequests.size() >= 32 || scopeRequests.containsKey(request.id()))
+                throw new IOException("Too many or duplicate pending scope requests");
+            scopeRequests.put(request.id(), pendingRequest);
+            try {
+                persistScope(pendingRequest, "PENDING");
+                var a = context.assignment();
+                Incoming notice = prepare(a.actor(), LEADER, a.taskId(), a.id(), "scope_request",
+                        "Scope approval required: " + request.id(),
+                        "Use resolve_scope_request with request_id=" + request.id() + ".\n"
+                        + Json.mapper().writerWithDefaultPrettyPrinter().writeValueAsString(request), true);
+                deliver(notice);
+            } catch (IOException | RuntimeException failure) {
+                scopeRequests.remove(request.id());
+                pendingRequest.reason = "Request delivery failed: " + failure.getClass().getSimpleName();
+                try { persistScope(pendingRequest, "DELIVERY_FAILED"); }
+                catch (IOException recording) { failure.addSuppressed(recording); }
+                throw failure;
+            }
+        }
+        try {
+            // 有界轮询只观察生命周期，超时不是批准；审批者可以正常等待用户思考。
+            while (!context.isCancelled()) {
+                try { return pendingRequest.result.get(100, java.util.concurrent.TimeUnit.MILLISECONDS); }
+                catch (java.util.concurrent.TimeoutException waiting) {
+                    synchronized (this) { validateScopeRequest(pendingRequest); }
+                }
+                catch (java.util.concurrent.ExecutionException failed) { throw new IOException("Scope request ended", failed.getCause()); }
+            }
+            throw new IOException("Scope request cancelled");
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Scope request interrupted", interrupted);
+        } finally {
+            try {
+                synchronized (this) {
+                    scopeRequests.remove(request.id(), pendingRequest);
+                    if (pendingRequest.decision == null) persistScope(pendingRequest, "CANCELLED");
+                }
+            } finally {
+                // 配置改变或线程中断也显式结束句柄；不在管理器锁内运行 Future 的后续动作。
+                pendingRequest.result.completeExceptionally(new IllegalStateException("Scope request lifecycle ended"));
+            }
+        }
+    }
+
+    /** 验证 Harness 身份和 Leader 原轮次，不从工具正文推测“当前业务任务”。调用者持有管理器锁。 */
+    private void validateScopeRequest(ScopeRequest value) {
+        var context = value.context;
+        var bound = context.assignment();
+        if (closed || bound == null || context.isCancelled()) throw new IllegalStateException("Scope request is no longer active");
+        Assignment a = assignment(bound.id());
+        member(a.owner);
+        if (a.abandoned || a.finished || !a.id.equals(current.get(a.task)) || !a.owner.equals(bound.actor())
+                || !a.task.equals(bound.taskId()) || !a.scope.equals(bound.scope()) || !a.context.id().equals(bound.leaderRunId())
+                || !value.request.runId().equals(context.id())
+                || !a.context.id().equals(leader.currentExecutionId()) || a.context.isCancelled()
+                || !(value.request.actor().equals(a.owner) || value.request.actor().equals(a.owner + "/subagent")
+                    || value.request.actor().startsWith(a.owner + "/subagent/")))
+            throw new IllegalStateException("Scope request assignment or leader turn has ended");
+    }
+
+    /**
+     * Leader 工具答复只能引用已登记的申请，不能更改路径或原工具参数。
+     * 先保存审计事实，再在锁外完成 Future；若保存失败队友不会取得许可，可重试同一申请。
+     */
+    public void resolveScope(String id, ScopeDecision decision, String reason, ExecutionContext leaderContext) throws IOException {
+        ScopeRequest value;
+        synchronized (this) {
+            ensureOpen();
+            if (leaderContext == null || leaderContext.assignment() != null || leaderContext.isCancelled())
+                throw new IllegalArgumentException("Only the active Leader can resolve scope requests");
+            value = scopeRequests.get(id);
+            if (value == null || value.decision != null) throw new IllegalArgumentException("Unknown or already resolved scope request");
+            validateScopeRequest(value);
+            if (!leaderContext.id().equals(value.context.assignment().leaderRunId()))
+                throw new IllegalArgumentException("Scope request belongs to another Leader turn");
+            if (decision == null || reason == null || reason.isBlank() || reason.length() > 4000)
+                throw new IllegalArgumentException("Scope decision and 1-4000 character reason are required");
+            value.decision = decision; value.reason = reason;
+            try { persistScope(value, decision.name()); }
+            catch (IOException failure) { value.decision = null; value.reason = ""; throw failure; }
+        }
+        value.result.complete(decision);
+    }
+
+    /** 记录实际申请、原派工和决定，不保存审批函数；重启后记录不转成可执行授权。 */
+    private void persistScope(ScopeRequest value, String state) throws IOException {
+        var record = Json.mapper().createObjectNode().put("assignment_id", value.context.assignment().id())
+                .put("state", state).put("reason", value.reason);
+        record.set("request", Json.mapper().valueToTree(value.request));
+        write(mailbox.root().resolve("scope-requests").resolve(value.request.id() + ".json"), record);
+    }
+
+    /** 关闭先摘除等待，再在锁外拒绝；迟到的 Leader 答复无法找到已失效句柄。 */
+    private void cancelScopeRequests(String owner) {
+        List<ScopeRequest> cancelled;
+        synchronized (this) {
+            cancelled = scopeRequests.values().stream().filter(v -> owner == null || v.context.assignment().actor().equals(owner)).toList();
+            cancelled.forEach(v -> scopeRequests.remove(v.request.id(), v));
+        }
+        cancelled.forEach(v -> v.result.completeExceptionally(new IllegalStateException("Team scope closed")));
+    }
 
     /** 常驻队友即使 IDLE 仍是旧会话资源；切换前由 Leader 显式关闭，不暗中丢掉它们。 */
     public synchronized boolean hasLiveMembers() {
@@ -129,7 +257,7 @@ public final class TeamManager implements AutoCloseable {
 
     /**
      * 每次派工保存独立的范围与原执行编号。先登记等待再投递，快速完成也不会漏掉唤醒。
-     * 范围只是分工数据，实际权限仍由 Gate 检查；本方法不重放失败业务。
+     * 固定范围由沙箱编译为挂载；用户授权仍是上限，本方法不重放失败业务。
      */
     public synchronized String assign(String to, String taskId, String summary, String body, ExecutionContext context,
             AssignmentScope scope) throws IOException {
@@ -310,6 +438,7 @@ public final class TeamManager implements AutoCloseable {
             member = member(id);
             member.closed = true;
         }
+        cancelScopeRequests(id);
         member.runtime.close();
         synchronized (this) {
             IOException recordingFailure = null;
@@ -646,6 +775,7 @@ public final class TeamManager implements AutoCloseable {
             closed = true;
             closing = new ArrayList<>(members.values());
         }
+        cancelScopeRequests(null);
         for (Member member : closing) {
             if (member.closed) continue;
             try { shutdown(member.id); }

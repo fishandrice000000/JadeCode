@@ -135,6 +135,8 @@ class MainTest {
                         + " Reply to questions with send_message reply_to. Successful reports enter submitted without unlocking dependencies."
                         + " Use review_task_result decision=accept/reject after checking reports; rejected tasks return to pending for a new assignment."
                         + " Use decision=note for failed/blocked reports, then reopen_task when appropriate."
+                        + " Assignment scopes are Docker-enforced even in Full Access. Use existing paths, such as read_paths=[.] and write_paths=[src]."
+                        + " Resolve scope_request notifications with resolve_scope_request: approve_once, deny, or ask_user. Leader approval cannot expand user permissions."
                         + " Teammates have independent histories: include necessary context in summary and full body."
                         + " You may continue other work after dispatch; required reports are processed before this turn finishes."
                         + " Review reports and actual changes before declaring the user's overall goal complete."
