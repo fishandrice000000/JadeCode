@@ -75,12 +75,14 @@ class TeamCoordinationTest {
         LlmClient parent = request -> switch (leaderCalls.getAndIncrement()) {
             case 0 -> call("dispatch", "{}");
             case 1 -> { await(memberEntered); yield text("Candidate answer"); }
-            default -> {
-                assertTrue(Json.mapper().valueToTree(request.messages()).toString().contains("Report evidence"));
-                yield text("Final answer");
+            case 2 -> {
+                try { assertEquals(Task.Status.SUBMITTED, tasks.load(task.id()).status()); }
+                catch (java.io.IOException failure) { throw new IllegalStateException(failure); }
+                yield acceptReport(request);
             }
+            default -> text("Final answer");
         };
-        try (var leader = session(parent, Map.of("dispatch", dispatch))) {
+        try (var leader = session(parent, leaderTools(team, Map.of("dispatch", dispatch)))) {
             leaderObserver(leader, waiting);
             team.bind(leader, (id, role) -> {
                 var tools = new java.util.LinkedHashMap<String, Tool>();
@@ -97,7 +99,7 @@ class TeamCoordinationTest {
             });
             leader.onClose(team::close); leader.start();
             assertEquals("Final answer", leader.submit("Leader-only background", null).get(5, TimeUnit.SECONDS));
-            assertEquals(3, leaderCalls.get()); assertEquals(1, firstMember.get().size());
+            assertEquals(4, leaderCalls.get()); assertEquals(1, firstMember.get().size());
             assertFalse(firstMember.get().getFirst().extractText().contains("Leader-only background"));
             assertEquals(assignment.get(), receivedScope.get().assignment().id());
             assertEquals(List.of("src/Flow.java"), receivedScope.get().assignment().scope().writePaths());
@@ -141,9 +143,14 @@ class TeamCoordinationTest {
             if (call == 2) { assertTrue(history.contains("NEED_CHOICE")); return call("reply", "{}"); }
             if (!history.contains("BLOCKED_REPORT")) return text("Still waiting");
             if (!secondAssigned.get()) return call("dispatch", "{\"second\":true}");
-            return text(history.contains("SECOND_REPORT") ? "All reports handled" : "Waiting for follow-up");
+            if (history.contains("SECOND_REPORT")) {
+                try { if (tasks.load(second.id()).status() == Task.Status.SUBMITTED) return acceptReport(request); }
+                catch (java.io.IOException failure) { throw new IllegalStateException(failure); }
+                return text("All reports handled");
+            }
+            return text("Waiting for follow-up");
         };
-        try (var leader = session(parent, Map.of("dispatch", dispatch, "reply", reply))) {
+        try (var leader = session(parent, leaderTools(team, Map.of("dispatch", dispatch, "reply", reply)))) {
             leaderObserver(leader, waiting);
             team.bind(leader, (id, role) -> {
                 Tool ask = new TestTool("ask") {
@@ -281,6 +288,7 @@ class TeamCoordinationTest {
         var parent = new AtomicInteger(); var member = new AtomicInteger(); var child = new AtomicInteger();
         var agent = new AtomicReference<String>(); var task = new AtomicReference<String>(); var assignment = new AtomicReference<String>();
         var nestedContext = new AtomicReference<ExecutionContext>();
+        var accepted = new java.util.concurrent.atomic.AtomicBoolean();
         LlmClient model = request -> {
             if (request.system().contains("Complete the given task")) {
                 return child.getAndIncrement() == 0 ? call("read_file", "{\"path\":\"proof.txt\"}") : text("Verified evidence");
@@ -309,6 +317,9 @@ class TeamCoordinationTest {
                             + "\",\"summary\":\"Verify evidence\",\"body\":\"Use a task subagent.\",\"scope\":{\"read_paths\":[\"proof.txt\"],\"write_paths\":[]}}");
                 }
             } catch (java.io.IOException failure) { throw new IllegalStateException(failure); }
+            if (!accepted.get() && request.messages().stream().anyMatch(m -> m.extractText().contains("[Incoming result]"))) {
+                accepted.set(true); return acceptReport(request);
+            }
             return text("Final answer");
         };
         var defaults = com.jadecode.config.JadeSettings.defaults();
@@ -348,6 +359,22 @@ class TeamCoordinationTest {
             assertEquals(context.assignment(), execution.get().assignment());
             assertEquals(List.of("src/A.java"), execution.get().assignment().scope().writePaths());
         }
+    }
+
+    /** 使用真实 Leader 工具完成验收，脚本模型不再把提交直接当成业务完成。 */
+    private static Map<String, Tool> leaderTools(TeamManager team, Map<String, Tool> extra) {
+        var tools = new java.util.LinkedHashMap<String, Tool>(extra);
+        TeamTools.forActor(team, TeamManager.LEADER).forEach(tool -> tools.put(tool.name(), tool));
+        return tools;
+    }
+    private static ModelResponse acceptReport(CompleteRequest request) {
+        String history = request.messages().stream().map(Message::extractText).collect(java.util.stream.Collectors.joining("\n"));
+        var matcher = java.util.regex.Pattern.compile("\\[Incoming result\\][^\n]* assignment=(\\S+) message=(\\S+)").matcher(history);
+        String assignment = null, report = null;
+        while (matcher.find()) { assignment = matcher.group(1); report = matcher.group(2); }
+        if (assignment == null) throw new IllegalStateException("Missing report notification");
+        return call("review_task_result", Json.mapper().createObjectNode().put("assignment_id", assignment)
+                .put("report_id", report).put("decision", "accept").put("notes", "Verified report evidence").toString());
     }
 
     /** 测试模型的调用同步点有超时，失败时给出明确原因，不靠 sleep 猜线程状态。 */

@@ -187,6 +187,7 @@ class OpenCodeGoAssemblyTest {
         var memberId = new java.util.concurrent.atomic.AtomicReference<String>();
         var agentId = new java.util.concurrent.atomic.AtomicReference<String>();
         AtomicInteger parentPhase = new AtomicInteger(), memberPhase = new AtomicInteger();
+        var reviewed = new java.util.concurrent.atomic.AtomicBoolean();
         LlmClient transport = request -> {
             if (request.system().startsWith("You are JadeCode teammate.")) {
                 String prior = memberId.compareAndExchange(null, request.sessionId());
@@ -213,8 +214,17 @@ class OpenCodeGoAssemblyTest {
                     return call("create_task", "{\"subject\":\"fixture task\",\"description\":\"Return a fixture report\"}");
                 }
                 if (phase == 2) return call("assign_task", "{\"agent_id\":\"" + agentId.get() + "\",\"task_id\":\""
-                        + Json.mapper().readTree(result).path("id").asText() + "\",\"summary\":\"fixture\",\"body\":\"Return a report\"}");
+                        + Json.mapper().readTree(result).path("id").asText() + "\",\"summary\":\"fixture\",\"body\":\"Return a report\",\"scope\":{\"read_paths\":[],\"write_paths\":[]}}");
             } catch (java.io.IOException invalid) { throw new AssertionError(invalid); }
+            if (!reviewed.get()) {
+                String history = request.messages().stream().map(Message::extractText).collect(java.util.stream.Collectors.joining("\n"));
+                var report = java.util.regex.Pattern.compile("\\[Incoming result\\][^\n]* assignment=(\\S+) message=(\\S+)").matcher(history);
+                if (report.find()) {
+                    reviewed.set(true);
+                    return call("review_task_result", Json.mapper().createObjectNode().put("assignment_id", report.group(1))
+                            .put("report_id", report.group(2)).put("decision", "accept").put("notes", "Fixture verified").toString());
+                }
+            }
             return text("done");
         };
         try (var runtime = runtime(workspace, jade, settings, config(), transport)) {

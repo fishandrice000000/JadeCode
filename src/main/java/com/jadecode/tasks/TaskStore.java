@@ -197,12 +197,32 @@ public final class TaskStore {
      * @throws IOException 快照或保存失败，未发布候选完成状态
      */
     public synchronized Completion complete(String id, String owner) throws IOException {
+        return complete(id, owner, Status.IN_PROGRESS);
+    }
+
+    /** 队友只提交待验收事实；保存失败不改变状态，submitted 不满足下游依赖。 */
+    public synchronized Task submit(String id, String owner) throws IOException {
+        Task task = load(id);
+        if (task.status() != Status.IN_PROGRESS || !owner.equals(task.owner()))
+            throw new IllegalArgumentException("Only the original owner can submit an in_progress task");
+        Task submitted = new Task(id, task.subject(), task.description(), Status.SUBMITTED, owner, task.blockedBy());
+        save(submitted);
+        return submitted;
+    }
+
+    /** Leader 验收专用入口；普通 complete_task 无法直接完成 submitted 的队友任务。 */
+    public synchronized Completion accept(String id, String owner) throws IOException {
+        return complete(id, owner, Status.SUBMITTED);
+    }
+
+    /** 共用解锁计算，但调用入口固定允许的前态，不能把执行中和待验收混为一谈。 */
+    private Completion complete(String id, String owner, Status expected) throws IOException {
         requireId(id);
         requireOwner(owner);
         Map<String, Task> graph = snapshot();
         Task task = requireTask(graph, id);
-        if (task.status() != Status.IN_PROGRESS || !owner.equals(task.owner())) {
-            throw new IllegalArgumentException("Only the original owner can complete an in_progress task");
+        if (task.status() != expected || !owner.equals(task.owner())) {
+            throw new IllegalArgumentException("Task owner or expected completion state does not match: " + expected);
         }
         // 1. 记录之前就可开始的任务；否则每次完成都会反复把它们误报为“刚解锁”。
         var readyBefore = new HashSet<String>();

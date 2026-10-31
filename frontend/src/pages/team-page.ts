@@ -16,6 +16,8 @@ export function reportState(a: TeamAssignment | undefined): string {
 	if (a.deliveryError) return "Delivery error";
 	if (!a.reportId) return "Pending";
 	if (!a.finished) return "Not delivered";
+	if (a.reviewDecision === "accept") return "Accepted";
+	if (a.reviewDecision === "reject") return "Rework requested";
 	return a.reviewNotes ? "Reviewed" : "Submitted";
 }
 

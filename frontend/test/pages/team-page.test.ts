@@ -5,7 +5,7 @@ import xterm from "@xterm/headless";
 import { createHash } from "node:crypto";
 import { Application } from "../../src/app/Application.ts";
 import { PayloadAssembler } from "../../src/bridge/payload-assembler.ts";
-import { TeamPage, TeamDetailPage } from "../../src/pages/team-page.ts";
+import { TeamPage, TeamDetailPage, reportState } from "../../src/pages/team-page.ts";
 import type { Page, PageContext } from "../../src/pages/page-stack.ts";
 import { SessionStore } from "../../src/state/session-store.ts";
 import { StatusView } from "../../src/views/status-view.ts";
@@ -46,6 +46,14 @@ test("Team page uses current assignment, distinguishes queued work and opens det
 	page.handleInput("\r"); assert.ok(opened[0] instanceof TeamDetailPage);
 	assert.match(opened[0]!.render(80).join("\n"), /Assigned scope · read\n  src/);
 	for (const line of page.render(15)) assert.ok(line.length <= 15);
+});
+
+/** 验收标签直接采用后端决定；成功报告的 completed 是队友声明，不等于 Leader 接受。 */
+test("Team report distinguishes submission, acceptance and rework decisions", () => {
+	const { state } = fixture(); const assignment = state.team()[0]!.assignments[0]!;
+	assert.equal(reportState(assignment), "Submitted");
+	assert.equal(reportState({ ...assignment, reviewDecision: "accept", reviewNotes: "Checked tests" }), "Accepted");
+	assert.equal(reportState({ ...assignment, reviewDecision: "reject", reviewNotes: "Add tests" }), "Rework requested");
 });
 
 test("reading a full report is explicit, scrollable, safe and does not mark it reviewed", async () => {

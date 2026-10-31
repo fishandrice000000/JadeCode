@@ -105,6 +105,11 @@ public final class SessionRuntime implements AutoCloseable {
     private TeamReports teamReports = id -> { throw new IllegalArgumentException("No Team is active"); };
     /** 工厂安装当前 Team 的只读报告端口，不启动 IO。 */
     public void teamReports(TeamReports reader) { teamReports = java.util.Objects.requireNonNull(reader); }
+    /** Leader 验收属于当前轮的决策工作；在 Inbox 锁外检查，避免与 Team 投递形成锁反转。 */
+    private java.util.function.Function<String, String> teamCompletion = run -> "";
+    public void teamCompletion(java.util.function.Function<String, String> check) {
+        teamCompletion = java.util.Objects.requireNonNull(check);
+    }
     /** 后端详情页显式请求时才读取正文，普通快照不读磁盘。 */
     public String teamReport(String assignment) throws IOException { return teamReports.read(assignment); }
     /** 当前执行编号供只读 Team 统计使用，空闲时为空串。 */
@@ -821,6 +826,13 @@ public final class SessionRuntime implements AutoCloseable {
                 changeState(State.WAITING_TEAM);
                 awaitResults(task);
                 changeState(State.RUNNING);
+                continue;
+            }
+            // 队友报告已交付后仍须 Leader 验收；继续原轮，不进入等待外部结果的休眠。
+            String review = teamCompletion.apply(task.context().id());
+            if (!review.isEmpty()) {
+                task.timer.resumeDisplay();
+                appendMessage(Message.userText("[Team acceptance required]\n" + review), "team_review_required");
                 continue;
             }
             Continue continuation = engine.stop(history);

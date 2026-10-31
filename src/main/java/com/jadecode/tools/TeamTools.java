@@ -39,8 +39,8 @@ public final class TeamTools {
                 case "assign_task" -> "Claim an existing ready task for a teammate, persist instructions, then enqueue. Returns assignment_id. A busy teammate queues it. The current leader turn waits for the terminal report. scope is a fixed snapshot with read_paths and write_paths relative to the workspace. Use English task titles and summaries.";
                 case "shutdown_teammate" -> "Close a teammate and its processes. Unfinished assignments become blocked. Does not undo file changes.";
                 case "reopen_task" -> "Explicitly restore a failed/blocked task to pending before reassignment. Does not execute business work.";
-                case "submit_task_result" -> "Submit outcome completed/failed/blocked, short summary and full report. Persists body, updates task, notifies leader. Retry with identical arguments after partial failure; do not redo business.";
-                case "review_task_result" -> "Record leader review notes for the exact assignment_id and report_id. Does not change task dependencies or prove correctness.";
+                case "submit_task_result" -> "Submit outcome completed/failed/blocked, short summary and full report. Persists body, changes success to submitted pending Leader acceptance, notifies leader. Retry with identical arguments after partial failure; do not redo business.";
+                case "review_task_result" -> "Review exact assignment_id/report_id: decision=accept unlocks dependencies, reject returns submitted work to pending for rework, note records failed/blocked report feedback. Successful reports require accept/reject. Retry with identical decision and notes.";
                 case "retry_team_message" -> "Retry only a previously failed delivery by message_id. Does not rerun commands or overwrite message bodies.";
                 default -> "Send summary plus persisted full body to leader/a teammate. kind=message/question/progress/supplement. Messages are always inserted into an active turn; an idle recipient stores them until explicit work starts. Teammates may only message leader. Include task_id and assignment_id for task-specific messages. Set reply_to to the original question message_id when replying. Use short English UI summaries.";
             };
@@ -55,7 +55,7 @@ public final class TeamTools {
                         "scope", "object");
                 case "shutdown_teammate" -> Map.of("agent_id", "string");
                 case "reopen_task" -> Map.of("task_id", "string");
-                case "review_task_result" -> Map.of("assignment_id", "string", "report_id", "string", "notes", "string");
+                case "review_task_result" -> Map.of("assignment_id", "string", "report_id", "string", "decision", "string", "notes", "string");
                 case "retry_team_message" -> Map.of("message_id", "string");
                 case "submit_task_result" -> Map.of("assignment_id", "string", "status", "string", "summary", "string", "body", "string");
                 default -> Map.of("to_agent", "string", "task_id", "string", "assignment_id", "string",
@@ -71,7 +71,7 @@ public final class TeamTools {
                 case "assign_task" -> List.of("agent_id", "task_id", "summary", "body");
                 case "shutdown_teammate" -> List.of("agent_id");
                 case "reopen_task" -> List.of("task_id");
-                case "review_task_result" -> List.of("assignment_id", "report_id", "notes");
+                case "review_task_result" -> List.of("assignment_id", "report_id", "decision", "notes");
                 case "retry_team_message" -> List.of("message_id");
                 case "submit_task_result" -> List.of("assignment_id", "status", "summary", "body");
                 default -> List.of("to_agent", "summary", "body");
@@ -124,6 +124,12 @@ public final class TeamTools {
         /** Team 派工需要可信 context；旧的无 context 调用明确失败，不伪造用户授权。 */
         @Override public String execute(ObjectNode input) { return "Error: Team tools require execution context"; }
 
+        /** 本适配器的成功值全部经过 JSON 编码；只有自己生成的固定错误前缀才设置失败标志。 */
+        @Override public ToolOutcome executeOutcome(ObjectNode input, ExecutionContext context) {
+            String result = execute(input, context);
+            return new ToolOutcome(result, result.startsWith("Error: "));
+        }
+
         /**
          * 先检查完整参数，再调用唯一动作。普通参数/IO 错误作为工具结果返回，留给模型决策。
          * 不自动重试业务；部分失败的报告或消息 ID 保留在错误说明与文件中。
@@ -151,7 +157,7 @@ public final class TeamTools {
                     case "shutdown_teammate" -> { team.shutdown(input.path("agent_id").asText()); yield "Teammate closed"; }
                     case "reopen_task" -> team.reopen(input.path("task_id").asText());
                     case "review_task_result" -> Map.of("report_id", team.review(input.path("assignment_id").asText(),
-                            input.path("report_id").asText(), input.path("notes").asText()));
+                            input.path("report_id").asText(), input.path("decision").asText(), input.path("notes").asText()));
                     case "retry_team_message" -> Map.of("message_id", team.retry(actor, input.path("message_id").asText()));
                     case "submit_task_result" -> {
                         if (context.assignment() == null || !context.assignment().actor().equals(actor)

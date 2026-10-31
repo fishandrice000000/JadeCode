@@ -72,7 +72,7 @@ export interface TeamAssignment {
 	id: string; taskId: string; subject: string; leaderRunId: string;
 	scope: { readPaths: string[]; writePaths: string[] };
 	finished: boolean; abandoned: boolean; outcome: string; reportId: string; reportSummary: string;
-	reportPath: string; reviewNotes: string; deliveryError: string; progress: string; questions: TeamQuestion[];
+	reportPath: string; reviewNotes: string; reviewDecision?: string; deliveryError: string; progress: string; questions: TeamQuestion[];
 }
 export interface TeamMember {
 	id: string; name: string; responsibilities: string; state: string; closed: boolean;
@@ -500,7 +500,7 @@ function parseTeam(value: unknown): TeamMember[] {
 				scope: { readPaths: strings(scope.readPaths), writePaths: strings(scope.writePaths) },
 				finished: a.finished === true, abandoned: a.abandoned === true, outcome: text(a, "outcome"),
 				reportId: text(a, "reportId"), reportSummary: text(a, "reportSummary"), reportPath: text(a, "reportPath"),
-				reviewNotes: text(a, "reviewNotes"), deliveryError: text(a, "deliveryError"), progress: text(a, "progress"),
+				reviewNotes: text(a, "reviewNotes"), reviewDecision: text(a, "reviewDecision"), deliveryError: text(a, "deliveryError"), progress: text(a, "progress"),
 				questions: objects(a.questions).map((q) => ({ id: text(q, "id"), summary: text(q, "summary"), to: text(q, "to"), answered: q.answered === true })) };
 		}),
 	}));
