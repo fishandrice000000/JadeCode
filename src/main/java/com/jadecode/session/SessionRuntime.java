@@ -370,7 +370,7 @@ public final class SessionRuntime implements AutoCloseable {
     /** 关闭依赖失败时保留失败事实，阻止服务提前释放工作区。 */
     private volatile boolean cleanupFailed;
     private long executionTokenBudget;
-    /** 服务在启动前配置每轮报告用量软上限；离线和旧调用默认不限。 */
+    /** 调用方在启动前显式配置每轮累计用量软上限；所有运行方式默认不限。 */
     public void executionTokenBudget(long tokens) {
         if (consumer != null || tokens < 1) throw new IllegalArgumentException("Set a positive budget before starting");
         executionTokenBudget = tokens;

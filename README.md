@@ -107,6 +107,8 @@ OpenCode Go 当前只适配 `deepseek-v4.1-flash`，配置必须显式包含：
 }
 ```
 
+普通任务默认不设累计 token 预算；累计用量仍会记录，Leader 与各队友按各自上下文窗口进行摘要压缩。
+
 `--model-config /path/to/model.json` 可选择另一份配置。进程环境中的 `ANTHROPIC_API_KEY`、`ANTHROPIC_BASE_URL`、`MODEL_ID`、`MAX_TOKENS`、`MODEL_PROVIDER` 覆盖文件；用环境变量切换端点或 provider 时，必须同时提供对应 Key。程序不读取 `.env`。
 
 模型配置在服务启动时固定。更换配置或相关环境变量前，先明确停止已有服务，再启动新服务。

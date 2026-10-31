@@ -29,6 +29,7 @@ public final class RuntimeFactory {
     private final AppConfig modelConfig;
     private com.jadecode.llm.LlmClient injectedClient;
     private com.jadecode.config.JadePaths paths = com.jadecode.config.JadePaths.defaults();
+    /** 0 表示未显式请求任务预算；它与单次模型请求的输入/输出限额无关。 */
     private long tokenBudget;
     private boolean created;
     private Path workspace = Path.of("").toAbsolutePath();
@@ -56,7 +57,11 @@ public final class RuntimeFactory {
         if (created) throw new IllegalStateException("Runtime factory workspace is already fixed");
         workspace = path; writeScopes = scopes; return this;
     }
-    /** 常驻服务为每轮设置报告用量软预算，后续 /new 和 /resume 也使用同一装配策略。 */
+    /**
+     * 仅为明确请求预算的调用方设置每轮累计用量软上限，默认不调用此入口。
+     * 正整数包含同组 Agent 和辅助请求；/new、/resume 沿用显式策略。
+     * 不修改用户配置、不发模型请求；工厂装配后或非正数输入立即失败。
+     */
     public RuntimeFactory tokenBudget(long value) {
         if (created || value < 1) throw new IllegalArgumentException("Set a positive budget before creating a runtime");
         tokenBudget=value; return this;

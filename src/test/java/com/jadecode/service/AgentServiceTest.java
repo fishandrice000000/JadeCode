@@ -24,11 +24,20 @@ class AgentServiceTest {
     @TempDir Path temporary;
     private JadePaths paths;
     private AgentService service(LlmClient client)throws Exception {
+        return service(client, 0);
+    }
+    /** 默认不设置任务预算；仅预算回归显式注入上限，所有夹具仍走生产服务接线。 */
+    private AgentService service(LlmClient client, long requestedBudget)throws Exception {
         paths=new JadePaths(temporary.resolve("data"));paths.directory(paths.config(),true);
         Files.writeString(paths.config().resolve("config.json"),"{\"memory\":{\"enabled\":false},\"sandbox\":{\"enabled\":false}}");
         JadeSettings settings=new JadeConfigFile(paths.config().resolve("config.json")).load();
-        return new AgentService(paths,"fixture-build",(workspace,permissions,model)->
-                new RuntimeFactory(settings,permissions,new AppConfig("fixture","http://127.0.0.1:9","fixture",128),client,paths));
+        return new AgentService(paths,"fixture-build",(workspace,permissions,model)-> {
+            var factory = new RuntimeFactory(settings, permissions,
+                    new AppConfig("fixture", "http://127.0.0.1:9", "fixture", 128), client, paths);
+            // 0 只表示夹具没有请求预算，不能调用要求正整数的显式配置入口。
+            if (requestedBudget > 0) factory.tokenBudget(requestedBudget);
+            return factory;
+        });
     }
     private ModelResponse reply(String text){return new ModelResponse(Message.assistant(List.of(new TextBlock(text))),new ModelResponse.Usage(1,1),"end_turn");}
     private ObjectNode open(Path workspace){return Json.mapper().createObjectNode().put("workspace",workspace.toString());}
@@ -259,6 +268,32 @@ class AgentServiceTest {
         }
     }
 
+    /** 累计用量超过旧的 100 万阈值仍能消费工具结果并完成；不等同于单次上下文超限。 */
+    @Test void tasksHaveNoReportedTokenBudgetUnlessExplicitlyRequested()throws Exception{
+        Path workspace = Files.createDirectory(temporary.resolve("workspace"));
+        Path file = Files.writeString(workspace.resolve("fixture.txt"), "fixture");
+        var calls = new AtomicInteger();
+        LlmClient client = request -> {
+            if (calls.incrementAndGet() == 1) return new ModelResponse(Message.assistant(List.of(
+                    new ToolUseBlock("read", "read_file", Json.mapper().createObjectNode().put("path", file.toString())))),
+                    new ModelResponse.Usage(600_000, 600_000), "tool_use");
+            return reply("continued without a task budget");
+        };
+        try (var service = service(client)) {
+            var managed = service.open(open(workspace));
+            try (var connection = new Connection(managed)) {
+                connection.handshake();
+                connection.command("session.submit", Json.mapper().createObjectNode()
+                        .put("text", "read fixture").put("clientSubmissionId", "unlimited"));
+                connection.await("task.result", p -> p.path("text").asText().equals("continued without a task budget"));
+                assertEquals(2, calls.get());
+                // 取消隐式上限不能取消记账；已发生的模型用量仍能从会话读到。
+                assertTrue(managed.backend.runtime().display().usage().total().inputTokens() > 600_000);
+            }
+        }
+    }
+
+    /** 显式预算仍阻止后续请求；新轮次重新设置该预算，不遗留上一轮耗尽状态。 */
     @Test void reportedTokenBudgetStopsTheNextModelRequestAndANewTurnGetsANewBudget()throws Exception{
         Path workspace=Files.createDirectory(temporary.resolve("workspace"));
         Path file=Files.writeString(workspace.resolve("fixture.txt"),"fixture");
@@ -269,7 +304,7 @@ class AgentServiceTest {
                     new ModelResponse.Usage(600_000,600_000),"tool_use");
             return reply("new budget");
         };
-        try(var service=service(client)){
+        try(var service=service(client, 1_000_000)){
             var managed=service.open(open(workspace));
             try(var connection=new Connection(managed)){
                 connection.handshake();

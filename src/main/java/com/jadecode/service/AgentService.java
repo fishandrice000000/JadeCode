@@ -99,7 +99,9 @@ public final class AgentService implements AutoCloseable {
             else if (request.path("headless").asBoolean()) permissions.select(PermissionProfile.AUTO_REVIEW);
             Path model=request.hasNonNull("modelConfig") ? Path.of(request.path("modelConfig").asText()) : null;
             if(model!=null && !model.isAbsolute())model=workspace.resolve(model).normalize();
-            RuntimeFactory factory=factories.create(workspace,permissions,model).workspace(workspace,owner::acquire).tokenBudget(1_000_000).managed(managedWorkspace);
+            // 默认只统计累计用量，不替用户设置任务预算；上下文占用由各 Agent 的压缩器处理。
+            // 显式预算仍由调用方配置到工厂，服务不能再用固定值覆盖它。
+            RuntimeFactory factory=factories.create(workspace,permissions,model).workspace(workspace,owner::acquire).managed(managedWorkspace);
             Managed managed=new Managed(id,workspace,lease,factory,request);
             sessions.put(id,managed);
             try { persist(); }
