@@ -107,6 +107,8 @@ OpenCode Go 当前只适配 `deepseek-v4.1-flash`，配置必须显式包含：
 }
 ```
 
+Go 的此模型采用与 DeepSeek 官方相同的限额。默认使用 [DeepSeek 官方模型文档](https://api-docs.deepseek.com/api/list-models/)的参数快照（2026-10-31 核对）：总窗口 1,048,576 token，最大输出 393,216 token。输入与输出共用窗口，官方未单列固定的最大输入；模型页会说明这一约束。自动压缩沿用既有窗口预留策略，`maxTokens: "auto"` 使用已知输出上限并按当前剩余空间收紧。快照随代码维护，不是启动时的实时查询；关闭 `modelMetadata.autoDiscover` 后仅使用手动覆盖值，覆盖值可收小已知上限。
+
 普通任务默认不设累计 token 预算；累计用量仍会记录，Leader 与各队友按各自上下文窗口进行摘要压缩。
 
 `--model-config /path/to/model.json` 可选择另一份配置。进程环境中的 `ANTHROPIC_API_KEY`、`ANTHROPIC_BASE_URL`、`MODEL_ID`、`MAX_TOKENS`、`MODEL_PROVIDER` 覆盖文件；用环境变量切换端点或 provider 时，必须同时提供对应 Key。程序不读取 `.env`。

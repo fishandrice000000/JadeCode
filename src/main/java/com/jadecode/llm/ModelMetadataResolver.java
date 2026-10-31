@@ -26,10 +26,11 @@ import com.jadecode.llm.ModelMetadata.Limits;
 import com.jadecode.util.Json;
 
 /**
- * 使用模型前查询限额，查询失败也不让原先可工作的 Agent 无法启动。
+ * 使用模型前取得限额，查询失败也不让原先可工作的 Agent 无法启动。
  *
  * <p>只适配明确知道的官方 HTTPS 地址：Anthropic Messages 兼容不意味着也有同样的模型目录。
- * 未识别的代理不发查询，更不会把代理密钥送到官方域名试运气。缓存只保存限额与匹配的模型 ID，
+ * 未识别的代理不发查询，更不会把代理密钥送到官方域名试运气。Go 的目标模型按用户确认的
+ * 同限额契约使用 DeepSeek 官方文档快照，不发认证查询。缓存只保存限额与匹配的模型 ID，
  * 不保存认证、原始响应或对话；过期、损坏或字段缺失都按未知处理。构造无 IO／网络副作用。</p>
  */
 public final class ModelMetadataResolver {
@@ -63,10 +64,15 @@ public final class ModelMetadataResolver {
     public ModelMetadata resolve(AppConfig config, JadeSettings.Models settings) {
         Limits official = Limits.unknown(); String source;
         Target target = target(config);
-        if (config.provider() == com.jadecode.config.ModelProvider.OPENCODE_GO)
-            // 已核对 Go 公共目录只有身份字段；不把一次目录请求伪装成已取得限额，也不借用直连限额。
-            source = "Automatic token-limit lookup is not adapted for OpenCode Go; configure modelMetadata.overrides for deepseek-v4.1-flash";
-        else if (!settings.autoDiscover()) source = "Automatic discovery is off; using the existing configuration";
+        if (!settings.autoDiscover()) source = "Automatic discovery is off; using the existing configuration";
+        else if (config.provider() == com.jadecode.config.ModelProvider.OPENCODE_GO) {
+            // AppConfig 已限定 Go 只支持 deepseek-v4.1-flash；用户确认它与官方 Flash 限额一致。
+            // 2026-10-31 核对：https://api-docs.deepseek.com/api/list-models/ 。使用精确 token 数，
+            // 不把文档简写的 1M/384K 当成十进制 1000000/384000，也不向 DeepSeek 发送 Go Key。
+            // 官方只公布总窗口和输出上限：输入需要给实际输出留空间，不能伪造独立最大输入。
+            official = new Limits(1048576, null, 393216);
+            source = "DeepSeek official documentation snapshot (2026-10-31) for OpenCode Go; input and output share the context window";
+        }
         else if (target == null) source = "No official lookup is adapted for this endpoint; using the existing configuration";
         else {
             // 1. 缓存按实际端点和精确请求模型区分；命中有效记录才免去查询。

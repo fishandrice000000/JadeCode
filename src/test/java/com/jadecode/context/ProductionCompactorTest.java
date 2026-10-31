@@ -81,6 +81,12 @@ class ProductionCompactorTest {
     /** 构造可信 usage 锚点检查严格大于边界；最大输出只限制单次请求，不改变触发线。 */
     @Test void exactThresholdDoesNotCompactButOneMoreTokenDoes() throws Exception {
         var client = new Client(); var tracker = new ContextTokenTracker();
+        // 通过实际 Go 参数发现入口取得窗口，证明新增官方参数能驱动既有摘要流程。
+        var go = new com.jadecode.config.AppConfig("fixture-key", "https://opencode.ai/inference/go/anthropic",
+                "deepseek-v4.1-flash", 0, com.jadecode.config.ModelProvider.OPENCODE_GO);
+        client.metadata = new ModelMetadataResolver(dir.resolve("metadata"), java.time.Clock.systemUTC(), (uri, headers, timeout) -> {
+            throw new AssertionError("本例只允许使用官方文档快照，不查询真实接口");
+        }).resolve(go, com.jadecode.config.JadeSettings.defaults().modelMetadata());
         var original = request(List.of(Message.userText("past")));
         var answer = assistant("finished");
         var history = List.of(original.messages().getFirst(), answer);

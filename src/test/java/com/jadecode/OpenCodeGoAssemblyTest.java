@@ -165,18 +165,36 @@ class OpenCodeGoAssemblyTest {
         }
     }
 
-    /** Go 目录缺限额时只使用明确手动值，不向直连厂家发送 Go Key，也不猜测大窗口。 */
-    @Test void modelLimitsRemainUnknownUntilExplicitlyConfigured() {
+    /** 用户确认 Go 与官方限额一致；使用有来源的快照，不向直连厂家发送 Go Key。 */
+    @Test void goUsesDeepseekOfficialLimitsWithoutTransferringCredentials() {
         var resolver = new ModelMetadataResolver(temporary.resolve("metadata"), Clock.systemUTC(), (uri, headers, timeout) -> {
-            throw new AssertionError("Go 限额不能借用直连服务目录");
+            throw new AssertionError("使用官方文档快照时不能向直连服务转交 Go 认证");
         });
-        var unknown = resolver.resolve(config(), JadeSettings.defaults().modelMetadata());
-        assertFalse(unknown.limits().known()); assertEquals(8000, unknown.formalOutputBudget(0));
-        assertTrue(unknown.source().contains("modelMetadata.overrides"));
+        var official = resolver.resolve(config(), JadeSettings.defaults().modelMetadata());
+        assertEquals(1048576, official.limits().contextWindowTokens());
+        assertNull(official.limits().maxInputTokens(), "官方仅声明输入输出共用窗口，没有单独的固定输入限额");
+        assertEquals(393216, official.formalOutputBudget(0));
+        assertTrue(official.source().contains("DeepSeek"));
+        assertTrue(official.source().contains("2026-10-31"));
+        // 手动值仍可更保守地收小限额，但不能突破已经确认的官方上限。
         var known = resolver.resolve(config(), new JadeSettings.Models(true, 24, 1000,
                 Map.of(config().model(), new ModelMetadata.Limits(50000, null, 12000))));
         assertEquals(50000, known.limits().contextWindowTokens()); assertEquals(12000, known.formalOutputBudget(0));
         assertEquals(12000, known.capOutput(15000)); assertTrue(known.source().contains("manual"));
+        var enlarged = resolver.resolve(config(), new JadeSettings.Models(true, 24, 1000,
+                Map.of(config().model(), new ModelMetadata.Limits(2_000_000, null, 500_000))));
+        assertEquals(official.limits(), enlarged.limits());
+    }
+
+    /** 关闭自动发现时只采用用户明确的覆盖值，不隐式启用官方快照或网络查询。 */
+    @Test void disabledDiscoveryKeepsGoManualLimitsOnly() {
+        var resolver = new ModelMetadataResolver(temporary.resolve("metadata"), Clock.systemUTC(), (uri, headers, timeout) -> {
+            throw new AssertionError("禁用发现后不能发起目录请求");
+        });
+        assertFalse(resolver.resolve(config(), new JadeSettings.Models(false, 24, 1000, Map.of())).limits().known());
+        var manual = new ModelMetadata.Limits(50000, 40000, 12000);
+        assertEquals(manual, resolver.resolve(config(), new JadeSettings.Models(false, 24, 1000,
+                Map.of(config().model(), manual))).limits());
     }
 
     /** 真实 Team 工具创建队友并派工；队友复用传输但不继承 Leader 的路由身份。 */

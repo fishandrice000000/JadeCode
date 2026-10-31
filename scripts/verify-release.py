@@ -340,10 +340,10 @@ def verify(case, name):
             case.env.pop(variable, None)
         config = case.home / ".jadecode/config/config.json"
         settings = json.loads(config.read_text())
+        # Go 官方参数快照不访问公网；这里让真实生产工厂解析，不用手动覆盖掩盖发现缺口。
         settings.update({"memory": {"enabled": False}, "thinking": {"effort": "low"}, "modelMetadata": {
-            "autoDiscover": False, "overrides": {"deepseek-v4.1-flash": {
-                "contextWindowTokens": 50000, "maxOutputTokens": 12345}}}})
-        config.write_text(json.dumps(settings))  # 数字仅为离线夹具，绝不当作服务商实际限额。
+            "autoDiscover": True, "overrides": {}}})
+        config.write_text(json.dumps(settings))
         selected = config.with_name("model.json")
         selected.write_text(json.dumps({"provider": "opencode-go", "apiKey": "dummy-go-fixture",
             "baseUrl": f"http://127.0.0.1:{case.server.server_port}/inference/go/anthropic",
@@ -360,6 +360,19 @@ def verify(case, name):
         before = len(case.server.calls)
         case.start(extra=["--resume=" + metadata["id"]]); case.until("JADE_VERIFY_DONE")
         assert len(case.server.calls) == before, "Go resume replayed a saved request"
+        # 参数需真正到达模型页；输入上限保留共享窗口语义，不能显示一个伪造的固定数值。
+        offset = len(case.output); case.send("/model\r")
+        case.until("Context window: 1048576", offset)
+        case.until("Max output: 393216", offset)
+        case.until("Max input: within context window, shared with output", offset)
+        case.drain(.15); case.snapshot("go-model-limits")
+        rendered = subprocess.run([shutil.which("node"), str(REPO / "scripts/tui-screen.mjs"), str(case.directory)],
+                                  check=True, capture_output=True, text=True)
+        screen = json.loads(rendered.stdout)[-1]["text"]
+        for label in ("Context window: 1048576", "Max output: 393216",
+                      "Max input: within context window, shared with output"):
+            assert label in screen, "model limit missing from rendered terminal: " + label
+        case.send("\x1b"); case.drain(.2)
         case.send("/thinking high\r")
         deadline = time.monotonic() + 5
         while json.loads(metadata_file.read_text()).get("thinking") != "HIGH" and time.monotonic() < deadline:
@@ -367,14 +380,19 @@ def verify(case, name):
         assert json.loads(metadata_file.read_text())["thinking"] == "HIGH"
         offset = len(case.output); case.send("JADE_VERIFY_TEXT\r"); case.until("JADE_VERIFY_DONE", offset)
         case.finish()
-        assert len(case.server.go_requests) == 2 and all(item["valid"] for item in case.server.go_requests)
-        assert all(item["session"] == metadata["id"] for item in case.server.go_requests)
-        assert {item["stream"] for item in case.server.go_requests} == {True, False}
-        assert all(call["max_tokens"] == 12345 for call in case.server.calls)
-        assert [call["output_config"]["effort"] for call in case.server.calls] == ["low", "high"]
-        assert all(call["thinking"]["type"] == "enabled" for call in case.server.calls)
+        assert len(case.server.go_requests) == 2 and all(item["valid"] for item in case.server.go_requests), "Go request count or headers differ from the fixture contract"
+        assert all(item["session"] == metadata["id"] for item in case.server.go_requests), "Go resume changed model session identity"
+        # 常驻服务对 headless 和 TUI 均使用后端模型流式出口；客户端只决定怎样显示结果。
+        # 不能沿用服务迁移前“headless 必定非流式”的断言；SDK 非流式另由 WireTest 覆盖。
+        assert all(item["stream"] for item in case.server.go_requests), "Go service requests did not use the shared streaming path"
+        outputs = [call["max_tokens"] for call in case.server.calls]
+        assert outputs == [393216, 393216], f"Go auto output limits differ: {outputs}"
+        efforts = [call["output_config"]["effort"] for call in case.server.calls]
+        assert efforts == ["low", "high"], f"Go thinking choices differ: {efforts}"
+        assert all(call["thinking"]["type"] == "enabled" for call in case.server.calls), "Go thinking was not enabled"
         return {"exit": 0, "httpRequests": 2, "headersValid": True, "resumeIdentityStable": True,
-                "headlessAndStreaming": True, "thinkingChanged": True, "manualOutputLimit": 12345}
+                "headlessAndInteractive": True, "serviceRequestsStreamed": True, "thinkingChanged": True, "officialOutputLimit": 393216,
+                "officialContextWindow": 1048576, "modelPageLimitsVisible": True}
     if name in ("model-config", "model-config-explicit"):
         # 认证仅使用本地夹具占位值；同时移除旧环境变量，避免 JSON 没接通却被环境兜底。
         for variable in ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "MODEL_ID", "MAX_TOKENS"):

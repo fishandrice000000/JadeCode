@@ -104,7 +104,10 @@ export class ModelPage extends InformationPage {
 		lines.push(theme.style("text", `Model: ${singleLine(snapshot.model || "?")}`));
 		lines.push(theme.style("text", `Thinking: ${singleLine(snapshot.thinkingLabel || snapshot.thinking || "default")}`));
 		lines.push(theme.style("text", `Context window: ${snapshot.contextWindowTokens ?? "unknown"}`));
-		lines.push(theme.style("text", `Max input: ${snapshot.maxInputTokens ?? "unknown"}`));
+		// 未报告独立输入上限时仍说明已知约束；不能把总窗口复制为固定的 Max input。
+		const maxInput = snapshot.maxInputTokens ?? (snapshot.contextWindowTokens === null
+			? "unknown" : "within context window, shared with output");
+		lines.push(theme.style("text", `Max input: ${maxInput}`));
 		lines.push(theme.style("text", `Max output: ${snapshot.maxOutputTokens ?? "unknown"}`));
 		if (snapshot.modelSource) lines.push(theme.style("dim", singleLine(snapshot.modelSource)));
 		return lines.map((line) => clipLine(line, Math.max(0, width)));
