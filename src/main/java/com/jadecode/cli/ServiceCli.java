@@ -126,8 +126,8 @@ public final class ServiceCli {
               --workspace-id <id>      Open a retained managed workspace
               --delete-workspace       Delete --workspace-id after closing its session
               --upload-snapshot <dir>  Upload local files to --workspace-id (does not import)
-              --artifacts              List published results for --workspace-id
-              --download-artifact <id> Download with --workspace-id and --output <local-file>
+              --artifacts              List published files for --workspace-id
+              --download-artifact <id> Download one original file with --workspace-id and --output <local-file>
 
             Closing the UI detaches. Use /stop to cancel the current turn or /close to close the session.
             """;}

@@ -9,7 +9,7 @@ import com.jadecode.execution.ExecutionContext;
 import com.jadecode.util.Json;
 
 /**
- * 将经授权的来源发布到不存在的新目录。暂存和输入基线在工作区外，失败不覆盖已有项目。
+ * 将经授权的来源发布到不存在的新目录。暂存在工作区外，失败不覆盖已有项目。
  * 来源记录先落盘再发布，崩溃时保留中断证据，不凭目录存在就重放获取。
  */
 public final class ResourceService {
@@ -77,13 +77,12 @@ public final class ResourceService {
                     WorkspaceFiles.directory(prepared); WorkspaceFiles.unzip(archive,prepared,invalid);
                     provenance.put("kind","snapshot").put("resourceId",resource).put("sha256",uploaded.path("sha256").asText());
                 } else throw new IOException("Unsupported resource source");
-                // 读取前检查权限；保存原始普通文件基线，后续成果可包含未跟踪文件和删除。
+                // 发布导入目录前逐文件检查权限和布局；文件交付不再需要另外保存输入基线 ZIP。
                 WorkspaceFiles.Check before=(path,name)-> {
                     if (invalid.getAsBoolean()) throw new IOException("Import cancelled or authorization changed");
                     check.accept(path,destination+"/"+name);
                 };
-                Path baseline=workspace.metadata().resolve("inputs").resolve(id+".zip");
-                WorkspaceFiles.zip(prepared,baseline,before); provenance.put("baselineSha256",WorkspaceFiles.sha256(baseline));
+                WorkspaceFiles.inspect(prepared,List.of("."),before);
                 Path saved=workspace.metadata().resolve("inputs").resolve(id+".json"); ManagedWorkspaceStore.write(saved,provenance);
                 if (invalid.getAsBoolean() || Files.exists(target,LinkOption.NOFOLLOW_LINKS)) throw new IOException("Import target or authorization changed before publication");
                 Files.createDirectories(target.getParent()); Files.move(prepared,target,StandardCopyOption.ATOMIC_MOVE);

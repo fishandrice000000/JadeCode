@@ -21,7 +21,7 @@ public final class WorkspaceTools {
         return List.of(tool("workspace_status","List this managed workspace's snapshot IDs, imported sources, operations and environment state.","{}",workspace,gate,permissions,bash),
                 tool("import_resource","Import a Git HTTPS repository at a commit/ref or an uploaded snapshot into a NEW relative directory. Does not install or execute project code.",
                         "\"source\":{\"type\":\"object\",\"properties\":{\"kind\":{\"enum\":[\"git\",\"snapshot\"]},\"url\":{\"type\":\"string\"},\"revision\":{\"type\":\"string\"},\"resourceId\":{\"type\":\"string\"}},\"required\":[\"kind\"],\"additionalProperties\":false},\"destination\":{\"type\":\"string\"},\"retryOperationId\":{\"type\":\"string\",\"description\":\"For a failed import, reuse its source/destination; Git revision must be its resolvedCommit from workspace_status.\"}",workspace,gate,permissions,bash),
-                tool("publish_result","Publish immutable selected files, binary patch and actual execution records; keep this conversation open. Patch applies with git apply -p2. Returns artifactId for user download.",
+                tool("publish_result","Publish 1..64 completed files by workspace-relative path. Each file gets a fixed copy and its own artifactId in the returned artifacts array for separate download. Directories are rejected; generate an archive yourself if requested. No patch or automatic ZIP is created. Keep this conversation open.",
                         "\"paths\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"summary\":{\"type\":\"string\"}",workspace,gate,permissions,bash),
                 tool("prepare_environment","Create/update a project's .venv, install a local requirements file, then run pip check/list. Installation is serialized with other workspace commands. Network requires existing bash approval. Failure can leave partial packages.",
                         "\"project\":{\"type\":\"string\"},\"requirements\":{\"type\":\"string\"},\"network_access\":{\"type\":\"boolean\"}",workspace,gate,permissions,bash));
@@ -61,7 +61,7 @@ public final class WorkspaceTools {
         };
     }
 
-    /** 文件权限按其最终工作区路径判断，包括成果中已经删除但仍在原始基线中的文件。 */
+    /** 文件权限按其实际工作区路径判断；发布只检查明确选中的成品，不读取旧输入。 */
     private static void authorize(PermissionGate gate,String tool,Path target,ExecutionContext context) throws IOException {
         var input=Json.mapper().createObjectNode().put("path",target.toString());
         if (tool.equals("write_file")) input.put("content",""); // 仅解释写入路径，不执行空写入。

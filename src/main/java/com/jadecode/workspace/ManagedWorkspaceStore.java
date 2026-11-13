@@ -159,10 +159,16 @@ public final class ManagedWorkspaceStore {
         record.put("state","READY"); write(uploads.resolve(id+".json"),record); return uploadStatus(uploads,record);
     }
 
-    /** 已发布成果按偏移读取；客户端逐块写入本地临时文件并在摘要校验后改名。 */
+    /**
+     * 根据成果编号按偏移读取一个已发布文件，不接受客户端提供服务器路径。
+     * 每块附带登记的整文件大小和摘要；实际长度变化时拒绝，客户端最终再核对完整内容。
+     */
     private ObjectNode readArtifact(ManagedWorkspace workspace,ObjectNode input) throws IOException {
-        Path file = workspace.artifacts().bundle(input.path("artifactId").asText());
-        long offset = input.path("offset").asLong(-1), size = Files.size(file);
+        String id = input.path("artifactId").asText();
+        var metadata = workspace.artifacts().metadata(id);
+        Path file = workspace.artifacts().file(id);
+        long offset = input.path("offset").asLong(-1), size = metadata.path("size").asLong();
+        if (Files.size(file) != size) throw new IOException("Published file length changed");
         if (offset < 0 || offset > size) throw new IOException("Invalid artifact offset");
         ByteBuffer bytes = ByteBuffer.allocate((int)Math.min(WorkspaceFiles.CHUNK,size-offset));
         try (var channel = FileChannel.open(file,StandardOpenOption.READ,LinkOption.NOFOLLOW_LINKS)) {
@@ -170,7 +176,7 @@ public final class ManagedWorkspaceStore {
         }
         if (bytes.hasRemaining()) throw new IOException("Published artifact ended before its registered size");
         return Json.mapper().createObjectNode().put("offset",offset).put("size",size)
-                .put("sha256",workspace.artifacts().manifest(input.path("artifactId").asText()).path("bundleSha256").asText())
+                .put("sha256",metadata.path("sha256").asText()).put("filename",metadata.path("filename").asText())
                 .put("data",Base64.getEncoder().encodeToString(bytes.array())).put("eof",offset+bytes.position()==size);
     }
     private static ObjectNode uploadStatus(Path uploads,ObjectNode record) throws IOException {

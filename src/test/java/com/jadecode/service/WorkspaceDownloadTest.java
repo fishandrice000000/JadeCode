@@ -10,6 +10,13 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import com.jadecode.cli.WorkspaceClient;
 import com.jadecode.config.JadePaths;
+import com.jadecode.execution.ExecutionContext;
+import com.jadecode.workspace.ManagedWorkspaceStore;
+import com.jadecode.workspace.WorkspaceTools;
+import com.jadecode.safety.PermissionGate;
+import com.jadecode.safety.PermissionState;
+import com.jadecode.tools.BashTool;
+import com.jadecode.util.PathResolver;
 import com.jadecode.util.Json;
 import com.jadecode.workspace.WorkspaceFiles;
 
@@ -23,12 +30,21 @@ class WorkspaceDownloadTest {
         var readers=Executors.newVirtualThreadPerTaskExecutor(); var timer=Executors.newSingleThreadScheduledExecutor();
         try (var server=ServerSocketChannel.open(StandardProtocolFamily.UNIX)) {
             String workspace=service.workspaceCommand(Json.mapper().createObjectNode().put("action","create")).path("workspaceId").asText();
-            String artifact=UUID.randomUUID().toString();
-            Path source=Files.createDirectory(root.resolve("source")); byte[] content=new byte[180_000]; new Random(19).nextBytes(content); Files.write(source.resolve("binary"),content);
-            Path directory=Files.createDirectories(paths.root().resolve("managed").resolve(workspace).resolve("artifacts").resolve(artifact));
-            Path bundle=directory.resolve("bundle.zip"); WorkspaceFiles.zip(source,bundle,(file,name)->{});
-            JadePaths.atomicWrite(directory.resolveSibling(artifact+".json"),Json.mapper().createObjectNode().put("artifactId",artifact)
-                    .put("bundleSha256",WorkspaceFiles.sha256(bundle)).put("bundleSize",Files.size(bundle)).toString());
+            // 用真实发布服务准备原始二进制文件，验证传输不再隐式包装为 ZIP。
+            var stored=new ManagedWorkspaceStore(paths).open(workspace);
+            byte[] content=new byte[180_000]; new Random(19).nextBytes(content);
+            Files.write(stored.path().resolve("presentation.pptx"),content);
+            var publication=Json.mapper().createObjectNode().put("summary","fixture PPT");
+            publication.putArray("paths").add("presentation.pptx");
+            var state=PermissionState.defaults();
+            var gate=new PermissionGate(new PathResolver(stored.path()),state,null);
+            var publisher=WorkspaceTools.forWorkspace(stored,gate,state,new BashTool(stored.path())).stream()
+                    .filter(tool->tool.name().equals("publish_result")).findFirst().orElseThrow();
+            var context=ExecutionContext.create(ExecutionContext.Source.USER,null);
+            assertNull(gate.check("publish_result",publication,context));
+            var outcome=publisher.executeOutcome(publication,context);
+            assertFalse(outcome.isError(),outcome.content());
+            String artifact=Json.mapper().readTree(outcome.content()).path("artifacts").get(0).path("artifactId").asText();
             Path socket=root.resolve("download.sock"); server.bind(UnixDomainSocketAddress.of(socket));
             var serving=readers.submit(()->{
                 try (var accepted=server.accept()) {
@@ -38,18 +54,18 @@ class WorkspaceDownloadTest {
             try (var channel=SocketChannel.open(StandardProtocolFamily.UNIX)) {
                 channel.connect(UnixDomainSocketAddress.of(socket));
                 try (var peer=new ServiceClient.Peer(ChannelStreams.input(channel),ChannelStreams.output(channel),channel)) {
-                    byte[] bytes=Files.readAllBytes(bundle); Path output=root.resolve("result.zip");
+                    byte[] bytes=content; Path output=root.resolve("result.pptx");
                     Path part=output.resolveSibling(output.getFileName()+".jade-"+artifact+".part");
                     Files.write(part,Arrays.copyOf(bytes,23_000));
                     WorkspaceClient.download(peer,workspace,artifact,output);
-                    assertEquals(WorkspaceFiles.sha256(bundle),WorkspaceFiles.sha256(output)); assertFalse(Files.exists(part));
+                    assertArrayEquals(content,Files.readAllBytes(output)); assertFalse(Files.exists(part));
                     assertThrows(java.io.IOException.class,()->WorkspaceClient.download(peer,workspace,artifact,output));
-                    Path corrupt=root.resolve("corrupt.zip"); Path broken=corrupt.resolveSibling(corrupt.getFileName()+".jade-"+artifact+".part");
+                    Path corrupt=root.resolve("corrupt.pptx"); Path broken=corrupt.resolveSibling(corrupt.getFileName()+".jade-"+artifact+".part");
                     byte[] prefix=Arrays.copyOf(bytes,23_000); prefix[100]^=1; Files.write(broken,prefix);
                     assertThrows(java.io.IOException.class,()->WorkspaceClient.download(peer,workspace,artifact,corrupt));
                     assertFalse(Files.exists(corrupt)); assertFalse(Files.exists(broken));
                     WorkspaceClient.download(peer,workspace,artifact,corrupt);
-                    assertEquals(WorkspaceFiles.sha256(bundle),WorkspaceFiles.sha256(corrupt));
+                    assertArrayEquals(content,Files.readAllBytes(corrupt));
                 }
             }
             serving.get(5,TimeUnit.SECONDS); Files.delete(socket);

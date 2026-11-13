@@ -65,7 +65,7 @@ public final class WorkspaceFiles {
         for (String selection : selected) {
             Path start = resolve(root, selection);
             if (excluded(root.relativize(start))) throw new IOException("Protected or environment paths cannot be bundled");
-            if (!Files.exists(start, LinkOption.NOFOLLOW_LINKS)) continue; // 删除项通过基线差异表达。
+            if (!Files.exists(start, LinkOption.NOFOLLOW_LINKS)) continue; // 可选选择缺失时略过；成品发布单独要求文件存在。
             Files.walkFileTree(start, new SimpleFileVisitor<>() {
                 @Override public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
                     if (++visited[0] > 200_000) throw new IOException("Workspace entry limit exceeded");
@@ -87,18 +87,6 @@ public final class WorkspaceFiles {
             });
         }
         return Collections.unmodifiableSortedMap(result);
-    }
-
-    /** 在私有目标复制选定文件，保留执行位；调用方负责以同一屏障保护清单与复制。 */
-    public static void copy(Path root, Path target, Collection<String> names, Check check) throws IOException {
-        for (String name : names) {
-            Path source = resolve(root,name), dest = resolve(target,name); check.accept(source,name);
-            Files.createDirectories(dest.getParent());
-            try (InputStream in = Files.newInputStream(source, LinkOption.NOFOLLOW_LINKS)) {
-                Files.copy(in,dest);
-            }
-            mode(dest,Files.isExecutable(source));
-        }
     }
 
     /** 生成可重新上传的 ZIP；顺序与时间固定，重复上传相同内容可获得相同摘要。 */

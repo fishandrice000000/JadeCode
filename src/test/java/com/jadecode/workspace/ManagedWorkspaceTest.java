@@ -88,7 +88,7 @@ class ManagedWorkspaceTest {
         var other=store.create(); assertThrows(IOException.class,()->store.command(command("upload.finish",other.id()).put("resourceId",id)));
     }
 
-    @Test void importedSnapshotHasPinnedBaselineRejectsOverwriteAndSurvivesReopen() throws Exception {
+    @Test void importedSnapshotRecordsSourceRejectsOverwriteAndSurvivesReopen() throws Exception {
         var store=store(); var workspace=store.create(); Path source=Files.createDirectory(temporary.resolve("source"));
         Files.writeString(source.resolve("note.txt"),"original"); Path archive=temporary.resolve("snapshot.zip"); WorkspaceFiles.zip(source,archive,(file,name)->{});
         String resource=upload(store,workspace,archive);
@@ -98,6 +98,10 @@ class ManagedWorkspaceTest {
         assertThrows(IOException.class,()->workspace.resources().importResource(input,context(),()->false,(file,name)->{}));
         var reopened=store().open(workspace.id()); assertEquals(1,reopened.status().path("inputs").size());
         assertTrue(Files.exists(reopened.path().resolve("project/note.txt")));
+        assertFalse(imported.has("baselineSha256"));
+        try (var records=Files.list(reopened.metadata().resolve("inputs"))) {
+            assertFalse(records.anyMatch(file->file.toString().endsWith(".zip")),"Import no longer saves a delivery baseline archive");
+        }
     }
 
     @Test void cancelledOrDeniedImportNeverPublishesPartialDirectory() throws Exception {
@@ -120,18 +124,12 @@ class ManagedWorkspaceTest {
         try (var acquired=workspace.exclusive()) { assertNotNull(acquired); }
     }
 
-    @Test void gitRejectsCredentialUrlsAndGeneratedBinaryPatchActuallyApplies() throws Exception {
+    /** Git 导入仍校验来源；已废弃的补丁操作明确拒绝，不生成旧交付文件。 */
+    @Test void gitRejectsCredentialUrlsAndRemovedPatchOperation() throws Exception {
         for (String url:List.of("file:///tmp/repo","http://example.test/repo","https://token@example.test/repo","https://example.test/repo?token=x"))
             assertThrows(IOException.class,()->GitWorker.validate(url,"main"));
         GitWorker.validate("https://example.test/repo.git","refs/heads/main");
-        Path original=WorkspaceFiles.directory(temporary.resolve("original")), result=WorkspaceFiles.directory(temporary.resolve("result"));
-        Files.writeString(original.resolve("old.txt"),"before\n"); Files.writeString(result.resolve("old.txt"),"after\n");
-        Files.write(original.resolve("binary"),new byte[]{0,1,2}); Files.write(result.resolve("binary"),new byte[]{0,9,2});
-        Files.writeString(result.resolve("new.txt"),"new\n");
-        GitWorker.execute(temporary,Json.mapper().createObjectNode().put("operation","patch"));
-        var process=new ProcessBuilder("git","-C",original.toString(),"apply","-p2",temporary.resolve("changes.patch").toString()).redirectErrorStream(true).start();
-        assertTrue(process.waitFor(5,TimeUnit.SECONDS)); assertEquals(0,process.exitValue(),new String(process.getInputStream().readAllBytes()));
-        assertEquals("after\n",Files.readString(original.resolve("old.txt"))); assertEquals("new\n",Files.readString(original.resolve("new.txt")));
-        assertArrayEquals(new byte[]{0,9,2},Files.readAllBytes(original.resolve("binary")));
+        assertThrows(IOException.class,()->GitWorker.execute(temporary,Json.mapper().createObjectNode().put("operation","patch")));
+        assertFalse(Files.exists(temporary.resolve("changes.patch")));
     }
 }

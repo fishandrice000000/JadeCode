@@ -70,7 +70,7 @@ class ManagedWorkspaceDockerTest {
         return String.join(":",values);
     }
 
-    @Test void snapshotEnvironmentAndImmutableArtifactWorkAcrossContainerRecreation() throws Exception {
+    @Test void snapshotEnvironmentAndPublishedFileWorkAcrossContainerRecreation() throws Exception {
         Assumptions.assumeTrue(Boolean.getBoolean("jade.sandbox.integration"));
         var store=new ManagedWorkspaceStore(new JadePaths(root.resolve("data"))); var workspace=store.create();
         var permissions=PermissionState.defaults(); permissions.select(PermissionProfile.WORKSPACE);
@@ -100,19 +100,18 @@ class ManagedWorkspaceDockerTest {
             assertNull(gate.check("bash",execute,context)); var executed=bash.executeOutcome(execute,context); assertFalse(executed.isError(),executed.content());
             assertFalse(workspace.status().path("environment").path("verified").asBoolean(),"arbitrary shell invalidates the previous verification claim");
             Files.writeString(workspace.path().resolve("project/new.txt"),"new\n"); Files.delete(workspace.path().resolve("project/binary"));
-            var publication=Json.mapper().createObjectNode().put("summary","fixture changes"); publication.putArray("paths").add("project");
+            var publication=Json.mapper().createObjectNode().put("summary","fixture changes"); publication.putArray("paths").add("project/note.txt");
             var outcome=call(tools.get("publish_result"),publication,gate,context); assertFalse(outcome.isError(),outcome.content());
-            var manifest=Json.mapper().readTree(outcome.content()); String id=manifest.path("artifactId").asText();
-            assertTrue(manifest.path("deleted").toString().contains("project/binary"));
-            assertFalse(manifest.path("files").toString().contains(".venv")); assertTrue(manifest.path("executions").size()>=2);
-            String digest=WorkspaceFiles.sha256(workspace.artifacts().bundle(id));
+            var published=Json.mapper().readTree(outcome.content()).path("artifacts").get(0);
+            String id=published.path("artifactId").asText();
+            assertEquals("note.txt",published.path("filename").asText());
+            assertFalse(published.has("inputs")); assertFalse(published.has("executions")); assertFalse(published.has("deleted"));
+            String digest=WorkspaceFiles.sha256(workspace.artifacts().file(id));
             Files.writeString(workspace.path().resolve("project/note.txt"),"later\n");
-            assertEquals(digest,WorkspaceFiles.sha256(workspace.artifacts().bundle(id)));
-            Path extracted=WorkspaceFiles.directory(root.resolve("artifact")); WorkspaceFiles.unzip(workspace.artifacts().bundle(id),extracted,()->false);
-            assertEquals("after\n",Files.readString(extracted.resolve("files/project/note.txt")));
-            assertTrue(Files.size(extracted.resolve("changes.patch"))>0);
+            assertEquals(digest,WorkspaceFiles.sha256(workspace.artifacts().file(id)));
+            assertEquals("after\n",Files.readString(workspace.artifacts().file(id)));
             assertEquals("project",workspace.status().path("inputs").get(0).path("destination").asText());
-            // 新权限必须同时约束基线与当前文件，不能通过 publish_result 绕过 read_file deny。
+            // 发布仍按实际文件复核 read_file 权限，不能通过成品交付绕过 deny。
             var deny=new com.jadecode.safety.rules.PermissionRule("fixture.deny",com.jadecode.safety.rules.PermissionRule.Effect.DENY,
                     com.jadecode.safety.rules.PermissionRule.Kind.PATH,"read_file",workspace.path().toString(),"READ",
                     workspace.path().resolve("project/note.txt").toString(),false,List.of());
@@ -122,7 +121,7 @@ class ManagedWorkspaceDockerTest {
             assertNull(restrictedGate.check("publish_result",publication,context));
             assertTrue(publisher.executeOutcome(publication,context).isError()); assertEquals(1,workspace.artifacts().list().path("artifacts").size());
         }
-        assertTrue(Files.exists(workspace.artifacts().bundle(workspace.artifacts().list().path("artifacts").get(0).path("artifactId").asText())));
+        assertTrue(Files.exists(workspace.artifacts().file(workspace.artifacts().list().path("artifacts").get(0).path("artifactId").asText())));
     }
     private ToolOutcome call(Tool tool,ObjectNode input,PermissionGate gate,ExecutionContext context) {
         assertNull(gate.check(tool.name(),input,context)); return tool.executeOutcome(input,context);

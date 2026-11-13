@@ -13,7 +13,8 @@ import com.jadecode.util.Json;
 
 /**
  * 一份持久独立工作区的运行协调器。会话、Team 和后台共用同一把屏障；普通文件操作可并行，
- * Shell 与导入/环境更新/快照复制独占，防止把半安装环境或混合版本文件当成就绪成果。
+ * Shell 与导入/环境更新独占，防止操作读到半安装环境或半导入目录。
+ * 成品文件生成完成后独立发布，不占用工作区全局屏障。
  * 屏障只协调 Harness 发起的操作；不暂停模型思考，不拦截同 UID 的外部编辑器。
  */
 public final class ManagedWorkspace implements DockerRuntime.Operations {
@@ -109,7 +110,7 @@ public final class ManagedWorkspace implements DockerRuntime.Operations {
         }
     }
 
-    /** 只给内部导入/补丁工作者暴露本次新建暂存目录；无宿主回退，不传递模型认证。 */
+    /** 只给内部 Git 导入工作者暴露本次新建暂存目录；无宿主回退，不传递模型认证。 */
     DockerRuntime.Outcome run(String tool,Path scratch,ObjectNode input,boolean network,ExecutionContext context,
             java.util.function.BooleanSupplier invalid) throws IOException {
         if (context.isCancelled() || invalid.getAsBoolean()) throw new IOException("Managed execution authorization is stale");

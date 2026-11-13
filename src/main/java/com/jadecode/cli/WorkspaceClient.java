@@ -13,7 +13,7 @@ import com.jadecode.workspace.WorkspaceFiles;
 
 /**
  * 用户显式上传/下载的客户端 IO。路径始终在客户端解释，远程只收到资源块和工作区 ID。
- * 不让模型填写客户端落盘位置；有界传输不把 ZIP 全部读入内存，失败保留可续传前缀。
+ * 不让模型填写客户端落盘位置；有界传输不把整个文件读入内存，失败保留可续传前缀。
  */
 public final class WorkspaceClient {
     private WorkspaceClient() { }
@@ -56,6 +56,7 @@ public final class WorkspaceClient {
     /**
      * 下载到同目录私有 .part 文件，重试从长度继续；最终长度与 SHA-256 全部匹配才发布。
      * 利用同文件系统的硬链接原子创建新名字，不覆盖已存在用户文件，随后移除临时名字。
+     * artifact 对应一个原文件版本，destination 由用户选择；下载不解包或转换文件内容。
      */
     public static void download(ServiceClient.Peer peer,String workspace,String artifact,Path destination) throws IOException {
         com.jadecode.workspace.ManagedWorkspaceStore.id(artifact);

@@ -196,10 +196,14 @@ Team 派工均等待成功、失败或受阻报告；通信与报告在安全边
 ./jade --isolated "获取指定仓库版本，检查并修复问题"
 ./jade --managed-workspaces
 ./jade --workspace-id <id> --artifacts
-./jade --workspace-id <id> --download-artifact <artifact-id> --output ./result.zip
+./jade --workspace-id <id> --download-artifact <artifact-id> --output ./presentation.pptx
 ```
 
-上传快照不包含 Git 历史，当前不支持符号链接／硬链接布局；获取仓库不自动处理子模块或 LFS。成果下载不自动应用补丁、提交或推送。关闭会话保留工作数据，删除需显式执行工作区删除操作。
+上传快照不包含 Git 历史，当前不支持符号链接／硬链接布局；获取仓库不自动处理子模块或 LFS。关闭会话保留工作数据，删除需显式执行工作区删除操作。
+
+Agent 在文件生成完成后调用 `publish_result`，例如 `{"paths":["output/presentation.pptx"],"summary":"产品介绍 PPT"}`。返回的 `artifacts` 数组中，每个文件都有独立的 `artifactId`、`filename`、`size` 和 `sha256`；用户按编号下载原文件。发布只复制选定文件，后续修改工作文件不会改变已发布版本，不生成 Git 补丁、变更清单或自动 ZIP。目录不能直接发布；需要打包时，先由 Agent 生成压缩包，再发布该文件。
+
+下载中断后，重新执行相同成果编号及本地目标路径的命令，可利用保留的 `.part` 文件续传；最终长度及 SHA-256 匹配后才生成正式文件，不覆盖已有目标。发布不占用整个工作区的执行屏障，应先完成文件生成再发布。当前不兼容旧的 ZIP 成果登记格式，既有本地文件不会自动清理。
 
 显式删除时，若 Docker 在私有缓存中留下 root 所属的空挂载占位，会用断网、无额外 capabilities 的 UID 0 维护容器清理空目录和零字节占位。它只绑定被删除工作区的缓存子目录，不执行模型命令；普通 Agent 工作容器仍使用非 root 身份。
 

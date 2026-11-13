@@ -36,7 +36,7 @@ class ManagedAgentServiceTest {
                 case 1 -> name="workspace_status";
                 case 2 -> { name="import_resource"; input.put("destination","project").putObject("source").put("kind","snapshot").put("resourceId",resource.get()); }
                 case 3 -> { name="bash"; input.put("command","printf fixture > project/from-agent.txt"); }
-                case 4 -> { name="publish_result"; input.put("summary","fixture delivery").putArray("paths").add("project"); }
+                case 4 -> { name="publish_result"; input.put("summary","fixture delivery").putArray("paths").add("project/from-agent.txt"); }
                 default -> { return new ModelResponse(Message.assistant(List.of(new TextBlock("fixture completed"))),new ModelResponse.Usage(1,1),"end_turn"); }
             }
             return new ModelResponse(Message.assistant(List.of(new ToolUseBlock("managed-fixture-"+step,name,input))),new ModelResponse.Usage(1,1),"tool_use");
