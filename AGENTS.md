@@ -78,6 +78,15 @@ sh scripts/build-sandbox.sh
 
 ## 7. 修改纪律与验证
 
+### Java 代码格式规范
+
+- 项目固定使用根目录 `java-formatter.xml` 中的 Eclipse Formatter 配置，命令行与 VS Code 编辑器共用同一份配置；编辑器通过 `JadeCode.code-workspace` 加载。
+- 使用 `python3 scripts/format-java.py 文件.java ...` 直接调用本机已安装的 VS Code Java 扩展内置的 Eclipse JDT Formatter，无需通过编辑器界面触发；`--check` 只检查、不写入。
+- 所有新增或修改的 Java 文件，提交前必须使用 Formatter 统一格式化，并检查格式化后的差异。
+- 代码应保持清晰的缩进、空格和换行，字段、构造器、方法和分支正常展开；不得以沿用旧代码风格为由继续将多条语句挤在同一行。
+
+### 修改与验证要求
+
 - 修改前读取实际文件和 Git 状态，保护用户未提交工作，只做当前任务内最小、局部、可解释的改动；不顺手重构、补功能、升级依赖或创建未要求的 abstraction。
 - 发现范围外问题或归属不明文件，只报告，不删除、移动、恢复、修复、暂存、提交或加入 `.gitignore`。
 - 保持 Java 21 与现有项目风格；公共 API、wire format、安全边界和失败语义必须有明确契约。未实现分支使用明确占位或失败，不以假成功、静默 no-op 或跳过安全检查伪装能力，也不用“让编译通过”补完未授权核心 TODO。

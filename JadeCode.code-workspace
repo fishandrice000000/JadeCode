@@ -1,0 +1,14 @@
+{
+    "folders": [
+        {
+            "path": "."
+        }
+    ],
+    "settings": {
+        "java.format.settings.url": "${workspaceFolder}/java-formatter.xml",
+        "java.format.settings.profile": "JadeCode",
+        "[java]": {
+            "editor.defaultFormatter": "redhat.java"
+        }
+    }
+}

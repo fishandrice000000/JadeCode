@@ -211,6 +211,19 @@ Agent 在文件生成完成后调用 `publish_result`，例如 `{"paths":["outpu
 
 后端是 Maven 单模块，前端位于 `frontend/`；运行协议位于 `protocol/`。Pi 固定源码、项目补丁、原生模块和许可证保留在 `frontend/vendor/pi-tui/`。
 
+Java 使用根目录 `java-formatter.xml` 固定 Eclipse Formatter 配置：四空格缩进、120 列换行，展开构造器、方法与分支，保留现有注释段落排版。安装 VS Code 的 Red Hat Java 扩展后，用 VS Code 打开 `JadeCode.code-workspace`，编辑器即使用同一份配置；已有文件夹级 Formatter 设置时，也需指向此配置及 `JadeCode` profile。
+
+命令行直接使用扩展内置的 Eclipse JDT Formatter 与运行时，不改变项目的 Java 21 Toolchain，也不需要启动编辑器。脚本自动查找本机 `.vscode-server`、`.vscode` 和 `.vscode-insiders` 下的扩展；可用 `JADECODE_JAVA_EXTENSION` 指定扩展目录。
+
+```sh
+# 格式化指定文件；所有新增或修改的 Java 文件提交前均需执行并检查 diff。
+python3 scripts/format-java.py src/main/java/com/jadecode/Main.java
+python3 scripts/format-java.py --check src/main/java/com/jadecode/Main.java
+
+# 格式化 Git 跟踪的全部 Java 文件（包含 scripts/ 中的适配器）。
+git ls-files -z -- '*.java' | xargs -0 python3 scripts/format-java.py
+```
+
 ```sh
 # 后端：编译、单元测试与 JAR 打包
 mvn --batch-mode --no-transfer-progress clean verify
