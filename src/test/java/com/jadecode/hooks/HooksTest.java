@@ -93,4 +93,48 @@ class HooksTest {
         Map<String, Object> params = Map.of("a", "hi", "n", 1);
         assertEquals("hi1", hooks.trigger("CustomEvent", params));
     }
+
+    /** 通知的返回文字没有控制意义，不能让后续订阅者丢失执行事实。 */
+    @Test
+    void notificationResultsDoNotShortCircuitSubscribers() {
+        Hooks hooks = new Hooks();
+        List<String> calls = new ArrayList<>();
+        hooks.register(Hooks.POST_TOOL_USE, params -> {
+            calls.add("first");
+            return "ignored notification result";
+        });
+        hooks.register(Hooks.POST_TOOL_USE, params -> {
+            calls.add("second");
+            return null;
+        });
+        assertNull(hooks.trigger(Hooks.POST_TOOL_USE, Map.of()));
+        assertEquals(List.of("first", "second"), calls);
+    }
+
+    /** 权限 Hook 的异常必须交回执行器，不能被吞掉并作为已获许可继续。 */
+    @Test
+    void permissionFailureIsNeverConvertedToApproval() {
+        Hooks hooks = new Hooks();
+        hooks.register(Hooks.PRE_TOOL_USE, params -> {
+            throw new IllegalStateException("permission failed");
+        });
+        assertThrows(IllegalStateException.class, () -> hooks.trigger(Hooks.PRE_TOOL_USE, Map.of()));
+    }
+
+    /** 权限检查先于预装的扩展；拒绝时扩展既不能显示假执行，也不能放行。 */
+    @Test
+    void trustedGuardRunsBeforePreinstalledExtensions() {
+        var hooks = new Hooks();
+        var calls = new java.util.ArrayList<String>();
+        hooks.register(Hooks.PRE_TOOL_USE, params -> {
+            calls.add("extension");
+            return null;
+        });
+        hooks.registerFirst(Hooks.PRE_TOOL_USE, params -> {
+            calls.add("permission");
+            return "blocked";
+        });
+        assertEquals("blocked", hooks.trigger(Hooks.PRE_TOOL_USE, java.util.Map.of()));
+        assertEquals(java.util.List.of("permission"), calls);
+    }
 }

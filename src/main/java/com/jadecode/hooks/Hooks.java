@@ -8,9 +8,9 @@ import java.util.Map;
 /**
  * 保存一些在特定时刻要调用的函数，比如执行工具前查权限、执行后显示结果。
  *
- * <p>register 把函数加进表，trigger 按加入顺序执行。某函数返回非 null 就不再调用后面的。
+ * <p>register 把函数加进表，trigger 按加入顺序执行；能否短路由事件的控制契约决定。
  * PreToolUse 返回文字表示拒绝这次工具调用；Stop 返回文字表示任务还没做完，
- * 要把这段提示交给模型继续；其它事件的返回文字虽然通常不用，也会使后面的函数不再执行。</p>
+ * 要把这段提示交给模型继续；内置通知忽略返回值并通知全部订阅者；自定义事件保留首个非 null 短路。</p>
  *
  * <p>这些函数在调用 trigger 的同一线程执行，不是任务队列，也不自动开线程。
  * 父 history 由 SessionRuntime 修改，子 Agent 修改自己的消息列表；
@@ -45,6 +45,10 @@ public class Hooks {
      */
     public static final String PARAM_CONTEXT = "executionContext";
 
+    /** 内置通知没有控制返回值；权限检查、Stop 与自定义事件仍支持短路。 */
+    private static final java.util.Set<String> NOTIFICATIONS = java.util.Set.of(USER_PROMPT_SUBMIT,
+            POST_TOOL_USE, SUBAGENT_START, SUBAGENT_TOOL, SUBAGENT_END, TURN_END);
+
     // 每个事件名对应一组函数，按加入顺序保存。
     private final Map<String, List<Hook>> registry = new HashMap<>();
 
@@ -67,7 +71,7 @@ public class Hooks {
          * <li>SubagentEnd：output 是最终文字，outcome 是 DONE/STOPPED/FAILED。</li>
          * </ul>
          * @param params 当前事件的参数表，只读，不保证每次都有 executionContext
-         * @return 拒绝原因或让模型继续的提示；其它情况返回 null，避免阻止后面的函数
+         * @return 拒绝原因或让模型继续的提示；内置通知的返回值不参与控制，自定义事件仍以非 null 短路
          */
         String run(Map<String, ?> params);
     }
@@ -88,10 +92,18 @@ public class Hooks {
     }
 
     /**
-     * 按注册顺序在当前线程执行函数，遇到第一个非 null 返回值就停止。
+     * 装配阶段把可信控制检查放在现有扩展之前，例如权限闸门必须先于展示与用户扩展。
+     * 只改变指定事件的首位，其余注册顺序不变；不执行回调，不允许运行中并发修改。
+     */
+    public void registerFirst(String event, Hook hook) {
+        registry.computeIfAbsent(event, ignored -> new ArrayList<>()).addFirst(hook);
+    }
+
+    /**
+     * 按注册顺序同步执行。内置通知广播全部回调，控制事件和自定义事件遇非 null 停止。
      * @param event 这次发生的事件名
      * @param params 给函数读取的参数，不保证每个事件都有任务信息
-     * @return 第一段非 null 文字；没有函数或全返回 null 时为 null，怎样使用由调用者决定
+     * @return 控制事件和自定义事件的首个非 null 结果；内置通知始终返回 null
      * @throws RuntimeException 某函数意外抛异常，原样交给调用者，不当作检查通过
      */
     public String trigger(String event, Map<String, ?> params) {
@@ -101,10 +113,10 @@ public class Hooks {
         }
         for (Hook hook : hooks) {
             String result = hook.run(params); // lambda 的身体在这里执行
-            if (result != null) {
-                return result; // 已经返回了处理意见，不再运行后面的函数。
+            if (result != null && !NOTIFICATIONS.contains(event)) {
+                return result; // 只有具有控制含义的结果才能终止后续回调。
             }
         }
-        return null; // 所有函数都没返回处理意见。
+        return null; // 通知广播完成，或者没有产生控制结果。
     }
 }
