@@ -54,31 +54,22 @@ public class GlobTool implements Tool {
     /**
      * @return pattern 必填，root 为可选目录路径；两者均为字符串
      */
-    @Override
-    public Map<String, String> properties() {
+
+    private Map<String, String> properties() {
         return Map.of("pattern", "string", "root", "string");
     }
 
     /**
      * @return 必填 [pattern]
      */
-    @Override
-    public List<String> required() {
+
+    private List<String> required() {
         return List.of("pattern");
     }
 
-    /**
-     * 按 required() 检查缺失参数，再按指定 root 收集相对路径。
-     *
-     * @param input 模型参数,须含 pattern 字符串
-     * @return 匹配的路径列表文本;无匹配 "(no matches)";错误 "Error: ..." 文案
+    /** 将匹配内容与 IO 状态分开，文件名中的 Error 不参与权限/失败判断。 * @param context Harness 提供的任务上下文；不从模型参数读取，离线只读调用可按工具契约传 null
+     * @param input 模型参数对象，只读取；具体字段由工具自行校验
      */
-    @Override
-    public String execute(ObjectNode input) {
-        return executeOutcome(input, null).content();
-    }
-
-    /** 将匹配内容与 IO 状态分开，文件名中的 Error 不参与权限/失败判断。 */
     @Override
     public ToolOutcome executeOutcome(ObjectNode input, com.jadecode.execution.ExecutionContext context) {
         for (String key : required()) {
@@ -147,5 +138,11 @@ public class GlobTool implements Tool {
         if (omitted[0])
             shown.add("... (unreadable paths omitted)");
         return new ToolOutcome(String.join("\n", shown), false);
+    }
+
+    /** 提供完整参数结构；标量构造器只负责组装 Schema，不授予执行权限。 */
+    @Override
+    public com.fasterxml.jackson.databind.node.ObjectNode inputSchema() {
+        return com.jadecode.tools.ToolSchema.objectSchema(properties(), required());
     }
 }

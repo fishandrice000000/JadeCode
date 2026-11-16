@@ -6,7 +6,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutionException;
 
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -156,13 +155,7 @@ public final class BridgeApproval implements Approval, AutoCloseable {
         payload.put("cwd", request.cwd() == null ? "" : request.cwd().toString());
         payload.put("revision", Long.toString(request.revision()));
         String input = request.input() == null ? "{}" : request.input().toString();
-        if (input.length() > 4096) {
-            payload.put("inputJson", "");
-            payload.put("inputBlobRef",
-                    wire.payloads().sendText("approval-input", input, wire.sessionId(), wire.generation(), "approval"));
-        } else {
-            payload.put("inputJson", input);
-        }
+        payload.put("inputJson", input);
         if (request.suggestion() == null) {
             payload.putNull("suggestionId");
             payload.putNull("suggestionScope");

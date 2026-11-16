@@ -4,8 +4,6 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.List;
-import java.util.Map;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jadecode.skills.SkillLoader;
@@ -47,8 +45,8 @@ class LoadSkillToolTest {
     void definesLoadSkillToolContract() {
         assertEquals("load_skill", tool.name());
         assertEquals("Load the full SKILL.md content by skill name.", tool.description());
-        assertEquals(Map.of("name", "string"), tool.properties());
-        assertEquals(List.of("name"), tool.required());
+        assertEquals("string", tool.inputSchema().path("properties").path("name").path("type").asText());
+        assertEquals("name", tool.inputSchema().path("required").get(0).asText());
 
         ObjectNode schema = tool.inputSchema(); // required 必须是 properties 的子集,否则这里会抛
         assertEquals("object", schema.get("type").asText());
@@ -61,25 +59,39 @@ class LoadSkillToolTest {
     @Test
     void missingNameReturnsError() {
         assertEquals("Error: Missing required parameter: name",
-                tool.execute(Json.mapper().createObjectNode()));
+                tool.executeOutcome(Json.mapper().createObjectNode(), null).content());
     }
 
     /** ③ 命中:原样透传完整 SKILL.md 原文 */
     @Test
     void hitReturnsRawContent() {
-        assertEquals(RAW, tool.execute(input("name", "alpha")));
+        assertEquals(RAW, tool.executeOutcome(input("name", "alpha"), null).content());
     }
 
     /** ④ 未命中:原样透传 loader 的未知技能文案(工具层不改写) */
     @Test
     void missPassesThroughLoaderMessage() {
         assertEquals("Error: Unknown skill 'nope'. Available: alpha",
-                tool.execute(input("name", "nope")));
+                tool.executeOutcome(input("name", "nope"), null).content());
     }
 
     /** ⑤ 空串名字:过得了缺参检查,走 registry 未命中 */
     @Test
     void blankNameFallsThroughToRegistryMiss() {
-        assertEquals("Error: Unknown skill ''. Available: alpha", tool.execute(input("name", "")));
+        assertEquals("Error: Unknown skill ''. Available: alpha",
+                tool.executeOutcome(input("name", ""), null).content());
+    }
+
+    /** 正常文件可以以 Error 开头；只有查表失败才设置 isError。 */
+    @Test
+    void errorLookingSkillContentStillSucceeds() throws IOException {
+        Path directory = Files.createDirectories(ws.resolve("skills/error-example"));
+        String content = "Error: example text in a real skill";
+        Files.writeString(directory.resolve("SKILL.md"), content);
+        var loader = new LoadSkillTool(new SkillLoader(ws.resolve("skills")));
+        var success = loader.executeOutcome(input("name", "error-example"), null);
+        assertEquals(content, success.content());
+        assertFalse(success.isError());
+        assertTrue(loader.executeOutcome(input("name", "missing"), null).isError());
     }
 }

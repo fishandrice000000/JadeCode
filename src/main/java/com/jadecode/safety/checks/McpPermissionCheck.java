@@ -43,6 +43,6 @@ public final class McpPermissionCheck {
         }
         // hostReadOnly 来自用户配置中的原始工具名白名单；没有声明就不能靠名字 search/get 自动放行。
         return new Analysis(modelName, resolver.workspaceReal(), List.of(), List.of(), !identity.hostReadOnly(),
-                identity.hostReadOnly(), !identity.hostReadOnly(), error);
+                identity.hostReadOnly(), !identity.hostReadOnly(), error, "");
     }
 }

@@ -83,7 +83,7 @@ class HistoryCompactorTest {
 
     /** 预置一条 assistant 回复 */
     private static ModelResponse assistant(ContentBlock... blocks) {
-        return new ModelResponse(Message.assistant(List.of(blocks)), new ModelResponse.Usage(0, 0));
+        return new ModelResponse(Message.assistant(List.of(blocks)), new ModelResponse.Usage(0, 0, 0, 0), "");
     }
 
     /** 取摘要消息(结果列表里唯一那条 user 文本消息)的正文 */
@@ -252,13 +252,13 @@ class HistoryCompactorTest {
         List<Message> messages = List.of(
                 Message.userText("看一下项目"),
                 Message.assistant(List.of(new TextBlock("先跑一条"), use("t1"))),
-                Message.userBlocks(List.of(new ToolResultBlock("t1", "结果一"))),
+                Message.userBlocks(List.of(new ToolResultBlock("t1", "结果一", false))),
                 Message.assistant(List.of(new TextBlock("读完了"))));
         String activeRequest = "  把 \"结果\" 汇总一下  "; // 含多余空格与引号:必须原样出现
         String summary = "目标:汇总\n决定:保留 \"原文\"\\路径";
 
         AtomicLong archiveLinesWhenCalled = new AtomicLong(-1);
-        LlmClient orderingClient = request -> {
+        LlmClient orderingClient = (request, ignoredStream) -> {
             archiveLinesWhenCalled.set(archivedLineCount()); // 调模型的那一刻,归档必须已经写好
             return assistant(new TextBlock(summary));
         };
@@ -294,7 +294,7 @@ class HistoryCompactorTest {
     @Test
     void compactAllKeepsArchiveWhenSummaryCallFails() {
         List<Message> messages = escapedHistory();
-        LlmClient failing = request -> {
+        LlmClient failing = (request, ignoredStream) -> {
             throw new LlmException("summary boom");
         };
         HistoryCompactor compactor = compactor(failing);
@@ -334,7 +334,7 @@ class HistoryCompactorTest {
                 Message.userText("开始"),
                 Message.assistant(List.of(new TextBlock("先跑一条"), use("old-0"))),
                 Message.userBlocks(List.of(new TextBlock("<reminder>Update your todos.</reminder>"),
-                        new ToolResultBlock("old-0", "旧结果"))),
+                        new ToolResultBlock("old-0", "旧结果", false))),
                 Message.assistant(List.of(new TextBlock("已经读过旧结果"))));
     }
 
@@ -342,8 +342,9 @@ class HistoryCompactorTest {
     private static List<Message> freshTail() {
         return List.of(
                 Message.assistant(List.of(new TextBlock("再跑两条"), use("f1"), use("f2"))),
-                Message.userBlocks(List.of(new ToolResultBlock("f1", "新鲜一"), new ToolResultBlock("f2", "新鲜二"),
-                        new TextBlock("<reminder>Update your todos.</reminder>"))));
+                Message.userBlocks(
+                        List.of(new ToolResultBlock("f1", "新鲜一", false), new ToolResultBlock("f2", "新鲜二", false),
+                                new TextBlock("<reminder>Update your todos.</reminder>"))));
     }
 
     @Test
@@ -411,7 +412,7 @@ class HistoryCompactorTest {
         List<Message> input = List.copyOf(mutable);
         String before = ContextSerialization.toJson(input);
         LlmException fixed = new LlmException("预置摘要失败");
-        RecordingLlmClient client = new RecordingLlmClient(request -> {
+        RecordingLlmClient client = new RecordingLlmClient((request, ignoredStream) -> {
             throw fixed;
         });
 
@@ -433,7 +434,7 @@ class HistoryCompactorTest {
         List<Message> messages = List.of(
                 Message.userText("开始"),
                 Message.assistant(List.of(use("old-0"))),
-                Message.userBlocks(List.of(new ToolResultBlock("old-0", "旧结果"))),
+                Message.userBlocks(List.of(new ToolResultBlock("old-0", "旧结果", false))),
                 Message.userText("继续问一句"));
         RecordingLlmClient recording = new RecordingLlmClient(
                 new ScriptedLlmClient(assistant(new TextBlock("整段摘要"))));
@@ -479,7 +480,7 @@ class HistoryCompactorTest {
     void compactHistoryWithOnlyFreshExchangeReturnsInputWithoutIoOrModelCall() throws LlmException {
         List<Message> messages = List.of(
                 Message.assistant(List.of(use("f1"))),
-                Message.userBlocks(List.of(new ToolResultBlock("f1", "新鲜结果"))));
+                Message.userBlocks(List.of(new ToolResultBlock("f1", "新鲜结果", false))));
         RecordingLlmClient recording = new RecordingLlmClient(new ScriptedLlmClient(assistant(new TextBlock("s"))));
         HistoryCompactor compactor = compactor(recording);
 
@@ -493,8 +494,8 @@ class HistoryCompactorTest {
 
     @Test
     void contextCompactorDelegatesHistoryCompaction() throws LlmException {
-        // 现成的薄委托必须可达(不改 ContextCompactor 的实现)。
-        ContextCompactor compactor = new ContextCompactor(
+        // 现成的薄委托必须可达(不改 CourseCompactor 的实现)。
+        CourseCompactor compactor = new com.jadecode.context.CourseCompactor(
                 new ScriptedLlmClient(assistant(new TextBlock("摘要一")), assistant(new TextBlock("摘要二"))),
                 transcriptDir,
                 workspace.resolve("outputs"), limits(50_000, 0.8, 1000, 100_000, 100));
@@ -505,7 +506,7 @@ class HistoryCompactorTest {
         List<Message> withFreshTail = List.of(
                 Message.userText("hi"),
                 Message.assistant(List.of(use("f1"))),
-                Message.userBlocks(List.of(new ToolResultBlock("f1", "新鲜"))));
+                Message.userBlocks(List.of(new ToolResultBlock("f1", "新鲜", false))));
 
         List<Message> compacted = compactor.compactHistory(withFreshTail, "req");
 
@@ -524,12 +525,13 @@ class HistoryCompactorTest {
         // 情形 A:确定性层(fit)能把结果换成可恢复外壳 → 不调用摘要模型。
         RecordingLlmClient shrunken = new RecordingLlmClient(
                 new ScriptedLlmClient(assistant(new TextBlock("不该被调用"))));
-        ContextCompactor fitting = new ContextCompactor(shrunken, transcriptDir, toolResultsDir, small,
+        CourseCompactor fitting = new com.jadecode.context.CourseCompactor(shrunken, transcriptDir, toolResultsDir,
+                small,
                 CompactionPolicy.coursePipeline());
         List<Message> shrinkable = List.of(
                 Message.userText("开始"),
                 Message.assistant(List.of(use("t1"))),
-                Message.userBlocks(List.of(new ToolResultBlock("t1", "x".repeat(4000)))));
+                Message.userBlocks(List.of(new ToolResultBlock("t1", "x".repeat(4000), false))));
 
         List<Message> fitted = fitting.prepare(shrinkable, "req");
 
@@ -541,7 +543,8 @@ class HistoryCompactorTest {
         // 情形 B:整段都是普通文本,前三层都动不了 → 第四层整段摘要,且请求不带工具。
         RecordingLlmClient summarized = new RecordingLlmClient(
                 new ScriptedLlmClient(assistant(new TextBlock("真的摘要了"))));
-        ContextCompactor summarizing = new ContextCompactor(summarized, transcriptDir, toolResultsDir, small,
+        CourseCompactor summarizing = new com.jadecode.context.CourseCompactor(summarized, transcriptDir,
+                toolResultsDir, small,
                 CompactionPolicy.coursePipeline());
         List<Message> unsquashable = List.of(
                 Message.userText("开始"),

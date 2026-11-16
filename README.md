@@ -30,6 +30,13 @@ JadeCode 将模型的决策连接到文件、Shell、权限审批与任务状态
 
 模型是否正确完成任务，仍需结合实际 diff、工具结果和测试判断。
 
+## 配置与历史格式
+
+当前 `config.json` 必须声明 `"version": 1`，仅接受当前 Token 压缩字段；可选设置仍可局部覆盖。
+启动读取不再迁移 `tui.json` 或旧 `compaction.limits`。可参考 `config.example.json` 手动更新配置，程序不会改写或删除旧文件。
+会话清单和日志仅接受 v5；自定义主题必须声明 `"schemaVersion": 2` 并包含 dark/light 双变体，缺少颜色角色仍使用语义继承。
+Workflow 使用 `workflow-runner-v2` 缓存身份；旧缓存不能恢复，需新建流程运行，原文件保留。
+
 ## 快速开始
 
 ### 1. 准备环境
@@ -244,3 +251,11 @@ GitHub Actions 分别检查 Java 与前端，不调用真实模型，也不自�
 - [learn-claude-code](https://github.com/shareAI-lab/learn-claude-code)：Agent Harness 课程与学习起点。
 - [Pi](https://github.com/badlogic/pi-mono)：终端前端基础；固定副本的许可证见 [Pi LICENSE](frontend/vendor/pi-tui/LICENSE)。
 - Anthropic Java SDK、MCP Java SDK，以及构建文件列出的其他依赖；成套产物附带前端依赖许可证。
+
+## 执行与扩展契约
+
+CLI 的交互与 headless 模式都通过常驻服务创建会话。会话负责历史、队列与 Todo 提醒；每次子任务创建自己的 AgentExecutor，复用模型请求、工具执行和压缩步骤，保留独立历史、思考快照与 30 轮上限。正式请求和摘要用量按实际 Agent 归属统计。
+
+自定义工具提供完整 `inputSchema()`，通过 `executeOutcome(input, context)` 返回正文和明确的错误标志。模型客户端统一使用 `complete(request, stream)`；无需展示时传 `ResponseStream.NONE`。运行消息分别携带身份、标签、正文与错误状态，正文中的标签文字不参与身份解析。
+
+权限审批继续接入 `PreToolUse` Hook：首个非 null 返回值阻止工具执行；`Stop` 首个非 null 返回值要求继续。内置通知广播全部订阅者并忽略返回值，自定义事件保留原有短路规则。生产 Token 压缩与课程字符压缩分别由 `ProductionCompactor`、`CourseCompactor` 实现，通过 `ContextCompactor` 接入执行器。

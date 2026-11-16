@@ -5,7 +5,7 @@ package com.jadecode.llm;
  *
  * <p>每次请求（包括重试）使用新对象，不能把它放在共享 LlmClient 的可变字段中，否则
  * Leader 和队友会把文字写进彼此的界面。文本片段只是预览；完整消息仍由客户端返回。
- * 签名、加密思考与工具参数不通过这个接口显示。</p>
+ * 签名与加密思考不显示；工具参数预览只供查看，不能触发执行。</p>
  */
 public interface ResponseStream {
     /** 不展示的调用使用此对象；队友和辅助请求不因此改变自己的消息协议。 */
@@ -22,7 +22,7 @@ public interface ResponseStream {
 
     /**
      * 每次正式请求尝试开始时调用；retry 必须生成新 ID。
-     * 默认无操作，旧调用方不需要实现。
+     * 无展示或不关心请求开始的接收者可以使用空实现。
      */
     default void requestStarted(String requestId) {
     }
@@ -51,23 +51,13 @@ public interface ResponseStream {
      * @param stopReason 服务端真实停止原因；unknown 保持原值，不能根据正文猜
      */
     default void complete(String stopReason) {
-        complete();
-    }
-
-    /** 完整响应已拼好并通过调用方校验，结束预览；不是任务或工具执行成功。 */
-    default void complete() {
-    }
-
-    /** 请求或完整响应校验失败，结束预览并标明不完整；不能将预览当成有效历史。 */
-    default void failed() {
     }
 
     /**
      * 失败时仍传递服务端已报告的停止原因，让界面区分输出截断与一般请求错误。
-     * 默认委托旧 failed，旧展示实现仍能收到一次失败通知；不采用消息或执行工具。
+     * 不采用消息或执行工具；没有取得停止原因时由调用者显式传入空串。
      * @param stopReason 已取得的真实停止原因；没有完整响应时传空串，不根据异常文字猜测
      */
     default void failed(String stopReason) {
-        failed();
     }
 }

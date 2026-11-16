@@ -117,8 +117,8 @@ public class AnthropicSdkLlmClient implements LlmClient {
      * @return 转回内部类型后的响应（assistant 消息 + token 用量）
      * @throws LlmException 服务端错误(带 HTTP 状态码)或网络类异常(状态码 0)
      */
-    @Override
-    public ModelResponse complete(CompleteRequest request) throws LlmException {
+
+    private ModelResponse completeNonStreaming(CompleteRequest request) throws LlmException {
         com.anthropic.models.messages.MessageCreateParams params = toParams(request);
         try {
             return toResponse(client.messages().create(params));
@@ -145,6 +145,10 @@ public class AnthropicSdkLlmClient implements LlmClient {
      */
     @Override
     public ModelResponse complete(CompleteRequest request, ResponseStream display) throws LlmException {
+        java.util.Objects.requireNonNull(display, "display");
+        // NONE 明确选择普通请求：辅助调用不创建事件流，也不伪造增量片段。
+        if (display == ResponseStream.NONE)
+            return completeNonStreaming(request);
         MessageAccumulator accumulator = MessageAccumulator.create();
         Map<Long, StringBuilder> toolJson = new HashMap<>();
         var openBlocks = new HashSet<Long>();

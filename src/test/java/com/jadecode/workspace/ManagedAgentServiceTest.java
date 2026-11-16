@@ -27,11 +27,11 @@ class ManagedAgentServiceTest {
         var paths = new JadePaths(root.resolve("data"));
         paths.directory(paths.config(), true);
         Files.writeString(paths.config().resolve("config.json"),
-                "{\"memory\":{\"enabled\":false},\"modelMetadata\":{\"autoDiscover\":false}}");
+                "{\"version\":1,\"memory\":{\"enabled\":false},\"modelMetadata\":{\"autoDiscover\":false}}");
         var settings = new JadeConfigFile(paths.config().resolve("config.json")).load();
         var resource = new AtomicReference<String>();
         var calls = new AtomicInteger();
-        LlmClient model = request -> {
+        LlmClient model = (request, ignoredStream) -> {
             ToolExchangeProtocol.validateHistory(request.messages());
             for (Message message : request.messages())
                 for (ContentBlock block : message.content())
@@ -59,16 +59,18 @@ class ManagedAgentServiceTest {
                 }
                 default -> {
                     return new ModelResponse(Message.assistant(List.of(new TextBlock("fixture completed"))),
-                            new ModelResponse.Usage(1, 1), "end_turn");
+                            new ModelResponse.Usage(1, 1, 0, 0), "end_turn");
                 }
             }
             return new ModelResponse(
                     Message.assistant(List.of(new ToolUseBlock("managed-fixture-" + step, name, input))),
-                    new ModelResponse.Usage(1, 1), "tool_use");
+                    new ModelResponse.Usage(1, 1, 0, 0), "tool_use");
         };
         try (var service = new AgentService(paths, "fixture-managed",
                 (workspace, permissions, configuration) -> new RuntimeFactory(settings, permissions,
-                        new AppConfig("fixture", "http://127.0.0.1:9", "fixture", 128), model, paths))) {
+                        new AppConfig("fixture", "http://127.0.0.1:9", "fixture", 128,
+                                com.jadecode.config.ModelProvider.ANTHROPIC_COMPATIBLE),
+                        model, paths))) {
             String id = service.workspaceCommand(Json.mapper().createObjectNode().put("action", "create"))
                     .path("workspaceId").asText();
             Path source = Files.createDirectory(root.resolve("source"));

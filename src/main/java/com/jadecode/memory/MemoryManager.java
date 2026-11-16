@@ -109,14 +109,19 @@ public final class MemoryManager implements AutoCloseable {
         }
     }
 
+    /** 候选记忆的提交结果；是否失败由开关/落盘分支报告，不扫描候选正文。 */
+    public record NoteResult(String text, boolean error) {
+    }
+
     /** 工具只提交候选；独立整理器依据后端绑定原话核对，成功不代表正式库已改变。 */
-    public String note(String kind, String body, String turn) {
+    public NoteResult note(String kind, String body, String turn) {
         if (!enabled)
-            return "Error: Memory is disabled";
+            return new NoteResult("Error: Memory is disabled", true);
         try {
-            return maintenance.note(kind, body, turn);
+            return new NoteResult(maintenance.note(kind, body, turn), false);
         } catch (IOException | RuntimeException failure) {
-            return "Error: Pending memory note was not saved: " + failure.getClass().getSimpleName();
+            return new NoteResult("Error: Pending memory note was not saved: " + failure.getClass().getSimpleName(),
+                    true);
         }
     }
 

@@ -76,7 +76,7 @@ class TeamScopeRequestTest {
         var tools = new LinkedHashMap<String, Tool>();
         tools.put("dispatch", dispatch);
         TeamTools.forActor(team, TeamManager.LEADER).forEach(t -> tools.put(t.name(), t));
-        try (var leader = session(request -> {
+        try (var leader = session((request, ignoredStream) -> {
             if (leaderCalls.getAndIncrement() == 0)
                 return call("dispatch", "{}");
             boolean hasRequest = request.messages().stream()
@@ -91,7 +91,8 @@ class TeamScopeRequestTest {
         }, tools)) {
             team.bind(leader,
                     (id, role) -> session(
-                            request -> workerCalls.getAndIncrement() == 0 ? call("ask", "{}") : text("Available"),
+                            (request, ignoredStream) -> workerCalls.getAndIncrement() == 0 ? call("ask", "{}")
+                                    : text("Available"),
                             Map.of("ask", ask)));
             leader.onClose(team::close);
             leader.start();
@@ -142,43 +143,49 @@ class TeamScopeRequestTest {
                 return "Fixture action";
             }
 
-            public Map<String, String> properties() {
+            private Map<String, String> properties() {
                 return Map.of();
             }
 
-            public List<String> required() {
+            private List<String> required() {
                 return List.of();
             }
 
-            public String execute(ObjectNode input) {
-                throw new IllegalStateException("Context required");
-            }
-
-            public String execute(ObjectNode input, ExecutionContext context) {
+            public com.jadecode.tools.ToolOutcome executeOutcome(ObjectNode input, ExecutionContext context) {
                 try {
-                    return action.execute(input, context);
+                    return new com.jadecode.tools.ToolOutcome(action.execute(input, context), false);
                 } catch (Exception failure) {
                     throw new IllegalStateException(failure);
                 }
+            }
+
+            /** 提供完整参数结构；标量构造器只负责组装 Schema，不授予执行权限。 */
+            @Override
+            public com.fasterxml.jackson.databind.node.ObjectNode inputSchema() {
+                return com.jadecode.tools.ToolSchema.objectSchema(properties(), required());
             }
         };
     }
 
     private static SessionRuntime session(LlmClient client, Map<String, Tool> tools) {
-        return new SessionRuntime(new AgentExecutor(client, tools, "fixture", 1000, new Hooks()), ignored -> {
-        }, ignored -> {
-        });
+        return new com.jadecode.session.SessionRuntime(new com.jadecode.agent.AgentExecutor(client,
+                com.jadecode.tools.ToolCatalog.fixed(tools), "fixture", 1000, new Hooks(), null,
+                () -> com.jadecode.llm.ResponseStream.NONE, com.jadecode.execution.ExecutionObserver.NONE,
+                () -> com.jadecode.llm.ThinkingSettings.DEFAULT, () -> ""), null, null,
+                com.jadecode.support.TestMessages.toText(ignored -> {
+                }, ignored -> {
+                }));
     }
 
     private static ModelResponse text(String value) {
-        return new ModelResponse(Message.assistant(List.of(new TextBlock(value))), new ModelResponse.Usage(0, 0),
+        return new ModelResponse(Message.assistant(List.of(new TextBlock(value))), new ModelResponse.Usage(0, 0, 0, 0),
                 "end_turn");
     }
 
     private static ModelResponse call(String name, String input) {
         try {
             return new ModelResponse(Message.assistant(List.of(new ToolUseBlock("call_" + UUID.randomUUID(), name,
-                    (ObjectNode) Json.mapper().readTree(input)))), new ModelResponse.Usage(0, 0), "tool_use");
+                    (ObjectNode) Json.mapper().readTree(input)))), new ModelResponse.Usage(0, 0, 0, 0), "tool_use");
         } catch (Exception failure) {
             throw new IllegalArgumentException(failure);
         }

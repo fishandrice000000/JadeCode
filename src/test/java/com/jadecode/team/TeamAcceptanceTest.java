@@ -31,8 +31,8 @@ class TeamAcceptanceTest {
         var team = new TeamManager(paths, tasks, ignored -> {
         });
         var hold = new CountDownLatch(1);
-        try (var leader = session(request -> text("leader"))) {
-            team.bind(leader, (id, role) -> session(request -> {
+        try (var leader = session((request, ignoredStream) -> text("leader"))) {
+            team.bind(leader, (id, role) -> session((request, ignoredStream) -> {
                 try {
                     hold.await();
                 } catch (InterruptedException stop) {
@@ -78,13 +78,17 @@ class TeamAcceptanceTest {
     }
 
     private static SessionRuntime session(LlmClient client) {
-        return new SessionRuntime(new AgentExecutor(client, Map.of(), "fixture", 1000, new Hooks()), ignored -> {
-        }, ignored -> {
-        });
+        return new com.jadecode.session.SessionRuntime(new com.jadecode.agent.AgentExecutor(client,
+                com.jadecode.tools.ToolCatalog.fixed(Map.of()), "fixture", 1000, new Hooks(), null,
+                () -> com.jadecode.llm.ResponseStream.NONE, com.jadecode.execution.ExecutionObserver.NONE,
+                () -> com.jadecode.llm.ThinkingSettings.DEFAULT, () -> ""), null, null,
+                com.jadecode.support.TestMessages.toText(ignored -> {
+                }, ignored -> {
+                }));
     }
 
     private static ModelResponse text(String value) {
-        return new ModelResponse(Message.assistant(List.of(new TextBlock(value))), new ModelResponse.Usage(0, 0),
+        return new ModelResponse(Message.assistant(List.of(new TextBlock(value))), new ModelResponse.Usage(0, 0, 0, 0),
                 "end_turn");
     }
 }

@@ -38,7 +38,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * ContextCompactor.reactiveCompact 的行为测试:切点保护、前缀/尾部两个范围、
+ * CourseCompactor.reactiveCompact 的行为测试:切点保护、前缀/尾部两个范围、
  * 空前缀 no-op、归档与摘要的失败语义,以及输入对象图保真。
  *
  * <p>
@@ -70,8 +70,8 @@ class ReactiveCompactionTest {
                 d.snipHeadMessages(), d.targetRatio());
     }
 
-    private ContextCompactor compactor(LlmClient client, int keepRecentMessages) {
-        return new ContextCompactor(client, transcriptDir, workspace.resolve("tool-results"),
+    private CourseCompactor compactor(LlmClient client, int keepRecentMessages) {
+        return new com.jadecode.context.CourseCompactor(client, transcriptDir, workspace.resolve("tool-results"),
                 limits(keepRecentMessages, 100_000, 100));
     }
 
@@ -80,11 +80,11 @@ class ReactiveCompactionTest {
     }
 
     private static ToolResultBlock result(String id, String content) {
-        return new ToolResultBlock(id, content);
+        return new ToolResultBlock(id, content, false);
     }
 
     private static ModelResponse assistant(ContentBlock... blocks) {
-        return new ModelResponse(Message.assistant(List.of(blocks)), new ModelResponse.Usage(0, 0));
+        return new ModelResponse(Message.assistant(List.of(blocks)), new ModelResponse.Usage(0, 0, 0, 0), "");
     }
 
     /** 取响应式摘要消息的正文(结果列表的第一条) */
@@ -152,7 +152,7 @@ class ReactiveCompactionTest {
         List<Message> prefix = messages.subList(0, 4);
         RecordingLlmClient recording = new RecordingLlmClient(
                 new ScriptedLlmClient(assistant(new TextBlock("前缀摘要"))));
-        ContextCompactor compactor = compactor(recording, 5);
+        CourseCompactor compactor = compactor(recording, 5);
         String before = ContextSerialization.toJson(messages);
 
         List<Message> compacted = compactor.reactiveCompact(messages, "继续处理");
@@ -193,7 +193,7 @@ class ReactiveCompactionTest {
         List<Message> prefix = messages.subList(0, 1); // 前移一条:只摘掉下标 0
         RecordingLlmClient recording = new RecordingLlmClient(
                 new ScriptedLlmClient(assistant(new TextBlock("前置摘要"))));
-        ContextCompactor compactor = compactor(recording, 5);
+        CourseCompactor compactor = compactor(recording, 5);
 
         List<Message> compacted = compactor.reactiveCompact(messages, "req");
 
@@ -226,7 +226,7 @@ class ReactiveCompactionTest {
         List<Message> messages = nineMessageHistory();
         RecordingLlmClient recording = new RecordingLlmClient(
                 new ScriptedLlmClient(assistant(new TextBlock("摘要"))));
-        ContextCompactor compactor = compactor(recording, 2); // 注入 2,而不是默认 5
+        CourseCompactor compactor = compactor(recording, 2); // 注入 2,而不是默认 5
 
         List<Message> compacted = compactor.reactiveCompact(messages, "req");
 
@@ -244,11 +244,11 @@ class ReactiveCompactionTest {
         RecordingLlmClient recording = new RecordingLlmClient(
                 new ScriptedLlmClient(assistant(new TextBlock("不该被调用"))));
         AtomicInteger calls = new AtomicInteger();
-        LlmClient counting = request -> {
+        LlmClient counting = (request, ignoredStream) -> {
             calls.incrementAndGet();
-            return recording.complete(request);
+            return recording.complete(request, com.jadecode.llm.ResponseStream.NONE);
         };
-        ContextCompactor compactor = compactor(counting, 5);
+        CourseCompactor compactor = compactor(counting, 5);
 
         // 空历史
         List<Message> empty = List.of();
@@ -283,13 +283,14 @@ class ReactiveCompactionTest {
         AtomicLong archivedLinesAtCall = new AtomicLong(-1);
         AtomicReference<CompleteRequest> captured = new AtomicReference<>();
         AtomicInteger calls = new AtomicInteger();
-        LlmClient client = request -> {
+        LlmClient client = (request, ignoredStream) -> {
             calls.incrementAndGet();
             captured.set(request);
             archivedLinesAtCall.set(archivedLineCount()); // 调模型时归档必须已经写好
             return assistant(new TextBlock("前缀摘要"));
         };
-        ContextCompactor compactor = new ContextCompactor(client, transcriptDir, workspace.resolve("tool-results"),
+        CourseCompactor compactor = new com.jadecode.context.CourseCompactor(client, transcriptDir,
+                workspace.resolve("tool-results"),
                 limits(5, 100_000, 7));
 
         compactor.reactiveCompact(messages, "继续处理");
@@ -317,7 +318,7 @@ class ReactiveCompactionTest {
         List<Message> messages = nineMessageHistory();
         String activeRequest = "  请总结 \"这一阶段\"  \n"; // 首尾空白与引号必须原样保留
         String summary = "目标:收尾\n决定:保留 \"原文\"\\路径";
-        ContextCompactor compactor = compactor(
+        CourseCompactor compactor = compactor(
                 new ScriptedLlmClient(assistant(new TextBlock(summary))), 5);
 
         List<Message> compacted = compactor.reactiveCompact(messages, activeRequest);
@@ -344,7 +345,7 @@ class ReactiveCompactionTest {
         List<Message> messages = nineMessageHistory();
         RecordingLlmClient recording = new RecordingLlmClient(
                 new ScriptedLlmClient(assistant(new TextBlock("不该被调用"))));
-        ContextCompactor compactor = compactor(recording, 5);
+        CourseCompactor compactor = compactor(recording, 5);
         String before = ContextSerialization.toJson(messages);
 
         IllegalStateException error = assertThrows(IllegalStateException.class,
@@ -363,11 +364,11 @@ class ReactiveCompactionTest {
         List<Message> messages = nineMessageHistory();
         LlmException boom = new LlmException("summary boom");
         AtomicInteger calls = new AtomicInteger();
-        LlmClient failing = request -> {
+        LlmClient failing = (request, ignoredStream) -> {
             calls.incrementAndGet();
             throw boom;
         };
-        ContextCompactor compactor = compactor(failing, 5);
+        CourseCompactor compactor = compactor(failing, 5);
         String before = ContextSerialization.toJson(messages);
 
         LlmException thrown = assertThrows(LlmException.class,
@@ -388,7 +389,7 @@ class ReactiveCompactionTest {
         List<Message> messages = new ArrayList<>(List.of(
                 Message.userText("开始"),
                 Message.assistant(List.of(use("a-1"))),
-                new Message(Role.USER, resultBlocks),
+                new Message(Role.USER, resultBlocks, null),
                 Message.assistant(List.of(new TextBlock("已读"))),
                 Message.userText("第 4 条"),
                 Message.assistant(List.of(new TextBlock("继续"))),
@@ -396,7 +397,7 @@ class ReactiveCompactionTest {
                 Message.assistant(List.of(new TextBlock("再继续"))),
                 Message.userText("收尾")));
         String before = ContextSerialization.toJson(messages);
-        ContextCompactor compactor = compactor(new ScriptedLlmClient(assistant()), 5); // 成功但没有正文
+        CourseCompactor compactor = compactor(new ScriptedLlmClient(assistant()), 5); // 成功但没有正文
 
         List<Message> compacted = compactor.reactiveCompact(messages, "req");
 
@@ -408,7 +409,8 @@ class ReactiveCompactionTest {
         // 失败路径同样不得改动可变输入。
         Path blockedDir = workspace.resolve("blocked-transcripts");
         Files.writeString(blockedDir, "占位文件"); // 用普通文件占住归档目录位置
-        ContextCompactor failing = new ContextCompactor(new ScriptedLlmClient(assistant()), blockedDir,
+        CourseCompactor failing = new com.jadecode.context.CourseCompactor(new ScriptedLlmClient(assistant()),
+                blockedDir,
                 workspace.resolve("tool-results"), limits(5, 100_000, 100));
         assertThrows(IllegalStateException.class, () -> failing.reactiveCompact(messages, "req"));
         assertEquals(before, ContextSerialization.toJson(messages), "失败路径不得改动可变输入");

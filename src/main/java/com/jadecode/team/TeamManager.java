@@ -661,11 +661,6 @@ public final class TeamManager implements AutoCloseable {
         changed(a.owner, a.id, "Report delivery failed", a.deliveryError, "ERROR");
     }
 
-    /** 兼容仅记录失败/受阻报告意见的调用；成功报告必须显式决定接受或返工。 */
-    public synchronized String review(String id, String reportId, String notes) throws IOException {
-        return review(id, reportId, "note", notes);
-    }
-
     /**
      * 验收固定报告。先保存决定，再更新任务；若跨文件更新失败，相同决定可续办。
      * 拒绝恢复 pending 并移除当前派工；新 assign 生成新 ID，旧报告与意见仍保留。

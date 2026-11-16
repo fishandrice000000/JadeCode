@@ -49,29 +49,17 @@ public class SubagentTool implements Tool {
     /**
      * @return 单参数 prompt(string)
      */
-    @Override
-    public Map<String, String> properties() {
+
+    private Map<String, String> properties() {
         return Map.of("prompt", "string");
     }
 
     /**
      * @return 必填 [prompt]
      */
-    @Override
-    public List<String> required() {
-        return List.of("prompt");
-    }
 
-    /**
-     * 旧调用者不传任务信息时使用，创建没有询问用户功能的 USER 任务。
-     * CLI 应调用双参数版本，把真正的任务来源和会话是否退出也传给子 Agent。
-     * @param input 模型参数，要有 prompt，不修改
-     * @return 子 Agent 的最终文字、轮数用完提示或 Error 说明，不在此修改父 history
-     * @see #execute(ObjectNode, ExecutionContext)
-     */
-    @Override
-    public String execute(ObjectNode input) {
-        return execute(input, ExecutionContext.create(ExecutionContext.Source.USER, null));
+    private List<String> required() {
+        return List.of("prompt");
     }
 
     /**
@@ -81,24 +69,30 @@ public class SubagentTool implements Tool {
      * 子 Agent 也用相同的方法检查会话是否退出，免得模型回复较晚，退出后还去执行工具。</p>
      * @param input 非 null 参数对象，prompt 沿用 asText 转换方式；不修改输入
      * @param context 非 null 的父任务信息；保留真实用户目标、来源、审批通道和退出检查
-     * @return 最终文字或轮数耗尽提示；缺参及 LlmException 返回 Error 说明，
+     * @return 执行结果（content 保留原输出，isError 由本方法失败分支给定）：最终文字或轮数耗尽提示；缺参及 LlmException 返回 Error 说明，
      *         父执行器再包装为本次 task 的 tool_result。其它意外运行异常继续抛出
      * @throws NullPointerException context 为 null，且已调用子运行器
      */
     @Override
-    public String execute(ObjectNode input, ExecutionContext context) {
+    public com.jadecode.tools.ToolOutcome executeOutcome(ObjectNode input, ExecutionContext context) {
         for (String key : required()) {
             if (input.get(key) == null) {
-                return "Error: Missing required parameter: " + key;
+                return new com.jadecode.tools.ToolOutcome("Error: Missing required parameter: " + key, true);
             }
         }
 
         String prompt = input.get("prompt").asText();
         try {
             // 子任务正文来自模型，只用于安排工作；审批必须保留真实用户目标，避免模型自造授权。
-            return runtime.run(prompt, context);
+            return new com.jadecode.tools.ToolOutcome(runtime.run(prompt, context), false);
         } catch (LlmException e) {
-            return "Error: " + e.getMessage();
+            return new com.jadecode.tools.ToolOutcome("Error: " + e.getMessage(), true);
         }
+    }
+
+    /** 提供完整参数结构；标量构造器只负责组装 Schema，不授予执行权限。 */
+    @Override
+    public com.fasterxml.jackson.databind.node.ObjectNode inputSchema() {
+        return com.jadecode.tools.ToolSchema.objectSchema(properties(), required());
     }
 }

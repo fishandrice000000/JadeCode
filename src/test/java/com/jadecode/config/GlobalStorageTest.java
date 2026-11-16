@@ -50,7 +50,7 @@ class GlobalStorageTest {
         var sessions = new SessionStore(paths, ignored -> {
         });
         String id;
-        try (var opened = sessions.create("offline")) {
+        try (var opened = sessions.create("offline", "")) {
             id = opened.journal().metadata().id();
         }
         try (var reopened = sessions.open(id)) {
@@ -140,25 +140,41 @@ class GlobalStorageTest {
         var d = JadeSettings.defaults();
         var calls = new AtomicInteger();
         var settings = new JadeSettings(d.tui(), d.compaction(), d.limits(),
-                new JadeSettings.Memory(false, 100, 100, 1000));
-        LlmClient fake = request -> {
+                new JadeSettings.Memory(false, 100, 100, 1000),
+                new com.jadecode.config.JadeSettings.Models(true, 24, 2000, Map.of()),
+                com.jadecode.llm.ThinkingSettings.DEFAULT, new com.jadecode.config.JadeSettings.Permissions(
+                        com.jadecode.safety.PermissionProfile.WORKSPACE, java.util.List.of(), java.util.Set.of()),
+                com.jadecode.config.JadeSettings.Mcp.defaults(),
+                com.jadecode.context.ProductionCompactionSettings.defaults()
+                        .withAutomatic(d.compaction().autoSummaryEnabled()),
+                com.jadecode.sandbox.SandboxSettings.offline());
+        LlmClient fake = (request, ignoredStream) -> {
             if (calls.incrementAndGet() == 1)
                 return new ModelResponse(Message.assistant(List.of(new ToolUseBlock("pwd", "bash",
                         Json.mapper().createObjectNode().put("command", "pwd")))), null, "tool_use");
             assertTrue(request.messages().getLast().content().toString().contains(paths.workspace().toString()));
             return new ModelResponse(Message.assistant(List.of(new TextBlock("done"))), null, "end_turn");
         };
-        try (var runtime = JadeCodeFactory.create(new AppConfig("offline", "http://127.0.0.1:1", "fixture", 100),
-                paths.workspace(), fake,
-                ignored -> {
-                }, ignored -> {
-                }, (hooks, cwd, output) -> {
-                }, () -> ResponseStream.NONE,
-                ExecutionObserver.NONE, settings, settings.permissions().state(null), paths.jade())) {
-            runtime.run(new ArrayList<>(List.of(Message.userText("show cwd"))));
+        try (var runtime = com.jadecode.bootstrap.JadeCodeFactory
+                .create(new com.jadecode.bootstrap.JadeCodeFactory.Dependencies(
+                        new AppConfig("offline", "http://127.0.0.1:1", "fixture", 100,
+                                com.jadecode.config.ModelProvider.ANTHROPIC_COMPATIBLE),
+                        paths.workspace(), fake, settings, settings.permissions().state(null), paths.jade(), null, null,
+                        com.jadecode.support.TestMessages.toText(ignored -> {
+                        }, ignored -> {
+                        }), () -> ResponseStream.NONE, ExecutionObserver.NONE, com.jadecode.hooks.Hooks::new,
+                        (summary, compactionPaths) -> new com.jadecode.context.ProductionCompactor(summary,
+                                compactionPaths, (settings).contextCompaction())))) {
+            com.jadecode.support.SessionRuns.run(runtime, new ArrayList<>(List.of(Message.userText("show cwd"))));
         }
         assertEquals(2, calls.get());
         assertTrue(Files.exists(paths.root().resolve("workspace.json")));
         assertFalse(Files.exists(paths.workspace().resolve(".jadecode")));
+    }
+
+    /** 回收本用例通过正式队列入口创建的临时会话和日志。 */
+    @org.junit.jupiter.api.AfterEach
+    void closeMigratedSessions() throws Exception {
+        com.jadecode.support.SessionRuns.closeAll();
     }
 }

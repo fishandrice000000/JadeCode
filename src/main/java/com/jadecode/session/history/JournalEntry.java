@@ -20,29 +20,6 @@ public record JournalEntry(int version, String sessionId, long sequence, String 
         APPEND, REPLACE_LAST, REPLACE_HISTORY, TURN_STARTED, TURN_FINISHED, TURN_FAILED, USAGE, RENAMED, THINKING, GOAL
     }
 
-    /**
-     * 旧日志没有 runId，按 null 恢复；该可选关联信息不参与历史重放、权限或线程恢复。
-     * 新会话历史事件记录真实采用轮次，后台通知正文仍保留原来源 run，可追踪跨轮次采用。
-     */
-    public JournalEntry(int version, String sessionId, long sequence, String time, Kind kind,
-            List<Message> messages, ArrayNode todos, String reason, UsageRecord usage, String title,
-            ThinkingSettings thinking, com.jadecode.goal.GoalState goal) {
-        this(version, sessionId, sequence, time, kind, messages, todos, reason, usage, title, thinking, goal, null);
-    }
-
-    /** 版本 1/2 的调用者没有目标字段；保留旧构造，恢复旧记录时新增字段为 null。 */
-    public JournalEntry(int version, String sessionId, long sequence, String time, Kind kind,
-            List<Message> messages, ArrayNode todos, String reason, UsageRecord usage, String title,
-            ThinkingSettings thinking) {
-        this(version, sessionId, sequence, time, kind, messages, todos, reason, usage, title, thinking, null);
-    }
-
-    /** 原有历史事件没有额外元数据。版本 1 JSON 的新增可空字段也会按 null 读取。 */
-    public JournalEntry(int version, String sessionId, long sequence, String time, Kind kind,
-            List<Message> messages, ArrayNode todos, String reason) {
-        this(version, sessionId, sequence, time, kind, messages, todos, reason, null, null, null);
-    }
-
     /** 元数据事件不会覆盖模型历史和 Todo，更不会在恢复时成为 USER 消息。 */
     public boolean metadataOnly() {
         return kind == Kind.USAGE || kind == Kind.RENAMED || kind == Kind.THINKING || kind == Kind.GOAL;
@@ -53,13 +30,9 @@ public record JournalEntry(int version, String sessionId, long sequence, String 
         SessionMetadata.requireId(sessionId);
         if (runId != null && runId.isBlank())
             throw new IllegalArgumentException("Run identity cannot be blank");
-        if (version < 1 || version > SessionMetadata.VERSION || sequence < 1 || kind == null || reason == null)
+        if (version != SessionMetadata.VERSION || sequence < 1 || kind == null || reason == null)
             throw new IllegalArgumentException("Invalid session journal fields");
         boolean metadataOnly = kind == Kind.USAGE || kind == Kind.RENAMED || kind == Kind.THINKING || kind == Kind.GOAL;
-        if (metadataOnly && version < 2)
-            throw new IllegalArgumentException("Version 1 does not contain metadata events");
-        if (kind == Kind.GOAL && version < 3)
-            throw new IllegalArgumentException("Goal events require journal version 3");
         if (!metadataOnly && todos == null || metadataOnly && todos != null)
             throw new IllegalArgumentException("History events require Todo; metadata events cannot carry Todo");
         if ((kind == Kind.USAGE) != (usage != null) || (kind == Kind.RENAMED) != (title != null)
@@ -78,8 +51,6 @@ public record JournalEntry(int version, String sessionId, long sequence, String 
         if (kind.name().startsWith("TURN_") && !messages.isEmpty())
             throw new IllegalArgumentException("Turn records cannot carry messages");
         for (Message message : messages) {
-            if (message.source() != null && version < 4)
-                throw new IllegalArgumentException("Message source metadata requires journal version 4");
             if (message.role() == null || message.content() == null
                     || message.content().stream().anyMatch(java.util.Objects::isNull))
                 throw new IllegalArgumentException("Invalid history message content");

@@ -19,12 +19,13 @@ class ToolWireContractTest {
     /** 来源只属于内部历史，SDK 应发标准 USER 文本，不向兼容端点泄漏内部字段。 */
     @Test
     void sdkOmitsInternalMemorySource() throws Exception {
-        var client = new AnthropicSdkLlmClient(new AppConfig("offline", "http://127.0.0.1:1", "offline", 100));
+        var client = new AnthropicSdkLlmClient(new AppConfig("offline", "http://127.0.0.1:1", "offline", 100,
+                com.jadecode.config.ModelProvider.ANTHROPIC_COMPATIBLE));
         var method = AnthropicSdkLlmClient.class.getDeclaredMethod("toParams", CompleteRequest.class);
         method.setAccessible(true);
         var params = (com.anthropic.models.messages.MessageCreateParams) method.invoke(client,
                 new CompleteRequest("fixed boundary", List.of(Message.memoryReference("reference text")), 100,
-                        List.of()));
+                        List.of(), com.jadecode.llm.ThinkingSettings.DEFAULT, ""));
         var json = com.anthropic.core.ObjectMappers.jsonMapper().valueToTree(params.messages());
         assertEquals("user", json.get(0).get("role").asText());
         assertEquals("reference text", json.get(0).get("content").get(0).get("text").asText());
@@ -48,7 +49,8 @@ class ToolWireContractTest {
     /** SDK 转换保留明确失败标志；只反射转换方法，不发请求。 */
     @Test
     void sdkKeepsErrorFlag() throws Exception {
-        var client = new AnthropicSdkLlmClient(new AppConfig("offline", "http://127.0.0.1:1", "offline", 100));
+        var client = new AnthropicSdkLlmClient(new AppConfig("offline", "http://127.0.0.1:1", "offline", 100,
+                com.jadecode.config.ModelProvider.ANTHROPIC_COMPATIBLE));
         var content = AnthropicSdkLlmClient.class.getDeclaredMethod("toContentBlockParam", ContentBlock.class);
         content.setAccessible(true);
         var block = (com.anthropic.models.messages.ContentBlockParam) content.invoke(client,
@@ -59,7 +61,8 @@ class ToolWireContractTest {
     /** 根级约束和嵌套引用必须到达 SDK；已知字段不能重复进入额外字段表。 */
     @Test
     void sdkKeepsFullSchema() throws Exception {
-        var client = new AnthropicSdkLlmClient(new AppConfig("offline", "http://127.0.0.1:1", "offline", 100));
+        var client = new AnthropicSdkLlmClient(new AppConfig("offline", "http://127.0.0.1:1", "offline", 100,
+                com.jadecode.config.ModelProvider.ANTHROPIC_COMPATIBLE));
         ObjectNode schema = (ObjectNode) Json.mapper().readTree("""
                 {"type":"object","properties":{"value":{"$ref":"#/$defs/value"}},"required":["value"],
                  "additionalProperties":false,"$defs":{"value":{"type":"integer","minimum":2}}}
@@ -88,27 +91,35 @@ class ToolWireContractTest {
                 return "offline";
             }
 
-            public Map<String, String> properties() {
+            private Map<String, String> properties() {
                 return Map.of();
             }
 
-            public List<String> required() {
+            private List<String> required() {
                 return List.of();
-            }
-
-            public String execute(ObjectNode input) {
-                throw new AssertionError("不能执行旧入口第二次");
             }
 
             public ToolOutcome executeOutcome(ObjectNode input, ExecutionContext context) {
                 return new ToolOutcome("not found", true);
             }
+
+            /** 提供完整参数结构；标量构造器只负责组装 Schema，不授予执行权限。 */
+            @Override
+            public com.fasterxml.jackson.databind.node.ObjectNode inputSchema() {
+                return com.jadecode.tools.ToolSchema.objectSchema(properties(), required());
+            }
         };
-        var engine = new AgentExecutor(request -> {
+        var engine = new com.jadecode.agent.AgentExecutor((request, ignoredStream) -> {
             throw new AssertionError("不应请求模型");
-        }, Map.of("external", tool), "", 10, new Hooks());
-        var result = engine.executeTools(List.of(new ToolUseBlock("x", "external", Json.mapper().createObjectNode())),
-                ExecutionContext.create(ExecutionContext.Source.USER, null), 0);
+        }, com.jadecode.tools.ToolCatalog.fixed(Map.of("external", tool)), "", 10, new Hooks(), null,
+                () -> com.jadecode.llm.ResponseStream.NONE, com.jadecode.execution.ExecutionObserver.NONE,
+                () -> com.jadecode.llm.ThinkingSettings.DEFAULT, () -> "");
+        var result = engine.executeTools(new AgentExecutor.ModelReply(
+                Message.userText("offline fixture"),
+                List.of(new ToolUseBlock("x", "external", Json.mapper().createObjectNode())),
+                false, null, com.jadecode.tools.ToolCatalog.fixed(Map.of("external", tool)).snapshot(), "fixture",
+                null),
+                ExecutionContext.create(ExecutionContext.Source.USER, null));
         assertNull(result.failure());
         assertTrue(((ToolResultBlock) result.results().getFirst()).isError());
     }

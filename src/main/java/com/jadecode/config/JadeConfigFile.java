@@ -4,7 +4,6 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
-import java.util.UUID;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jadecode.context.CompactionLimits;
@@ -32,41 +31,12 @@ public final class JadeConfigFile implements com.jadecode.safety.rules.Permissio
     }
 
     /**
-     * 读取快照；首次发现旧 tui.json 时只迁移其主题，不删除旧文件。
-     * 新文件或新主题已经存在时优先使用新值。迁移失败抛 IOException，不假称已迁移。
+     * 只读当前 config.json 快照，不迁移旧文件，也不在启动读取时写盘。
+     * 文件不存在时采用完整默认模板；旧格式或非法值明确失败，原文件保持不变。
      */
     public JadeSettings load() throws IOException {
         synchronized (WRITE_LOCK) {
-            ObjectNode root = read(path);
-            // 先校验整份旧文件，再备份/迁移压缩段，避免坏配置也被覆盖成“看似正常”。
-            ObjectNode migrated = migrateCompaction(root);
-            if (migrated != root) {
-                parse(root);
-                parse(migrated);
-                if (Files.exists(path))
-                    backup(path);
-                write(migrated);
-                root = migrated;
-            }
-            Path legacy = path.resolveSibling("tui.json");
-            if (!section(root, "tui").has("theme") && Files.exists(legacy)) {
-                String oldTheme = theme(read(legacy).get("theme"), "tui.json.theme");
-                // 先验证现有配置，避免迁移时把非法配置写成一份看似正常的新文件。
-                parse(root);
-                if (Files.exists(path))
-                    backup(path);
-                backup(legacy);
-                ObjectNode ui = section(root, "tui").deepCopy();
-                ui.put("theme", oldTheme);
-                root.set("tui", ui);
-                if (!Files.exists(path)) {
-                    ObjectNode full = template();
-                    full.set("tui", merge((ObjectNode) full.get("tui"), ui));
-                    root = full;
-                }
-                write(root);
-            }
-            return parse(root);
+            return parse(Files.exists(path) ? read(path) : template());
         }
     }
 
@@ -200,10 +170,16 @@ public final class JadeConfigFile implements com.jadecode.safety.rules.Permissio
 
     /** 将可选覆盖值合成完整快照，不修改读取的树，也不把配置正文写入异常。 */
     private static JadeSettings parse(ObjectNode root) throws IOException {
-        if (root.has("version") && (!root.get("version").isInt() || root.get("version").intValue() != 1))
+        if (!root.path("version").isInt() || root.path("version").intValue() != 1)
             throw new IOException("config.version must be 1");
         JadeSettings d = JadeSettings.defaults();
-        ObjectNode ui = section(root, "tui"), c = section(root, "compaction"), l = section(c, "limits");
+        ObjectNode ui = section(root, "tui"), c = section(root, "compaction");
+        // 生产配置只接收 Token 管线字段；课程策略通过显式 Java 装配提供。
+        var compactionFields = java.util.Set.of("autoSummaryEnabled", "reserveTokens", "keepRecentTokens",
+                "summaryMaxOutputTokens", "summaryMaxInputTokens", "largeResultCharLimit", "largeResultPreviewChars");
+        for (var field : c.properties())
+            if (!compactionFields.contains(field.getKey()))
+                throw new IOException("Unsupported config.compaction field: " + field.getKey());
         // 1. 未填写的 UI 字段用默认值；显式写错则报错，不能把 "false" 字符串当作布尔值。
         JadeSettings.Tui dt = d.tui();
         JadeSettings.Tui tui;
@@ -240,26 +216,9 @@ public final class JadeConfigFile implements com.jadecode.safety.rules.Permissio
         } catch (IllegalArgumentException invalid) {
             throw new IOException("Invalid config.tui settings: " + invalid.getMessage(), invalid);
         }
-        CompactionPolicy p = d.compaction();
-        // 2. 开关与数值分开：保存某层的阈值不意味着已经打开那层策略。
-        CompactionPolicy policy = new CompactionPolicy(bool(c, "largeResultEnabled", p.largeResultEnabled()),
-                bool(c, "batchBudgetEnabled", p.batchBudgetEnabled()), bool(c, "snipEnabled", p.snipEnabled()),
-                bool(c, "microEnabled", p.microEnabled()), bool(c, "fitEnabled", p.fitEnabled()),
-                bool(c, "autoSummaryEnabled", p.autoSummaryEnabled()), bool(c, "reactiveEnabled", p.reactiveEnabled()));
-        CompactionLimits a = d.limits();
-        // 3. 所有阈值都允许局部覆盖。保留条数／预览可为零，预算和输出额度必须为正。
-        CompactionLimits limits = new CompactionLimits(number(l, "contextCharLimit", a.contextCharLimit(), 1),
-                number(l, "toolResultBatchCharLimit", a.toolResultBatchCharLimit(), 1),
-                number(l, "largeResultCharLimit", a.largeResultCharLimit(), 1),
-                number(l, "summaryInputCharLimit", a.summaryInputCharLimit(), 1),
-                number(l, "keepRecentResults", a.keepRecentResults(), 0),
-                number(l, "keepRecentMessages", a.keepRecentMessages(), 0),
-                number(l, "microResultMinChars", a.microResultMinChars(), 1),
-                number(l, "budgetPreviewChars", a.budgetPreviewChars(), 0),
-                number(l, "fitPreviewChars", a.fitPreviewChars(), 0),
-                number(l, "summaryMaxOutputTokens", a.summaryMaxOutputTokens(), 1),
-                number(l, "snipMaxMessages", a.snipMaxMessages(), 1),
-                number(l, "snipHeadMessages", a.snipHeadMessages(), 0), ratio(l, a.targetRatio()));
+        // 课程阈值只作为显式离线装配的默认值，不再从生产配置猜测或迁移。
+        CompactionPolicy policy = d.compaction();
+        CompactionLimits limits = d.limits();
         ObjectNode memory = section(root, "memory");
         int extractionTokens = number(memory, "extractionMaxOutputTokens", d.memory().extractionMaxOutputTokens(), 1,
                 "config.memory");
@@ -339,43 +298,12 @@ public final class JadeConfigFile implements com.jadecode.safety.rules.Permissio
     }
 
     /**
-     * 只迁移已识别的课程压缩字段，保留其它设置和未知扩展；返回原对象表示不需要写盘。
-     * 旧默认 8000 按用户批准升级为 32768，其它显式摘要输出值保留；字符阈值不猜成 Token。
-     * 备份和原子替换归 load，纯转换过程不修改输入。
-     */
-    private static ObjectNode migrateCompaction(ObjectNode root) throws IOException {
-        ObjectNode old = section(root, "compaction");
-        var removed = java.util.Set.of("largeResultEnabled", "batchBudgetEnabled", "snipEnabled", "microEnabled",
-                "fitEnabled", "reactiveEnabled");
-        if (!old.has("limits") && removed.stream().noneMatch(old::has))
-            return root;
-        ObjectNode result = root.deepCopy(), compact = old.deepCopy(), legacy = section(old, "limits");
-        compact.remove("limits");
-        removed.forEach(compact::remove);
-        if (!compact.has("largeResultCharLimit") && legacy.has("largeResultCharLimit"))
-            compact.set("largeResultCharLimit", legacy.get("largeResultCharLimit"));
-        if (!compact.has("largeResultPreviewChars") && legacy.has("budgetPreviewChars"))
-            compact.set("largeResultPreviewChars", legacy.get("budgetPreviewChars"));
-        if (!compact.has("summaryMaxOutputTokens") && legacy.has("summaryMaxOutputTokens")
-                && legacy.get("summaryMaxOutputTokens").asInt() != 8000)
-            compact.set("summaryMaxOutputTokens", legacy.get("summaryMaxOutputTokens"));
-        ObjectNode defaults = Json.mapper().valueToTree(com.jadecode.context.ProductionCompactionSettings.defaults());
-        defaults.put("summaryMaxInputTokens", "auto");
-        defaults.fields().forEachRemaining(entry -> {
-            if (!compact.has(entry.getKey()))
-                compact.set(entry.getKey(), entry.getValue());
-        });
-        result.set("compaction", compact);
-        return result;
-    }
-
-    /**
      * 读取可信用户配置中的 stdio 服务；缺失时启用默认 Fetch，非法配置报字段而不回显启动参数。
      * 不安装依赖、不验证程序存在，也不启动服务，因此未安装 Fetch 不影响配置读取或构建。
      */
     private static JadeSettings.Mcp mcp(ObjectNode root) throws IOException {
         ObjectNode mcp = section(root, "mcp");
-        // 旧用户文件尚无 MCP 字段时也获得默认入口；显式 servers 表（包括空表）完整替换默认表。
+        // 可选 MCP 字段未配置时采用默认入口；显式 servers 表（包括空表）完整替换默认表。
         if (!mcp.has("servers"))
             return JadeSettings.Mcp.defaults();
         ObjectNode configured = section(mcp, "servers");
@@ -510,11 +438,6 @@ public final class JadeConfigFile implements com.jadecode.safety.rules.Permissio
         return root.get(key).booleanValue();
     }
 
-    /** 限制为可装入 Java int 的整数，避免小数被截断或过大数字溢出后变成负预算。 */
-    private static int number(ObjectNode root, String key, int fallback, int minimum) throws IOException {
-        return number(root, key, fallback, minimum, "config.compaction.limits");
-    }
-
     /** 不同章节复用数值检查，但错误信息必须指向实际字段，不能一律写成压缩配置。 */
     private static int number(ObjectNode root, String key, int fallback, int minimum, String section)
             throws IOException {
@@ -524,17 +447,6 @@ public final class JadeConfigFile implements com.jadecode.safety.rules.Permissio
         if (!value.isIntegralNumber() || !value.canConvertToInt() || value.intValue() < minimum)
             throw new IOException(section + "." + key + " must be an integer greater than or equal to " + minimum + "");
         return value.intValue();
-    }
-
-    /** 目标比例必须有限且严格在 0 与 1 之间，否则不能表示“把历史缩短到多少”。 */
-    private static double ratio(ObjectNode root, double fallback) throws IOException {
-        if (!root.has("targetRatio"))
-            return fallback;
-        JsonNode value = root.get("targetRatio");
-        double ratio = value.asDouble(Double.NaN);
-        if (!value.isNumber() || !Double.isFinite(ratio) || ratio <= 0 || ratio >= 1)
-            throw new IOException("config.compaction.limits.targetRatio must be between 0 and 1");
-        return ratio;
     }
 
     /** 主题名只采用程序提供的两项，不将配置文字拼成 ANSI 指令或任意文件路径。 */
@@ -562,17 +474,6 @@ public final class JadeConfigFile implements com.jadecode.safety.rules.Permissio
         if (!(node instanceof ObjectNode object))
             throw new IOException("Configuration must be a JSON object: " + source);
         return object;
-    }
-
-    private static ObjectNode merge(ObjectNode target, ObjectNode source) {
-        source.fields().forEachRemaining(e -> target.set(e.getKey(), e.getValue()));
-        return target;
-    }
-
-    /** 只在自动迁移前备份，不循环覆盖同名恢复文件；旧配置本身也保留。 */
-    private static void backup(Path source) throws IOException {
-        Files.copy(source,
-                source.resolveSibling(source.getFileName() + ".pre-config-migration-" + UUID.randomUUID() + ".bak"));
     }
 
     /** 原子替换优先；文件系统不支持时回退普通替换，任何失败都清理本次临时文件。 */

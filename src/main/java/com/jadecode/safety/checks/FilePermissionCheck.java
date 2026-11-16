@@ -17,12 +17,12 @@ public final class FilePermissionCheck implements ToolPermissionCheck {
     public Analysis analyzeGlob(ObjectNode input) {
         if (input.has("root") && !input.path("root").isTextual())
             return new Analysis("glob", resolver.workspaceReal(), List.of(), List.of(), false, true, false,
-                    "glob.root must be a string");
+                    "glob.root must be a string", "");
         String raw = input.path("root").asText(".");
         Path target = resolver.resolve(raw), original = resolver.workspaceReal().resolve(raw).normalize();
         var resources = target.equals(original) ? List.of(new Resource(target, "READ"))
                 : List.of(new Resource(target, "READ"), new Resource(original, "READ"));
-        return new Analysis("glob", resolver.workspaceReal(), resources, List.of(), false, true, false, "");
+        return new Analysis("glob", resolver.workspaceReal(), resources, List.of(), false, true, false, "", "");
     }
 
     @Override
@@ -30,7 +30,7 @@ public final class FilePermissionCheck implements ToolPermissionCheck {
         Path cwd = resolver.workspaceReal();
         if (!input.path("path").isTextual() || input.path("path").textValue().isBlank())
             return new Analysis(tool, cwd, List.of(), List.of(), false, false, false,
-                    "Tool is missing a non-empty path");
+                    "Tool is missing a non-empty path", "");
         // 同一份解析器交给实际文件工具，不能让检查与执行各自使用不同 cwd。
         Path target = resolver.resolve(input.path("path").textValue());
         boolean write = !tool.equals("read_file");
@@ -39,6 +39,6 @@ public final class FilePermissionCheck implements ToolPermissionCheck {
         String operation = write ? "WRITE" : "READ";
         var resources = original.equals(target) ? List.of(new Resource(target, operation))
                 : List.of(new Resource(original, operation), new Resource(target, operation));
-        return new Analysis(tool, cwd, resources, List.of(), write, false, false, "");
+        return new Analysis(tool, cwd, resources, List.of(), write, false, false, "", "");
     }
 }

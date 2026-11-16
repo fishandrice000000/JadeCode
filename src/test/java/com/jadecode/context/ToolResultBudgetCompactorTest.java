@@ -53,7 +53,7 @@ class ToolResultBudgetCompactorTest {
         for (int i = 0; i < outputs.length; i++) {
             String id = "call-" + i;
             calls.add(new ToolUseBlock(id, "bash", Json.mapper().createObjectNode()));
-            results.add(new ToolResultBlock(id, outputs[i]));
+            results.add(new ToolResultBlock(id, outputs[i], false));
         }
         return List.of(Message.userText("任务"), Message.assistant(List.copyOf(calls)),
                 Message.userBlocks(List.copyOf(results)));

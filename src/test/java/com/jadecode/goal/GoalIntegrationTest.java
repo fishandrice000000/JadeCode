@@ -34,7 +34,7 @@ class GoalIntegrationTest {
 
     /** 正常响应都报告五个 token，分类账本应分别计一次而非重复记账。 */
     private static ModelResponse reply(ContentBlock... content) {
-        return new ModelResponse(Message.assistant(List.of(content)), new ModelResponse.Usage(2, 3), "end_turn");
+        return new ModelResponse(Message.assistant(List.of(content)), new ModelResponse.Usage(2, 3, 0, 0), "end_turn");
     }
 
     /** 正式候选回答，与判断器 JSON 分开构造，防止测试误把两类请求混同。 */
@@ -53,22 +53,31 @@ class GoalIntegrationTest {
         var defaults = JadeSettings.defaults();
         var settings = new JadeSettings(defaults.tui(), defaults.compaction(), defaults.limits(),
                 new JadeSettings.Memory(false, 100, 100, 1000), defaults.modelMetadata(), defaults.thinking(),
-                defaults.permissions(), new JadeSettings.Mcp(Map.of()));
-        return JadeCodeFactory.create(new AppConfig("offline", "http://127.0.0.1:9", "fixture", 1234), workspace,
-                client,
-                ignored -> {
+                defaults.permissions(), new JadeSettings.Mcp(Map.of()),
+                com.jadecode.context.ProductionCompactionSettings.defaults()
+                        .withAutomatic(defaults.compaction().autoSummaryEnabled()),
+                com.jadecode.sandbox.SandboxSettings.offline());
+        return com.jadecode.bootstrap.JadeCodeFactory.create(new com.jadecode.bootstrap.JadeCodeFactory.Dependencies(
+                new AppConfig("offline", "http://127.0.0.1:9", "fixture", 1234,
+                        com.jadecode.config.ModelProvider.ANTHROPIC_COMPATIBLE),
+                workspace, client, settings, PermissionState.defaults(), com.jadecode.support.TestPaths.jade(workspace),
+                null, null, com.jadecode.support.TestMessages.toText(ignored -> {
                 }, ignored -> {
-                }, (hooks, cwd, out) -> {
-                }, () -> ResponseStream.NONE, observer, settings, PermissionState.defaults(),
-                com.jadecode.support.TestPaths.jade(workspace));
+                }), () -> ResponseStream.NONE, observer, com.jadecode.hooks.Hooks::new,
+                (summary, paths) -> new com.jadecode.context.ProductionCompactor(summary, paths,
+                        (settings).contextCompaction())));
     }
 
     /** 小额度或门闩测试用真实 Session，判断端口可注入；不需要复制生产客户端来制造竞态。 */
     private static SessionRuntime runtime(LlmClient client, GoalEvaluator evaluator, GoalController.Limits limits,
             Hooks hooks) {
-        var runtime = new SessionRuntime(new AgentExecutor(client, Map.of(), "test", 1000, hooks), ignored -> {
-        }, ignored -> {
-        });
+        var runtime = new com.jadecode.session.SessionRuntime(new com.jadecode.agent.AgentExecutor(client,
+                com.jadecode.tools.ToolCatalog.fixed(Map.of()), "test", 1000, hooks, null,
+                () -> com.jadecode.llm.ResponseStream.NONE, com.jadecode.execution.ExecutionObserver.NONE,
+                () -> com.jadecode.llm.ThinkingSettings.DEFAULT, () -> ""), null, null,
+                com.jadecode.support.TestMessages.toText(ignored -> {
+                }, ignored -> {
+                }));
         runtime.goals(evaluator, limits);
         return runtime;
     }
@@ -79,7 +88,7 @@ class GoalIntegrationTest {
         Files.writeString(workspace.resolve("proof.txt"), "GOAL_PROOF");
         AtomicInteger formal = new AtomicInteger(), judges = new AtomicInteger();
         var notices = new CopyOnWriteArrayList<ExecutionNotice>();
-        LlmClient client = request -> {
+        LlmClient client = (request, ignoredStream) -> {
             if (request.system().equals(PromptGoalEvaluator.SYSTEM)) {
                 int count = judges.incrementAndGet();
                 assertTrue(request.tools().isEmpty());
@@ -139,7 +148,7 @@ class GoalIntegrationTest {
                     throw new java.io.IOException("bad judgment");
                 return new GoalEvaluator.Evaluation(false, "missing evidence", mode.equals("impossible"));
             };
-            try (var runtime = runtime(request -> {
+            try (var runtime = runtime((request, ignoredStream) -> {
                 formal.incrementAndGet();
                 return text("candidate");
             }, evaluator,
@@ -163,7 +172,7 @@ class GoalIntegrationTest {
         AtomicInteger formal = new AtomicInteger(), judges = new AtomicInteger();
         Hooks hooks = new Hooks();
         hooks.register(Hooks.STOP, params -> "keep working");
-        try (var runtime = runtime(request -> {
+        try (var runtime = runtime((request, ignoredStream) -> {
             formal.incrementAndGet();
             return text("candidate");
         }, (condition, history) -> {
@@ -186,20 +195,24 @@ class GoalIntegrationTest {
         var waiting = new CountDownLatch(1);
         AtomicInteger formal = new AtomicInteger(), judges = new AtomicInteger();
         var background = new BackgroundManager(workspace);
-        var engine = new AgentExecutor(request -> {
+        var engine = new com.jadecode.agent.AgentExecutor((request, ignoredStream) -> {
             if (formal.incrementAndGet() == 1)
-                return reply(new ToolUseBlock("bg", "bash", Json.mapper().createObjectNode()
-                        .put("command", "while [ ! -e ready ]; do sleep 0.01; done; printf BG_EVIDENCE")
-                        .put("run_in_background", true)));
+                return reply(new ToolUseBlock("bg", "bash",
+                        Json.mapper().createObjectNode()
+                                .put("command", "while [ ! -e ready ]; do sleep 0.01; done; printf BG_EVIDENCE")
+                                .put("run_in_background", true)));
             return text("candidate");
-        }, Map.of("bash", new BashTool(background)), "test", 1000, new Hooks());
+        }, com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", new BashTool(background))), "test", 1000, new Hooks(),
+                null, () -> com.jadecode.llm.ResponseStream.NONE, com.jadecode.execution.ExecutionObserver.NONE,
+                () -> com.jadecode.llm.ThinkingSettings.DEFAULT, () -> "");
         engine.observe(notice -> {
             if (notice.kind() == ExecutionNotice.Kind.SESSION && notice.state().equals("WAITING_BACKGROUND"))
                 waiting.countDown();
         });
-        try (var runtime = new SessionRuntime(engine, null, background, ignored -> {
-        }, ignored -> {
-        })) {
+        try (var runtime = new com.jadecode.session.SessionRuntime(engine, null, background,
+                com.jadecode.support.TestMessages.toText(ignored -> {
+                }, ignored -> {
+                }))) {
             runtime.goals((condition, history) -> {
                 judges.incrementAndGet();
                 assertTrue(history.toString().contains("<exit_code>0</exit_code>"));
@@ -223,7 +236,7 @@ class GoalIntegrationTest {
             var entered = new CountDownLatch(1);
             var release = new CompletableFuture<Void>();
             var finished = new CountDownLatch(1);
-            var runtime = runtime(request -> text("candidate"), (condition, history) -> {
+            var runtime = runtime((request, ignoredStream) -> text("candidate"), (condition, history) -> {
                 entered.countDown();
                 release.join();
                 finished.countDown();
@@ -260,7 +273,7 @@ class GoalIntegrationTest {
     void restoreWaitsForInputAndResetsEvaluationCount() throws Exception {
         AtomicInteger formal = new AtomicInteger();
         try (var host = new SessionHost(com.jadecode.support.TestPaths.workspace(workspace),
-                generation -> runtime(request -> {
+                generation -> runtime((request, ignoredStream) -> {
                     formal.incrementAndGet();
                     return text("candidate");
                 }, (condition, history) -> new GoalEvaluator.Evaluation(false, "not yet", false),
@@ -276,7 +289,7 @@ class GoalIntegrationTest {
         });
         String id = store.list().getFirst().id();
         try (var host = new SessionHost(com.jadecode.support.TestPaths.workspace(workspace),
-                generation -> runtime(request -> {
+                generation -> runtime((request, ignoredStream) -> {
                     formal.incrementAndGet();
                     return text("continued");
                 }, (condition, history) -> new GoalEvaluator.Evaluation(true, "new evidence", false),
@@ -300,7 +313,7 @@ class GoalIntegrationTest {
     @Test
     void noGoalAndUntrustedIncomingKeepOriginalBehavior() throws Exception {
         AtomicInteger formal = new AtomicInteger(), judges = new AtomicInteger();
-        try (var runtime = runtime(request -> {
+        try (var runtime = runtime((request, ignoredStream) -> {
             formal.incrementAndGet();
             return text("done");
         }, (condition, history) -> {
@@ -320,28 +333,29 @@ class GoalIntegrationTest {
         }
     }
 
-    /** v1/v2 历史向后兼容；v3 目标是元数据，错版本或缺字段不能被跳过。 */
+    /** 旧会话和日志版本明确拒绝；当前目标元数据必须完整。 */
     @Test
     void journalVersionsPreserveHistoryAndValidateGoalMetadata() throws Exception {
         String id = java.util.UUID.randomUUID().toString(), time = "2026-10-25T00:00:00Z";
-        for (int version : List.of(1, 2)) {
-            var metadata = new SessionMetadata(version, id, workspace.toString(), "old", time, time, "fixture");
-            var entry = new JournalEntry(version, id, 1, time, JournalEntry.Kind.APPEND,
-                    List.of(Message.userText("old request")), Json.mapper().createArrayNode(), "request");
-            byte[] bytes = (Json.mapper().writeValueAsString(entry) + "\n")
-                    .getBytes(java.nio.charset.StandardCharsets.UTF_8);
-            assertEquals("old request", SessionLoader.load(metadata, bytes).history().getFirst().extractText());
+        for (int version : List.of(1, 2, 3, 4)) {
+            assertThrows(IllegalArgumentException.class, () -> new SessionMetadata(version, id, workspace.toString(),
+                    "old", time, time, "fixture", false, com.jadecode.session.SessionUsage.Totals.empty(), null, ""));
+            assertThrows(IllegalArgumentException.class,
+                    () -> new JournalEntry(version, id, 1, time, JournalEntry.Kind.APPEND,
+                            List.of(Message.userText("old request")), Json.mapper().createArrayNode(), "request", null,
+                            null, null, null, null));
         }
-        var metadata = new SessionMetadata(3, id, workspace.toString(), "new", time, time, "fixture");
+        var metadata = new SessionMetadata(5, id, workspace.toString(), "new", time, time, "fixture", false,
+                com.jadecode.session.SessionUsage.Totals.empty(), null, "");
         var state = new GoalState(java.util.UUID.randomUUID().toString(), "condition", GoalState.Status.ACTIVE, 0, time,
                 "set");
-        var entry = new JournalEntry(3, id, 1, time, JournalEntry.Kind.GOAL, List.of(), null, "goal", null, null, null,
-                state);
+        var entry = new JournalEntry(5, id, 1, time, JournalEntry.Kind.GOAL, List.of(), null, "goal", null, null, null,
+                state, null);
         String line = Json.mapper().writeValueAsString(entry);
         var restored = SessionLoader.load(metadata, (line + "\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
         assertTrue(restored.history().isEmpty());
         assertEquals(state, restored.entries().getFirst().goal());
-        String wrongVersion = line.replace("\"version\":3", "\"version\":2");
+        String wrongVersion = line.replace("\"version\":5", "\"version\":2");
         assertThrows(java.io.IOException.class, () -> SessionLoader.load(metadata,
                 (wrongVersion + "\n").getBytes(java.nio.charset.StandardCharsets.UTF_8)));
         var missingGoal = (com.fasterxml.jackson.databind.node.ObjectNode) Json.mapper().readTree(line);

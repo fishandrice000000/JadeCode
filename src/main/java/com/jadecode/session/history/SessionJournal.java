@@ -79,7 +79,7 @@ public final class SessionJournal implements AutoCloseable {
     public synchronized void append(JournalEntry.Kind kind, List<Message> messages, ArrayNode todos, String reason)
             throws IOException {
         write(new JournalEntry(SessionMetadata.VERSION, metadata.id(), sequence + 1, Instant.now().toString(), kind,
-                messages, todos, reason));
+                messages, todos, reason, null, null, null, null, null));
     }
 
     /**
@@ -95,25 +95,25 @@ public final class SessionJournal implements AutoCloseable {
     /** 统计线程只写用量事实，不读取或修改会话消费者拥有的 Todo。 */
     public synchronized void usage(com.jadecode.llm.UsageRecord value) throws IOException {
         write(new JournalEntry(SessionMetadata.VERSION, metadata.id(), sequence + 1, Instant.now().toString(),
-                JournalEntry.Kind.USAGE, List.of(), null, "usage", value, null, null));
+                JournalEntry.Kind.USAGE, List.of(), null, "usage", value, null, null, null, null));
     }
 
     /** 名称先可靠写入日志，再更新清单；即使索引更新失败，也能在下次恢复时找回名称。 */
     public synchronized void rename(String value) throws IOException {
         write(new JournalEntry(SessionMetadata.VERSION, metadata.id(), sequence + 1, Instant.now().toString(),
-                JournalEntry.Kind.RENAMED, List.of(), null, "rename", null, value, null));
+                JournalEntry.Kind.RENAMED, List.of(), null, "rename", null, value, null, null, null));
     }
 
     /** 只保存会话选择，不记录密钥，也不将更改伪装成用户提示词。 */
     public synchronized void thinking(com.jadecode.llm.ThinkingSettings value) throws IOException {
         write(new JournalEntry(SessionMetadata.VERSION, metadata.id(), sequence + 1, Instant.now().toString(),
-                JournalEntry.Kind.THINKING, List.of(), null, "thinking", null, null, value));
+                JournalEntry.Kind.THINKING, List.of(), null, "thinking", null, null, value, null, null));
     }
 
     /** 目标状态只作为会话元数据持久化，不放进模型历史、不覆盖 Todo 或保存审批能力。 */
     public synchronized void goal(com.jadecode.goal.GoalState value) throws IOException {
         write(new JournalEntry(SessionMetadata.VERSION, metadata.id(), sequence + 1, Instant.now().toString(),
-                JournalEntry.Kind.GOAL, List.of(), null, "goal", null, null, null, value));
+                JournalEntry.Kind.GOAL, List.of(), null, "goal", null, null, null, value, null));
     }
 
     /**

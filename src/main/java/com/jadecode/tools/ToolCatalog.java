@@ -26,7 +26,7 @@ public final class ToolCatalog {
         });
     }
 
-    /** 兼容旧工具表与离线调用；不增加外部服务或读取配置。 */
+    /** 构造仅含内置工具的固定目录；不增加外部服务或读取配置。 */
     public static ToolCatalog fixed(Map<String, Tool> tools) {
         return new ToolCatalog(tools, List::of);
     }

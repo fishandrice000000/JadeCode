@@ -50,11 +50,11 @@ public final class WorkspaceTools {
                 return description;
             }
 
-            public Map<String, String> properties() {
+            private Map<String, String> properties() {
                 return Map.of();
             }
 
-            public List<String> required() {
+            private List<String> required() {
                 return switch (name) {
                     case "import_resource" -> List.of("source", "destination");
                     case "publish_result" -> List.of("paths", "summary");
@@ -74,10 +74,6 @@ public final class WorkspaceTools {
                 } catch (IOException invalid) {
                     throw new IllegalStateException("Invalid managed tool schema", invalid);
                 }
-            }
-
-            public String execute(ObjectNode input) {
-                return "Error: Managed tools require an execution context";
             }
 
             @Override

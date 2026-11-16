@@ -18,7 +18,8 @@ public class ScriptedLlmClient implements LlmClient {
     }
 
     @Override
-    public ModelResponse complete(CompleteRequest request) throws LlmException {
+    public ModelResponse complete(CompleteRequest request, com.jadecode.llm.ResponseStream ignoredStream)
+            throws LlmException {
         if (script.isEmpty()) {
             throw new LlmException("ScriptedLlmClient 脚本耗尽:预置响应已用完");
         }

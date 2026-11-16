@@ -97,8 +97,8 @@ public final class TaskTools {
         }
 
         /** @return 平铺参数类型；依赖数组的元素约束在 inputSchema 中补足 */
-        @Override
-        public Map<String, String> properties() {
+
+        private Map<String, String> properties() {
             return switch (action) {
                 case CREATE -> Map.of("subject", "string", "description", "string");
                 case UPDATE -> Map.of("task_id", "string", "addBlockedBy", "array");
@@ -108,8 +108,8 @@ public final class TaskTools {
         }
 
         /** @return 与 execute 一致的必填参数；description 可省略为课程默认空字符串 */
-        @Override
-        public List<String> required() {
+
+        private List<String> required() {
             return switch (action) {
                 case CREATE -> List.of("subject");
                 case UPDATE -> List.of("task_id", "addBlockedBy");
@@ -147,10 +147,12 @@ public final class TaskTools {
          * <p>先检查全部参数形状，再调用存储。list 返回目录摘要，get / 变更返回完整记录，
          * complete 返回 task 与 newlyUnblocked。合法完成不表示下游已经执行。</p>
          * @param input 模型参数对象，null / 错误类型 / 额外字段明确拒绝
-         * @return JSON 成功结果，或 Error: 开头的失败；普通 IO 含清理失败数量，不泄露文件正文
-         */
+         * @return 执行结果（content 保留原输出，isError 由本方法失败分支给定）：JSON 成功结果，或 Error: 开头的失败；普通 IO 含清理失败数量，不泄露文件正文
+         * @param context Harness 提供的任务上下文；不从模型参数读取，离线只读调用可按工具契约传 null
+        */
         @Override
-        public String execute(ObjectNode input) {
+        public com.jadecode.tools.ToolOutcome executeOutcome(ObjectNode input,
+                com.jadecode.execution.ExecutionContext context) {
             try {
                 // 1. schema 是给模型看的声明，执行时的判型才真正拦下 null、数字冒充字符串等输入。
                 validate(input);
@@ -186,12 +188,14 @@ public final class TaskTools {
                     }
                 };
                 // 2. 存储方法只有在成功写完后才返回值；不能拿模型要求的状态假装落盘成功。
-                return Json.mapper().writeValueAsString(result);
+                return new com.jadecode.tools.ToolOutcome(Json.mapper().writeValueAsString(result), false);
             } catch (IllegalArgumentException invalid) {
-                return "Error: " + invalid.getMessage();
+                return new com.jadecode.tools.ToolOutcome("Error: " + invalid.getMessage(), true);
             } catch (IOException failure) {
-                return "Error: Task IO failure (" + failure.getClass().getSimpleName()
-                        + "), cleanup errors: " + failure.getSuppressed().length;
+                return new com.jadecode.tools.ToolOutcome(
+                        "Error: Task IO failure (" + failure.getClass().getSimpleName()
+                                + "), cleanup errors: " + failure.getSuppressed().length,
+                        true);
             }
         }
 

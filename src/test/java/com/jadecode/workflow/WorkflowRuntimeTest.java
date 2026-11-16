@@ -5,7 +5,6 @@ import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jadecode.execution.ExecutionContext;
 import com.jadecode.llm.*;
@@ -29,7 +28,7 @@ class WorkflowRuntimeTest {
 
     /** 假响应报告固定真实计数，便于验证格式重试也计费。 */
     private static ModelResponse reply(String text) {
-        return new ModelResponse(Message.assistant(List.of(new TextBlock(text))), new ModelResponse.Usage(2, 3),
+        return new ModelResponse(Message.assistant(List.of(new TextBlock(text))), new ModelResponse.Usage(2, 3, 0, 0),
                 "end_turn");
     }
 
@@ -64,7 +63,7 @@ class WorkflowRuntimeTest {
     void reviewAndResumeReuseAllSuccessfulCalls() throws Exception {
         AtomicInteger requests = new AtomicInteger();
         var prompts = new java.util.concurrent.CopyOnWriteArrayList<String>();
-        LlmClient client = request -> {
+        LlmClient client = (request, ignoredStream) -> {
             requests.incrementAndGet();
             assertTrue(request.tools().isEmpty());
             assertEquals(1, request.messages().size());
@@ -116,7 +115,7 @@ class WorkflowRuntimeTest {
         var prompts = new CopyOnWriteArrayList<String>();
         var firstA = new AtomicBoolean(true);
         ObjectNode result;
-        try (var runtime = runtime(List.of(definition), request -> {
+        try (var runtime = runtime(List.of(definition), (request, ignoredStream) -> {
             String prompt = request.messages().getFirst().extractText();
             prompts.add(prompt);
             if (prompt.contains("\nTASK_A") && firstA.getAndSet(false))
@@ -135,7 +134,7 @@ class WorkflowRuntimeTest {
         assertEquals(1, prompts.stream().filter(p -> p.equals(common + "TASK_A")).count());
         assertEquals(1, prompts.stream().filter(p -> p.equals(common + "TASK_B")).count());
         assertTrue(prompts.stream().anyMatch(p -> p.startsWith(common + "TASK_A\nYour prior result")));
-        try (var restored = runtime(List.of(definition), request -> {
+        try (var restored = runtime(List.of(definition), (request, ignoredStream) -> {
             fail("恢复不得重新请求模型");
             return reply("unused");
         })) {
@@ -151,12 +150,12 @@ class WorkflowRuntimeTest {
     @Test
     void failedRunResumesOnlyMissingStep() throws Exception {
         var definition = flow("two", (ctx, args) -> {
-            ctx.agent("first", null, "a");
-            return ctx.agent("second", null, "b");
+            ctx.agent("first", "Complete the requested workflow step.", null, "a");
+            return ctx.agent("second", "Complete the requested workflow step.", null, "b");
         });
         AtomicInteger calls = new AtomicInteger();
         ObjectNode failed;
-        try (var runtime = runtime(List.of(definition), req -> {
+        try (var runtime = runtime(List.of(definition), (req, ignoredStream) -> {
             if (calls.incrementAndGet() == 2)
                 throw new LlmException("offline failure");
             return reply("ok");
@@ -165,7 +164,7 @@ class WorkflowRuntimeTest {
             assertEquals("failed", failed.path("status").asText());
             assertEquals(2, calls.get());
         }
-        try (var restored = runtime(List.of(definition), req -> {
+        try (var restored = runtime(List.of(definition), (req, ignoredStream) -> {
             calls.incrementAndGet();
             return reply("second done");
         })) {
@@ -181,16 +180,18 @@ class WorkflowRuntimeTest {
     void schemaRetryCountsBothAttemptsAndRejectsMalformedResults() throws Exception {
         ObjectNode schema = object(
                 "{\"type\":\"object\",\"required\":[\"ok\"],\"properties\":{\"ok\":{\"type\":\"boolean\"}},\"additionalProperties\":false}");
-        var definition = flow("json", (ctx, args) -> ctx.agent("structured", schema, "json"));
+        var definition = flow("json",
+                (ctx, args) -> ctx.agent("structured", "Complete the requested workflow step.", schema, "json"));
         AtomicInteger calls = new AtomicInteger();
         try (var runtime = runtime(List.of(definition),
-                req -> reply(calls.incrementAndGet() == 1 ? "{\"ok\":\"wrong type\"}" : "{\"ok\":true}"))) {
+                (req, ignoredStream) -> reply(
+                        calls.incrementAndGet() == 1 ? "{\"ok\":\"wrong type\"}" : "{\"ok\":true}"))) {
             var out = runtime.run("json", null, null, origin());
             assertEquals("completed", out.path("status").asText());
             assertEquals(2, calls.get());
             assertEquals(10, out.path("usage").path("reported_tokens").asInt());
         }
-        try (var runtime = runtime(List.of(definition), req -> reply("{\"ok\":true} trailing text"))) {
+        try (var runtime = runtime(List.of(definition), (req, ignoredStream) -> reply("{\"ok\":true} trailing text"))) {
             var out = runtime.run("json", null, null, origin());
             assertEquals("failed", out.path("status").asText());
             assertEquals(2, out.path("usage").path("requests").asInt());
@@ -202,9 +203,11 @@ class WorkflowRuntimeTest {
     /** 截断即使正文是合法 JSON，也不能进入结构修正或成功 journal。 */
     @Test
     void truncatedAgentIsNotRetriedOrCached() throws Exception {
-        var definition = flow("cut", (ctx, args) -> ctx.agent("step", null, "one"));
+        var definition = flow("cut",
+                (ctx, args) -> ctx.agent("step", "Complete the requested workflow step.", null, "one"));
         try (var runtime = runtime(List.of(definition),
-                req -> new ModelResponse(reply("partial").message(), new ModelResponse.Usage(2, 3), "max_tokens"))) {
+                (req, ignoredStream) -> new ModelResponse(reply("partial").message(),
+                        new ModelResponse.Usage(2, 3, 0, 0), "max_tokens"))) {
             var out = runtime.run("cut", null, null, origin());
             assertEquals("failed", out.path("status").asText());
             assertEquals(1, out.path("usage").path("requests").asInt());
@@ -220,14 +223,15 @@ class WorkflowRuntimeTest {
     @Test
     void observedBudgetAndMissingUsageStopFurtherRequests() throws Exception {
         ObjectNode args = object("{\"changes\":\"example\",\"budget\":1}");
-        try (var runtime = runtime(List.of(ReviewChangesWorkflow.definition()), req -> reply("{\"findings\":[]}"))) {
+        try (var runtime = runtime(List.of(ReviewChangesWorkflow.definition()),
+                (req, ignoredStream) -> reply("{\"findings\":[]}"))) {
             var out = runtime.run("review-changes", args, null, origin());
             assertEquals("failed", out.path("status").asText());
             assertTrue(out.path("usage").path("reported_tokens").asInt() >= 5);
             assertTrue(out.path("usage").path("requests").asInt() <= 2, "已超额后不能启动等待名额的请求");
         }
         try (var runtime = runtime(List.of(ReviewChangesWorkflow.definition()),
-                req -> new ModelResponse(reply("{\"findings\":[]}").message(), null))) {
+                (req, ignoredStream) -> new ModelResponse(reply("{\"findings\":[]}").message(), null, ""))) {
             var out = runtime.run("review-changes", args, null, origin());
             assertEquals("failed", out.path("status").asText());
             assertTrue(out.path("usage").path("unknown_usage").asInt() > 0);
@@ -255,7 +259,7 @@ class WorkflowRuntimeTest {
                             }));
             return Json.mapper().valueToTree(results);
         });
-        try (var runtime = runtime(List.of(definition), req -> {
+        try (var runtime = runtime(List.of(definition), (req, ignoredStream) -> {
             fail("No model should be called");
             return null;
         })) {
@@ -271,9 +275,10 @@ class WorkflowRuntimeTest {
         AtomicInteger inUse = new AtomicInteger(), max = new AtomicInteger();
         CountDownLatch started = new CountDownLatch(2);
         var definition = flow("bounded", (ctx, args) -> Json.mapper().valueToTree(ctx.parallel(List.of(
-                () -> ctx.parallel(List.of(() -> ctx.agent("a", null, "a"))).getFirst(),
-                () -> ctx.agent("b", null, "b")))));
-        try (var runtime = runtime(List.of(definition), req -> {
+                () -> ctx.parallel(List.of(() -> ctx.agent("a", "Complete the requested workflow step.", null, "a")))
+                        .getFirst(),
+                () -> ctx.agent("b", "Complete the requested workflow step.", null, "b")))));
+        try (var runtime = runtime(List.of(definition), (req, ignoredStream) -> {
             int used = inUse.incrementAndGet();
             max.accumulateAndGet(used, Math::max);
             started.countDown();
@@ -286,7 +291,7 @@ class WorkflowRuntimeTest {
             } finally {
                 inUse.decrementAndGet();
             }
-            return reply(req.messages().getFirst().extractText());
+            return reply(req.messages().getFirst().extractText().split("\\n", 2)[0]);
         })) {
             var out = runtime.run("bounded", null, null, origin());
             assertEquals("completed", out.path("status").asText());
@@ -301,9 +306,10 @@ class WorkflowRuntimeTest {
     void duplicateStepsAndJsonNullUseOneRequest() throws Exception {
         AtomicInteger calls = new AtomicInteger();
         var definition = flow("null", (ctx, args) -> Json.mapper().valueToTree(ctx.parallel(List.of(
-                () -> ctx.agent("same", object("{\"type\":\"null\"}"), "same"),
-                () -> ctx.agent("same", object("{\"type\":\"null\"}"), "same")))));
-        try (var runtime = runtime(List.of(definition), req -> {
+                () -> ctx.agent("same", "Complete the requested workflow step.", object("{\"type\":\"null\"}"), "same"),
+                () -> ctx.agent("same", "Complete the requested workflow step.", object("{\"type\":\"null\"}"),
+                        "same")))));
+        try (var runtime = runtime(List.of(definition), (req, ignoredStream) -> {
             calls.incrementAndGet();
             return reply("null");
         })) {
@@ -319,10 +325,11 @@ class WorkflowRuntimeTest {
     /** 一层嵌套共享实际请求额度，格式重试不能额外绕过；超限是失败而非假成功。 */
     @Test
     void nestedWorkflowAndCorrectionShareRequestCap() throws Exception {
-        var child = flow("child", (ctx, args) -> ctx.agent("json", object("{\"type\":\"boolean\"}"), "one"));
+        var child = flow("child", (ctx, args) -> ctx.agent("json", "Complete the requested workflow step.",
+                object("{\"type\":\"boolean\"}"), "one"));
         var parent = flow("parent", (ctx, args) -> ctx.workflow("child", null));
         AtomicInteger calls = new AtomicInteger();
-        try (var runtime = runtime(List.of(parent, child), req -> {
+        try (var runtime = runtime(List.of(parent, child), (req, ignoredStream) -> {
             calls.incrementAndGet();
             return reply("not json");
         }, new WorkflowRuntime.Limits(1, 1))) {
@@ -332,7 +339,7 @@ class WorkflowRuntimeTest {
             assertTrue(out.path("result").path("error").asText().contains("cap"));
         }
         var recursive = flow("recursive", (ctx, args) -> ctx.workflow("recursive", null));
-        try (var runtime = runtime(List.of(recursive), req -> {
+        try (var runtime = runtime(List.of(recursive), (req, ignoredStream) -> {
             fail("recursive workflow must fail before model call");
             return null;
         })) {
@@ -343,8 +350,9 @@ class WorkflowRuntimeTest {
     /** 恢复身份或 journal 损坏时保留已存在的成功 output，不把错误恢复当新运行覆盖掉。 */
     @Test
     void resumeRejectsMismatchAndCorruptionWithoutOverwritingOutput() throws Exception {
-        var definition = flow("saved", (ctx, args) -> ctx.agent("one", null, "one"));
-        try (var runtime = runtime(List.of(definition), req -> reply("ok"))) {
+        var definition = flow("saved",
+                (ctx, args) -> ctx.agent("one", "Complete the requested workflow step.", null, "one"));
+        try (var runtime = runtime(List.of(definition), (req, ignoredStream) -> reply("ok"))) {
             var out = runtime.run("saved", object("{\"tag\":\"original\"}"), null, origin());
             String id = out.path("run_id").asText();
             Path output = Path.of(out.path("output_file").asText());
@@ -352,12 +360,12 @@ class WorkflowRuntimeTest {
             assertThrows(IOException.class, () -> runtime.run("saved", object("{\"tag\":\"changed\"}"), id, origin()));
             var changedVersion = new WorkflowDefinition(definition.name(), definition.description(), "2",
                     definition.phases(), definition.argsSchema(), definition.script());
-            try (var changed = runtime(List.of(changedVersion), req -> reply("must not run"))) {
+            try (var changed = runtime(List.of(changedVersion), (req, ignoredStream) -> reply("must not run"))) {
                 assertThrows(IOException.class, () -> changed.run("saved", null, id, origin()));
             }
             try (var changedModel = new WorkflowRuntime(com.jadecode.support.TestPaths.workspace(workspace),
                     WorkflowDefinition.registry(List.of(definition)),
-                    () -> new WorkflowAgentRunner(req -> reply("must not run"), "other-model", 2000,
+                    () -> new WorkflowAgentRunner((req, ignoredStream) -> reply("must not run"), "other-model", 2000,
                             ThinkingSettings.DEFAULT),
                     WorkflowRuntime.Limits.defaults(), ignored -> {
                     })) {
@@ -382,10 +390,11 @@ class WorkflowRuntimeTest {
     void runLockAndCloseFenceLateResponses() throws Exception {
         CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
         AtomicReference<String> id = new AtomicReference<>();
-        var definition = flow("late", (ctx, args) -> ctx.agent("one", null, "one"));
+        var definition = flow("late",
+                (ctx, args) -> ctx.agent("one", "Complete the requested workflow step.", null, "one"));
         WorkflowRuntime runtime = new WorkflowRuntime(com.jadecode.support.TestPaths.workspace(workspace),
                 WorkflowDefinition.registry(List.of(definition)),
-                () -> new WorkflowAgentRunner(req -> {
+                () -> new WorkflowAgentRunner((req, ignoredStream) -> {
                     entered.countDown();
                     try {
                         if (!release.await(4, TimeUnit.SECONDS))
@@ -398,7 +407,7 @@ class WorkflowRuntimeTest {
                 }, "offline", 2000, ThinkingSettings.DEFAULT), WorkflowRuntime.Limits.defaults(),
                 p -> id.compareAndSet(null, p.runId()));
         try (var pool = Executors.newVirtualThreadPerTaskExecutor();
-                var competitor = runtime(List.of(definition), req -> reply("fresh"))) {
+                var competitor = runtime(List.of(definition), (req, ignoredStream) -> reply("fresh"))) {
             Future<ObjectNode> future = pool.submit(() -> runtime.run("late", null, null, origin()));
             assertTrue(entered.await(3, TimeUnit.SECONDS));
             assertThrows(IOException.class, () -> competitor.run("late", null, id.get(), origin()));
@@ -423,8 +432,9 @@ class WorkflowRuntimeTest {
         assertThrows(IllegalArgumentException.class, () -> WorkflowSchema
                 .validate(Json.mapper().getNodeFactory().numberNode(1.5), object("{\"type\":\"integer\"}")));
         assertThrows(IOException.class, () -> WorkflowSchema.parse("{\"a\":1,\"a\":2}"));
-        var definition = flow("safe", (ctx, args) -> ctx.agent("one", null, "one"));
-        try (var runtime = runtime(List.of(definition), req -> {
+        var definition = flow("safe",
+                (ctx, args) -> ctx.agent("one", "Complete the requested workflow step.", null, "one"));
+        try (var runtime = runtime(List.of(definition), (req, ignoredStream) -> {
             fail("invalid inputs must not request model");
             return null;
         })) {

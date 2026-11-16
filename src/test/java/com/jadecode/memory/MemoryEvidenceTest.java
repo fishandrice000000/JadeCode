@@ -1,6 +1,5 @@
 package com.jadecode.memory;
 
-import com.jadecode.config.WorkspacePaths;
 import com.jadecode.messages.*;
 import com.jadecode.session.history.*;
 import com.jadecode.util.Json;
@@ -19,7 +18,7 @@ class MemoryEvidenceTest {
     void journalKeepsEarlyHumanEvidenceAndExcludesInjectedReferences() throws Exception {
         var sessions = new SessionStore(com.jadecode.support.TestPaths.workspace(workspace), ignored -> {
         });
-        try (var opened = sessions.create("offline")) {
+        try (var opened = sessions.create("offline", "")) {
             var journal = opened.journal();
             long start = journal.sequence();
             journal.append(JournalEntry.Kind.APPEND, List.of(Message.userText("早期纠正：这是当前任务的要求，不是全局偏好")),
@@ -93,7 +92,7 @@ class MemoryEvidenceTest {
     void primaryHumanEvidenceUsesTrustedJournalRequestsAndHasExplicitBudget() throws Exception {
         var paths = com.jadecode.support.TestPaths.workspace(workspace);
         try (var opened = new SessionStore(paths, ignored -> {
-        }).create("offline")) {
+        }).create("offline", "")) {
             var journal = opened.journal();
             long start = journal.sequence();
             journal.append(JournalEntry.Kind.APPEND, List.of(Message.userText("失败只需非零，api_key=fixture-secret")),

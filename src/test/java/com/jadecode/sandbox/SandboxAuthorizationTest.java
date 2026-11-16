@@ -20,11 +20,11 @@ class SandboxAuthorizationTest {
     void productionDefaultsAreSandboxedAndInvalidConfigurationFailsClosed() throws Exception {
         Path config = temporary.resolve("config.json");
         assertTrue(new JadeConfigFile(config).load().sandbox().enabled());
-        Files.writeString(config, "{\"sandbox\":{\"enabled\":\"false\"}}");
+        Files.writeString(config, "{\"version\":1,\"sandbox\":{\"enabled\":\"false\"}}");
         assertThrows(java.io.IOException.class, () -> new JadeConfigFile(config).load());
-        Files.writeString(config, "{\"sandbox\":{\"maxIdle\":9,\"maxContainers\":2}}");
+        Files.writeString(config, "{\"version\":1,\"sandbox\":{\"maxIdle\":9,\"maxContainers\":2}}");
         assertThrows(java.io.IOException.class, () -> new JadeConfigFile(config).load());
-        Files.writeString(config, "{\"sandbox\":{\"enabledd\":false}}");
+        Files.writeString(config, "{\"version\":1,\"sandbox\":{\"enabledd\":false}}");
         assertThrows(java.io.IOException.class, () -> new JadeConfigFile(config).load());
     }
 

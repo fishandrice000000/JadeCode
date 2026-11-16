@@ -38,38 +38,28 @@ public final class WorkflowTool implements Tool {
     }
 
     /** 参数是平铺外壳，具体 args 契约由可信定义校验。 */
-    @Override
-    public Map<String, String> properties() {
+
+    private Map<String, String> properties() {
         return Map.of("name", "string", "args", "object", "resume_from_run_id", "string");
     }
 
     /** 新运行至少需要名字；每个预设再验证自己的必填输入。 */
-    @Override
-    public List<String> required() {
+
+    private List<String> required() {
         return List.of("name");
     }
 
     /** 模型不能通过附加 source/script 字段改变执行来源或上传代码。 */
     @Override
     public ObjectNode inputSchema() {
-        return Tool.super.inputSchema().put("additionalProperties", false);
-    }
-
-    /** 旧无 context 调用不伪造一次人工授权。 */
-    @Override
-    public String execute(ObjectNode input) {
-        return "Error: Workflow requires execution context";
-    }
-
-    /** 兼容只收正文的调用者；正式执行器使用 executeOutcome 保留明确失败标记。 */
-    @Override
-    public String execute(ObjectNode input, ExecutionContext context) {
-        return executeOutcome(input, context).content();
+        return com.jadecode.tools.ToolSchema.objectSchema(properties(), required()).put("additionalProperties", false);
     }
 
     /**
      * 校验整个外壳后只运行一次流程，不修改输入。null 不是“缺省 args”，resume 必须是非空字符串。
      * 参数/存储失败转成工具错误；意外运行异常仍由执行器处理，不能吞掉后当作成功。
+     * @param context Harness 提供的任务上下文；不从模型参数读取，离线只读调用可按工具契约传 null
+     * @param input 模型参数对象，只读取；具体字段由工具自行校验
      */
     @Override
     public ToolOutcome executeOutcome(ObjectNode input, ExecutionContext context) {

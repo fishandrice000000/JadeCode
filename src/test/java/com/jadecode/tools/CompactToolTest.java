@@ -1,8 +1,5 @@
 package com.jadecode.tools;
 
-import java.util.List;
-import java.util.Map;
-
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jadecode.util.Json;
@@ -32,8 +29,8 @@ class CompactToolTest {
         assertEquals("compact", tool.name(), "模型用这个名字在 tool_use 里选中本工具");
         assertEquals("Summarize earlier conversation to free context space.", tool.description(),
                 "描述必须沿用课程原文,让模型知道何时该请求压缩");
-        assertEquals(Map.of(), tool.properties(), "无参数工具:参数表为空");
-        assertEquals(List.of(), tool.required(), "无参数工具:必填表为空");
+        assertTrue(tool.inputSchema().path("properties").isEmpty(), "无参数工具:参数表为空");
+        assertTrue(tool.inputSchema().path("required").isEmpty(), "无参数工具:必填表为空");
     }
 
     /**
@@ -61,8 +58,8 @@ class CompactToolTest {
     @Test
     void executeIgnoresInputAndReturnsStableOutput() {
         // null 与空对象:都不读、不校验,直接返回稳定信号。
-        assertEquals(CompactTool.OUTPUT, tool.execute(null));
-        assertEquals(CompactTool.OUTPUT, tool.execute(Json.mapper().createObjectNode()));
+        assertEquals(CompactTool.OUTPUT, tool.executeOutcome(null, null).content());
+        assertEquals(CompactTool.OUTPUT, tool.executeOutcome(Json.mapper().createObjectNode(), null).content());
 
         // 带额外字段:同样被忽略,并且入参对象本身不被修改。
         ObjectNode withExtras = Json.mapper().createObjectNode();
@@ -70,9 +67,9 @@ class CompactToolTest {
         withExtras.putArray("more").add(1).add(2);
         String before = withExtras.toString();
 
-        assertEquals(CompactTool.OUTPUT, tool.execute(withExtras));
+        assertEquals(CompactTool.OUTPUT, tool.executeOutcome(withExtras, null).content());
         assertEquals(before, withExtras.toString(), "execute 只能读接口签名,不得修改入参");
-        assertEquals(CompactTool.OUTPUT, tool.execute(withExtras), "重复调用必须返回同一文本");
+        assertEquals(CompactTool.OUTPUT, tool.executeOutcome(withExtras, null).content(), "重复调用必须返回同一文本");
 
         assertEquals("Compaction requested after this tool batch.", CompactTool.OUTPUT,
                 "输出是父循环识别'本批请求过压缩'的稳定契约");

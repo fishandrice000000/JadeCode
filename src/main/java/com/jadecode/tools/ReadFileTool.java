@@ -46,31 +46,22 @@ public class ReadFileTool implements Tool {
     /**
      * @return 参数表:path(string,必填)、limit(integer,可选,只读前 N 行)
      */
-    @Override
-    public Map<String, String> properties() {
+
+    private Map<String, String> properties() {
         return Map.of("path", "string", "limit", "integer");
     }
 
     /**
      * @return 必填 [path];limit 缺省读全文
      */
-    @Override
-    public List<String> required() {
+
+    private List<String> required() {
         return List.of("path");
     }
 
-    /**
-     * 按 required() 检查缺失参数,然后透传 {@link #run(String, Integer)}。
-     *
-     * @param input 模型参数,须含 path;limit 可选
-     * @return 文件文本;错误 "Error: ..." 文案
+    /** 文件正文可能以 Error 开头，状态必须来自实际 IO 结果而不是内容关键词。 * @param context Harness 提供的任务上下文；不从模型参数读取，离线只读调用可按工具契约传 null
+     * @param input 模型参数对象，只读取；具体字段由工具自行校验
      */
-    @Override
-    public String execute(ObjectNode input) {
-        return executeOutcome(input, null).content();
-    }
-
-    /** 文件正文可能以 Error 开头，状态必须来自实际 IO 结果而不是内容关键词。 */
     @Override
     public ToolOutcome executeOutcome(ObjectNode input, com.jadecode.execution.ExecutionContext context) {
         for (String key : required()) {
@@ -114,4 +105,9 @@ public class ReadFileTool implements Tool {
         return new ToolOutcome(String.join("\n", lines), false);
     }
 
+    /** 提供完整参数结构；标量构造器只负责组装 Schema，不授予执行权限。 */
+    @Override
+    public com.fasterxml.jackson.databind.node.ObjectNode inputSchema() {
+        return com.jadecode.tools.ToolSchema.objectSchema(properties(), required());
+    }
 }

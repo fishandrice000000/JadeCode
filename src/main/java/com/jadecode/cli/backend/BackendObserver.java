@@ -23,7 +23,6 @@ import com.jadecode.util.Json;
  */
 public final class BackendObserver implements ExecutionObserver {
     /** detail 超过这个长度时改用 blob，避免单帧过大。 */
-    private static final int INLINE_DETAIL_LIMIT = 4096;
 
     private final WireContext wire;
     private final DisplayClock clock;
@@ -59,13 +58,7 @@ public final class BackendObserver implements ExecutionObserver {
         payload.put("outputTokens", Long.toString(notice.outputTokens()));
         payload.put("elapsedMs", notice.elapsedNanos() / 1_000_000L);
         String detail = notice.detail() == null ? "" : notice.detail();
-        if (detail.length() > INLINE_DETAIL_LIMIT) {
-            payload.put("detail", "");
-            payload.put("detailBlobRef",
-                    wire.payloads().sendText("notice-detail", detail, wire.sessionId(), wire.generation(), "notice"));
-        } else {
-            payload.put("detail", detail);
-        }
+        payload.put("detail", detail);
         ToolIdentity identity = notice.identity();
         if (identity == null)
             payload.putNull("toolIdentity");

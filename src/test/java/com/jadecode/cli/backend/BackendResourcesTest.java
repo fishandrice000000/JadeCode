@@ -18,11 +18,18 @@ class BackendResourcesTest {
         Path skill = Files.createDirectories(workspace.resolve("skills/local"));
         Files.writeString(skill.resolve("SKILL.md"),
                 "---\nname: local\ndescription: local fixture\n---\nPRIVATE_SKILL_BODY");
-        var config = new AppConfig("dummy", "http://127.0.0.1:9", "fixture", 128);
-        try (var runtime = JadeCodeFactory.create(config, workspace,
-                request -> {
+        var config = new AppConfig("dummy", "http://127.0.0.1:9", "fixture", 128,
+                com.jadecode.config.ModelProvider.ANTHROPIC_COMPATIBLE);
+        try (var runtime = com.jadecode.bootstrap.JadeCodeFactory.create(
+                new com.jadecode.bootstrap.JadeCodeFactory.Dependencies(config, workspace, (request, ignoredStream) -> {
                     throw new AssertionError("Resource display must not call a model");
-                }, com.jadecode.support.TestPaths.jade(workspace))) {
+                }, com.jadecode.config.JadeSettings.defaults(),
+                        (com.jadecode.config.JadeSettings.defaults()).permissions().state(null),
+                        com.jadecode.support.TestPaths.jade(workspace), null, null, ignored -> {
+                        }, () -> com.jadecode.llm.ResponseStream.NONE, com.jadecode.execution.ExecutionObserver.NONE,
+                        com.jadecode.hooks.Hooks::new,
+                        (summary, paths) -> new com.jadecode.context.ProductionCompactor(summary, paths,
+                                (com.jadecode.config.JadeSettings.defaults()).contextCompaction())))) {
             var display = runtime.display();
             assertEquals(List.of("AGENTS.md"), display.resources().get("Context"));
             assertEquals(List.of("local"), display.resources().get("Skills"));

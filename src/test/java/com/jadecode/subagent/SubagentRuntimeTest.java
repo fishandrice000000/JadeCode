@@ -47,10 +47,10 @@ class SubagentRuntimeTest {
         second.put("alpha", alpha);
         second.put("zeta", zeta);
         var calls = new ArrayList<CompleteRequest>();
-        LlmClient client = request -> {
+        LlmClient client = (request, ignoredStream) -> {
             // 循环随后还会追加回复，测试证据必须快照，不能保留那份可变历史引用。
             calls.add(new CompleteRequest(request.system(), List.copyOf(request.messages()), request.maxTokens(),
-                    request.tools(), request.thinking()));
+                    request.tools(), request.thinking(), ""));
             return assistant(new TextBlock("done"));
         };
         runtime(client, first, new Hooks()).run("first child");
@@ -84,26 +84,31 @@ class SubagentRuntimeTest {
             return "fake " + name;
         }
 
-        @Override
-        public Map<String, String> properties() {
+        private Map<String, String> properties() {
             return Map.of();
         }
 
-        @Override
-        public List<String> required() {
+        private List<String> required() {
             return List.of();
         }
 
         @Override
-        public String execute(ObjectNode input) {
+        public com.jadecode.tools.ToolOutcome executeOutcome(ObjectNode input,
+                com.jadecode.execution.ExecutionContext context) {
             calls++;
-            return output;
+            return new com.jadecode.tools.ToolOutcome(output, false);
+        }
+
+        /** 提供完整参数结构；标量构造器只负责组装 Schema，不授予执行权限。 */
+        @Override
+        public com.fasterxml.jackson.databind.node.ObjectNode inputSchema() {
+            return com.jadecode.tools.ToolSchema.objectSchema(properties(), required());
         }
     }
 
     /** 预置一条 assistant 回复(子代理侧只需要 message,usage 归零) */
     private static ModelResponse assistant(ContentBlock... blocks) {
-        return new ModelResponse(Message.assistant(List.of(blocks)), new ModelResponse.Usage(0, 0));
+        return new ModelResponse(Message.assistant(List.of(blocks)), new ModelResponse.Usage(0, 0, 0, 0), "");
     }
 
     /** 预置一条 tool_use:入参留空对象(FakeTool 不读参数) */
@@ -113,7 +118,13 @@ class SubagentRuntimeTest {
 
     /** 造运行时:system 与 maxTokens 固定,便于透传断言 */
     private static SubagentRuntime runtime(LlmClient client, Map<String, Tool> tools, Hooks hooks) {
-        return new SubagentRuntime(client, tools, "sub-system", 8000, hooks);
+        return new com.jadecode.subagent.SubagentRuntime(
+                scope -> new com.jadecode.agent.AgentExecutor(client, com.jadecode.tools.ToolCatalog.fixed(tools),
+                        "sub-system", 8000, hooks, null, () -> com.jadecode.llm.ResponseStream.NONE, scope.observer(),
+                        scope::thinking, () -> ""),
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                ignored -> {
+                });
     }
 
     /** 登记一个收集 SUBAGENT_END 入参的 hook,返回收集列表 */
@@ -172,10 +183,11 @@ class SubagentRuntimeTest {
         FakeTool tool = new FakeTool("bash", "不应执行");
         var requests = new java.util.concurrent.atomic.AtomicInteger();
         ContentBlock block = withTool ? toolUse("cut", "bash") : new TextBlock("尚未完成的总结");
-        SubagentRuntime runtime = runtime(request -> {
+        SubagentRuntime runtime = runtime((request, ignoredStream) -> {
             // 为旧实现提供正常结束机会，避免脚本耗尽掩盖错误的 DONE 或工具副作用。
             return requests.getAndIncrement() == 0
-                    ? new ModelResponse(Message.assistant(List.of(block)), new ModelResponse.Usage(0, 1), "max_tokens")
+                    ? new ModelResponse(Message.assistant(List.of(block)), new ModelResponse.Usage(0, 1, 0, 0),
+                            "max_tokens")
                     : assistant(new TextBlock("不应请求这一轮"));
         }, Map.of("bash", tool), hooks);
 

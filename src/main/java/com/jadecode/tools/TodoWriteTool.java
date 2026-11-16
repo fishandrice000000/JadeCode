@@ -41,19 +41,10 @@ public class TodoWriteTool implements Tool {
     }
 
     /**
-     * @return 平铺声明 todos 为 array——只起自文档作用,schema 实际以
-     *         {@link #inputSchema()} 为准
-     */
-    @Override
-    public Map<String, String> properties() {
-        return Map.of("todos", "array");
-    }
-
-    /**
      * @return 必填 [todos];execute 的缺参检查循环以此为准
      */
-    @Override
-    public List<String> required() {
+
+    private List<String> required() {
         return List.of("todos");
     }
 
@@ -97,17 +88,21 @@ public class TodoWriteTool implements Tool {
      * </p>
      *
      * @param input 模型参数,须含 todos 数组,元素形如 {"content": "...", "status": "pending"}
-     * @return 成功:新列表的渲染文本(来自 manager);失败:"Error: ..." 文案
+     * @return 执行结果（content 保留输出，isError 明确报告失败）：成功:新列表的渲染文本(来自 manager);失败:"Error: ..." 文案
+     * @param context Harness 提供的任务来源与取消检查；不从模型参数读取
      */
-    public String execute(ObjectNode input) {
+    public com.jadecode.tools.ToolOutcome executeOutcome(ObjectNode input,
+            com.jadecode.execution.ExecutionContext context) {
         for (String key : required()) {
             if (input.get(key) == null) {
-                return "Error: Missing required parameter: " + key;
+                return new com.jadecode.tools.ToolOutcome("Error: Missing required parameter: " + key, true);
             }
         }
         if (!input.get("todos").isArray()) {
-            return "Error: todos must be a list";
+            return new com.jadecode.tools.ToolOutcome("Error: todos must be a list", true);
         }
-        return manager.update((ArrayNode) input.get("todos"));
+        // 状态由计划校验产生，不能把错误文案包装成默认成功。
+        var result = manager.update((ArrayNode) input.get("todos"));
+        return new ToolOutcome(result.text(), result.error());
     }
 }

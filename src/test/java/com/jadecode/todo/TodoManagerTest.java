@@ -40,12 +40,12 @@ class TodoManagerTest {
     void validListReplacesWholly() {
         TodoManager manager = new TodoManager();
         String first = manager.update(
-                todos(item("step1", "pending"), item("step2", "in_progress"), item("step3", "completed")));
+                todos(item("step1", "pending"), item("step2", "in_progress"), item("step3", "completed"))).text();
 
         assertEquals("[ ] step1\n[>] step2\n[x] step3\n\n(1/3 completed)", first);
         assertEquals(first, manager.render()); // update 返回值即当前状态文本
 
-        String second = manager.update(todos(item("solo", "completed")));
+        String second = manager.update(todos(item("solo", "completed"))).text();
         assertEquals("[x] solo\n\n(1/1 completed)", second);
         assertEquals(second, manager.render()); // step1~3 已被替换掉
     }
@@ -54,8 +54,8 @@ class TodoManagerTest {
     @Test
     void emptyArrayClearsToNoTodos() {
         TodoManager manager = new TodoManager();
-        manager.update(todos(item("a", "pending")));
-        assertEquals("No todos.", manager.update(todos()));
+        manager.update(todos(item("a", "pending"))).text();
+        assertEquals("No todos.", manager.update(todos()).text());
         assertEquals("No todos.", manager.render());
     }
 
@@ -65,10 +65,10 @@ class TodoManagerTest {
         TodoManager manager = new TodoManager();
         // 只给 status、没给 content
         assertEquals("Error: todos[0] requires content",
-                manager.update(todos(Json.mapper().createObjectNode().put("status", "pending"))));
+                manager.update(todos(Json.mapper().createObjectNode().put("status", "pending"))).text());
         // 全空白 content:第 1 项合法、第 2 项空白 → 报 [1] 且整批不落库
         assertEquals("Error: todos[1] requires content",
-                manager.update(todos(item("ok", "pending"), item("   ", "pending"))));
+                manager.update(todos(item("ok", "pending"), item("   ", "pending"))).text());
         assertEquals("No todos.", manager.render()); // 两次失败都没污染状态
     }
 
@@ -80,7 +80,7 @@ class TodoManagerTest {
         for (int i = 0; i < many.length; i++) {
             many[i] = item("task" + i, "pending");
         }
-        assertEquals("Error: Max 20 todos allowed", manager.update(todos(many)));
+        assertEquals("Error: Max 20 todos allowed", manager.update(todos(many)).text());
     }
 
     /** ⑤ in_progress 多于一个:整批拒绝,文案带全部冲突下标(用户保留的增强后缀) */
@@ -88,7 +88,7 @@ class TodoManagerTest {
     void multipleInProgressRejected() {
         TodoManager manager = new TodoManager();
         assertEquals("Error: Only one todo can be in_progress at a time: in_progress index [0, 2]",
-                manager.update(todos(item("a", "in_progress"), item("b", "pending"), item("c", "in_progress"))));
+                manager.update(todos(item("a", "in_progress"), item("b", "pending"), item("c", "in_progress"))).text());
     }
 
     /** ⑥ status 无法识别:文案带原值(不转小写后的值) */
@@ -96,14 +96,14 @@ class TodoManagerTest {
     void invalidStatusKeepsRawValue() {
         TodoManager manager = new TodoManager();
         assertEquals("Error: todos[1] has invalid status 'DONE'",
-                manager.update(todos(item("a", "pending"), item("b", "DONE"))));
+                manager.update(todos(item("a", "pending"), item("b", "DONE"))).text());
     }
 
     /** ⑦ status 大小写不敏感 + 容忍首尾空白;缺省默认 pending */
     @Test
     void statusParsingIsLenient() {
         TodoManager manager = new TodoManager();
-        String out = manager.update(todos(item("a"), item("b", "IN_PROGRESS"), item("c", "  completed  ")));
+        String out = manager.update(todos(item("a"), item("b", "IN_PROGRESS"), item("c", "  completed  "))).text();
         assertEquals("[ ] a\n[>] b\n[x] c\n\n(1/3 completed)", out);
     }
 
@@ -111,8 +111,8 @@ class TodoManagerTest {
     @Test
     void failedUpdateLeavesOldListIntact() {
         TodoManager manager = new TodoManager();
-        manager.update(todos(item("keep", "pending")));
-        manager.update(todos(item("bad", "bogus"))); // 非法 status,整批拒绝
+        manager.update(todos(item("keep", "pending"))).text();
+        manager.update(todos(item("bad", "bogus"))).text(); // 非法 status,整批拒绝
         assertEquals("[ ] keep\n\n(0/1 completed)", manager.render());
     }
 
@@ -123,6 +123,20 @@ class TodoManagerTest {
         ObjectNode extra = item("real", "completed");
         extra.put("id", 42);
         extra.put("note", "whatever");
-        assertEquals("[x] real\n\n(1/1 completed)", manager.update(todos(extra)));
+        assertEquals("[x] real\n\n(1/1 completed)", manager.update(todos(extra)).text());
+    }
+
+    /** 整份计划先校验再替换；失败状态显式返回，保留上次成功计划。 */
+    @Test
+    void failedUpdateRetainsThePreviousPlanAndReportsAnErrorFlag() {
+        var manager = new TodoManager();
+        var valid = com.jadecode.util.Json.mapper().createArrayNode();
+        valid.addObject().put("content", "Error: a legitimate task title").put("status", "pending");
+        assertFalse(manager.update(valid).error());
+        var before = manager.snapshot();
+        var invalid = com.jadecode.util.Json.mapper().createArrayNode();
+        invalid.addObject().put("content", "");
+        assertTrue(manager.update(invalid).error());
+        assertEquals(before, manager.snapshot());
     }
 }

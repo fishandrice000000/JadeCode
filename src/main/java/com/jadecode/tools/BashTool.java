@@ -72,28 +72,16 @@ public class BashTool implements Tool {
     }
 
     /** 只暴露真实支持的模式参数；沙箱额外字段由外层包装器添加。 */
-    @Override
-    public Map<String, String> properties() {
+
+    private Map<String, String> properties() {
         return background == null ? Map.of("command", "string")
                 : Map.of("command", "string", "run_in_background", "boolean");
     }
 
     /** command 必填，省略后台模式保持同步默认。 */
-    @Override
-    public List<String> required() {
+
+    private List<String> required() {
         return List.of("command");
-    }
-
-    /** 离线同步兼容入口；后台模式仍要求正式执行身份。 */
-    @Override
-    public String execute(ObjectNode input) {
-        return execute(input, null);
-    }
-
-    /** 文字入口复用同一实现；正式调用方通过 ToolOutcome 保留错误标志。 */
-    @Override
-    public String execute(ObjectNode input, ExecutionContext context) {
-        return executeOutcome(input, context).content();
     }
 
     /**
@@ -102,7 +90,7 @@ public class BashTool implements Tool {
      * 后台返回启动说明，不用同一个 tool_use_id 再返回第二份 tool_result；最终输出交给通知链。
      * @param input 非 null，command 为非空白文本；run_in_background 如提供必须是真正 boolean
      * @param context 正式身份和取消条件；同步离线入口可为 null，后台必须提供
-     * @return 同步最终输出/状态，或后台启动回执；校验失败没有执行副作用
+     * @return 执行结果（content 保留原输出，isError 由本方法失败分支给定）：同步最终输出/状态，或后台启动回执；校验失败没有执行副作用
      */
     @Override
     public ToolOutcome executeOutcome(ObjectNode input, ExecutionContext context) {
@@ -152,5 +140,11 @@ public class BashTool implements Tool {
     /** 参数错误发生在执行之前，沿用工具错误格式。 */
     private static ToolOutcome error(String message) {
         return new ToolOutcome("Error: " + message, true);
+    }
+
+    /** 提供完整参数结构；标量构造器只负责组装 Schema，不授予执行权限。 */
+    @Override
+    public com.fasterxml.jackson.databind.node.ObjectNode inputSchema() {
+        return com.jadecode.tools.ToolSchema.objectSchema(properties(), required());
     }
 }

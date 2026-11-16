@@ -34,14 +34,14 @@ class OpenCodeGoAssemblyTest {
     }
 
     private static ModelResponse text(String body) {
-        return new ModelResponse(Message.assistant(List.of(new TextBlock(body))), new ModelResponse.Usage(3, 2),
+        return new ModelResponse(Message.assistant(List.of(new TextBlock(body))), new ModelResponse.Usage(3, 2, 0, 0),
                 "end_turn");
     }
 
     private static ModelResponse call(String name, String arguments) {
         try {
             return new ModelResponse(Message.assistant(List.of(new ToolUseBlock(UUID.randomUUID().toString(), name,
-                    Json.mapper().readTree(arguments)))), new ModelResponse.Usage(3, 2), "tool_use");
+                    Json.mapper().readTree(arguments)))), new ModelResponse.Usage(3, 2, 0, 0), "tool_use");
         } catch (java.io.IOException invalid) {
             throw new AssertionError(invalid);
         }
@@ -62,8 +62,9 @@ class OpenCodeGoAssemblyTest {
             }
 
             @Override
-            public ModelResponse complete(CompleteRequest request) throws LlmException {
-                return transport.complete(request);
+            public ModelResponse complete(CompleteRequest request, com.jadecode.llm.ResponseStream ignoredStream)
+                    throws LlmException {
+                return transport.complete(request, com.jadecode.llm.ResponseStream.NONE);
             }
         };
     }
@@ -72,7 +73,7 @@ class OpenCodeGoAssemblyTest {
     private JadeSettings settings(boolean memory) throws Exception {
         Path file = temporary.resolve("settings-" + memory + ".json");
         Files.writeString(file, """
-                {"memory":{"enabled":%s},"thinking":{"effort":"low"},
+                {"version":1,"memory":{"enabled":%s},"thinking":{"effort":"low"},
                  "permissions":{"defaultProfile":"auto-review"},"mcp":{"servers":{}},
                  "sandbox":{"enabled":false},
                  "compaction":{"autoSummaryEnabled":false,"keepRecentTokens":0}}
@@ -82,12 +83,13 @@ class OpenCodeGoAssemblyTest {
 
     private SessionRuntime runtime(Path workspace, JadePaths jade, JadeSettings settings, AppConfig config,
             LlmClient transport) {
-        return JadeCodeFactory.create(config, workspace, capable(transport), ignored -> {
-        }, ignored -> {
-        },
-                (hooks, cwd, output) -> {
-                }, () -> ResponseStream.NONE, ExecutionObserver.NONE, settings,
-                settings.permissions().state(null), jade);
+        return com.jadecode.bootstrap.JadeCodeFactory.create(new com.jadecode.bootstrap.JadeCodeFactory.Dependencies(
+                config, workspace, capable(transport), settings, settings.permissions().state(null), jade, null, null,
+                com.jadecode.support.TestMessages.toText(ignored -> {
+                }, ignored -> {
+                }), () -> ResponseStream.NONE, ExecutionObserver.NONE, com.jadecode.hooks.Hooks::new,
+                (summary, paths) -> new com.jadecode.context.ProductionCompactor(summary, paths,
+                        (settings).contextCompaction())));
     }
 
     /** 同一用户任务实际触发七类请求；恢复不重放旧工具，下一条请求仍用原 UUID 和已保存档位。 */
@@ -100,7 +102,7 @@ class OpenCodeGoAssemblyTest {
         Set<String> channels = ConcurrentHashMap.newKeySet();
         var memorySeen = new CountDownLatch(1);
         AtomicInteger phase = new AtomicInteger();
-        LlmClient transport = request -> {
+        LlmClient transport = (request, ignoredStream) -> {
             requests.add(request);
             assertFalse(request.sessionId().isEmpty(), "任何辅助请求都不能绕过会话绑定");
             String system = request.system();
@@ -180,7 +182,7 @@ class OpenCodeGoAssemblyTest {
         JadePaths jade = new JadePaths(temporary.resolve("jade"));
         var ids = new ConcurrentHashMap<String, String>();
         var entered = new CountDownLatch(2);
-        LlmClient transport = request -> {
+        LlmClient transport = (request, ignoredStream) -> {
             String input = request.messages().getFirst().extractText();
             String prior = ids.putIfAbsent(input, request.sessionId());
             if (prior != null)
@@ -211,13 +213,16 @@ class OpenCodeGoAssemblyTest {
         try (var opened = store.create(config().model(), config().backendIdentity())) {
             goId = opened.restored().metadata().id();
         }
-        var direct = new AppConfig("fixture-direct", "http://127.0.0.1:1", config().model(), 8000);
+        var direct = new AppConfig("fixture-direct", "http://127.0.0.1:1", config().model(), 8000,
+                com.jadecode.config.ModelProvider.ANTHROPIC_COMPATIBLE);
         try (var opened = store.open(goId);
-                var runtime = runtime(workspace, jade, settings, direct, request -> text("unexpected"))) {
+                var runtime = runtime(workspace, jade, settings, direct,
+                        (request, ignoredStream) -> text("unexpected"))) {
             assertThrows(IllegalArgumentException.class, () -> runtime.restore(opened.journal(), opened.restored()));
         }
-        try (var legacy = store.create(config().model());
-                var runtime = runtime(workspace, jade, settings, config(), request -> text("unexpected"))) {
+        try (var legacy = store.create(config().model(), "");
+                var runtime = runtime(workspace, jade, settings, config(),
+                        (request, ignoredStream) -> text("unexpected"))) {
             assertThrows(IllegalArgumentException.class, () -> runtime.restore(legacy.journal(), legacy.restored()));
         }
     }
@@ -271,7 +276,7 @@ class OpenCodeGoAssemblyTest {
         var agentId = new java.util.concurrent.atomic.AtomicReference<String>();
         AtomicInteger parentPhase = new AtomicInteger(), memberPhase = new AtomicInteger();
         var reviewed = new java.util.concurrent.atomic.AtomicBoolean();
-        LlmClient transport = request -> {
+        LlmClient transport = (request, ignoredStream) -> {
             if (request.system().startsWith("You are JadeCode teammate.")) {
                 String prior = memberId.compareAndExchange(null, request.sessionId());
                 if (prior != null)

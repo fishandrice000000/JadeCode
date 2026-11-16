@@ -90,11 +90,11 @@ class PromptLanguageTest {
         private CompleteRequest last;
 
         @Override
-        public ModelResponse complete(CompleteRequest request) {
+        public ModelResponse complete(CompleteRequest request, com.jadecode.llm.ResponseStream ignoredStream) {
             last = request;
             return new ModelResponse(Message.assistant(List.of(new TextBlock(
                     "{\"decision\":\"escalate\",\"reason\":\"test\"}"))),
-                    new ModelResponse.Usage(1, 1), "end_turn");
+                    new ModelResponse.Usage(1, 1, 0, 0), "end_turn");
         }
     }
 }

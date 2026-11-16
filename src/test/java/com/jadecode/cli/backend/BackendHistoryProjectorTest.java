@@ -16,12 +16,12 @@ class BackendHistoryProjectorTest {
     private static final String ID = "00000000-0000-0000-0000-000000000001";
 
     private JournalEntry entry(long seq, JournalEntry.Kind kind, String reason, Message... messages) {
-        return new JournalEntry(1, ID, seq, "2026-10-25T00:00:00Z", kind,
-                List.of(messages), JSON.createArrayNode(), reason);
+        return new JournalEntry(5, ID, seq, "2026-10-25T00:00:00Z", kind, List.of(messages), JSON.createArrayNode(),
+                reason, null, null, null, null, null);
     }
 
     private Message message(Role role, String text) {
-        return new Message(role, List.of(new TextBlock(text)));
+        return new Message(role, List.of(new TextBlock(text)), null);
     }
 
     private List<BackendHistoryProjector.Entry> project(JournalEntry... entries) {
@@ -42,8 +42,9 @@ class BackendHistoryProjectorTest {
     /** 召回资料只属于模型上下文；恢复后普通请求与独立通知保持原显示身份。 */
     @Test
     void memoryReferenceDoesNotBecomeUserHistory() {
-        var reference = new JournalEntry(4, ID, 2, "2026-10-26T00:00:00Z", JournalEntry.Kind.APPEND,
-                List.of(Message.memoryReference("old memory reference")), JSON.createArrayNode(), "memory_reference");
+        var reference = new JournalEntry(5, ID, 2, "2026-10-26T00:00:00Z", JournalEntry.Kind.APPEND,
+                List.of(Message.memoryReference("old memory reference")), JSON.createArrayNode(), "memory_reference",
+                null, null, null, null, null);
         var entries = project(entry(1, JournalEntry.Kind.APPEND, "request", Message.userText("real request")),
                 reference,
                 entry(3, JournalEntry.Kind.APPEND, "notification", Message.userText("background done")),

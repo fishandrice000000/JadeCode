@@ -13,12 +13,12 @@ import com.jadecode.util.Json;
  */
 public final class SessionChannel implements EventEndpoint {
     private final LiveDisplay display = new LiveDisplay();
-    private final PayloadTransfer.Assembler assembler = new PayloadTransfer.Assembler();
-    private final Map<String, String> blobs = new LinkedHashMap<>();
     private ProtocolSession connection;
     private String connectionId;
     private long sequence;
     private long generation = -1;
+    /** 新代次可能先收到装配提示；它不等于该代次的持久历史已安装。 */
+    private long baselineGeneration = -1;
     private boolean syncing;
     private java.util.function.BiConsumer<String, ObjectNode> audit = (kind, payload) -> {
     };
@@ -54,9 +54,14 @@ public final class SessionChannel implements EventEndpoint {
 
     /** 快照期间与事件使用同一把锁；基线仅在新会话代次安装一次。 */
     public synchronized List<Entry> snapshot(long nextGeneration, List<Entry> baseline) {
-        if (generation != nextGeneration) {
+        if (baselineGeneration != nextGeneration) {
+            var entries = new ArrayList<>(baseline);
+            // 装配期间的新提示保留在已保存历史之后；上一代显示不能带进来。
+            if (generation == nextGeneration)
+                entries.addAll(display.entries());
             generation = nextGeneration;
-            display.install(baseline);
+            baselineGeneration = nextGeneration;
+            display.install(entries);
         }
         return display.entries();
     }
@@ -68,6 +73,14 @@ public final class SessionChannel implements EventEndpoint {
 
     @Override
     public synchronized void sendEvent(String type, ObjectNode payload, String id, Long gen) {
+        adoptAndSend(type, payload, id, gen, null);
+    }
+
+    /** 同一锁内先采用完整资料，再向连接投递；streamKey 只控制传输合并，不影响投影。 */
+    private void adoptAndSend(String type, ObjectNode payload, String id, Long gen, String streamKey) {
+        // 上一代的迟到通知不能清空当前显示或发给新连接。
+        if (gen != null && gen < generation)
+            return;
         sequence++;
         if (Set.of("task.submitted", "task.result", "task.failed", "approval.requested", "approval.removed")
                 .contains(type)
@@ -78,39 +91,25 @@ public final class SessionChannel implements EventEndpoint {
             // 首次 open 的展示基线由 snapshot 安装；不能让上一代文字污染新会话。
             generation = gen;
             display.install(List.of());
-            blobs.clear();
         }
-        try {
-            String blob = payload.path("id").asText();
-            switch (type) {
-                case "payload.begin" -> assembler.begin(blob, payload.path("kind").asText(),
-                        payload.path("totalBytes").asInt(), payload.path("sha256").asText());
-                case "payload.chunk" ->
-                    assembler.chunk(blob, payload.path("index").asInt(), payload.path("text").asText());
-                case "payload.end" -> {
-                    String value = assembler.end(blob, payload.path("count").asInt(), payload.path("sha256").asText());
-                    // 大资料只用于紧随其后的事件；缓存数量有界，显示正文随后独立保存。
-                    while (blobs.size() >= 32)
-                        blobs.remove(blobs.keySet().iterator().next());
-                    blobs.put(blob, value);
-                }
-                default -> display.accept(type, payload, ref -> blobs.getOrDefault(ref, ""));
-            }
-        } catch (ProtocolException invalid) {
-            throw new IllegalStateException("Invalid server payload", invalid);
-        }
+        // 投影直接采用完整业务资料；断连时也无需先分块、再组装自己的输出。
+        display.accept(type, payload);
         // 同步阶段的运行事件已进入投影；它们不越过快照直接发到尚未 ready 的界面。
-        if (connection != null && (!syncing || control(type)))
-            connection.sendEvent(type, payload, id, gen);
+        if (connection != null && (!syncing || control(type))) {
+            if (streamKey == null)
+                connection.sendEvent(type, payload, id, gen);
+            else
+                connection.sendStreamEvent(type, payload, id, gen, streamKey);
+        }
     }
 
     private boolean control(String type) {
-        return type.startsWith("session.snapshot") || type.startsWith("payload.") || type.equals("state.snapshot");
+        return type.startsWith("session.snapshot") || type.equals("state.snapshot");
     }
 
     @Override
-    public void sendStreamEvent(String type, ObjectNode p, String id, Long gen, String key) {
-        sendEvent(type, p, id, gen);
+    public synchronized void sendStreamEvent(String type, ObjectNode p, String id, Long gen, String key) {
+        adoptAndSend(type, p, id, gen, key);
     }
 
     @Override

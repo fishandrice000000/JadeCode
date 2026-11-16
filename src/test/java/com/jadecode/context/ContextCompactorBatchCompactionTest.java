@@ -70,16 +70,17 @@ class ContextCompactorBatchCompactionTest {
         private final List<CompleteRequest> summaryRequests = new ArrayList<>();
 
         @Override
-        public ModelResponse complete(CompleteRequest request) {
+        public ModelResponse complete(CompleteRequest request, com.jadecode.llm.ResponseStream ignoredStream) {
             summaryRequests.add(new CompleteRequest(request.system(), List.copyOf(request.messages()),
-                    request.maxTokens(), request.tools()));
+                    request.maxTokens(), request.tools(), com.jadecode.llm.ThinkingSettings.DEFAULT, ""));
             return new ModelResponse(Message.assistant(List.of(new TextBlock("摘要文本"))),
-                    new ModelResponse.Usage(0, 0));
+                    new ModelResponse.Usage(0, 0, 0, 0), "");
         }
     }
 
-    private ContextCompactor compactor(LlmClient client) {
-        return new ContextCompactor(client, transcriptDir, toolResultsDir, CompactionLimits.courseDefaults());
+    private CourseCompactor compactor(LlmClient client) {
+        return new com.jadecode.context.CourseCompactor(client, transcriptDir, toolResultsDir,
+                CompactionLimits.courseDefaults());
     }
 
     /** 造一个 tool_use(空入参:本入口只看名字) */
@@ -121,10 +122,10 @@ class ContextCompactorBatchCompactionTest {
     @Test
     void pureCompactBatchSummarizesWholeClosedHistory() throws Exception {
         FakeClient client = new FakeClient();
-        ContextCompactor compactor = compactor(client);
+        CourseCompactor compactor = compactor(client);
         Message request = Message.userText("开始");
         Message assistant = assistant(call("c1", "compact"));
-        Message results = Message.userBlocks(List.of(new ToolResultBlock("c1", CompactTool.OUTPUT)));
+        Message results = Message.userBlocks(List.of(new ToolResultBlock("c1", CompactTool.OUTPUT, false)));
         List<Message> messages = history(request, assistant, results);
         List<Message> before = List.copyOf(messages);
 
@@ -153,13 +154,13 @@ class ContextCompactorBatchCompactionTest {
     @Test
     void mixedBatchSummarizesOnlyOldPrefixAndKeepsLatestExchange() throws Exception {
         FakeClient client = new FakeClient();
-        ContextCompactor compactor = compactor(client);
+        CourseCompactor compactor = compactor(client);
         Message request = Message.userText("开始");
         Message assistant = assistant(call("b1", "bash"), call("c1", "compact"));
         // 结果都远小于默认预算门槛,所以这一轮不会发生预算替换,尾部应保持原引用。
         Message results = Message.userBlocks(List.of(
-                new ToolResultBlock("b1", "普通输出"),
-                new ToolResultBlock("c1", CompactTool.OUTPUT)));
+                new ToolResultBlock("b1", "普通输出", false),
+                new ToolResultBlock("c1", CompactTool.OUTPUT, false)));
         List<Message> messages = history(request, assistant, results);
 
         List<Message> candidate = compactor.compactAfterBatch(
@@ -192,12 +193,12 @@ class ContextCompactorBatchCompactionTest {
     @Test
     void mixedBatchWithoutSummarizablePrefixReturnsInputUnchanged() throws Exception {
         FakeClient client = new FakeClient();
-        ContextCompactor compactor = compactor(client);
+        CourseCompactor compactor = compactor(client);
         // 历史恰好就是这一条闭合交换(没有更早的对话):整段都属于"要保护的尾部"。
         Message assistant = assistant(call("b1", "bash"), call("c1", "compact"));
         Message results = Message.userBlocks(List.of(
-                new ToolResultBlock("b1", "普通输出"),
-                new ToolResultBlock("c1", CompactTool.OUTPUT)));
+                new ToolResultBlock("b1", "普通输出", false),
+                new ToolResultBlock("c1", CompactTool.OUTPUT, false)));
         List<Message> messages = history(assistant, results);
 
         List<Message> candidate = compactor.compactAfterBatch(

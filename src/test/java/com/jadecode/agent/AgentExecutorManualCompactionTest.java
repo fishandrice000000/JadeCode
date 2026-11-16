@@ -17,7 +17,6 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jadecode.context.CompactionLimits;
 import com.jadecode.context.ContextCompactor;
 import com.jadecode.hooks.Hooks;
-import com.jadecode.session.SessionRuntime;
 import com.jadecode.llm.CompleteRequest;
 import com.jadecode.llm.LlmClient;
 import com.jadecode.llm.LlmException;
@@ -95,20 +94,25 @@ class AgentExecutorManualCompactionTest {
             return "fake " + name;
         }
 
-        @Override
-        public Map<String, String> properties() {
+        private Map<String, String> properties() {
             return Map.of();
         }
 
-        @Override
-        public List<String> required() {
+        private List<String> required() {
             return List.of();
         }
 
         @Override
-        public String execute(ObjectNode input) {
+        public com.jadecode.tools.ToolOutcome executeOutcome(ObjectNode input,
+                com.jadecode.execution.ExecutionContext context) {
             calls++;
-            return output;
+            return new com.jadecode.tools.ToolOutcome(output, false);
+        }
+
+        /** 提供完整参数结构；标量构造器只负责组装 Schema，不授予执行权限。 */
+        @Override
+        public com.fasterxml.jackson.databind.node.ObjectNode inputSchema() {
+            return com.jadecode.tools.ToolSchema.objectSchema(properties(), required());
         }
     }
 
@@ -130,9 +134,10 @@ class AgentExecutorManualCompactionTest {
         }
 
         @Override
-        public ModelResponse complete(CompleteRequest request) throws LlmException {
+        public ModelResponse complete(CompleteRequest request, com.jadecode.llm.ResponseStream ignoredStream)
+                throws LlmException {
             CompleteRequest snapshot = new CompleteRequest(request.system(), List.copyOf(request.messages()),
-                    request.maxTokens(), request.tools());
+                    request.maxTokens(), request.tools(), com.jadecode.llm.ThinkingSettings.DEFAULT, "");
             if (request.tools().isEmpty()) {
                 summaryRequests.add(snapshot);
                 if (summaryFailure != null) {
@@ -140,7 +145,7 @@ class AgentExecutorManualCompactionTest {
                 }
                 onSummary.run();
                 return new ModelResponse(Message.assistant(List.of(new TextBlock("摘要"))),
-                        new ModelResponse.Usage(0, 0));
+                        new ModelResponse.Usage(0, 0, 0, 0), "");
             }
             normalRequests.add(snapshot);
             if (replies.isEmpty()) {
@@ -166,7 +171,7 @@ class AgentExecutorManualCompactionTest {
     }
 
     private ContextCompactor compactor(LlmClient client) {
-        return new ContextCompactor(client, transcriptDir, toolResultsDir, defaultLimits());
+        return new com.jadecode.context.CourseCompactor(client, transcriptDir, toolResultsDir, defaultLimits());
     }
 
     private static ToolUseBlock use(String id, String name) {
@@ -174,7 +179,7 @@ class AgentExecutorManualCompactionTest {
     }
 
     private static ModelResponse assistant(ContentBlock... blocks) {
-        return new ModelResponse(Message.assistant(List.of(blocks)), new ModelResponse.Usage(0, 0));
+        return new ModelResponse(Message.assistant(List.of(blocks)), new ModelResponse.Usage(0, 0, 0, 0), "");
     }
 
     /** 取某条消息里的 tool_result 块(按出现顺序) */
@@ -278,10 +283,13 @@ class AgentExecutorManualCompactionTest {
             closedExchangeVisibleWhenSummarizing.set(closedTailMatches(messages, List.of(use("c1", "compact"))));
             archiveWhenSummarizing.set(archiveLinesUnchecked());
         };
-        AgentExecutor loop = new AgentExecutor(client, Map.of("compact", new CompactTool()), "test-system", 8000,
-                new Hooks(), compactor(client));
+        AgentExecutor loop = new com.jadecode.agent.AgentExecutor(client,
+                com.jadecode.tools.ToolCatalog.fixed(Map.of("compact", new CompactTool())), "test-system", 8000,
+                new Hooks(), compactor(client), () -> com.jadecode.llm.ResponseStream.NONE,
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                () -> "");
 
-        SessionRuntime.runExisting(loop, messages);
+        com.jadecode.support.ExecutorSteps.run(loop, messages);
 
         // 摘要调用那一刻的现场:历史里已经是"闭合"的完整交换(assistant 调用 + 对应 tool_result),
         // 说明结果先回灌、压缩动作在闭合之后才发生。
@@ -336,7 +344,7 @@ class AgentExecutorManualCompactionTest {
             toolResultsDir = workspace.resolve("tool-results-" + String.join("-", order));
             List<ToolUseBlock> calls = callsInOrder(order);
             ModelResponse firstReply = new ModelResponse(Message.assistant(List.copyOf(calls)),
-                    new ModelResponse.Usage(0, 0));
+                    new ModelResponse.Usage(0, 0, 0, 0), "");
             FakeClient client = new FakeClient(firstReply, assistant(new TextBlock("完成")));
             FakeTool bash = new FakeTool("bash", "普通输出");
             List<Message> messages = new ArrayList<>(List.of(Message.userText("开始")));
@@ -350,10 +358,13 @@ class AgentExecutorManualCompactionTest {
                 closedExchangeVisibleWhenSummarizing.set(closedTailMatches(messages, calls));
                 liveHistoryWhenSummarizing.set(List.copyOf(messages));
             };
-            AgentExecutor loop = new AgentExecutor(client, Map.of("bash", bash, "compact", new CompactTool()),
-                    "test-system", 8000, new Hooks(), compactor(client));
+            AgentExecutor loop = new com.jadecode.agent.AgentExecutor(client,
+                    com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", bash, "compact", new CompactTool())),
+                    "test-system", 8000, new Hooks(), compactor(client), () -> com.jadecode.llm.ResponseStream.NONE,
+                    com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                    () -> "");
 
-            SessionRuntime.runExisting(loop, messages);
+            com.jadecode.support.ExecutorSteps.run(loop, messages);
 
             assertEquals(1, client.summaryRequests.size(), "混合批次也要压缩一次");
             // 普通工具各执行一次;结果顺序与调用顺序一致。
@@ -436,11 +447,14 @@ class AgentExecutorManualCompactionTest {
                 assistant(new TextBlock("完成")),
                 assistant(new TextBlock("第二轮的回复")));
         FakeTool bash = new FakeTool("bash", "输出");
-        AgentExecutor loop = new AgentExecutor(client, Map.of("bash", bash, "compact", new CompactTool()),
-                "test-system", 8000, new Hooks(), compactor(client));
+        AgentExecutor loop = new com.jadecode.agent.AgentExecutor(client,
+                com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", bash, "compact", new CompactTool())), "test-system",
+                8000, new Hooks(), compactor(client), () -> com.jadecode.llm.ResponseStream.NONE,
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                () -> "");
         List<Message> messages = new ArrayList<>(List.of(Message.userText("开始")));
 
-        SessionRuntime.runExisting(loop, messages);
+        com.jadecode.support.ExecutorSteps.run(loop, messages);
 
         assertEquals(1, client.summaryRequests.size(), "一批多个成功 compact 只压缩一次");
         assertEquals(1, bash.calls);
@@ -448,7 +462,7 @@ class AgentExecutorManualCompactionTest {
 
         // 同一个 loop 第二次 run:标志不残留(没有 compact 调用 → 不再压缩)。
         messages.add(Message.userText("第二个请求"));
-        SessionRuntime.runExisting(loop, messages);
+        com.jadecode.support.ExecutorSteps.run(loop, messages);
 
         assertEquals(1, client.summaryRequests.size(), "第二次 run 不得继承上一轮的压缩请求");
         assertEquals(4, client.normalRequests.size());
@@ -463,11 +477,14 @@ class AgentExecutorManualCompactionTest {
                 assistant(new TextBlock("完成")));
         Hooks blockedHooks = new Hooks();
         blockedHooks.register(Hooks.PRE_TOOL_USE, params -> CompactTool.OUTPUT); // 拦截文案 == 稳定输出
-        AgentExecutor blockedLoop = new AgentExecutor(blockedClient, Map.of("compact", new CompactTool()),
-                "test-system", 8000, blockedHooks, compactor(blockedClient));
+        AgentExecutor blockedLoop = new com.jadecode.agent.AgentExecutor(blockedClient,
+                com.jadecode.tools.ToolCatalog.fixed(Map.of("compact", new CompactTool())), "test-system", 8000,
+                blockedHooks, compactor(blockedClient), () -> com.jadecode.llm.ResponseStream.NONE,
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                () -> "");
         List<Message> blockedMessages = new ArrayList<>(List.of(Message.userText("开始")));
 
-        SessionRuntime.runExisting(blockedLoop, blockedMessages);
+        com.jadecode.support.ExecutorSteps.run(blockedLoop, blockedMessages);
 
         assertEquals(0, blockedClient.summaryRequests.size(), "被拦截的 compact 不得触发压缩");
         assertEquals(CompactTool.OUTPUT, resultsOf(blockedMessages.get(2)).getFirst().content());
@@ -476,24 +493,29 @@ class AgentExecutorManualCompactionTest {
         // (b) 别的工具返回与 OUTPUT 完全相同的文案:不触发。
         transcriptDir = workspace.resolve("transcripts-other");
         FakeClient otherClient = new FakeClient(assistant(use("b1", "bash")), assistant(new TextBlock("完成")));
-        AgentExecutor otherLoop = new AgentExecutor(otherClient,
-                Map.of("bash", new FakeTool("bash", CompactTool.OUTPUT), "compact", new CompactTool()),
-                "test-system", 8000, new Hooks(), compactor(otherClient));
+        AgentExecutor otherLoop = new com.jadecode.agent.AgentExecutor(otherClient,
+                com.jadecode.tools.ToolCatalog
+                        .fixed(Map.of("bash", new FakeTool("bash", CompactTool.OUTPUT), "compact", new CompactTool())),
+                "test-system", 8000, new Hooks(), compactor(otherClient), () -> com.jadecode.llm.ResponseStream.NONE,
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                () -> "");
         List<Message> otherMessages = new ArrayList<>(List.of(Message.userText("开始")));
 
-        SessionRuntime.runExisting(otherLoop, otherMessages);
+        com.jadecode.support.ExecutorSteps.run(otherLoop, otherMessages);
 
         assertEquals(0, otherClient.summaryRequests.size(), "普通工具返回同样文案不得误触发");
 
         // (c) compact 名下返回非期望文案:不触发。
         transcriptDir = workspace.resolve("transcripts-wrong-output");
         FakeClient wrongClient = new FakeClient(assistant(use("c1", "compact")), assistant(new TextBlock("完成")));
-        AgentExecutor wrongLoop = new AgentExecutor(wrongClient,
-                Map.of("compact", new FakeTool("compact", "别的输出")), "test-system", 8000, new Hooks(),
-                compactor(wrongClient));
+        AgentExecutor wrongLoop = new com.jadecode.agent.AgentExecutor(wrongClient,
+                com.jadecode.tools.ToolCatalog.fixed(Map.of("compact", new FakeTool("compact", "别的输出"))), "test-system",
+                8000, new Hooks(), compactor(wrongClient), () -> com.jadecode.llm.ResponseStream.NONE,
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                () -> "");
         List<Message> wrongMessages = new ArrayList<>(List.of(Message.userText("开始")));
 
-        SessionRuntime.runExisting(wrongLoop, wrongMessages);
+        com.jadecode.support.ExecutorSteps.run(wrongLoop, wrongMessages);
 
         assertEquals(0, wrongClient.summaryRequests.size(), "输出不匹配时不得触发压缩");
     }
@@ -503,11 +525,14 @@ class AgentExecutorManualCompactionTest {
     @Test
     void duplicateCallIdsAreStillRejectedBeforeAnyToolOrSummary() {
         FakeClient client = new FakeClient(assistant(use("dup", "compact"), use("dup", "compact")));
-        AgentExecutor loop = new AgentExecutor(client, Map.of("compact", new CompactTool()), "test-system", 8000,
-                new Hooks(), compactor(client));
+        AgentExecutor loop = new com.jadecode.agent.AgentExecutor(client,
+                com.jadecode.tools.ToolCatalog.fixed(Map.of("compact", new CompactTool())), "test-system", 8000,
+                new Hooks(), compactor(client), () -> com.jadecode.llm.ResponseStream.NONE,
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                () -> "");
         List<Message> messages = new ArrayList<>(List.of(Message.userText("开始")));
 
-        assertThrows(IllegalArgumentException.class, () -> SessionRuntime.runExisting(loop, messages));
+        assertThrows(IllegalArgumentException.class, () -> com.jadecode.support.ExecutorSteps.run(loop, messages));
 
         assertEquals(1, messages.size(), "不得留下半截 assistant 消息");
         assertEquals(0, client.summaryRequests.size());
@@ -523,13 +548,16 @@ class AgentExecutorManualCompactionTest {
                 assistant(use("b1", "bash"), use("c1", "compact")),
                 assistant(new TextBlock("完成")));
         FakeTool bash = new FakeTool("bash", huge);
-        ContextCompactor compactor = new ContextCompactor(client, transcriptDir, toolResultsDir,
+        ContextCompactor compactor = new com.jadecode.context.CourseCompactor(client, transcriptDir, toolResultsDir,
                 limits(200, 100, 10)); // 批次门槛 200、单项门槛 100、预览 10
-        AgentExecutor loop = new AgentExecutor(client, Map.of("bash", bash, "compact", new CompactTool()),
-                "test-system", 8000, new Hooks(), compactor);
+        AgentExecutor loop = new com.jadecode.agent.AgentExecutor(client,
+                com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", bash, "compact", new CompactTool())), "test-system",
+                8000, new Hooks(), compactor, () -> com.jadecode.llm.ResponseStream.NONE,
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                () -> "");
         List<Message> messages = new ArrayList<>(List.of(Message.userText("开始")));
 
-        SessionRuntime.runExisting(loop, messages);
+        com.jadecode.support.ExecutorSteps.run(loop, messages);
 
         // 新鲜的大结果先落盘为可恢复外壳:文件含完整原文,上下文里只剩路径 + 10 字符预览。
         assertEquals(1, toolResultFileCount());
@@ -564,11 +592,14 @@ class AgentExecutorManualCompactionTest {
         Hooks hooks = new Hooks();
         java.util.concurrent.atomic.AtomicBoolean firstStop = new java.util.concurrent.atomic.AtomicBoolean(true);
         hooks.register(Hooks.STOP, params -> firstStop.getAndSet(false) ? "继续执行" : null);
-        AgentExecutor loop = new AgentExecutor(client, Map.of("compact", new CompactTool()), "test-system", 8000,
-                hooks, compactor(client));
+        AgentExecutor loop = new com.jadecode.agent.AgentExecutor(client,
+                com.jadecode.tools.ToolCatalog.fixed(Map.of("compact", new CompactTool())), "test-system", 8000, hooks,
+                compactor(client), () -> com.jadecode.llm.ResponseStream.NONE,
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                () -> "");
         List<Message> messages = new ArrayList<>(List.of(Message.userText("开始")));
 
-        SessionRuntime.runExisting(loop, messages);
+        com.jadecode.support.ExecutorSteps.run(loop, messages);
 
         assertEquals(2, client.summaryRequests.size(), "Stop hook 注入后再次 compact 应再压缩一次");
         // 第二次压缩发生在 Stop hook 注入之后:压缩消息里的 Current user request 仍是入口捕获的那句,
@@ -591,30 +622,42 @@ class AgentExecutorManualCompactionTest {
     void enabledPathValidatesEntryAndLegacyPathAndConfigErrorsBehaveAsSpecified() throws LlmException {
         // 启用路径:非法入口(空白请求)在第一次模型调用前拒绝。
         FakeClient client = new FakeClient(assistant(new TextBlock("不该被调用")));
-        AgentExecutor enabled = new AgentExecutor(client, Map.of("compact", new CompactTool()), "test-system", 8000,
-                new Hooks(), compactor(client));
+        AgentExecutor enabled = new com.jadecode.agent.AgentExecutor(client,
+                com.jadecode.tools.ToolCatalog.fixed(Map.of("compact", new CompactTool())), "test-system", 8000,
+                new Hooks(), compactor(client), () -> com.jadecode.llm.ResponseStream.NONE,
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                () -> "");
         List<Message> blankEntry = new ArrayList<>(List.of(Message.userText("   ")));
-        assertThrows(IllegalArgumentException.class, () -> SessionRuntime.runExisting(enabled, blankEntry));
+        assertThrows(IllegalArgumentException.class, () -> com.jadecode.support.ExecutorSteps.run(enabled, blankEntry));
         assertEquals(0, client.normalRequests.size(), "非法入口不得调用模型");
 
         // 旧路径:五参构造器 + 不含 compact 的工具表 → 保持既有行为(不捕获请求、不压缩)。
         FakeClient legacyClient = new FakeClient(assistant(new TextBlock("旧路径回复")));
-        AgentExecutor legacy = new AgentExecutor(legacyClient, Map.of("bash", new FakeTool("bash", "x")),
-                "test-system", 8000, new Hooks());
+        AgentExecutor legacy = new com.jadecode.agent.AgentExecutor(legacyClient,
+                com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", new FakeTool("bash", "x"))), "test-system", 8000,
+                new Hooks(), null, () -> com.jadecode.llm.ResponseStream.NONE,
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                () -> "");
         List<Message> legacyMessages = new ArrayList<>(List.of(Message.userText("旧请求")));
-        SessionRuntime.runExisting(legacy, legacyMessages);
+        com.jadecode.support.ExecutorSteps.run(legacy, legacyMessages);
         assertEquals("旧路径回复", legacyMessages.getLast().extractText());
         assertEquals(0, legacyClient.summaryRequests.size());
 
         // 配置错误:注册了 compact 却没注入压缩器 → 构造时明确拒绝。
         FakeClient misconfigured = new FakeClient();
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
-                () -> new AgentExecutor(misconfigured, Map.of("compact", new CompactTool()), "test-system", 8000,
-                        new Hooks()));
+                () -> new com.jadecode.agent.AgentExecutor(misconfigured,
+                        com.jadecode.tools.ToolCatalog.fixed(Map.of("compact", new CompactTool())), "test-system", 8000,
+                        new Hooks(), null, () -> com.jadecode.llm.ResponseStream.NONE,
+                        com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                        () -> ""));
         assertTrue(error.getMessage().contains("ContextCompactor"));
         assertThrows(IllegalArgumentException.class,
-                () -> new AgentExecutor(misconfigured, Map.of("compact", new CompactTool()), "test-system", 8000,
-                        new Hooks(), null));
+                () -> new com.jadecode.agent.AgentExecutor(misconfigured,
+                        com.jadecode.tools.ToolCatalog.fixed(Map.of("compact", new CompactTool())), "test-system", 8000,
+                        new Hooks(), null, () -> com.jadecode.llm.ResponseStream.NONE,
+                        com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                        () -> ""));
     }
 
     /* ---------------- 9. 失败语义 ---------------- */
@@ -625,12 +668,15 @@ class AgentExecutorManualCompactionTest {
         Files.writeString(transcriptDir, "占位文件");
         FakeClient archiveFailClient = new FakeClient(assistant(use("c1", "compact")),
                 assistant(new TextBlock("完成")));
-        AgentExecutor archiveFailLoop = new AgentExecutor(archiveFailClient, Map.of("compact", new CompactTool()),
-                "test-system", 8000, new Hooks(), compactor(archiveFailClient));
+        AgentExecutor archiveFailLoop = new com.jadecode.agent.AgentExecutor(archiveFailClient,
+                com.jadecode.tools.ToolCatalog.fixed(Map.of("compact", new CompactTool())), "test-system", 8000,
+                new Hooks(), compactor(archiveFailClient), () -> com.jadecode.llm.ResponseStream.NONE,
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                () -> "");
         List<Message> archiveFailMessages = new ArrayList<>(List.of(Message.userText("开始")));
 
         IllegalStateException archiveError = assertThrows(IllegalStateException.class,
-                () -> SessionRuntime.runExisting(archiveFailLoop, archiveFailMessages));
+                () -> com.jadecode.support.ExecutorSteps.run(archiveFailLoop, archiveFailMessages));
 
         assertNotNull(archiveError.getCause());
         assertEquals(0, archiveFailClient.summaryRequests.size(), "归档失败时不得调用摘要");
@@ -644,13 +690,15 @@ class AgentExecutorManualCompactionTest {
                 assistant(new TextBlock("不该走到这里")));
         summaryFailClient.summaryFailure = boom;
         FakeTool bash = new FakeTool("bash", "普通输出");
-        AgentExecutor summaryFailLoop = new AgentExecutor(summaryFailClient,
-                Map.of("bash", bash, "compact", new CompactTool()), "test-system", 8000, new Hooks(),
-                compactor(summaryFailClient));
+        AgentExecutor summaryFailLoop = new com.jadecode.agent.AgentExecutor(summaryFailClient,
+                com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", bash, "compact", new CompactTool())), "test-system",
+                8000, new Hooks(), compactor(summaryFailClient), () -> com.jadecode.llm.ResponseStream.NONE,
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                () -> "");
         List<Message> summaryFailMessages = new ArrayList<>(List.of(Message.userText("开始")));
 
         LlmException thrown = assertThrows(LlmException.class,
-                () -> SessionRuntime.runExisting(summaryFailLoop, summaryFailMessages));
+                () -> com.jadecode.support.ExecutorSteps.run(summaryFailLoop, summaryFailMessages));
 
         assertSame(boom, thrown, "摘要异常必须原样传播");
         assertEquals(1, summaryFailClient.summaryRequests.size());
@@ -685,13 +733,17 @@ class AgentExecutorManualCompactionTest {
                 assistant(new TextBlock("不该走到这里")));
         client.summaryFailure = boom;
         FakeTool bash = new FakeTool("bash", huge);
-        ContextCompactor compactor = new ContextCompactor(client, transcriptDir, toolResultsDir,
+        ContextCompactor compactor = new com.jadecode.context.CourseCompactor(client, transcriptDir, toolResultsDir,
                 limits(200, 100, 10)); // 批次门槛 200、单项门槛 100、预览 10:必然产生落盘候选
-        AgentExecutor loop = new AgentExecutor(client, Map.of("bash", bash, "compact", new CompactTool()),
-                "test-system", 8000, new Hooks(), compactor);
+        AgentExecutor loop = new com.jadecode.agent.AgentExecutor(client,
+                com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", bash, "compact", new CompactTool())), "test-system",
+                8000, new Hooks(), compactor, () -> com.jadecode.llm.ResponseStream.NONE,
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                () -> "");
         List<Message> messages = new ArrayList<>(List.of(Message.userText("开始")));
 
-        LlmException thrown = assertThrows(LlmException.class, () -> SessionRuntime.runExisting(loop, messages));
+        LlmException thrown = assertThrows(LlmException.class,
+                () -> com.jadecode.support.ExecutorSteps.run(loop, messages));
 
         assertSame(boom, thrown, "摘要异常必须原样传播");
         assertEquals(1, client.summaryRequests.size(), "恰好一次摘要调用");
@@ -736,12 +788,14 @@ class AgentExecutorManualCompactionTest {
                 assistant(new TextBlock("完成")));
         lifecycleClient.onSummary = () -> events.add("summary");
         FakeTool lifecycleBash = new FakeTool("bash", "普通输出");
-        AgentExecutor lifecycleLoop = new AgentExecutor(lifecycleClient,
-                Map.of("bash", lifecycleBash, "compact", new CompactTool()), "test-system", 8000, hooks,
-                compactor(lifecycleClient));
+        AgentExecutor lifecycleLoop = new com.jadecode.agent.AgentExecutor(lifecycleClient,
+                com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", lifecycleBash, "compact", new CompactTool())),
+                "test-system", 8000, hooks, compactor(lifecycleClient), () -> com.jadecode.llm.ResponseStream.NONE,
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                () -> "");
         List<Message> lifecycleMessages = new ArrayList<>(List.of(Message.userText("开始")));
 
-        SessionRuntime.runExisting(lifecycleLoop, lifecycleMessages);
+        com.jadecode.support.ExecutorSteps.run(lifecycleLoop, lifecycleMessages);
 
         // 摘要排在最后:每个工具都走完 Pre → 执行 → Post,整批生命周期结束后才轮到压缩动作。
         assertEquals(List.of("pre:bash", "post:bash", "pre:compact", "post:compact", "summary"), events,
@@ -768,12 +822,14 @@ class AgentExecutorManualCompactionTest {
                 assistant(new TextBlock("完成")));
         blockedClient.onSummary = () -> events.add("summary");
         FakeTool blockedBash = new FakeTool("bash", "不该执行");
-        AgentExecutor blockedLoop = new AgentExecutor(blockedClient,
-                Map.of("bash", blockedBash, "compact", new CompactTool()), "test-system", 8000, blocking,
-                compactor(blockedClient));
+        AgentExecutor blockedLoop = new com.jadecode.agent.AgentExecutor(blockedClient,
+                com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", blockedBash, "compact", new CompactTool())),
+                "test-system", 8000, blocking, compactor(blockedClient), () -> com.jadecode.llm.ResponseStream.NONE,
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                () -> "");
         List<Message> blockedMessages = new ArrayList<>(List.of(Message.userText("开始")));
 
-        SessionRuntime.runExisting(blockedLoop, blockedMessages);
+        com.jadecode.support.ExecutorSteps.run(blockedLoop, blockedMessages);
 
         assertEquals(0, blockedBash.calls, "被 PreToolUse 拦截的工具不得执行");
         assertEquals(1, blockedClient.summaryRequests.size(), "被拦普通工具 + 成功 compact 仍是混合批次");
@@ -800,11 +856,14 @@ class AgentExecutorManualCompactionTest {
                 assistant(use("c2", "compact")),
                 assistant(use("c3", "compact")), // 这一轮的结果里会追加 reminder
                 assistant(new TextBlock("完成")));
-        AgentExecutor loop = new AgentExecutor(client, Map.of("compact", new CompactTool()), "test-system", 8000,
-                new Hooks(), compactor(client));
+        AgentExecutor loop = new com.jadecode.agent.AgentExecutor(client,
+                com.jadecode.tools.ToolCatalog.fixed(Map.of("compact", new CompactTool())), "test-system", 8000,
+                new Hooks(), compactor(client), () -> com.jadecode.llm.ResponseStream.NONE,
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                () -> "");
         List<Message> messages = new ArrayList<>(List.of(Message.userText("开始")));
 
-        SessionRuntime.runExisting(loop, messages);
+        com.jadecode.support.SessionRuns.run(loop, messages);
 
         // 三轮都是纯 compact:每轮一次摘要,共 3 次;摘要调用不计入 todo 轮次,正常请求仍是 4 次。
         assertEquals(3, client.summaryRequests.size());
@@ -820,5 +879,11 @@ class AgentExecutorManualCompactionTest {
         assertEquals(2, messages.size());
         assertTrue(messages.getFirst().extractText().startsWith("[Compacted]"));
         assertEquals("完成", messages.getLast().extractText());
+    }
+
+    /** 回收本用例通过正式队列入口创建的临时会话和日志。 */
+    @org.junit.jupiter.api.AfterEach
+    void closeMigratedSessions() throws Exception {
+        com.jadecode.support.SessionRuns.closeAll();
     }
 }

@@ -11,7 +11,6 @@ import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
-import java.util.function.Consumer;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -72,8 +71,8 @@ public final class ProtocolSession implements AutoCloseable, EventEndpoint {
     private long lastClientSeq;
     private String snapshotId;
     private Long snapshotGeneration;
-    /** 快照 begin 的来源 seq；ready 必须回传同一值（null 表示旧调用未提供）。 */
-    private Long snapshotSourceSeq;
+    /** 快照 begin 的来源 seq；ready 必须回传同一值。 */
+    private long snapshotSourceSeq = -1;
     /** 是否在等待一次新的 ready；切换会话/新打开会话都会重新置位。 */
     private boolean awaitingReady;
     private final Map<String, CachedResult> cachedResults = new LinkedHashMap<>();
@@ -151,16 +150,11 @@ public final class ProtocolSession implements AutoCloseable, EventEndpoint {
         return nextSeq - 1;
     }
 
-    /** 登记最近一次快照；Node 的 {@code session.ready} 必须引用同一 snapshotId。 */
-    public synchronized void expectReady(String id, Long generation) {
-        expectReady(id, generation, null);
-    }
-
     /** @param sourceSeq 快照 begin 事件携带的来源序号；ready 必须原样回传 */
     public synchronized void expectReady(String id, Long generation, Long sourceSeq) {
         snapshotId = id;
         snapshotGeneration = generation;
-        snapshotSourceSeq = sourceSeq;
+        snapshotSourceSeq = java.util.Objects.requireNonNull(sourceSeq, "snapshot source sequence");
         awaitingReady = true;
         if (state == State.HELLO || state == State.READY)
             state = State.SYNC;
@@ -168,7 +162,35 @@ public final class ProtocolSession implements AutoCloseable, EventEndpoint {
 
     /** 发送一个事件（不合并）。 */
     public void sendEvent(String type, ObjectNode payload, String sessionId, Long generation) {
-        outbox.offer(type, payload, sessionId, generation, null);
+        outbox.offer(type, encode(payload, sessionId, generation), sessionId, generation, null);
+    }
+
+    /**
+     * 仅在当前连接出口把完整资料变为 blob 引用；不修改服务持有的原始 JSON。
+     * 分块先排入同一有界 outbox，再投递引用帧。缓存保留原文，重发会生成本连接可用的新 blob。
+     */
+    private ObjectNode encode(ObjectNode source, String sessionId, Long generation) {
+        ObjectNode result = source.deepCopy();
+        var transfer = new PayloadTransfer(outbox);
+        // 前端协议明确区分这些资料字段；只处理约定字段，不递归改写任意模型 JSON。
+        for (String field : java.util.List.of("inputJson", "detail", "text", "encodedEntries", "snapshot")) {
+            var value = result.get(field);
+            if (value == null || value.isNull())
+                continue;
+            String text = value.isTextual() ? value.asText() : value.toString();
+            boolean report = field.equals("text") && result.has("assignmentId");
+            if (!report && text.length() <= (field.equals("inputJson") || field.equals("detail") ? 4096 : 32768))
+                continue;
+            String ref = switch (field) {
+                case "inputJson" -> "inputBlobRef";
+                case "encodedEntries" -> "entriesBlobRef";
+                default -> field + "BlobRef";
+            };
+            result.remove(field);
+            result.put(ref,
+                    transfer.sendText(field, text, sessionId, generation, "wire-" + java.util.UUID.randomUUID()));
+        }
+        return result;
     }
 
     /** 发送一个可以与前一个相邻同键增量合并的正文/预览事件。 */
@@ -183,7 +205,7 @@ public final class ProtocolSession implements AutoCloseable, EventEndpoint {
             String oldest = cachedResults.keySet().iterator().next();
             cachedResults.remove(oldest);
         }
-        outbox.offerResult(type, payload, commandId, sessionId, generation);
+        outbox.offerResult(type, encode(payload, sessionId, generation), commandId, sessionId, generation);
     }
 
     /** 发送可恢复的命令错误；不会执行业务。 */
@@ -290,12 +312,12 @@ public final class ProtocolSession implements AutoCloseable, EventEndpoint {
             throw new ProtocolException(ProtocolError.STALE_GENERATION,
                     "session.ready referenced a stale session generation");
         // lastSnapshotSeq 是 Node 已安装快照的来源序号；帧仍在 outbox 中时 sentSeq 可能滞后，
-        // 因此这里只做十进制/非负校验。真正的屏障由 snapshotId + generation 保证。
+        // 因此这里核对 begin 固定的来源游标，而不拿发送线程当前序号作为上限。
         long lastSeq = Long.parseLong(seqNode.asText());
         if (lastSeq < 0)
             throw new ProtocolException(ProtocolError.INVALID_MESSAGE,
                     "session.ready references an invalid snapshot sequence");
-        if (snapshotSourceSeq != null && lastSeq != snapshotSourceSeq)
+        if (lastSeq != snapshotSourceSeq)
             throw new ProtocolException(ProtocolError.INVALID_MESSAGE,
                     "session.ready must echo the snapshot begin sourceSeq");
         synchronized (this) {
@@ -329,7 +351,8 @@ public final class ProtocolSession implements AutoCloseable, EventEndpoint {
             }
             CachedResult cached = message.commandId() == null ? null : cachedResults.get(message.commandId());
             if (cached != null) {
-                outbox.offerResult(cached.type(), cached.payload(), message.commandId(), cached.sessionId(),
+                outbox.offerResult(cached.type(), encode(cached.payload(), cached.sessionId(), cached.generation()),
+                        message.commandId(), cached.sessionId(),
                         cached.generation());
             } else {
                 sendError(message.commandId(), ProtocolError.DUPLICATE,

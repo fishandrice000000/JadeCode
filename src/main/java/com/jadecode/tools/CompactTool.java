@@ -43,16 +43,16 @@ public final class CompactTool implements Tool {
     /**
      * @return 空参数表:本工具不接受任何参数,模型只表达"想压缩"这件事
      */
-    @Override
-    public Map<String, String> properties() {
+
+    private Map<String, String> properties() {
         return Map.of();
     }
 
     /**
      * @return 空必填表:既然没有参数,也就没有必填项
      */
-    @Override
-    public List<String> required() {
+
+    private List<String> required() {
         return List.of();
     }
 
@@ -77,12 +77,20 @@ public final class CompactTool implements Tool {
      * </p>
      *
      * @param input 被忽略;不读取、不修改(可传 null)
-     * @return 恒定文案 {@link #OUTPUT};父循环靠它识别本批请求过压缩
+     * @return 执行结果（content 保留原输出，isError 由本方法失败分支给定）：恒定文案 {@link #OUTPUT};父循环靠它识别本批请求过压缩
+     * @param context Harness 提供的任务上下文；不从模型参数读取，离线只读调用可按工具契约传 null
      */
     @Override
-    public String execute(ObjectNode input) {
+    public com.jadecode.tools.ToolOutcome executeOutcome(ObjectNode input,
+            com.jadecode.execution.ExecutionContext context) {
         // 无参数工具:入参只是为了满足 Tool 接口的统一签名,这里不读、不校验、不改。
         // 返回固定文案 = "请求已提出"的信号;真正的压缩等整批交换闭合后由循环处理。
-        return OUTPUT;
+        return new com.jadecode.tools.ToolOutcome(OUTPUT, false);
+    }
+
+    /** 提供完整参数结构；标量构造器只负责组装 Schema，不授予执行权限。 */
+    @Override
+    public com.fasterxml.jackson.databind.node.ObjectNode inputSchema() {
+        return com.jadecode.tools.ToolSchema.objectSchema(properties(), required());
     }
 }

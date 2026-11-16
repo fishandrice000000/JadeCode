@@ -23,11 +23,6 @@ public interface ToolPermissionCheck {
             commands = List.copyOf(commands);
         }
 
-        /** 文件工具等旧调用没有 shell 语法说明，保留原构造方式。 */
-        public Analysis(String tool, Path cwd, List<Resource> resources, List<Command> commands,
-                boolean mutating, boolean readOnlyCommand, boolean uncertain, String error) {
-            this(tool, cwd, resources, commands, mutating, readOnlyCommand, uncertain, error, "");
-        }
     }
 
     Analysis analyze(String tool, ObjectNode input);

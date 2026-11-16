@@ -1,6 +1,5 @@
 package com.jadecode.context;
 
-import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -51,8 +50,8 @@ class ContextCompactorPreparationTest {
     }
 
     /** 当确定性层应当足够时，任何摘要调用都直接使测试失败，不以空响应掩盖错误分支。 */
-    private ContextCompactor deterministic(CompactionLimits limits) {
-        return new ContextCompactor(request -> {
+    private CourseCompactor deterministic(CompactionLimits limits) {
+        return new com.jadecode.context.CourseCompactor((request, ignoredStream) -> {
             fail("确定性层已经足够，不应调用摘要模型");
             return null;
         }, transcriptDir, outputDir, limits, CompactionPolicy.coursePipeline());
@@ -69,9 +68,9 @@ class ContextCompactorPreparationTest {
         assertFalse(Files.exists(transcriptDir));
         assertFalse(Files.exists(outputDir));
 
-        RecordingLlmClient client = new RecordingLlmClient(request -> new ModelResponse(
-                Message.assistant(List.of(new TextBlock("固定摘要"))), new ModelResponse.Usage(0, 0)));
-        ContextCompactor over = new ContextCompactor(client, transcriptDir, outputDir,
+        RecordingLlmClient client = new RecordingLlmClient((request, ignoredStream) -> new ModelResponse(
+                Message.assistant(List.of(new TextBlock("固定摘要"))), new ModelResponse.Usage(0, 0, 0, 0), ""));
+        CourseCompactor over = new com.jadecode.context.CourseCompactor(client, transcriptDir, outputDir,
                 limits(exact - 1, 20000, 3, 50));
         List<Message> actual = over.prepare(input, "当前任务");
 
@@ -91,7 +90,7 @@ class ContextCompactorPreparationTest {
         }
         mutable.add(Message.assistant(List.of(call("fresh"))));
         String original = "x".repeat(8000);
-        mutable.add(Message.userBlocks(List.of(new ToolResultBlock("fresh", original))));
+        mutable.add(Message.userBlocks(List.of(new ToolResultBlock("fresh", original, false))));
         List<Message> input = List.copyOf(mutable);
         String before = ContextSerialization.toJson(input);
 
@@ -123,10 +122,10 @@ class ContextCompactorPreparationTest {
     void stopsAfterMicroWhenContextFitsWithoutTouchingProtectedResults() throws Exception {
         List<Message> input = List.of(Message.userText("任务"),
                 Message.assistant(List.of(call("old-a"), call("old-b"))),
-                Message.userBlocks(List.of(new ToolResultBlock("old-a", "a".repeat(3000)),
-                        new ToolResultBlock("old-b", "b".repeat(3000)))),
+                Message.userBlocks(List.of(new ToolResultBlock("old-a", "a".repeat(3000), false),
+                        new ToolResultBlock("old-b", "b".repeat(3000), false))),
                 Message.assistant(List.of(call("fresh"))),
-                Message.userBlocks(List.of(new ToolResultBlock("fresh", "新结果"))));
+                Message.userBlocks(List.of(new ToolResultBlock("fresh", "新结果", false))));
         String before = ContextSerialization.toJson(input);
 
         List<Message> actual = deterministic(limits(5000, 20000, 1, 50)).prepare(input, "任务");
@@ -150,9 +149,9 @@ class ContextCompactorPreparationTest {
     void fitReceivesMicroCandidateAndPersistsFreshResultWithoutSummary() throws Exception {
         List<Message> input = List.of(Message.userText("任务"),
                 Message.assistant(List.of(call("old"))),
-                Message.userBlocks(List.of(new ToolResultBlock("old", "a".repeat(3000)))),
+                Message.userBlocks(List.of(new ToolResultBlock("old", "a".repeat(3000), false))),
                 Message.assistant(List.of(call("fresh"))),
-                Message.userBlocks(List.of(new ToolResultBlock("fresh", "b".repeat(8000)))));
+                Message.userBlocks(List.of(new ToolResultBlock("fresh", "b".repeat(8000), false))));
         String before = ContextSerialization.toJson(input);
 
         List<Message> actual = deterministic(limits(1000, 20000, 0, 50)).prepare(input, "任务");

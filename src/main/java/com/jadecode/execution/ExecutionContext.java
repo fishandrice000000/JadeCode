@@ -26,11 +26,6 @@ import com.jadecode.safety.approval.Approval;
  */
 public record ExecutionContext(String id, Source source, Approval approval, BooleanSupplier sessionClosed, String goal,
         AssignmentContext assignment, com.jadecode.sandbox.ExecutionPlan sandboxPlan, String actorScope) {
-    /** 任务上下文不默认携带调用级许可；旧入口不能借空字段绕过沙箱。 */
-    public ExecutionContext(String id, Source source, Approval approval, BooleanSupplier sessionClosed, String goal,
-            AssignmentContext assignment) {
-        this(id, source, approval, sessionClosed, goal, assignment, null, "");
-    }
 
     /** 仅在权限检查后派生本次工具上下文，原任务和其它工具不取得这份许可。 */
     public ExecutionContext withSandboxPlan(com.jadecode.sandbox.ExecutionPlan value) {
@@ -60,16 +55,6 @@ public record ExecutionContext(String id, Source source, Approval approval, Bool
     /** 子代理一次委派的隔离编号由 Harness 生成，保留父 run/source，丢弃父工具的调用级许可。 */
     public ExecutionContext withActorScope(String scope) {
         return new ExecutionContext(id, source, approval, sessionClosed, goal, assignment, null, scope);
-    }
-
-    /** 保留非 Team 调用方的构造契约；普通任务没有派工范围。 */
-    public ExecutionContext(String id, Source source, Approval approval, BooleanSupplier sessionClosed, String goal) {
-        this(id, source, approval, sessionClosed, goal, null);
-    }
-
-    /** 旧调用未提供目标时保留原签名；目标由会话在运行时补入，不改变来源。 */
-    public ExecutionContext(String id, Source source, Approval approval, BooleanSupplier sessionClosed) {
-        this(id, source, approval, sessionClosed, "");
     }
 
     /** 给辅助审批携带当前真实任务说明，不把整个可变历史交给审批组件。 */
@@ -112,21 +97,6 @@ public record ExecutionContext(String id, Source source, Approval approval, Bool
     }
 
     /**
-     * 给没有父会话的旧调用者使用，默认 isCancelled 一直返回 false。
-     *
-     * <p>真正的 CLI 任务应传四个参数，把检查会话退出的函数也传进来，
-     * 否则子代理不知道父会话已经退出。这里默认 false 不代表跳过权限检查。</p>
-     * @param id 非空白的任务 ID
-     * @param source 任务来源
-     * @param approval 询问用户的函数，可为 null
-     * @throws IllegalArgumentException id 为 null 或空白
-     * @throws NullPointerException source 为 null
-     */
-    public ExecutionContext(String id, Source source, Approval approval) {
-        this(id, source, approval, () -> false);
-    }
-
-    /**
      * 创建一个新的 run_ ID，供独立调用者执行一项任务，不启动线程或命令。
      * @param source 任务来自用户还是定时器
      * @param approval 询问用户的函数，可为 null
@@ -134,7 +104,7 @@ public record ExecutionContext(String id, Source source, Approval approval, Bool
      * @throws NullPointerException source 为 null
      */
     public static ExecutionContext create(Source source, Approval approval) {
-        return new ExecutionContext("run_" + UUID.randomUUID(), source, approval);
+        return new ExecutionContext("run_" + UUID.randomUUID(), source, approval, () -> false, "", null, null, "");
     }
 
     /**
@@ -149,7 +119,7 @@ public record ExecutionContext(String id, Source source, Approval approval, Bool
      * @throws NullPointerException source 或 sessionClosed 为 null
      */
     public static ExecutionContext create(Source source, Approval approval, BooleanSupplier sessionClosed) {
-        return new ExecutionContext("run_" + UUID.randomUUID(), source, approval, sessionClosed);
+        return new ExecutionContext("run_" + UUID.randomUUID(), source, approval, sessionClosed, "", null, null, "");
     }
 
     /**

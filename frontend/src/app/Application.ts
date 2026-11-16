@@ -657,7 +657,7 @@ export class Application {
 				return;
 			case "message":
 				this.transcript.message(text(message.payload, "actor"), text(message.payload, "label"),
-					display(text(message.payload, "text")), message.payload.error === true);
+					display(this.resolveText(message.payload, "text", "textBlobRef")), message.payload.error === true);
 				return;
 			case "task.submitted":
 				this.transcript.userRequest(text(message.payload, "submissionId"),

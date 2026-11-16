@@ -22,11 +22,6 @@ public record ToolResultBlock(@JsonProperty("tool_use_id") String toolUseId, Str
         @JsonProperty("is_error") @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_DEFAULT) boolean isError)
         implements ContentBlock {
 
-    /** 兼容旧工具和旧调用方；不扫描正文推测是否失败。 */
-    public ToolResultBlock(String toolUseId, String content) {
-        this(toolUseId, content, false);
-    }
-
     /** 重建结果正文时保留身份与失败标志；不修改原结果，不产生 IO。 */
     public ToolResultBlock withContent(String replacement) {
         return new ToolResultBlock(toolUseId, replacement, isError);

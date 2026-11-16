@@ -24,7 +24,7 @@ class ToolExchangeProtocolTest {
     }
 
     private static ToolResultBlock result(String id, String content) {
-        return new ToolResultBlock(id, content);
+        return new ToolResultBlock(id, content, false);
     }
 
     /** 合法历史:闭合交换 + reminder text + 普通文本 + archive marker 形状的 user 文本都允许 */

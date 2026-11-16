@@ -25,7 +25,7 @@ public record WorkflowAgentRunner(LlmClient client, String model, int maxTokens,
     /** 端点/模型和格式提示版本参与缓存身份；只存哈希，不把端点可能携带的认证片段写进快照。 */
     String identity() {
         try {
-            String basis = "workflow-runner-v1|" + model + "|" + maxTokens + "|" + thinking.name();
+            String basis = "workflow-runner-v2|" + model + "|" + maxTokens + "|" + thinking.name();
             return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
                     .digest(basis.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
         } catch (java.security.NoSuchAlgorithmException impossible) {
@@ -34,23 +34,17 @@ public record WorkflowAgentRunner(LlmClient client, String model, int maxTokens,
     }
 
     /**
-     * 发一次无工具请求，schema 是提示而非服务端约束；真实解析与校验由 WorkflowContext 完成。
-     * 返回完整响应和真实用量，不把 schema 失败吞掉；调用者保证每次修正也经过并发/预算检查。
-     */
-    ModelResponse call(String prompt, JsonNode schema) throws LlmException {
-        return call(prompt, schema, null);
-    }
-
-    /**
-     * 公共规则之后先放 schema，再放变化任务；task=null 保持原入口的字节顺序。
+     * 公共规则之后先放 schema，再放非空任务；所有步骤采用同一种排列。
      * schema=null 时不插入格式约束。只组装本次请求，不保存历史或改变调用预算。
      * 输入不被修改，返回模型原响应和用量；网络/模型异常向上传递，结构校验仍归 Context。
      */
     ModelResponse call(String commonPrefix, JsonNode schema, String task) throws LlmException {
+        java.util.Objects.requireNonNull(task, "task");
         String request = commonPrefix
                 + (schema == null ? "" : "\nReturn only one JSON value matching this schema:\n" + schema)
-                + (task == null ? "" : "\n" + task);
+                + ("\n" + task);
         return client.complete(
-                new CompleteRequest(SYSTEM, List.of(Message.userText(request)), maxTokens, List.of(), thinking));
+                new CompleteRequest(SYSTEM, List.of(Message.userText(request)), maxTokens, List.of(), thinking, ""),
+                com.jadecode.llm.ResponseStream.NONE);
     }
 }

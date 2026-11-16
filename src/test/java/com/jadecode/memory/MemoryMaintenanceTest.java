@@ -53,7 +53,7 @@ class MemoryMaintenanceTest {
         String extraction = "{\"rollout_summary\":\"# Task\\nUser requested Java 21 for this project; compiler verified.\",\"rollout_slug\":\"java21-project\"}";
         boolean badTool;
 
-        public ModelResponse complete(CompleteRequest request) {
+        public ModelResponse complete(CompleteRequest request, com.jadecode.llm.ResponseStream ignoredStream) {
             requests.add(request);
             if (request.tools().isEmpty()) {
                 extractions++;
@@ -148,7 +148,7 @@ class MemoryMaintenanceTest {
     void rejectsTruncatedAndFencedExtraction() throws Exception {
         var store = store();
         for (boolean truncated : List.of(true, false)) {
-            LlmClient fake = req -> new ModelResponse(Message.assistant(List.of(new TextBlock(truncated
+            LlmClient fake = (req, ignoredStream) -> new ModelResponse(Message.assistant(List.of(new TextBlock(truncated
                     ? "{\"rollout_summary\":\"\",\"rollout_slug\":\"\"}"
                     : "```json\n{\"rollout_summary\":\"\",\"rollout_slug\":\"\"}\n```"))), null,
                     truncated ? "max_tokens" : "end_turn");
@@ -197,7 +197,7 @@ class MemoryMaintenanceTest {
         assertEquals("Other facts", second.snapshot().workspaceHandbook());
         assertTrue(first.snapshot().handbook().contains("First facts"));
         assertTrue(first.snapshot().handbook().contains("Other facts"));
-        try (var memory = service(first, req -> {
+        try (var memory = service(first, (req, ignoredStream) -> {
             throw new AssertionError("index must not call model");
         })) {
             assertFalse(memory.reference().contains("Other index"));
@@ -228,7 +228,7 @@ class MemoryMaintenanceTest {
     void stagedCandidateFollowedByTruncationDoesNotPublish() throws Exception {
         var store = store();
         var calls = new java.util.concurrent.atomic.AtomicInteger();
-        try (var memory = service(store, request -> calls.incrementAndGet() == 1
+        try (var memory = service(store, (request, ignoredStream) -> calls.incrementAndGet() == 1
                 ? call("stage", "stage_memory", Json.mapper().createObjectNode().put("scope", "workspace")
                         .put("summary", "# Memory routes\nCandidate").put("handbook", "Candidate fact"))
                 : new ModelResponse(Message.assistant(List.of(new TextBlock("partial"))), null, "max_tokens"))) {
@@ -260,7 +260,7 @@ class MemoryMaintenanceTest {
         Path legacy = Files.createDirectories(store.workspace().resolve(".jadecode/memory"));
         String original = "用户似乎喜欢 Python。其实只让演示了一段 Python。";
         Files.writeString(legacy.resolve("python.md"), original);
-        try (var memory = service(store, req -> {
+        try (var memory = service(store, (req, ignoredStream) -> {
             throw new AssertionError();
         })) {
             memory.reference();
@@ -336,7 +336,7 @@ class MemoryMaintenanceTest {
     void noChangeAcknowledgesInputsWithoutRewritingKnowledge() throws Exception {
         var store = store();
         var calls = new java.util.concurrent.atomic.AtomicInteger();
-        try (var memory = service(store, request -> {
+        try (var memory = service(store, (request, ignoredStream) -> {
             calls.incrementAndGet();
             return reply("No durable change.");
         })) {
@@ -403,7 +403,7 @@ class MemoryMaintenanceTest {
         var second = new MemoryStore(new com.jadecode.config.WorkspacePaths(
                 Files.createDirectory(temporary.resolve("second-project")), first.paths().jade()), warnings::add);
         var calls = new java.util.concurrent.atomic.AtomicInteger();
-        try (var memory = service(second, request -> {
+        try (var memory = service(second, (request, ignoredStream) -> {
             int step = calls.incrementAndGet();
             try {
                 var input = Json.mapper().readTree(request.messages().getFirst().extractText());
@@ -445,7 +445,7 @@ class MemoryMaintenanceTest {
     void unknownPendingReferenceIsRejectedAndFailureExhaustionIsVisible() throws Exception {
         var store = store();
         var calls = new java.util.concurrent.atomic.AtomicInteger();
-        try (var memory = service(store, request -> {
+        try (var memory = service(store, (request, ignoredStream) -> {
             calls.incrementAndGet();
             return call("unknown", "stage_memory", Json.mapper().createObjectNode().put("scope", "global")
                     .put("summary", "must not publish")
@@ -493,7 +493,7 @@ class MemoryMaintenanceTest {
         var store = store();
         var calls = new java.util.concurrent.atomic.AtomicInteger();
         var sessions = new SessionStore(store.paths(), warnings::add);
-        try (var opened = sessions.create("offline"); var memory = service(store, request -> {
+        try (var opened = sessions.create("offline", ""); var memory = service(store, (request, ignoredStream) -> {
             calls.incrementAndGet();
             if (request.tools().isEmpty())
                 return reply(
@@ -529,7 +529,7 @@ class MemoryMaintenanceTest {
     void closingDuringModelCallPreventsLatePublication() throws Exception {
         var store = store();
         MemoryMaintenance[] holder = new MemoryMaintenance[1];
-        holder[0] = service(store, request -> {
+        holder[0] = service(store, (request, ignoredStream) -> {
             holder[0].close();
             return reply("{\"rollout_summary\":\"Late reply\",\"rollout_slug\":\"late\"}");
         });

@@ -207,7 +207,7 @@ final class MemoryEvidence {
             }
             if (block instanceof TextBlock text && !text.text().isBlank()) {
                 String value = text.text();
-                // 旧 run(messages) 无来源标记，保守排除明显的框架/压缩参考，不能据其推断用户偏好。
+                // 框架与压缩参考不能作为新的偏好证据；真正人类原话由轮次入口单独绑定。
                 if (value.startsWith("[Compacted]") || value.startsWith("[Scheduled]") || value.startsWith("[Goal"))
                     continue;
                 items.add(new Item(human ? 0 : 1, sequence, source, redact(value)));
@@ -218,8 +218,7 @@ final class MemoryEvidence {
                     if (filtered.projectInstructions()) {
                         var observation = Json.mapper().createObjectNode().put("type", "tool_observation")
                                 .put("tool", filtered.tool()).put("path", filtered.path())
-                                .put("succeeded", !tool.isError() && !tool.content().startsWith("Error")
-                                        && !tool.content().startsWith("Permission denied"))
+                                .put("succeeded", !tool.isError())
                                 .put("body_omitted", "project_instructions");
                         items.add(new Item(2, sequence, source, redact(observation.toString())));
                     }

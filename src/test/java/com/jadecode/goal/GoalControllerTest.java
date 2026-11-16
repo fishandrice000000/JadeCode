@@ -75,7 +75,7 @@ class GoalControllerTest {
     void evaluatorUsesSeparateToolFreeRequest() throws Exception {
         var history = new ArrayList<>(List.of(Message.userText("user task"), text("candidate")));
         AtomicInteger calls = new AtomicInteger();
-        var evaluator = new PromptGoalEvaluator(request -> {
+        var evaluator = new PromptGoalEvaluator((request, ignoredStream) -> {
             calls.incrementAndGet();
             assertTrue(request.tools().isEmpty());
             assertEquals(512, request.maxTokens());
@@ -115,14 +115,14 @@ class GoalControllerTest {
     void evaluatorFailsClosedWithoutRetry() {
         for (String stop : List.of("", "max_tokens", "refusal", "tool_use")) {
             AtomicInteger calls = new AtomicInteger();
-            var evaluator = new PromptGoalEvaluator(request -> {
+            var evaluator = new PromptGoalEvaluator((request, ignoredStream) -> {
                 calls.incrementAndGet();
                 return new ModelResponse(text("{\"ok\":true,\"reason\":\"yes\",\"impossible\":false}"), null, stop);
             }, 512);
             assertThrows(IOException.class, () -> evaluator.evaluate("goal", List.of()));
             assertEquals(1, calls.get());
         }
-        var evaluator = new PromptGoalEvaluator(request -> new ModelResponse(
+        var evaluator = new PromptGoalEvaluator((request, ignoredStream) -> new ModelResponse(
                 Message.assistant(List.of(new ToolUseBlock("id", "bash", Json.mapper().createObjectNode()))), null,
                 "end_turn"), 512);
         assertThrows(IOException.class, () -> evaluator.evaluate("goal", List.of()));

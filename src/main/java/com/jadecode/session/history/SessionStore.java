@@ -81,11 +81,6 @@ public final class SessionStore {
         return List.copyOf(result);
     }
 
-    /** 旧调用者没有后端身份，继续创建可读的通用会话，不猜测其供应商。 */
-    public Opened create(String model) throws IOException {
-        return create(model, "");
-    }
-
     /** 创建全新会话；只存模型名及无秘密恢复身份，不保存 AppConfig 或认证。 */
     public Opened create(String model, String backendIdentity) throws IOException {
         paths.register();

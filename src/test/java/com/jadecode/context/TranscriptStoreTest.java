@@ -44,7 +44,7 @@ class TranscriptStoreTest {
     void writesEveryMessageInOrderAsCompleteUtf8JsonLines() throws IOException {
         List<Message> history = List.of(Message.userText("中文🙂\n\"引号\"与\\"),
                 Message.assistant(List.of(new ToolUseBlock("call", "bash", Json.mapper().createObjectNode()))),
-                Message.userBlocks(List.of(new ToolResultBlock("call", "第一行\n第二行\n"),
+                Message.userBlocks(List.of(new ToolResultBlock("call", "第一行\n第二行\n", false),
                         new TextBlock("reminder"))));
         String before = ContextSerialization.toJson(history);
 
@@ -85,7 +85,7 @@ class TranscriptStoreTest {
         for (Message candidate : List.of(
                 Message.assistant(List.of(new TextBlock(valid))),
                 Message.userBlocks(List.of(new TextBlock(valid), new TextBlock("额外块"))),
-                Message.userBlocks(List.of(new ToolResultBlock("call", valid))),
+                Message.userBlocks(List.of(new ToolResultBlock("call", valid, false))),
                 Message.userText("前言" + valid), Message.userText(valid + "尾随正文"),
                 marker("-1", saved), marker("", saved), marker("2147483648", saved),
                 Message.userText("[1 messages archived at " + saved + "\n额外正文]"))) {

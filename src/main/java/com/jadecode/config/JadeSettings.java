@@ -14,40 +14,6 @@ public record JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimit
         com.jadecode.llm.ThinkingSettings thinking, Permissions permissions, Mcp mcp,
         com.jadecode.context.ProductionCompactionSettings contextCompaction,
         com.jadecode.sandbox.SandboxSettings sandbox) {
-    /** 旧的显式离线装配不访问 Docker；正式配置解析会显式传入 sandbox。 */
-    public JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimits limits, Memory memory, Models models,
-            com.jadecode.llm.ThinkingSettings thinking, Permissions permissions, Mcp mcp,
-            com.jadecode.context.ProductionCompactionSettings contextCompaction) {
-        this(tui, compaction, limits, memory, models, thinking, permissions, mcp, contextCompaction,
-                com.jadecode.sandbox.SandboxSettings.offline());
-    }
-
-    /** 兼容显式离线装配，旧字符阈值不被解释成生产 Token 预算。 */
-    public JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimits limits, Memory memory, Models models,
-            com.jadecode.llm.ThinkingSettings thinking, Permissions permissions, Mcp mcp) {
-        this(tui, compaction, limits, memory, models, thinking, permissions, mcp,
-                com.jadecode.context.ProductionCompactionSettings.defaults()
-                        .withAutomatic(compaction.autoSummaryEnabled()));
-    }
-
-    /** 旧配置和离线装配同样提供默认 Fetch；只登记入口，不启动外部程序。 */
-    public JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimits limits, Memory memory, Models models,
-            com.jadecode.llm.ThinkingSettings thinking, Permissions permissions) {
-        this(tui, compaction, limits, memory, models, thinking, permissions, Mcp.defaults());
-    }
-
-    /** 旧装配保持 Workspace 默认，不因新增配置而读取用户文件。 */
-    public JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimits limits, Memory memory, Models models,
-            com.jadecode.llm.ThinkingSettings thinking) {
-        this(tui, compaction, limits, memory, models, thinking, new Permissions(
-                com.jadecode.safety.PermissionProfile.WORKSPACE, java.util.List.of(), java.util.Set.of()));
-    }
-
-    /** 老配置/离线装配缺少思考设置时不改变服务商默认行为。 */
-    public JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimits limits, Memory memory,
-            Models modelMetadata) {
-        this(tui, compaction, limits, memory, modelMetadata, com.jadecode.llm.ThinkingSettings.DEFAULT);
-    }
 
     public JadeSettings {
         java.util.Objects.requireNonNull(thinking, "thinking");
@@ -97,18 +63,8 @@ public record JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimit
         }
     }
 
-    /** 兼容已有离线装配；未指定记忆设置时使用相同默认值。 */
-    public JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimits limits) {
-        this(tui, compaction, limits, new Memory(8000));
-    }
-
-    /** 不指定参数发现设置的旧调用仍使用默认值；离线工厂不会因此自行联网。 */
-    public JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimits limits, Memory memory) {
-        this(tui, compaction, limits, memory, new Models(true, 24, 2000, Map.of()));
-    }
-
     /**
-     * 非秘密 TUI 设置快照。旧四字段构造继续有效；新增字段都有兼容默认值。主题、模式、
+     * 非秘密 TUI 设置快照。所有字段在装配时明确提供；读取配置时保留正常默认值。主题、模式、
      * 图片/候选等只影响显示，不改变 Agent/压缩/认证策略。{@code keybindings} 为动作 ID→
      * 键列表的局部覆盖；{@code externalEditor} 为未配置空串。
      */
@@ -154,13 +110,6 @@ public record JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimit
             darkTheme = darkTheme == null || darkTheme.isBlank() ? "dark" : darkTheme;
         }
 
-        /** 旧四字段配置的兼容构造；其余字段取 Pi/Jade 批准默认值。 */
-        public Tui(String theme, boolean thinkingVisible, boolean toolsExpanded, boolean commandSuggestions) {
-            this(theme, "fullscreen", "transcript", "auto", true, 0, false, 0, 1,
-                    5, thinkingVisible, toolsExpanded, commandSuggestions, "streaming", true, 60,
-                    false, false, false, "  ", "", java.util.Map.of(), 0, "light", "dark");
-        }
-
         /** @return 是否安静启动。 */
         public boolean quietStartup() {
             return quietStartup;
@@ -173,10 +122,6 @@ public record JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimit
      */
     public record Memory(boolean enabled, int extractionMaxOutputTokens, int consolidationMaxOutputTokens,
             int consolidationInputChars) {
-        /** 只指定提取额度时，为整理输出和输入预算采用默认值。 */
-        public Memory(int extractionMaxOutputTokens) {
-            this(true, extractionMaxOutputTokens, 16384, 128000);
-        }
 
         public Memory {
             if (extractionMaxOutputTokens < 1 || consolidationMaxOutputTokens < 1 || consolidationInputChars < 1)
@@ -198,7 +143,13 @@ public record JadeSettings(Tui tui, CompactionPolicy compaction, CompactionLimit
 
     /** 程序化离线装配的默认值；正式配置解析为 sandbox 单独采用启用的生产默认。 */
     public static JadeSettings defaults() {
-        return new JadeSettings(new Tui("system", true, false, true), CompactionPolicy.defaults(),
-                CompactionLimits.defaults());
+        return new JadeSettings(
+                new Tui("system", "fullscreen", "transcript", "auto", true, 0, false, 0, 1, 5, true, false, true,
+                        "streaming", true, 60, false, false, false, "  ", "", java.util.Map.of(), 0, "light", "dark"),
+                CompactionPolicy.defaults(), CompactionLimits.defaults(), new Memory(true, 8000, 16384, 128000),
+                new Models(true, 24, 2000, Map.of()), com.jadecode.llm.ThinkingSettings.DEFAULT, new Permissions(
+                        com.jadecode.safety.PermissionProfile.WORKSPACE, java.util.List.of(), java.util.Set.of()),
+                Mcp.defaults(), com.jadecode.context.ProductionCompactionSettings.defaults(),
+                com.jadecode.sandbox.SandboxSettings.offline());
     }
 }

@@ -85,6 +85,13 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
                 requested = ("assign_task", {"agent_id": json.loads(results[0]["content"])["agent_id"],
                              "task_id": json.loads(results[1]["content"])["id"], "summary": "Verify Team delivery",
                              "body": "Submit a concise report.", "scope": {"read_paths": ["proof.txt"], "write_paths": []}})
+            elif len(results) == 3:
+                # Leader 必须明确验收已送达的成功报告；只宣称 DONE 会被 Stop 要求继续。
+                review = re.search(r"report_id=(mail_[0-9a-f-]{36})", text)
+                if review:
+                    requested = ("review_task_result", {
+                        "assignment_id": json.loads(results[2]["content"])["assignment_id"],
+                        "report_id": review.group(1), "decision": "accept", "notes": "Verified fixture evidence."})
         if "JADE_VERIFY_WORKFLOW" in text and body.get("tools") and len(results) < 2:
             # 第一轮运行固定文本流程，第二轮用真实返回的 run_id 恢复；不由夹具猜文件路径或调用缓存内部接口。
             workflow_args = {"name": "review-changes", "args": {"changes": "return 1;"}} if not results else {
@@ -188,7 +195,7 @@ class Case:
         self.home = self.directory / "home"
         config = self.home / ".jadecode/config"
         config.mkdir(parents=True)
-        (config / "config.json").write_text(json.dumps({"modelMetadata": {"autoDiscover": False}, "tui": {"quietStartup": True}, "mcp": {"servers": {}}}))
+        (config / "config.json").write_text(json.dumps({"version": 1, "modelMetadata": {"autoDiscover": False}, "tui": {"quietStartup": True}, "mcp": {"servers": {}}}))
         self.target = self.directory / "outside.txt"
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Endpoint)
         self.server.target = self.target
@@ -416,7 +423,7 @@ def verify(case, name):
                                    cwd=case.workspace, env=case.env, stdin=subprocess.DEVNULL, capture_output=True, timeout=20)
         assert completed.returncode == 0, completed.stderr.decode("utf8", "replace")
         assert completed.stdout.decode().strip() == "JADE_VERIFY_DONE"
-        assert any(case.workspace.rglob("events.jsonl")), "state was not persisted in the working directory"
+        assert any((case.home / ".jadecode/workspaces").rglob("events.jsonl")), "state was not persisted in the user workspace partition"
         # JSON 已选定后，项目 .env 不得把生成请求重定向到另一端点。
         (case.workspace / ".env").write_text("ANTHROPIC_API_KEY=wrong-project-fixture\nANTHROPIC_BASE_URL=http://127.0.0.1:1\nMODEL_ID=wrong-project\n")
         case.start("JADE_VERIFY_TEXT", extra=["--model-config=" + relative] if name.endswith("explicit") else [])
@@ -450,7 +457,7 @@ def verify(case, name):
         assert answer.stdout.decode().strip() == "JADE_VERIFY_DONE", "goal headless printed a candidate or evaluator output"
         formal = [call for call in case.server.calls if call.get("tools")]
         assert len(formal) == 3 and case.server.goal_judgments == 2
-        journal = next(case.workspace.rglob("events.jsonl")).read_text()
+        journal = next((case.home / ".jadecode/workspaces").rglob("events.jsonl")).read_text()
         assert '"status":"ACHIEVED"' in journal and '"purpose":"GOAL"' in journal
         return {"exit": 0, "formalRequests": 3, "goalRequests": 2, "stdout": "final answer only"}
     if name == "java-only":
@@ -478,6 +485,7 @@ def verify(case, name):
         assert answer.stdout.decode().strip() == "JADE_VERIFY_DONE", "headless returned before the required report or leaked intermediate replies"
         records = list((case.home / ".jadecode").rglob("assignment_*.json"))
         assert len(records) == 1 and json.loads(records[0].read_text())["finished"], "headless closed before result delivery"
+        assert json.loads(records[0].read_text())["review_decision"] == "accept", "headless closed before explicit report acceptance"
         return {"exit": 0, "requiredReportReceived": True, "stdout": "final answer only", "httpRequests": len(case.server.calls)}
     if name in ("headless", "headless-read-only", "headless-full-access", "headless-workspace", "headless-auto-review", "resume", "memory-delay"):
         profile = ["--permission=" + name.removeprefix("headless-")] if name.startswith("headless-") else []
@@ -487,7 +495,7 @@ def verify(case, name):
                                 cwd=case.workspace, env=case.env, capture_output=True, timeout=20)
         assert answer.returncode == 0, answer.stderr.decode("utf8", "replace")
         assert answer.stdout.decode().strip() == "JADE_VERIFY_DONE", "headless stdout contains non-answer output"
-        assert list(case.workspace.rglob("*.jsonl")), "no restorable session was saved"
+        assert list((case.home / ".jadecode/workspaces").rglob("*.jsonl")), "no restorable session was saved"
         if name in ("headless-read-only", "headless-workspace", "headless-auto-review"):
             assert not case.target.exists(), "read-only headless executed a write"
         if name == "headless-full-access":
@@ -495,15 +503,16 @@ def verify(case, name):
         if name == "memory-delay":
             assert case.server.aux_requests > 0, "Memory did not make an auxiliary request"
             assert case.server.aux_finished <= time.monotonic() and time.monotonic() - started >= .4
-            journal = next(case.workspace.rglob("events.jsonl")).read_text()
+            journal = next((case.home / ".jadecode/workspaces").rglob("events.jsonl")).read_text()
             assert "MEMORY" in journal, "Memory request usage was not persisted"
         if name == "resume":
-            metadata = json.loads(next(case.workspace.rglob("session.json")).read_text())
-            before = len(case.server.calls)
+            metadata = json.loads(next((case.home / ".jadecode/workspaces").rglob("session.json")).read_text())
+            before = sum(bool(call.get("tools")) for call in case.server.calls)
             case.start(extra=["--resume=" + metadata["id"]])
             case.until("JADE_VERIFY_DONE")
             case.drain(.2)
-            assert len(case.server.calls) == before, "resume re-executed the saved task"
+            # 恢复可继续已登记的 Memory 维护；只检查正式任务没有被重放。
+            assert sum(bool(call.get("tools")) for call in case.server.calls) == before, "resume re-executed the saved task"
             case.finish()
         return {"exit": 0, "stdout": "final answer only", "httpRequests": len(case.server.calls)}
     if name == "mcp":
@@ -528,7 +537,7 @@ def verify(case, name):
         if name == "goal-error":
             before = len(case.output); case.send("/goal clear\r"); case.until("CLEARED", before)
             assert len(case.server.calls) == before_calls, "clearing a goal made a model call"
-        journal = next(case.workspace.rglob("events.jsonl")).read_text()
+        journal = next((case.home / ".jadecode/workspaces").rglob("events.jsonl")).read_text()
         assert '"purpose":"GOAL"' in journal
         assert ('"status":"ACHIEVED"' in journal) == (name == "goal")
         assert "Goal · Historical" not in ANSI.sub(b"", bytes(case.output)).decode("utf8", "replace")
@@ -556,8 +565,8 @@ def verify(case, name):
         case.send("/name ROUTING_ORIGINAL\r"); case.until("ROUTING_ORIGINAL"); case.drain(.15)
         case.send("/new\r")
         deadline = time.monotonic() + 5
-        while len(list(case.workspace.rglob("session.json"))) < 2 and time.monotonic() < deadline: case.drain(.04)
-        assert len(list(case.workspace.rglob("session.json"))) == 2, "could not prepare a resume candidate"
+        while len(list((case.home / ".jadecode/workspaces").rglob("session.json"))) < 2 and time.monotonic() < deadline: case.drain(.04)
+        assert len(list((case.home / ".jadecode/workspaces").rglob("session.json"))) == 2, "could not prepare a resume candidate"
         case.drain(.3)
         resume_start = len(case.output)
         case.send("/resume\r"); case.until("ROUTING_ORIGINAL", resume_start); case.drain(.15)
@@ -590,11 +599,11 @@ def verify(case, name):
         case.send("/name COMMAND_TITLE\r"); case.until("COMMAND_TITLE"); case.drain(.15)
         case.send("/thinking\r"); case.until("Thinking:"); case.drain(.15)
         case.send("/copy\r"); case.until("No assistant reply to copy"); case.drain(.15)
-        old_id = json.loads(next(case.workspace.rglob("session.json")).read_text())["id"]
+        old_id = json.loads(next((case.home / ".jadecode/workspaces").rglob("session.json")).read_text())["id"]
         case.send("/new\r")
         deadline = time.monotonic() + 5
-        while len(list(case.workspace.rglob("session.json"))) < 2 and time.monotonic() < deadline: case.drain(.04)
-        assert len(list(case.workspace.rglob("session.json"))) == 2, "/new did not create a session"
+        while len(list((case.home / ".jadecode/workspaces").rglob("session.json"))) < 2 and time.monotonic() < deadline: case.drain(.04)
+        assert len(list((case.home / ".jadecode/workspaces").rglob("session.json"))) == 2, "/new did not create a session"
         case.drain(.3)
         before = len(case.output)
         case.send("/resume " + old_id + "\r"); case.until("COMMAND_TITLE", before)
@@ -679,7 +688,7 @@ def verify(case, name):
             case.drain(.04)
         assert len([call for call in case.server.calls if call.get("tools")]) == 3, "session stopped accepting input after workflow failure"
         # 等到第二轮持久化收尾，防止只看到 HTTP 到达却没发现稍后记账失败。
-        journal = next(case.workspace.rglob("events.jsonl"))
+        journal = next((case.home / ".jadecode/workspaces").rglob("events.jsonl"))
         while journal.read_text().count('"kind":"TURN_FINISHED"') < 2 and time.monotonic() < deadline:
             case.drain(.04)
         assert journal.read_text().count('"kind":"TURN_FINISHED"') == 2

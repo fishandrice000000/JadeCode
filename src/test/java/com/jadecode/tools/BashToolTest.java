@@ -18,7 +18,7 @@ class BashToolTest {
     private String run(BashTool tool, String command) {
         ObjectNode input = Json.mapper().createObjectNode();
         input.put("command", command);
-        return tool.execute(input);
+        return tool.executeOutcome(input, null).content();
     }
 
     /** ① 正常执行:echo 输出原文(无换行) */
@@ -64,7 +64,7 @@ class BashToolTest {
     @Test
     void missingCommandParameterReturnsError() {
         assertEquals("Error: Missing required parameter: command",
-                bash.execute(Json.mapper().createObjectNode()));
+                bash.executeOutcome(Json.mapper().createObjectNode(), null).content());
     }
 
     /** 退役策略明确失败，不静默忽略，也不允许启动任何后台工作。 */

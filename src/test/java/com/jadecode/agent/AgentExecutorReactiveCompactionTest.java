@@ -14,7 +14,6 @@ import com.jadecode.context.CompactionLimits;
 import com.jadecode.context.CompactionPolicy;
 import com.jadecode.context.ContextCompactor;
 import com.jadecode.hooks.Hooks;
-import com.jadecode.session.SessionRuntime;
 import com.jadecode.llm.CompleteRequest;
 import com.jadecode.llm.LlmClient;
 import com.jadecode.llm.LlmException;
@@ -102,20 +101,25 @@ class AgentExecutorReactiveCompactionTest {
             return "fake " + name;
         }
 
-        @Override
-        public Map<String, String> properties() {
+        private Map<String, String> properties() {
             return Map.of();
         }
 
-        @Override
-        public List<String> required() {
+        private List<String> required() {
             return List.of();
         }
 
         @Override
-        public String execute(ObjectNode input) {
+        public com.jadecode.tools.ToolOutcome executeOutcome(ObjectNode input,
+                com.jadecode.execution.ExecutionContext context) {
             calls++;
-            return output;
+            return new com.jadecode.tools.ToolOutcome(output, false);
+        }
+
+        /** 提供完整参数结构；标量构造器只负责组装 Schema，不授予执行权限。 */
+        @Override
+        public com.fasterxml.jackson.databind.node.ObjectNode inputSchema() {
+            return com.jadecode.tools.ToolSchema.objectSchema(properties(), required());
         }
     }
 
@@ -139,10 +143,11 @@ class AgentExecutorReactiveCompactionTest {
         }
 
         @Override
-        public ModelResponse complete(CompleteRequest request) throws LlmException {
+        public ModelResponse complete(CompleteRequest request, com.jadecode.llm.ResponseStream ignoredStream)
+                throws LlmException {
             // 快照:请求里的 messages 是可变列表,不复制会读到跑完之后的状态。
             CompleteRequest snapshot = new CompleteRequest(request.system(), List.copyOf(request.messages()),
-                    request.maxTokens(), request.tools());
+                    request.maxTokens(), request.tools(), com.jadecode.llm.ThinkingSettings.DEFAULT, "");
             if (request.tools().isEmpty()) {
                 events.add("summary");
                 summaryRequests.add(snapshot);
@@ -150,7 +155,7 @@ class AgentExecutorReactiveCompactionTest {
                     throw summaryFailure;
                 }
                 return new ModelResponse(Message.assistant(List.of(new TextBlock("摘要文本"))),
-                        new ModelResponse.Usage(0, 0));
+                        new ModelResponse.Usage(0, 0, 0, 0), "");
             }
             events.add("normal");
             normalRequests.add(snapshot);
@@ -186,7 +191,7 @@ class AgentExecutorReactiveCompactionTest {
     }
 
     private static ModelResponse assistant(ContentBlock... blocks) {
-        return new ModelResponse(Message.assistant(List.of(blocks)), new ModelResponse.Usage(0, 0));
+        return new ModelResponse(Message.assistant(List.of(blocks)), new ModelResponse.Usage(0, 0, 0, 0), "");
     }
 
     private static ToolUseBlock use(String id, String name) {
@@ -271,16 +276,20 @@ class AgentExecutorReactiveCompactionTest {
     void overflowIsRecoveredOnceAndTheRetriedRequestSucceeds() throws Exception {
         LlmException firstFailure = new LlmException("prompt_too_long: 请求上下文过长");
         FakeClient client = new FakeClient(events, firstFailure, assistant(new TextBlock("完成")));
-        ContextCompactor compactor = new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits(),
+        ContextCompactor compactor = new com.jadecode.context.CourseCompactor(client, transcriptDir, toolResultsDir,
+                wideLimits(),
                 CompactionPolicy.coursePipeline());
-        AgentExecutor loop = new AgentExecutor(client, Map.of("bash", new FakeTool("bash", "x")), "test-system", 8000,
-                new Hooks(), compactor);
+        AgentExecutor loop = new com.jadecode.agent.AgentExecutor(client,
+                com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", new FakeTool("bash", "x"))), "test-system", 8000,
+                new Hooks(), compactor, () -> com.jadecode.llm.ResponseStream.NONE,
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                () -> "");
         List<Message> messages = legalHistory(9);
         List<Message> callerList = messages;
         Message tailFirst = messages.get(4); // 补救后应当原样保留的尾部第一条
         Message lastRequest = messages.getLast();
 
-        SessionRuntime.runExisting(loop, messages);
+        com.jadecode.support.ExecutorSteps.run(loop, messages);
 
         // 顺序:失败的正式请求 → 一次前缀摘要 → 重新发同一次正式请求(成功)。
         assertEquals(List.of("normal", "summary", "normal"), events);
@@ -319,14 +328,19 @@ class AgentExecutorReactiveCompactionTest {
         // 认证 / 限流 / 网络这类错误压缩改变不了根因,所以一次补救都不该发生。
         LlmException unauthorized = new LlmException("401 unauthorized: invalid api key");
         FakeClient client = new FakeClient(events, unauthorized, assistant(new TextBlock("不该被调用")));
-        ContextCompactor compactor = new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits(),
+        ContextCompactor compactor = new com.jadecode.context.CourseCompactor(client, transcriptDir, toolResultsDir,
+                wideLimits(),
                 CompactionPolicy.coursePipeline());
-        AgentExecutor loop = new AgentExecutor(client, Map.of("bash", new FakeTool("bash", "x")), "test-system", 8000,
-                new Hooks(), compactor);
+        AgentExecutor loop = new com.jadecode.agent.AgentExecutor(client,
+                com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", new FakeTool("bash", "x"))), "test-system", 8000,
+                new Hooks(), compactor, () -> com.jadecode.llm.ResponseStream.NONE,
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                () -> "");
         List<Message> messages = legalHistory(9);
         List<Message> before = List.copyOf(messages);
 
-        LlmException thrown = assertThrows(LlmException.class, () -> SessionRuntime.runExisting(loop, messages));
+        LlmException thrown = assertThrows(LlmException.class,
+                () -> com.jadecode.support.ExecutorSteps.run(loop, messages));
 
         assertSame(unauthorized, thrown, "非匹配失败必须抛出原异常对象");
         assertEquals(List.of("normal"), events, "不得有补救或重试请求");
@@ -342,13 +356,18 @@ class AgentExecutorReactiveCompactionTest {
         LlmException first = new LlmException("prompt_too_long: 第一次超限");
         LlmException second = new LlmException("prompt_too_long: 补救之后仍然超限");
         FakeClient client = new FakeClient(events, first, second, assistant(new TextBlock("不该被调用")));
-        ContextCompactor compactor = new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits(),
+        ContextCompactor compactor = new com.jadecode.context.CourseCompactor(client, transcriptDir, toolResultsDir,
+                wideLimits(),
                 CompactionPolicy.coursePipeline());
-        AgentExecutor loop = new AgentExecutor(client, Map.of("bash", new FakeTool("bash", "x")), "test-system", 8000,
-                new Hooks(), compactor);
+        AgentExecutor loop = new com.jadecode.agent.AgentExecutor(client,
+                com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", new FakeTool("bash", "x"))), "test-system", 8000,
+                new Hooks(), compactor, () -> com.jadecode.llm.ResponseStream.NONE,
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                () -> "");
         List<Message> messages = legalHistory(9);
 
-        LlmException thrown = assertThrows(LlmException.class, () -> SessionRuntime.runExisting(loop, messages));
+        LlmException thrown = assertThrows(LlmException.class,
+                () -> com.jadecode.support.ExecutorSteps.run(loop, messages));
 
         // 抛的是第二次实际异常对象(不是包装,也不是第一次那个)。
         assertSame(second, thrown);
@@ -367,15 +386,20 @@ class AgentExecutorReactiveCompactionTest {
         LlmException first = new LlmException("prompt_too_long: 第一次超限");
         LlmException second = new LlmException("prompt_too_long: 第二次超限");
         FakeClient client = new FakeClient(events, first, second, assistant(new TextBlock("不该被调用")));
-        ContextCompactor compactor = new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits(),
+        ContextCompactor compactor = new com.jadecode.context.CourseCompactor(client, transcriptDir, toolResultsDir,
+                wideLimits(),
                 CompactionPolicy.coursePipeline());
-        AgentExecutor loop = new AgentExecutor(client, Map.of("bash", new FakeTool("bash", "x")), "test-system", 8000,
-                new Hooks(), compactor);
+        AgentExecutor loop = new com.jadecode.agent.AgentExecutor(client,
+                com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", new FakeTool("bash", "x"))), "test-system", 8000,
+                new Hooks(), compactor, () -> com.jadecode.llm.ResponseStream.NONE,
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                () -> "");
         List<Message> messages = legalHistory(3);
         List<Message> callerList = messages;
         List<Message> before = List.copyOf(messages);
 
-        LlmException thrown = assertThrows(LlmException.class, () -> SessionRuntime.runExisting(loop, messages));
+        LlmException thrown = assertThrows(LlmException.class,
+                () -> com.jadecode.support.ExecutorSteps.run(loop, messages));
 
         assertSame(second, thrown, "no-op 也要消耗额度,第二次超限直接抛出");
         assertEquals(List.of("normal", "normal"), events, "两次正式请求之间没有摘要,也没有第三次尝试");
@@ -394,15 +418,19 @@ class AgentExecutorReactiveCompactionTest {
         Files.writeString(transcriptDir, "占位文件");
         LlmException overflow = new LlmException("prompt_too_long: 需要补救");
         FakeClient client = new FakeClient(events, overflow, assistant(new TextBlock("不该被调用")));
-        ContextCompactor compactor = new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits(),
+        ContextCompactor compactor = new com.jadecode.context.CourseCompactor(client, transcriptDir, toolResultsDir,
+                wideLimits(),
                 CompactionPolicy.coursePipeline());
-        AgentExecutor loop = new AgentExecutor(client, Map.of("bash", new FakeTool("bash", "x")), "test-system", 8000,
-                new Hooks(), compactor);
+        AgentExecutor loop = new com.jadecode.agent.AgentExecutor(client,
+                com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", new FakeTool("bash", "x"))), "test-system", 8000,
+                new Hooks(), compactor, () -> com.jadecode.llm.ResponseStream.NONE,
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                () -> "");
         List<Message> messages = legalHistory(9);
         List<Message> before = List.copyOf(messages);
 
         IllegalStateException error = assertThrows(IllegalStateException.class,
-                () -> SessionRuntime.runExisting(loop, messages));
+                () -> com.jadecode.support.ExecutorSteps.run(loop, messages));
 
         assertNotNull(error.getCause(), "归档失败必须保留 cause");
         assertEquals(List.of("normal"), events, "补救失败后不得再发正式请求");
@@ -418,14 +446,19 @@ class AgentExecutorReactiveCompactionTest {
         LlmException summaryBoom = new LlmException("补救摘要失败");
         FakeClient client = new FakeClient(events, overflow, assistant(new TextBlock("不该被调用")));
         client.summaryFailure = summaryBoom;
-        ContextCompactor compactor = new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits(),
+        ContextCompactor compactor = new com.jadecode.context.CourseCompactor(client, transcriptDir, toolResultsDir,
+                wideLimits(),
                 CompactionPolicy.coursePipeline());
-        AgentExecutor loop = new AgentExecutor(client, Map.of("bash", new FakeTool("bash", "x")), "test-system", 8000,
-                new Hooks(), compactor);
+        AgentExecutor loop = new com.jadecode.agent.AgentExecutor(client,
+                com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", new FakeTool("bash", "x"))), "test-system", 8000,
+                new Hooks(), compactor, () -> com.jadecode.llm.ResponseStream.NONE,
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                () -> "");
         List<Message> messages = legalHistory(9);
         List<Message> before = List.copyOf(messages);
 
-        LlmException thrown = assertThrows(LlmException.class, () -> SessionRuntime.runExisting(loop, messages));
+        LlmException thrown = assertThrows(LlmException.class,
+                () -> com.jadecode.support.ExecutorSteps.run(loop, messages));
 
         assertSame(summaryBoom, thrown, "补救内部的摘要异常原样传播");
         assertEquals(List.of("normal", "summary"), events, "摘要失败后不再发正式请求");
@@ -448,14 +481,17 @@ class AgentExecutorReactiveCompactionTest {
                 second,
                 assistant(new TextBlock("完成")));
         FakeTool bash = new FakeTool("bash", "普通输出");
-        ContextCompactor compactor = new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits(),
+        ContextCompactor compactor = new com.jadecode.context.CourseCompactor(client, transcriptDir, toolResultsDir,
+                wideLimits(),
                 CompactionPolicy.coursePipeline());
-        AgentExecutor loop = new AgentExecutor(client, Map.of("bash", bash), "test-system", 8000, new Hooks(),
-                compactor);
+        AgentExecutor loop = new com.jadecode.agent.AgentExecutor(client,
+                com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", bash)), "test-system", 8000, new Hooks(), compactor,
+                () -> com.jadecode.llm.ResponseStream.NONE, com.jadecode.execution.ExecutionObserver.NONE,
+                () -> com.jadecode.llm.ThinkingSettings.DEFAULT, () -> "");
         List<Message> messages = legalHistory(9);
         List<Message> callerList = messages;
 
-        SessionRuntime.runExisting(loop, messages);
+        com.jadecode.support.ExecutorSteps.run(loop, messages);
 
         assertEquals(List.of("normal", "summary", "normal", "normal", "summary", "normal"), events,
                 "两次超限各补救一次;中间那次成功把额度重置了");
@@ -497,19 +533,23 @@ class AgentExecutorReactiveCompactionTest {
         FakeClient client = new FakeClient(events,
                 firstRunFailure, assistant(new TextBlock("完成一")),
                 secondRunFailure, assistant(new TextBlock("完成二")));
-        ContextCompactor compactor = new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits(),
+        ContextCompactor compactor = new com.jadecode.context.CourseCompactor(client, transcriptDir, toolResultsDir,
+                wideLimits(),
                 CompactionPolicy.coursePipeline());
-        AgentExecutor loop = new AgentExecutor(client, Map.of("bash", new FakeTool("bash", "x")), "test-system", 8000,
-                new Hooks(), compactor);
+        AgentExecutor loop = new com.jadecode.agent.AgentExecutor(client,
+                com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", new FakeTool("bash", "x"))), "test-system", 8000,
+                new Hooks(), compactor, () -> com.jadecode.llm.ResponseStream.NONE,
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                () -> "");
         List<Message> messages = legalHistory(9);
 
-        SessionRuntime.runExisting(loop, messages);
+        com.jadecode.support.ExecutorSteps.run(loop, messages);
         // 第一次 run 的补救消息使用的是第一次 run 入口捕获的那句请求。
         assertTrue(messages.getFirst().extractText().startsWith("[Reactive compact]"));
         assertTrue(messages.getFirst().extractText().contains("Current user request:\n请求9"));
         // 同一个 loop 的第二次 run:如果额度被上一次 run 耗尽后没有重置,这里的超限就会直接抛出。
         messages.add(Message.userText("第二个请求"));
-        SessionRuntime.runExisting(loop, messages);
+        com.jadecode.support.ExecutorSteps.run(loop, messages);
 
         assertEquals(List.of("normal", "summary", "normal", "normal", "summary", "normal"), events);
         assertEquals(2, client.summaryRequests.size());
@@ -527,14 +567,19 @@ class AgentExecutorReactiveCompactionTest {
         LlmException fromPrepare = new LlmException("too many tokens while summarizing");
         FakeClient client = new FakeClient(events, assistant(new TextBlock("不该被调用")));
         client.summaryFailure = fromPrepare;
-        ContextCompactor compactor = new ContextCompactor(client, transcriptDir, toolResultsDir, narrowLimits(),
+        ContextCompactor compactor = new com.jadecode.context.CourseCompactor(client, transcriptDir, toolResultsDir,
+                narrowLimits(),
                 CompactionPolicy.coursePipeline());
-        AgentExecutor loop = new AgentExecutor(client, Map.of("bash", new FakeTool("bash", "x")), "test-system", 8000,
-                new Hooks(), compactor);
+        AgentExecutor loop = new com.jadecode.agent.AgentExecutor(client,
+                com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", new FakeTool("bash", "x"))), "test-system", 8000,
+                new Hooks(), compactor, () -> com.jadecode.llm.ResponseStream.NONE,
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                () -> "");
         List<Message> messages = legalHistory(9);
         List<Message> before = List.copyOf(messages);
 
-        LlmException thrown = assertThrows(LlmException.class, () -> SessionRuntime.runExisting(loop, messages));
+        LlmException thrown = assertThrows(LlmException.class,
+                () -> com.jadecode.support.ExecutorSteps.run(loop, messages));
 
         // catch 只包住正式 client.complete,所以 prepare 里的摘要异常直接抛出,一个正式请求都没发。
         assertSame(fromPrepare, thrown, "prepare 的异常必须原样抛出,不得进入补救分支");
@@ -553,13 +598,17 @@ class AgentExecutorReactiveCompactionTest {
                 assistant(new TextBlock("不该被调用")));
         client.summaryFailure = fromManual;
         FakeTool compact = new FakeTool("compact", com.jadecode.tools.CompactTool.OUTPUT);
-        ContextCompactor compactor = new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits(),
+        ContextCompactor compactor = new com.jadecode.context.CourseCompactor(client, transcriptDir, toolResultsDir,
+                wideLimits(),
                 CompactionPolicy.coursePipeline());
-        AgentExecutor loop = new AgentExecutor(client, Map.of("compact", compact), "test-system", 8000, new Hooks(),
-                compactor);
+        AgentExecutor loop = new com.jadecode.agent.AgentExecutor(client,
+                com.jadecode.tools.ToolCatalog.fixed(Map.of("compact", compact)), "test-system", 8000, new Hooks(),
+                compactor, () -> com.jadecode.llm.ResponseStream.NONE, com.jadecode.execution.ExecutionObserver.NONE,
+                () -> com.jadecode.llm.ThinkingSettings.DEFAULT, () -> "");
         List<Message> messages = new ArrayList<>(List.of(Message.userText("请求9")));
 
-        LlmException thrown = assertThrows(LlmException.class, () -> SessionRuntime.runExisting(loop, messages));
+        LlmException thrown = assertThrows(LlmException.class,
+                () -> com.jadecode.support.ExecutorSteps.run(loop, messages));
 
         // 主动压缩的摘要失败同样是"压缩失败",不是"正式请求超限":不嵌套补救、不包装。
         assertSame(fromManual, thrown);
@@ -577,15 +626,25 @@ class AgentExecutorReactiveCompactionTest {
     void legacyPathWithoutCompactorNeverRecovers() throws Exception {
         LlmException overflow = new LlmException("prompt_too_long: 但这条路径没有压缩器");
         FakeClient client = new FakeClient(events, overflow, assistant(new TextBlock("不该被调用")));
-        AgentExecutor loop = new AgentExecutor(client, Map.of("bash", new FakeTool("bash", "x")), "test-system", 8000,
-                new Hooks());
+        AgentExecutor loop = new com.jadecode.agent.AgentExecutor(client,
+                com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", new FakeTool("bash", "x"))), "test-system", 8000,
+                new Hooks(), null, () -> com.jadecode.llm.ResponseStream.NONE,
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                () -> "");
         List<Message> messages = new ArrayList<>(List.of(Message.userText("请求")));
 
-        LlmException thrown = assertThrows(LlmException.class, () -> SessionRuntime.runExisting(loop, messages));
+        LlmException thrown = assertThrows(LlmException.class,
+                () -> com.jadecode.support.ExecutorSteps.run(loop, messages));
 
         assertSame(overflow, thrown, "未启用压缩器时异常原样传播");
         assertEquals(List.of("normal"), events);
         assertEquals(0, client.summaryRequests.size());
         assertFalse(Files.exists(transcriptDir));
+    }
+
+    /** 回收本用例通过正式队列入口创建的临时会话和日志。 */
+    @org.junit.jupiter.api.AfterEach
+    void closeMigratedSessions() throws Exception {
+        com.jadecode.support.SessionRuns.closeAll();
     }
 }

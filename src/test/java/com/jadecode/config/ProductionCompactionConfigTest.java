@@ -1,13 +1,12 @@
 package com.jadecode.config;
 
-import com.jadecode.util.Json;
 import java.io.IOException;
 import java.nio.file.*;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import static org.junit.jupiter.api.Assertions.*;
 
-/** 升级只触碰压缩段，先校验和备份；全用临时配置，绝不读取机器认证。 */
+/** 当前配置严格读取，拒绝旧压缩字段且不改写原文件；全部使用临时目录。 */
 class ProductionCompactionConfigTest {
     @TempDir
     Path dir;
@@ -24,9 +23,9 @@ class ProductionCompactionConfigTest {
         assertEquals(2000, settings.largeResultPreviewChars());
     }
 
-    /** 校验旧压缩段只迁移一次，完整原文备份和其它设置均保留。 */
+    /** 旧压缩段明确拒绝，失败不迁移、不备份、不修改原文。 */
     @Test
-    void migratesOldLimitsOnceAndPreservesOtherSettingsAndOriginalBackup() throws Exception {
+    void rejectsOldLimitsWithoutWritingAnyFiles() throws Exception {
         Path path = dir.resolve("config.json");
         String old = """
                 {"version":1,"custom":{"x":7},"tui":{"theme":"solarized"},"compaction":{
@@ -35,23 +34,10 @@ class ProductionCompactionConfigTest {
                 """;
         Files.writeString(path, old);
         var config = new JadeConfigFile(path);
-        var loaded = config.load();
-        assertFalse(loaded.contextCompaction().autoSummaryEnabled());
-        assertEquals(32768, loaded.contextCompaction().summaryMaxOutputTokens());
-        var newRoot = Json.mapper().readTree(Files.readString(path));
-        assertEquals(7, newRoot.path("custom").path("x").asInt());
-        assertEquals("solarized", loaded.tui().theme());
-        assertFalse(newRoot.path("compaction").has("limits"));
-        assertFalse(newRoot.path("compaction").has("snipEnabled"));
-        assertEquals("auto", newRoot.path("compaction").path("summaryMaxInputTokens").asText());
+        assertThrows(IOException.class, config::load);
+        assertEquals(old, Files.readString(path));
         try (var files = Files.list(dir)) {
-            var backups = files.filter(file -> !file.equals(path)).toList();
-            assertEquals(1, backups.size());
-            assertEquals(old, Files.readString(backups.getFirst()));
-        }
-        config.load();
-        try (var files = Files.list(dir)) {
-            assertEquals(2, files.count(), "重复读取不再次备份/重写");
+            assertEquals(1, files.count(), "读取失败不能创建备份或迁移文件");
         }
     }
 
@@ -59,16 +45,31 @@ class ProductionCompactionConfigTest {
     @Test
     void invalidConfigurationIsNotRewrittenAndExplicitNewBudgetIsPreserved() throws Exception {
         Path path = dir.resolve("config.json");
-        String invalid = "{\"compaction\":{\"snipEnabled\":true,\"reserveTokens\":-1}}";
+        String invalid = "{\"version\":1,\"compaction\":{\"snipEnabled\":true,\"reserveTokens\":-1}}";
         Files.writeString(path, invalid);
         assertThrows(IOException.class, () -> new JadeConfigFile(path).load());
         assertEquals(invalid, Files.readString(path));
         try (var files = Files.list(dir)) {
             assertEquals(1, files.count());
         }
-        Files.writeString(path, "{\"compaction\":{\"summaryMaxInputTokens\":900000,\"summaryMaxOutputTokens\":65536}}");
+        Files.writeString(path,
+                "{\"version\":1,\"compaction\":{\"summaryMaxInputTokens\":900000,\"summaryMaxOutputTokens\":65536}}");
         var settings = new JadeConfigFile(path).load().contextCompaction();
         assertEquals(900000, settings.summaryMaxInputTokens());
         assertEquals(65536, settings.summaryMaxOutputTokens());
+    }
+
+    /** 只发现旧 tui.json 时采用当前默认值，不读取或修改旧主题文件。 */
+    @Test
+    void oldThemeFileIsIgnoredAndMissingVersionIsRejected() throws Exception {
+        Path old = dir.resolve("tui.json"), current = dir.resolve("config.json");
+        Files.writeString(old, "{\"theme\":\"light\"}");
+        assertEquals("system", new JadeConfigFile(current).load().tui().theme());
+        assertFalse(Files.exists(current));
+        String partial = "{\"tui\":{\"theme\":\"dark\"}}";
+        Files.writeString(current, partial);
+        assertThrows(IOException.class, () -> new JadeConfigFile(current).load());
+        assertEquals(partial, Files.readString(current));
+        assertEquals("{\"theme\":\"light\"}", Files.readString(old));
     }
 }

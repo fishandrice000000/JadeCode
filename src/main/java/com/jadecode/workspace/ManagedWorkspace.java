@@ -184,8 +184,7 @@ public final class ManagedWorkspace implements DockerRuntime.Operations {
             throw new IOException("Managed operation requires an attached Docker runtime");
         long revision = state.snapshot().revision();
         var plan = new ExecutionPlan("managed/" + id, context.id(), revision, tool, input, scratch, false, network,
-                false,
-                List.of(new ExecutionPlan.Mount(scratch, scratch, true)));
+                false, List.of(new ExecutionPlan.Mount(scratch, scratch, true)), List.of());
         var result = runtime.execute(plan, 300,
                 () -> context.isCancelled() || invalid.getAsBoolean() || state.snapshot().revision() != revision);
         if (result.error())

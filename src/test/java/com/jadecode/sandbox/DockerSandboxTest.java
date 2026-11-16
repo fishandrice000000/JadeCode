@@ -24,8 +24,8 @@ class DockerSandboxTest {
         mounts.add(new ExecutionPlan.Mount(workspace, workspace, !readOnly));
         mounts.addAll(extra);
         return new ExecutionPlan("test-agent", "test-run", 0, "bash",
-                Json.mapper().createObjectNode().put("command", command),
-                workspace, readOnly, false, reusable, mounts);
+                Json.mapper().createObjectNode().put("command", command), workspace, readOnly, false, reusable, mounts,
+                List.of());
     }
 
     private DockerRuntime runtime() {
@@ -98,8 +98,8 @@ class DockerSandboxTest {
                     .error());
             assertEquals(1, runtime.containerCount(), "Ordinary denied commands should still reuse the same boundary");
             var glob = new ExecutionPlan("test-agent", "test-run", 0, "glob",
-                    Json.mapper().createObjectNode().put("pattern", "*.txt"),
-                    workspace, false, false, true, List.of(new ExecutionPlan.Mount(workspace, workspace, true)));
+                    Json.mapper().createObjectNode().put("pattern", "*.txt"), workspace, false, false, true,
+                    List.of(new ExecutionPlan.Mount(workspace, workspace, true)), List.of());
             var listing = runtime.execute(glob, 15, () -> false);
             assertFalse(listing.error(), listing.content());
             assertTrue(listing.content().contains("result.txt"), listing.content());
@@ -118,8 +118,8 @@ class DockerSandboxTest {
             assertEquals(1, runtime.containerCount(), "Session baseline can remain idle across tasks");
             assertTrue(runtime.execute(plan(workspace, "echo stale", false, true, List.of()), 10, () -> false).error());
             var next = new ExecutionPlan("test-agent", "next-run", 0, "bash",
-                    Json.mapper().createObjectNode().put("command", "cat result.txt"),
-                    workspace, false, false, true, List.of(new ExecutionPlan.Mount(workspace, workspace, true)));
+                    Json.mapper().createObjectNode().put("command", "cat result.txt"), workspace, false, false, true,
+                    List.of(new ExecutionPlan.Mount(workspace, workspace, true)), List.of());
             assertFalse(runtime.execute(next, 10, () -> false).error());
             assertEquals(1, runtime.containerCount());
             runtime.endActor("test-agent");
@@ -244,19 +244,19 @@ class DockerSandboxTest {
                 d.permissions(), new com.jadecode.config.JadeSettings.Mcp(java.util.Map.of()), d.contextCompaction(),
                 SandboxSettings.defaults());
         AtomicInteger calls = new AtomicInteger();
-        com.jadecode.llm.LlmClient fake = request -> {
+        com.jadecode.llm.LlmClient fake = (request, ignoredStream) -> {
             int step = calls.getAndIncrement();
             if (step == 0)
                 return new com.jadecode.llm.ModelResponse(com.jadecode.messages.Message.assistant(List.of(
                         new com.jadecode.messages.ToolUseBlock("background", "bash", Json.mapper().createObjectNode()
                                 .put("command", "sleep 2; printf finished > background.txt")
                                 .put("run_in_background", true)))),
-                        null);
+                        null, "");
             if (step == 1)
                 return new com.jadecode.llm.ModelResponse(com.jadecode.messages.Message.assistant(List.of(
                         new com.jadecode.messages.ToolUseBlock("read", "read_file",
                                 Json.mapper().createObjectNode().put("path", "note.txt")))),
-                        null);
+                        null, "");
             var read = request.messages().stream()
                     .flatMap(m -> m.blocksOfType(com.jadecode.messages.ToolResultBlock.class).stream())
                     .filter(r -> r.toolUseId().equals("read")).findFirst().orElseThrow();
@@ -264,17 +264,21 @@ class DockerSandboxTest {
             assertEquals("Error: ordinary file contents", read.content());
             return new com.jadecode.llm.ModelResponse(
                     com.jadecode.messages.Message.assistant(List.of(new com.jadecode.messages.TextBlock("done"))),
-                    null);
+                    null, "");
         };
-        try (var session = com.jadecode.bootstrap.JadeCodeFactory.create(
-                new com.jadecode.config.AppConfig("offline", "http://127.0.0.1:1", "offline", 100), workspace, fake,
-                ignored -> {
-                }, ignored -> {
-                }, (hooks, cwd, output) -> {
-                }, () -> com.jadecode.llm.ResponseStream.NONE,
-                com.jadecode.execution.ExecutionObserver.NONE, settings, settings.permissions().state(null),
-                new com.jadecode.config.JadePaths(temporary.resolve("state")))) {
-            session.run(new java.util.ArrayList<>(
+        try (var session = com.jadecode.bootstrap.JadeCodeFactory
+                .create(new com.jadecode.bootstrap.JadeCodeFactory.Dependencies(
+                        new com.jadecode.config.AppConfig("offline", "http://127.0.0.1:1", "offline", 100,
+                                com.jadecode.config.ModelProvider.ANTHROPIC_COMPATIBLE),
+                        workspace, fake, settings, settings.permissions().state(null),
+                        new com.jadecode.config.JadePaths(temporary.resolve("state")), null, null,
+                        com.jadecode.support.TestMessages.toText(ignored -> {
+                        }, ignored -> {
+                        }), () -> com.jadecode.llm.ResponseStream.NONE, com.jadecode.execution.ExecutionObserver.NONE,
+                        com.jadecode.hooks.Hooks::new,
+                        (summary, paths) -> new com.jadecode.context.ProductionCompactor(summary, paths,
+                                (settings).contextCompaction())))) {
+            com.jadecode.support.SessionRuns.run(session, new java.util.ArrayList<>(
                     List.of(com.jadecode.messages.Message.userText("run fixture and read note"))));
             assertEquals("finished", Files.readString(workspace.resolve("background.txt")));
             assertTrue(calls.get() >= 3);
@@ -531,5 +535,11 @@ class DockerSandboxTest {
                 assertFalse(Files.exists(workspace.resolve("late.txt")));
             }
         }
+    }
+
+    /** 回收本用例通过正式队列入口创建的临时会话和日志。 */
+    @org.junit.jupiter.api.AfterEach
+    void closeMigratedSessions() throws Exception {
+        com.jadecode.support.SessionRuns.closeAll();
     }
 }

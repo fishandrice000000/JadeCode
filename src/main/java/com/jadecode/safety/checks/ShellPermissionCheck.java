@@ -28,7 +28,7 @@ public final class ShellPermissionCheck implements ToolPermissionCheck {
     public Analysis analyze(String tool, ObjectNode input) {
         Path cwd = resolver.workspaceReal();
         if (!input.path("command").isTextual())
-            return new Analysis(tool, cwd, List.of(), List.of(), false, false, false, "Missing textual command");
+            return new Analysis(tool, cwd, List.of(), List.of(), false, false, false, "Missing textual command", "");
         var parsed = parser.parse(input.path("command").textValue());
         var resources = new ArrayList<Resource>();
         var commands = new ArrayList<Command>();

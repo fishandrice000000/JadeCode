@@ -43,7 +43,7 @@ class SessionBackgroundTest {
             await(release);
             return new ShellCommand.Result(evidence, 1, false);
         })) {
-            var engine = new AgentExecutor(request -> {
+            var engine = new com.jadecode.agent.AgentExecutor((request, ignoredStream) -> {
                 ToolExchangeProtocol.validateHistory(request.messages());
                 return switch (calls.getAndIncrement()) {
                     case 0 -> launch();
@@ -55,10 +55,14 @@ class SessionBackgroundTest {
                     }
                     default -> throw new AssertionError("Unexpected model polling");
                 };
-            }, Map.of("bash", new BashTool(background)), "test", 1000, new Hooks());
-            try (var runtime = new SessionRuntime(engine, null, background, ignored -> {
-            }, ignored -> {
-            })) {
+            }, com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", new BashTool(background))), "test", 1000,
+                    new Hooks(), null, () -> com.jadecode.llm.ResponseStream.NONE,
+                    com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                    () -> "");
+            try (var runtime = new com.jadecode.session.SessionRuntime(engine, null, background,
+                    com.jadecode.support.TestMessages.toText(ignored -> {
+                    }, ignored -> {
+                    }))) {
                 runtime.start();
                 var result = runtime.submit("build and inspect", null);
                 until(() -> runtime.state() == SessionRuntime.State.WAITING_BACKGROUND);
@@ -95,29 +99,34 @@ class SessionBackgroundTest {
                     completed.countDown();
                 }
             });
-            var engine = new AgentExecutor(request -> switch (calls.getAndIncrement()) {
-                case 0 -> launch();
-                case 1 -> text("A candidate");
-                case 2 -> {
-                    assertFalse(request.messages().toString().contains("LATE_BUILD_RESULT"));
-                    yield text("B done");
-                }
-                case 3 -> {
-                    String history = request.messages().toString();
-                    assertTrue(history.contains("LATE_BUILD_RESULT"));
-                    assertTrue(history.contains(execution.get().id()));
-                    yield text("C used previous build");
-                }
-                default -> throw new AssertionError("Notification unexpectedly created a model turn");
-            }, Map.of("bash", new BashTool(background)), "test", 1000, new Hooks());
+            var engine = new com.jadecode.agent.AgentExecutor(
+                    (request, ignoredStream) -> switch (calls.getAndIncrement()) {
+                        case 0 -> launch();
+                        case 1 -> text("A candidate");
+                        case 2 -> {
+                            assertFalse(request.messages().toString().contains("LATE_BUILD_RESULT"));
+                            yield text("B done");
+                        }
+                        case 3 -> {
+                            String history = request.messages().toString();
+                            assertTrue(history.contains("LATE_BUILD_RESULT"));
+                            assertTrue(history.contains(execution.get().id()));
+                            yield text("C used previous build");
+                        }
+                        default -> throw new AssertionError("Notification unexpectedly created a model turn");
+                    }, com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", new BashTool(background))), "test", 1000,
+                    new Hooks(), null, () -> com.jadecode.llm.ResponseStream.NONE,
+                    com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                    () -> "");
             engine.observe(notices::add);
             var store = new com.jadecode.session.history.SessionStore(
                     com.jadecode.support.TestPaths.workspace(workspace), ignored -> {
                     });
-            try (var opened = store.create("offline");
-                    var runtime = new SessionRuntime(engine, null, background, ignored -> {
-                    }, ignored -> {
-                    })) {
+            try (var opened = store.create("offline", "");
+                    var runtime = new com.jadecode.session.SessionRuntime(engine, null, background,
+                            com.jadecode.support.TestMessages.toText(ignored -> {
+                            }, ignored -> {
+                            }))) {
                 runtime.restore(opened.journal(), opened.restored());
                 runtime.start();
                 var first = runtime.submit("A build", null);
@@ -162,7 +171,7 @@ class SessionBackgroundTest {
         var entered = new CountDownLatch(1);
         var release = new CountDownLatch(1);
         var calls = new AtomicInteger();
-        var engine = new AgentExecutor(request -> {
+        var engine = new com.jadecode.agent.AgentExecutor((request, ignoredStream) -> {
             if (calls.getAndIncrement() == 0) {
                 entered.countDown();
                 await(release);
@@ -170,10 +179,13 @@ class SessionBackgroundTest {
             }
             assertTrue(request.messages().toString().contains("TEAM_QUESTION"));
             return text("question handled");
-        }, Map.of(), "test", 1000, new Hooks());
-        try (var runtime = new SessionRuntime(engine, ignored -> {
-        }, ignored -> {
-        })) {
+        }, com.jadecode.tools.ToolCatalog.fixed(Map.of()), "test", 1000, new Hooks(), null,
+                () -> com.jadecode.llm.ResponseStream.NONE, com.jadecode.execution.ExecutionObserver.NONE,
+                () -> com.jadecode.llm.ThinkingSettings.DEFAULT, () -> "");
+        try (var runtime = new com.jadecode.session.SessionRuntime(engine, null, null,
+                com.jadecode.support.TestMessages.toText(ignored -> {
+                }, ignored -> {
+                }))) {
             runtime.start();
             var result = runtime.submit("work", null);
             assertTrue(entered.await(5, TimeUnit.SECONDS));
@@ -191,12 +203,12 @@ class SessionBackgroundTest {
     private static ModelResponse launch() {
         return new ModelResponse(Message.assistant(List.of(new ToolUseBlock("launch", "bash",
                 Json.mapper().createObjectNode().put("command", "fixture build").put("run_in_background", true)))),
-                new ModelResponse.Usage(1, 1), "tool_use");
+                new ModelResponse.Usage(1, 1, 0, 0), "tool_use");
     }
 
     /** 生成普通正式回复，帮助区分候选回答与真正轮次结束。 */
     private static ModelResponse text(String value) {
-        return new ModelResponse(Message.assistant(List.of(new TextBlock(value))), new ModelResponse.Usage(1, 1),
+        return new ModelResponse(Message.assistant(List.of(new TextBlock(value))), new ModelResponse.Usage(1, 1, 0, 0),
                 "end_turn");
     }
 

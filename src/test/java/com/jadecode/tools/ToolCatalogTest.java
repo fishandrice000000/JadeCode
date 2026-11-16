@@ -29,16 +29,23 @@ class ToolCatalogTest {
                 return "fixture";
             }
 
-            public Map<String, String> properties() {
+            private Map<String, String> properties() {
                 return Map.of();
             }
 
-            public List<String> required() {
+            private List<String> required() {
                 return List.of();
             }
 
-            public String execute(ObjectNode input) {
-                return execute.get();
+            public com.jadecode.tools.ToolOutcome executeOutcome(ObjectNode input,
+                    com.jadecode.execution.ExecutionContext context) {
+                return new com.jadecode.tools.ToolOutcome(execute.get(), false);
+            }
+
+            /** 提供完整参数结构；标量构造器只负责组装 Schema，不授予执行权限。 */
+            @Override
+            public com.fasterxml.jackson.databind.node.ObjectNode inputSchema() {
+                return com.jadecode.tools.ToolSchema.objectSchema(properties(), required());
             }
         };
     }
@@ -96,21 +103,24 @@ class ToolCatalogTest {
                         new ToolIdentity(ToolIdentity.Kind.MCP, "fixture", "echo", true)))
                 : List.of());
         AtomicInteger requests = new AtomicInteger();
-        var engine = new AgentExecutor(request -> {
+        var engine = new com.jadecode.agent.AgentExecutor((request, ignoredStream) -> {
             if (requests.getAndIncrement() == 0) {
                 assertEquals(1, request.tools().size());
-                return new ModelResponse(Message
-                        .assistant(List.of(new ToolUseBlock("connect", "connect_mcp", Json.mapper().createObjectNode()),
+                return new ModelResponse(
+                        Message.assistant(List.of(
+                                new ToolUseBlock("connect", "connect_mcp", Json.mapper().createObjectNode()),
                                 new ToolUseBlock("guessed", external.name(), Json.mapper().createObjectNode()))),
-                        null);
+                        null, "");
             }
             assertEquals(2, request.tools().size());
-            return new ModelResponse(Message.assistant(List.of(new TextBlock("done"))), null);
-        }, catalog, "", 100, new Hooks(), null, () -> com.jadecode.llm.ResponseStream.NONE);
+            return new ModelResponse(Message.assistant(List.of(new TextBlock("done"))), null, "");
+        }, catalog, "", 100, new Hooks(), null, () -> com.jadecode.llm.ResponseStream.NONE,
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                () -> "");
         var messages = new java.util.ArrayList<>(List.of(Message.userText("test")));
         var reply = engine.request(messages, "test", "", ignored -> {
         });
-        var batch = engine.executeTools(reply, ExecutionContext.create(ExecutionContext.Source.USER, null), 0);
+        var batch = engine.executeTools(reply, ExecutionContext.create(ExecutionContext.Source.USER, null));
         assertTrue(((ToolResultBlock) batch.results().get(1)).isError());
         assertEquals(0, executed.get());
         messages.add(reply.message());

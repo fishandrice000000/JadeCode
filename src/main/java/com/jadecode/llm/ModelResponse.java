@@ -10,10 +10,6 @@ import com.jadecode.messages.Message;
  * @param stopReason 服务端停止原因，例如 end_turn／max_tokens；缺失为 ""，不凭文本猜原因
  */
 public record ModelResponse(Message message, Usage usage, String stopReason) {
-    /** 旧客户端和离线替身未报告原因时保持兼容，不能假定正常 end_turn。 */
-    public ModelResponse(Message message, Usage usage) {
-        this(message, usage, "");
-    }
 
     public ModelResponse {
         if (stopReason == null)
@@ -27,10 +23,6 @@ public record ModelResponse(Message message, Usage usage, String stopReason) {
      * @param cacheCreationInputTokens 本次写入缓存的输入；不再叠加 TTL 明细等子项
      */
     public record Usage(long inputTokens, long outputTokens, long cacheReadInputTokens, long cacheCreationInputTokens) {
-        /** 没有缓存字段的旧调用保留原含义；不能额外再把 inputTokens 重复加一次。 */
-        public Usage(long inputTokens, long outputTokens) {
-            this(inputTokens, outputTokens, 0, 0);
-        }
 
         public Usage {
             if (inputTokens < 0 || outputTokens < 0 || cacheReadInputTokens < 0 || cacheCreationInputTokens < 0)

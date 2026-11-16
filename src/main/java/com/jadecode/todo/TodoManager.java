@@ -21,6 +21,10 @@ import java.util.List;
  * </p>
  */
 public class TodoManager {
+    /** 一次计划更新的实际结果；失败时旧计划不变，正文无需解析错误前缀。 */
+    public record UpdateResult(String text, boolean error) {
+    }
+
     /** 当前计划:只有整体校验通过的列表才会进到这里 */
     private List<Todo> items = List.of();
 
@@ -51,9 +55,9 @@ public class TodoManager {
                     || !item.path("status").isTextual())
                 throw new IllegalArgumentException("Todo snapshot fields are invalid");
         }
-        String result = update(snapshot.deepCopy());
-        if (result.startsWith("Error:"))
-            throw new IllegalArgumentException(result);
+        UpdateResult result = update(snapshot.deepCopy());
+        if (result.error())
+            throw new IllegalArgumentException(result.text());
     }
 
     /**
@@ -66,32 +70,34 @@ public class TodoManager {
      * </p>
      *
      * @param todos 模型传来的计划数组,元素形如 {"content": "...", "status": "pending"}
-     * @return 成功:新列表的渲染文本;失败:"Error: " 开头的原因文案(含下标/原值,回灌给模型自纠)
+     * @return 成功返回新计划文本与 error=false；失败返回原因与 error=true，旧计划不变
      */
-    public String update(ArrayNode todos) {
+    public UpdateResult update(ArrayNode todos) {
+        // 先在临时列表检查整份计划，任一失败都不能污染当前 items。
         List<Todo> validated = new ArrayList<>();
         List<Integer> inProgressIndex = new ArrayList<>();
 
         if (todos.size() > MAX_TODO_COUNT) {
-            return "Error: Max " + MAX_TODO_COUNT + " todos allowed";
+            return new UpdateResult("Error: Max " + MAX_TODO_COUNT + " todos allowed", true);
         }
 
+        // 下标用于向模型指出非法项；规范化后的内容只放进临时列表。
         for (int i = 0; i < todos.size(); i++) {
             JsonNode todo = todos.get(i);
 
             if (!(todo instanceof ObjectNode)) {
-                return "Error: todos[" + i + "] must be an object";
+                return new UpdateResult("Error: todos[" + i + "] must be an object", true);
             }
 
             String content = todo.path("content").asText("").strip();
             if (content.isBlank()) {
-                return "Error: todos[" + i + "] requires content";
+                return new UpdateResult("Error: todos[" + i + "] requires content", true);
             }
 
             String statusStr = todo.path("status").asText("pending");
             Status status = Status.fromString(statusStr);
             if (status == null) {
-                return "Error: todos[" + i + "] has invalid status '" + statusStr + "'";
+                return new UpdateResult("Error: todos[" + i + "] has invalid status '" + statusStr + "'", true);
             }
 
             if (status == Status.IN_PROGRESS) {
@@ -101,11 +107,13 @@ public class TodoManager {
         }
 
         if (inProgressIndex.size() > 1) {
-            return "Error: Only one todo can be in_progress at a time: in_progress index " + inProgressIndex;
+            return new UpdateResult(
+                    "Error: Only one todo can be in_progress at a time: in_progress index " + inProgressIndex, true);
         }
 
+        // 全部结构与“至多一项进行中”均通过后，再一次性采用新计划。
         items = validated;
-        return render();
+        return new UpdateResult(render(), false);
     }
 
     /**

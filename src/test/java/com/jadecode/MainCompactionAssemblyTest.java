@@ -9,8 +9,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jadecode.agent.AgentExecutor;
 import com.jadecode.bootstrap.JadeCodeFactory;
 import com.jadecode.session.SessionRuntime;
@@ -31,7 +29,6 @@ import com.jadecode.messages.ToolResultBlock;
 import com.jadecode.messages.ToolUseBlock;
 import com.jadecode.subagent.SubagentOutcome;
 import com.jadecode.tools.CompactTool;
-import com.jadecode.tools.Tool;
 import com.jadecode.util.Json;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -40,6 +37,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -86,7 +84,8 @@ class MainCompactionAssemblyTest {
 
     /** 假配置:只用于确定"正式请求输出额度来自配置"这一条断言,不连任何真实服务 */
     private static AppConfig config() {
-        return new AppConfig("fake-key", "http://localhost:1", "fake-model", 1234);
+        return new AppConfig("fake-key", "http://localhost:1", "fake-model", 1234,
+                com.jadecode.config.ModelProvider.ANTHROPIC_COMPATIBLE);
     }
 
     /** 本类只验证压缩接线；显式关闭自动记忆，不让后台请求消费正式剧本或访问 HOME。 */
@@ -98,27 +97,45 @@ class MainCompactionAssemblyTest {
     private static SessionRuntime runtime(AppConfig config, Path workspace, LlmClient client) {
         var defaults = com.jadecode.config.JadeSettings.defaults();
         var settings = new com.jadecode.config.JadeSettings(defaults.tui(), defaults.compaction(), defaults.limits(),
-                disabledMemory());
-        return JadeCodeFactory.create(config, workspace, client, ignored -> {
-        }, ignored -> {
-        }, (hooks, path, output) -> {
-        },
-                () -> com.jadecode.llm.ResponseStream.NONE, com.jadecode.execution.ExecutionObserver.NONE, settings,
-                settings.permissions().state(null), com.jadecode.support.TestPaths.jade(workspace));
+                disabledMemory(), new com.jadecode.config.JadeSettings.Models(true, 24, 2000, Map.of()),
+                com.jadecode.llm.ThinkingSettings.DEFAULT, new com.jadecode.config.JadeSettings.Permissions(
+                        com.jadecode.safety.PermissionProfile.WORKSPACE, java.util.List.of(), java.util.Set.of()),
+                com.jadecode.config.JadeSettings.Mcp.defaults(),
+                com.jadecode.context.ProductionCompactionSettings.defaults()
+                        .withAutomatic(defaults.compaction().autoSummaryEnabled()),
+                com.jadecode.sandbox.SandboxSettings.offline());
+        return com.jadecode.bootstrap.JadeCodeFactory
+                .create(new com.jadecode.bootstrap.JadeCodeFactory.Dependencies(config, workspace, client, settings,
+                        settings.permissions().state(null), com.jadecode.support.TestPaths.jade(workspace), null, null,
+                        com.jadecode.support.TestMessages.toText(ignored -> {
+                        }, ignored -> {
+                        }), () -> com.jadecode.llm.ResponseStream.NONE, com.jadecode.execution.ExecutionObserver.NONE,
+                        com.jadecode.hooks.Hooks::new,
+                        (summary, paths) -> new com.jadecode.context.ProductionCompactor(summary, paths,
+                                (settings).contextCompaction())));
     }
 
     /** 保留原课程“短历史也全部摘要”的集成断言；生产默认另测 Token 保留尾部的契约。 */
     private SessionRuntime course(AppConfig config, LlmClient client) {
         var defaults = com.jadecode.config.JadeSettings.defaults();
         var settings = new com.jadecode.config.JadeSettings(defaults.tui(),
-                com.jadecode.context.CompactionPolicy.coursePipeline(), defaults.limits(), disabledMemory());
-        return JadeCodeFactory.create(config, ws, client, ignored -> {
-        }, ignored -> {
-        },
-                (hooks, path, output) -> {
-                }, () -> com.jadecode.llm.ResponseStream.NONE,
-                com.jadecode.execution.ExecutionObserver.NONE, settings, settings.permissions().state(null),
-                com.jadecode.support.TestPaths.jade(ws));
+                com.jadecode.context.CompactionPolicy.coursePipeline(), defaults.limits(), disabledMemory(),
+                new com.jadecode.config.JadeSettings.Models(true, 24, 2000, Map.of()),
+                com.jadecode.llm.ThinkingSettings.DEFAULT, new com.jadecode.config.JadeSettings.Permissions(
+                        com.jadecode.safety.PermissionProfile.WORKSPACE, java.util.List.of(), java.util.Set.of()),
+                com.jadecode.config.JadeSettings.Mcp.defaults(),
+                com.jadecode.context.ProductionCompactionSettings.defaults()
+                        .withAutomatic(com.jadecode.context.CompactionPolicy.coursePipeline().autoSummaryEnabled()),
+                com.jadecode.sandbox.SandboxSettings.offline());
+        return com.jadecode.bootstrap.JadeCodeFactory
+                .create(new com.jadecode.bootstrap.JadeCodeFactory.Dependencies(config, ws, client, settings,
+                        settings.permissions().state(null), com.jadecode.support.TestPaths.jade(ws), null, null,
+                        com.jadecode.support.TestMessages.toText(ignored -> {
+                        }, ignored -> {
+                        }), () -> com.jadecode.llm.ResponseStream.NONE, com.jadecode.execution.ExecutionObserver.NONE,
+                        com.jadecode.hooks.Hooks::new,
+                        (summary, paths) -> new com.jadecode.context.CourseCompactor(summary, paths,
+                                (settings).limits(), (settings).compaction())));
     }
 
     /** 剧本化客户端:父 / 子各有正式请求剧本,摘要请求统一返回固定文本 */
@@ -136,15 +153,16 @@ class MainCompactionAssemblyTest {
         }
 
         @Override
-        public ModelResponse complete(CompleteRequest request) throws LlmException {
+        public ModelResponse complete(CompleteRequest request, com.jadecode.llm.ResponseStream ignoredStream)
+                throws LlmException {
             CompleteRequest snapshot = new CompleteRequest(request.system(), List.copyOf(request.messages()),
-                    request.maxTokens(), request.tools());
+                    request.maxTokens(), request.tools(), com.jadecode.llm.ThinkingSettings.DEFAULT, "");
             if (request.tools().isEmpty()
                     || request.messages().getLast().extractText().startsWith("[Harness compaction request]")) {
                 events.add("summary");
                 summaries.add(snapshot);
                 return new ModelResponse(Message.assistant(List.of(new TextBlock("摘要文本"))),
-                        new ModelResponse.Usage(0, 0));
+                        new ModelResponse.Usage(0, 0, 0, 0), "");
             }
             boolean child = request.system().contains("Complete the given task");
             events.add(child ? "child" : "parent");
@@ -164,7 +182,7 @@ class MainCompactionAssemblyTest {
     /* ---------------- 造数据与观察辅助 ---------------- */
 
     private static ModelResponse assistant(ContentBlock... blocks) {
-        return new ModelResponse(Message.assistant(List.of(blocks)), new ModelResponse.Usage(0, 0));
+        return new ModelResponse(Message.assistant(List.of(blocks)), new ModelResponse.Usage(0, 0, 0, 0), "");
     }
 
     private static ModelResponse textReply(String text) {
@@ -248,7 +266,7 @@ class MainCompactionAssemblyTest {
         SessionRuntime loop = runtime(config(), ws, client);
 
         List<Message> messages = new ArrayList<>(List.of(Message.userText("你好")));
-        loop.run(messages);
+        com.jadecode.support.SessionRuns.run(loop, messages);
 
         // 能力表:原八把 + compact;正式请求的输出额度来自(假)配置。
         assertEquals(1, client.formal.size());
@@ -276,12 +294,13 @@ class MainCompactionAssemblyTest {
         client.metadata = new ModelMetadata(new ModelMetadata.Limits(1048576, null, 393216), "test");
         Files.writeString(ws.resolve("evidence.txt"), "fresh inspected evidence");
         var call = toolReply("read", "read_file", "path", "evidence.txt").message();
-        client.parentScript.add(new ModelResponse(call, new ModelResponse.Usage(1048576 - 16384, 1)));
+        client.parentScript.add(new ModelResponse(call, new ModelResponse.Usage(1048576 - 16384, 1, 0, 0), ""));
         client.parentScript.add(textReply("done"));
         List<Message> history = new ArrayList<>(List.of(Message.userText("historical evidence ".repeat(8000))));
         try (SessionRuntime loop = runtime(config(), ws, client)) {
-            assertTrue(((ContextCompactor) readField(readField(loop, "engine"), "compactor")).productionMode());
-            loop.run(history);
+            assertTrue(readField(readField(loop, "engine"),
+                    "compactor") instanceof com.jadecode.context.ProductionCompactor);
+            com.jadecode.support.SessionRuns.run(loop, history);
         }
         assertEquals(List.of("parent", "summary", "parent"), client.events);
         var summary = client.summaries.getFirst();
@@ -304,11 +323,13 @@ class MainCompactionAssemblyTest {
         client.parentScript.add(textReply("done"));
         client.childScript.add(toolReply("c-auto", "compact"));
         client.childScript.add(textReply("child done"));
-        AppConfig auto = new AppConfig("fake-key", "http://localhost:1", "fake-model", AppConfig.AUTO_MAX_TOKENS);
+        AppConfig auto = new AppConfig("fake-key", "http://localhost:1", "fake-model", AppConfig.AUTO_MAX_TOKENS,
+                com.jadecode.config.ModelProvider.ANTHROPIC_COMPATIBLE);
 
         // 调真实工厂，但客户端和工作区都是离线注入；close 保证本用例不留下后台服务。
         try (SessionRuntime loop = course(auto, client)) {
-            loop.run(new ArrayList<>(List.of(Message.userText("Delegate the inspection"))));
+            com.jadecode.support.SessionRuns.run(loop,
+                    new ArrayList<>(List.of(Message.userText("Delegate the inspection"))));
         }
         assertEquals(List.of("parent", "child", "summary", "child", "parent"), client.events);
         assertEquals(4, client.formal.size());
@@ -326,7 +347,7 @@ class MainCompactionAssemblyTest {
         SessionRuntime loop = course(config(), client);
 
         List<Message> messages = new ArrayList<>(List.of(Message.userText("阶段目标")));
-        loop.run(messages);
+        com.jadecode.support.SessionRuns.run(loop, messages);
 
         // 顺序:正式请求(带工具表)→ 独立摘要 → 下一次正式请求。
         assertEquals(List.of("parent", "summary", "parent"), client.events);
@@ -343,25 +364,32 @@ class MainCompactionAssemblyTest {
         assertTrue(retried.getFirst().extractText().contains("Current user request:\n阶段目标"));
         // 归档落在注入的全局项目分区 transcripts，内容按结构等于压缩前完整历史。
         assertArchivedMessages(List.of(Message.userText("阶段目标"), compactReply.message(),
-                Message.userBlocks(List.of(new ToolResultBlock("c1", CompactTool.OUTPUT)))), archiveLines());
+                Message.userBlocks(List.of(new ToolResultBlock("c1", CompactTool.OUTPUT, false)))), archiveLines());
     }
 
-    /* ---------------- 证据 3:父子共享同一个压缩器实例 ---------------- */
+    /* ---------------- 证据 3:各次委派独立持有压缩器与锚点 ---------------- */
 
     @Test
-    void parentAndChildShareTheSameCompactorInstance() throws Exception {
+    void eachDelegationOwnsItsCompactorAndUsageAnchor() throws Exception {
         ScriptedClient client = new ScriptedClient();
         SessionRuntime loop = runtime(config(), ws, client);
 
-        // 只读反射取私有依赖:身份相等是"共享同一个实例"的直接证据,行为相似不能替代它。
+        // 只读反射确认依赖分别装配，不把独立历史的锚点或摘要客户端混在一起。
         ContextCompactor parentCompactor = (ContextCompactor) readField(readField(loop, "engine"), "compactor");
-        // s14 的执行目录改为快照；仍沿真实 task 实例检查父子共享关系，不将目录强转回旧 Map。
+        // s14 的执行目录改为快照；仍沿真实 task 实例检查每次委派的装配关系，不将目录强转回旧 Map。
         var tools = (com.jadecode.tools.ToolCatalog) readField(readField(loop, "engine"), "tools");
         Object runtime = readField(tools.snapshot().entries().get("task").tool(), "runtime");
-        ContextCompactor childCompactor = (ContextCompactor) readField(runtime, "compactor");
-
-        assertNotNull(parentCompactor, "父循环必须注入压缩器");
-        assertSame(parentCompactor, childCompactor, "父、子必须共享同一个压缩器实例");
+        var factory = (java.util.function.Function<com.jadecode.subagent.SubagentRuntime.Invocation, AgentExecutor>) readField(
+                runtime, "executors");
+        try (var first = factory.apply(new com.jadecode.subagent.SubagentRuntime.Invocation("first",
+                com.jadecode.llm.ThinkingSettings.DEFAULT, com.jadecode.execution.ExecutionObserver.NONE));
+                var second = factory.apply(new com.jadecode.subagent.SubagentRuntime.Invocation("second",
+                        com.jadecode.llm.ThinkingSettings.DEFAULT, com.jadecode.execution.ExecutionObserver.NONE))) {
+            assertNotNull(parentCompactor, "父循环必须注入压缩器");
+            assertNotSame(parentCompactor, readField(first, "compactor"), "子摘要必须使用自己的客户端归属");
+            assertNotSame(readField(first, "compactor"), readField(second, "compactor"), "不同委派独立装配");
+            assertNotSame(readField(first, "contextTokens"), readField(second, "contextTokens"));
+        }
     }
 
     /* ---------------- 证据 3:真实 task → 子 compact → 回父 ---------------- */
@@ -388,7 +416,7 @@ class MainCompactionAssemblyTest {
         });
 
         List<Message> messages = new ArrayList<>(List.of(Message.userText("父任务")));
-        loop.run(messages);
+        com.jadecode.support.SessionRuns.run(loop, messages);
 
         // 顺序:父正式请求(task)→ 子正式请求(compact)→ 子摘要 → 子下一次正式请求(最终答复)→ 父下一次请求。
         assertEquals(List.of("parent", "child", "summary", "child", "parent"), client.events);
@@ -399,6 +427,17 @@ class MainCompactionAssemblyTest {
         assertEquals(1, occurrences(childRequest.system(), BOUNDARY), "子 prompt 也带边界句");
         // 子摘要的"当前请求"是子目标,不是父目标。
         assertTrue(client.summaries.getFirst().messages().getFirst().extractText().contains("子目标:查清这个模块"));
+        // 摘要也归实际发起它的子 Agent：父任务两次请求，子任务两次正式请求加一次摘要。
+        var accounting = loop.display().usage();
+        var parentUsage = accounting.byActor().get("leader");
+        assertEquals(2, parentUsage.reportedRequests() + parentUsage.missingRequests());
+        var children = accounting.byActor().entrySet().stream()
+                .filter(entry -> entry.getKey().startsWith("leader/subagent/")).toList();
+        assertEquals(1, children.size());
+        var childUsage = children.getFirst().getValue();
+        assertEquals(3, childUsage.reportedRequests() + childUsage.missingRequests());
+        var summaryUsage = accounting.byPurpose().get("SUMMARY");
+        assertEquals(1, summaryUsage.reportedRequests() + summaryUsage.missingRequests());
         // 子代理生命周期:START / END(DONE) 各一次。
         assertEquals(1, starts.size());
         assertEquals(1, ends.size());
@@ -417,7 +456,7 @@ class MainCompactionAssemblyTest {
         assertTrue(childRetried.getFirst().extractText().contains("Current user request:\n子目标:查清这个模块"));
         // 子归档也落在同一注入工作区,内容按结构等于子压缩前的完整历史。
         assertArchivedMessages(List.of(Message.userText("子目标:查清这个模块"), childCompact.message(),
-                Message.userBlocks(List.of(new ToolResultBlock("c1", CompactTool.OUTPUT)))), archiveLines());
+                Message.userBlocks(List.of(new ToolResultBlock("c1", CompactTool.OUTPUT, false)))), archiveLines());
     }
 
     /* ---------------- 证据 4:自动整理在父子两条路径上真的启用 ---------------- */
@@ -438,7 +477,7 @@ class MainCompactionAssemblyTest {
         SessionRuntime parentLoop = runtime(config(), ws, parentClient);
         List<Message> parentMessages = new ArrayList<>(List.of(Message.userText("读大文件")));
 
-        parentLoop.run(parentMessages);
+        com.jadecode.support.SessionRuns.run(parentLoop, parentMessages);
 
         assertEquals(0, parentClient.summaries.size(), "确定性落盘不需要辅助摘要");
         String parentShell = resultsOf(parentClient.formal.get(1).messages().getLast()).getFirst().content();
@@ -459,7 +498,7 @@ class MainCompactionAssemblyTest {
         SessionRuntime childLoop = runtime(config(), childWs, childClient);
         List<Message> childMessages = new ArrayList<>(List.of(Message.userText("委派一次")));
 
-        childLoop.run(childMessages);
+        com.jadecode.support.SessionRuns.run(childLoop, childMessages);
 
         assertEquals(0, childClient.summaries.size(), "子路径同样只靠确定性落盘,无辅助摘要");
         // formal:0=父(task)、1=子第一次 read_file、2=子第二次(应看到外壳)
@@ -486,14 +525,23 @@ class MainCompactionAssemblyTest {
         // 生产默认不再自动补救；本例验证“显式启用后的接线”，而不是偷用机器配置打开它。
         var defaults = com.jadecode.config.JadeSettings.defaults();
         var settings = new com.jadecode.config.JadeSettings(defaults.tui(),
-                com.jadecode.context.CompactionPolicy.coursePipeline(), defaults.limits(), disabledMemory());
-        SessionRuntime loop = JadeCodeFactory.create(config(), ws, client, ignored -> {
-        }, ignored -> {
-        },
-                (hooks, cwd, output) -> {
-                }, () -> com.jadecode.llm.ResponseStream.NONE,
-                com.jadecode.execution.ExecutionObserver.NONE, settings, settings.permissions().state(null),
-                com.jadecode.support.TestPaths.jade(ws));
+                com.jadecode.context.CompactionPolicy.coursePipeline(), defaults.limits(), disabledMemory(),
+                new com.jadecode.config.JadeSettings.Models(true, 24, 2000, Map.of()),
+                com.jadecode.llm.ThinkingSettings.DEFAULT, new com.jadecode.config.JadeSettings.Permissions(
+                        com.jadecode.safety.PermissionProfile.WORKSPACE, java.util.List.of(), java.util.Set.of()),
+                com.jadecode.config.JadeSettings.Mcp.defaults(),
+                com.jadecode.context.ProductionCompactionSettings.defaults()
+                        .withAutomatic(com.jadecode.context.CompactionPolicy.coursePipeline().autoSummaryEnabled()),
+                com.jadecode.sandbox.SandboxSettings.offline());
+        SessionRuntime loop = com.jadecode.bootstrap.JadeCodeFactory
+                .create(new com.jadecode.bootstrap.JadeCodeFactory.Dependencies(config(), ws, client, settings,
+                        settings.permissions().state(null), com.jadecode.support.TestPaths.jade(ws), null, null,
+                        com.jadecode.support.TestMessages.toText(ignored -> {
+                        }, ignored -> {
+                        }), () -> com.jadecode.llm.ResponseStream.NONE, com.jadecode.execution.ExecutionObserver.NONE,
+                        com.jadecode.hooks.Hooks::new,
+                        (summary, paths) -> new com.jadecode.context.CourseCompactor(summary, paths,
+                                (settings).limits(), (settings).compaction())));
         List<String> toolEvents = new ArrayList<>();
         ((AgentExecutor) readField(loop, "engine")).hooks().register(Hooks.POST_TOOL_USE, params -> {
             toolEvents.add("post");
@@ -501,7 +549,7 @@ class MainCompactionAssemblyTest {
         });
 
         List<Message> messages = new ArrayList<>(List.of(Message.userText("目标")));
-        loop.run(messages);
+        com.jadecode.support.SessionRuns.run(loop, messages);
 
         assertEquals(3, toolEvents.size(), "重试不得重跑已经执行过的工具");
         assertEquals(1, client.summaries.size(), "补救只摘要一次");
@@ -518,10 +566,16 @@ class MainCompactionAssemblyTest {
             expected.add(toolReply("r" + i, "read_file", "path", "note.txt").message());
             // 第三轮回灌时父循环还会追加一条 todo 提醒,归档按结构核对必须把它算进去。
             expected.add(i < 3
-                    ? Message.userBlocks(List.of(new ToolResultBlock("r" + i, "小内容")))
-                    : Message.userBlocks(List.of(new ToolResultBlock("r" + i, "小内容"),
+                    ? Message.userBlocks(List.of(new ToolResultBlock("r" + i, "小内容", false)))
+                    : Message.userBlocks(List.of(new ToolResultBlock("r" + i, "小内容", false),
                             new TextBlock("<reminder>Update your todos.</reminder>"))));
         }
         assertArchivedMessages(expected, archiveLines());
+    }
+
+    /** 回收本用例通过正式队列入口创建的临时会话和日志。 */
+    @org.junit.jupiter.api.AfterEach
+    void closeMigratedSessions() throws Exception {
+        com.jadecode.support.SessionRuns.closeAll();
     }
 }

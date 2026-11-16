@@ -51,17 +51,12 @@ public final class SessionUsage {
             byModel = Map.copyOf(byModel);
         }
 
-        /** 没有逐次报告来源的旧调用不得用累计值推算最近请求命中率。 */
-        public Snapshot(Totals total, Map<String, Totals> byActor, Map<String, Totals> byPurpose,
-                Map<String, Totals> byModel) {
-            this(total, byActor, byPurpose, byModel, null);
-        }
     }
 
     private final Set<String> seen = new HashSet<>();
     private final Map<String, Totals> actors = new LinkedHashMap<>(), purposes = new LinkedHashMap<>(),
             models = new LinkedHashMap<>();
-    private volatile Snapshot snapshot = new Snapshot(Totals.empty(), Map.of(), Map.of(), Map.of());
+    private volatile Snapshot snapshot = new Snapshot(Totals.empty(), Map.of(), Map.of(), Map.of(), null);
     private volatile boolean failed;
     private SessionJournal journal;
     private boolean closed, lateWarning;

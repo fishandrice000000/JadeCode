@@ -21,7 +21,7 @@ class BackendSnapshotTest {
         ledger.record(new UsageRecord("r1", "fixture", "leader", UsageRecord.Purpose.FORMAL,
                 new ModelResponse.Usage(20, 10, 60, 20)));
         ledger.record(new UsageRecord("m", "fixture", "leader", UsageRecord.Purpose.MEMORY,
-                new ModelResponse.Usage(1000, 10)));
+                new ModelResponse.Usage(1000, 10, 0, 0)));
         assertEquals(60, wire(ledger).path("usage").path("recentCacheHitPercent").asInt());
         ledger.record(new UsageRecord("r2", "fixture", "leader", UsageRecord.Purpose.FORMAL, null));
         assertTrue(wire(ledger).path("usage").path("recentCacheHitPercent").isNull());
@@ -29,8 +29,8 @@ class BackendSnapshotTest {
 
     private com.fasterxml.jackson.databind.JsonNode wire(SessionUsage ledger) {
         var display = new SessionRuntime.Display("session", "title", "fixture",
-                new ModelMetadata(ModelMetadata.Limits.unknown(), "fixture"), ThinkingSettings.DEFAULT,
-                "default", List.of(), ledger.snapshot(), null, Map.of("Context", List.of("AGENTS.md")));
+                new ModelMetadata(ModelMetadata.Limits.unknown(), "fixture"), ThinkingSettings.DEFAULT, "default",
+                List.of(), ledger.snapshot(), null, Map.of("Context", List.of("AGENTS.md")), List.of());
         return BackendSnapshot.capture(1, display, null, JadeSettings.defaults(), 0, List.of(), Map.of(),
                 "", "", Map.of(), Map.of()).toJson();
     }
@@ -40,13 +40,13 @@ class BackendSnapshotTest {
         SessionUsage ledger = new SessionUsage(ignored -> {
         });
         var formal = new UsageRecord("r1", "fixture", "leader", UsageRecord.Purpose.FORMAL,
-                new ModelResponse.Usage(20, 10));
+                new ModelResponse.Usage(20, 10, 0, 0));
         ledger.record(formal);
         ledger.record(formal);
         ledger.record(new UsageRecord("r2", "fixture", "agent_1", UsageRecord.Purpose.SUBAGENT, null));
         var display = new SessionRuntime.Display("session", "title", "fixture",
-                new ModelMetadata(ModelMetadata.Limits.unknown(), "fixture"), ThinkingSettings.DEFAULT,
-                "default", List.of(), ledger.snapshot(), null, Map.of());
+                new ModelMetadata(ModelMetadata.Limits.unknown(), "fixture"), ThinkingSettings.DEFAULT, "default",
+                List.of(), ledger.snapshot(), null, Map.of(), List.of());
         var json = BackendSnapshot.capture(1, display, null, JadeSettings.defaults(), 0, List.of(), Map.of(),
                 "", "", Map.of(), Map.of()).toJson().path("usage");
         assertEquals(20, json.path("inputTokens").asLong());

@@ -26,34 +26,29 @@ public final class ConnectMcpTool implements Tool {
         return "Connect a configured MCP server and discover tools for the next model request. Does not install programs.";
     }
 
-    @Override
-    public Map<String, String> properties() {
+    private Map<String, String> properties() {
         return Map.of("name", "string");
     }
 
-    @Override
-    public List<String> required() {
+    private List<String> required() {
         return List.of("name");
     }
 
     /** schema 只列宿主配置中的名称，模型不能传 command、args 或伪造权限声明。 */
     @Override
     public ObjectNode inputSchema() {
-        ObjectNode schema = Tool.super.inputSchema();
+        ObjectNode schema = com.jadecode.tools.ToolSchema.objectSchema(properties(), required());
         var names = ((ObjectNode) schema.path("properties").path("name")).putArray("enum");
         manager.availableServers().forEach(names::add);
         schema.put("additionalProperties", false);
         return schema;
     }
 
-    @Override
-    public String execute(ObjectNode input) {
-        return executeOutcome(input, null).content();
-    }
-
     /**
      * 初始化、发现与命名检查全部完成才报告成功；异常返回失败结果，不结束整个 Agent 循环。
      * 发布前回调只合并数据并检查名称，没有网络或模型调用。
+     * @param context Harness 提供的任务上下文；不从模型参数读取，离线只读调用可按工具契约传 null
+     * @param input 模型参数对象，只读取；具体字段由工具自行校验
      */
     @Override
     public ToolOutcome executeOutcome(ObjectNode input, ExecutionContext context) {

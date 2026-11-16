@@ -56,7 +56,7 @@ class MicroCompactorTest {
         List<ContentBlock> results = new ArrayList<>();
         for (int i = 0; i < outputs.length; i++) {
             calls.add(use("old-" + i));
-            results.add(new ToolResultBlock("old-" + i, outputs[i]));
+            results.add(new ToolResultBlock("old-" + i, outputs[i], false));
         }
         return List.of(Message.userText("开始"), Message.assistant(List.copyOf(calls)),
                 Message.userBlocks(List.copyOf(results)),
@@ -90,8 +90,8 @@ class MicroCompactorTest {
                 oldest, "第二个".repeat(300), "第三个".repeat(300), "第四个".repeat(300)));
         TextBlock reminder = new TextBlock("<reminder>Update your todos.</reminder>");
         messages.add(Message.assistant(List.of(use("fresh-1"), use("fresh-2"))));
-        messages.add(Message.userBlocks(List.of(new ToolResultBlock("fresh-1", "fresh".repeat(300)),
-                reminder, new ToolResultBlock("fresh-2", "fresh".repeat(300)))));
+        messages.add(Message.userBlocks(List.of(new ToolResultBlock("fresh-1", "fresh".repeat(300), false),
+                reminder, new ToolResultBlock("fresh-2", "fresh".repeat(300), false))));
         // 尾部人类文本不能让前面的未读结果变成已消费结果。
         messages.add(Message.userText("继续"));
         List<Message> input = List.copyOf(messages);
@@ -121,7 +121,7 @@ class MicroCompactorTest {
         messages.add(Message.userText("开始"));
         for (int i = 0; i < 4; i++) {
             messages.add(Message.assistant(List.of(use("call-" + i))));
-            messages.add(Message.userBlocks(List.of(new ToolResultBlock("call-" + i, "x".repeat(500)))));
+            messages.add(Message.userBlocks(List.of(new ToolResultBlock("call-" + i, "x".repeat(500), false))));
         }
         messages.add(Message.assistant(List.of(new TextBlock("已读取"))));
         List<Message> input = List.copyOf(messages);
@@ -162,7 +162,7 @@ class MicroCompactorTest {
     void zeroRetentionStillProtectsUnseenResults() throws IOException {
         List<Message> messages = new ArrayList<>(consumedBatch("x".repeat(500), "y".repeat(500)));
         messages.add(Message.assistant(List.of(use("fresh"))));
-        messages.add(Message.userBlocks(List.of(new ToolResultBlock("fresh", "z".repeat(500)))));
+        messages.add(Message.userBlocks(List.of(new ToolResultBlock("fresh", "z".repeat(500), false))));
         List<Message> input = List.copyOf(messages);
 
         List<Message> actual = compactor(0, 120).microCompact(input, null);
@@ -177,8 +177,8 @@ class MicroCompactorTest {
     void onlyUnseenResultsReturnsOriginalEvenWithZeroRetention() {
         List<Message> input = List.of(Message.userText("开始"),
                 Message.assistant(List.of(use("fresh-1"), use("fresh-2"))),
-                Message.userBlocks(List.of(new ToolResultBlock("fresh-1", "x".repeat(500)),
-                        new ToolResultBlock("fresh-2", "y".repeat(500)))),
+                Message.userBlocks(List.of(new ToolResultBlock("fresh-1", "x".repeat(500), false),
+                        new ToolResultBlock("fresh-2", "y".repeat(500), false))),
                 Message.userText("继续"));
 
         assertSame(input, compactor(0, 120).microCompact(input, null));
@@ -221,7 +221,7 @@ class MicroCompactorTest {
         List<Message> input = consumedBatch(firstPreview, secondPreview);
         List<Message> expected = new ArrayList<>(input);
         expected.set(2, Message.userBlocks(List.of(
-                new ToolResultBlock("old-0", "[Earlier tool result saved at " + firstPath + "]"),
+                new ToolResultBlock("old-0", "[Earlier tool result saved at " + firstPath + "]", false),
                 resultAt(input, 2, 1))));
         int target = ContextSerialization.estimateChars(expected);
 

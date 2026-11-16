@@ -29,11 +29,6 @@ public record Message(Role role, List<ContentBlock> content,
         MEMORY_REFERENCE
     }
 
-    /** 普通消息与旧日志没有来源字段；保持既有构造方式和 JSON 形状。 */
-    public Message(Role role, List<ContentBlock> content) {
-        this(role, content, null);
-    }
-
     /** 已标记参考消息必须是非空 USER 文本，不能伪装工具调用、结果或模型回答。 */
     public Message {
         if (source == Source.MEMORY_REFERENCE && (role != Role.USER || content == null || content.size() != 1
@@ -55,7 +50,7 @@ public record Message(Role role, List<ContentBlock> content,
      * 
      */
     public static Message userText(String text) {
-        return new Message(Role.USER, List.of(new TextBlock(text)));
+        return new Message(Role.USER, List.of(new TextBlock(text)), null);
     }
 
     /**
@@ -63,7 +58,7 @@ public record Message(Role role, List<ContentBlock> content,
      * @return 装有用户块列表的消息
      */
     public static Message userBlocks(List<ContentBlock> blocks) {
-        return new Message(Role.USER, blocks);
+        return new Message(Role.USER, blocks, null);
     }
 
     /**
@@ -71,7 +66,7 @@ public record Message(Role role, List<ContentBlock> content,
      * @return 装有 LLM 块列表的消息
      */
     public static Message assistant(List<ContentBlock> blocks) {
-        return new Message(Role.ASSISTANT, blocks);
+        return new Message(Role.ASSISTANT, blocks, null);
     }
 
     /**

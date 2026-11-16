@@ -19,7 +19,7 @@ class WorkspaceProcessTest {
     void cliAllocatesUploadsMultipleChunksResumesAndDeletesOnlyExplicitly() throws Exception {
         Path config = Files.createDirectories(root.resolve(".jadecode/config"));
         Files.writeString(config.resolve("config.json"),
-                "{\"memory\":{\"enabled\":false},\"modelMetadata\":{\"autoDiscover\":false}}");
+                "{\"version\":1,\"memory\":{\"enabled\":false},\"modelMetadata\":{\"autoDiscover\":false}}");
         Path source = Files.createDirectory(root.resolve("source"));
         byte[] bytes = new byte[150_000];
         new Random(7).nextBytes(bytes);
@@ -51,7 +51,7 @@ class WorkspaceProcessTest {
     void cliDownloadsPublishedFileAfterServiceRestart() throws Exception {
         Path config = Files.createDirectories(root.resolve(".jadecode/config"));
         Files.writeString(config.resolve("config.json"),
-                "{\"memory\":{\"enabled\":false},\"modelMetadata\":{\"autoDiscover\":false}}");
+                "{\"version\":1,\"memory\":{\"enabled\":false},\"modelMetadata\":{\"autoDiscover\":false}}");
         try {
             String id = Json.mapper().readTree(run("--create-workspace")).path("workspaceId").asText();
             var workspace = new ManagedWorkspaceStore(new JadePaths(root.resolve(".jadecode"))).open(id);

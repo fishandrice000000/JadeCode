@@ -34,7 +34,7 @@ public enum ModelProvider {
         return defaultModel;
     }
 
-    /** 缺少字段兼容旧配置；未知值明确失败，诊断不回显可能误填的 Key。 */
+    /** 可选 provider 未配置时采用 Anthropic-compatible 默认值；未知值明确失败，诊断不回显可能误填的 Key。 */
     public static ModelProvider parse(String value) {
         if (value == null)
             return ANTHROPIC_COMPATIBLE;

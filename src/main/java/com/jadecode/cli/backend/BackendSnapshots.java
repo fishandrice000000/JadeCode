@@ -8,7 +8,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jadecode.util.Json;
 
 /**
- * 把完整显示快照分块发到当前出口。旧本地后端和常驻服务共用哈希/ready 契约；
+ * 把完整显示快照按卡片编码到会话出口，统一维护哈希与 ready 来源游标；
  * 常驻服务注入投影函数，读取当前显示，不执行日志中的任何工具。
  */
 public final class BackendSnapshots implements BackendSessionService.SnapshotSink {
@@ -25,7 +25,7 @@ public final class BackendSnapshots implements BackendSessionService.SnapshotSin
 
     /** 整份快照与运行事件共用出口锁，游标之后的事件不会插入块之间。 */
     @Override
-    public void full(String id, long generation, long ignored,
+    public void full(String id, long generation,
             List<BackendHistoryProjector.Entry> baseline, BackendSnapshot snapshot) {
         synchronized (wire.session()) {
             var entries = projection.apply(baseline);
@@ -40,16 +40,12 @@ public final class BackendSnapshots implements BackendSessionService.SnapshotSin
                 var digest = MessageDigest.getInstance("SHA-256");
                 int index = 0;
                 for (var entry : entries) {
-                    // 单卡可以超过帧上限；大卡正文仍用 blob 承载，完整资料不截断。
+                    // 先发送完整逻辑卡片；连接出口再按帧上限分块，显示投影无需处理 blob。
                     String encoded = Json.mapper().valueToTree(List.of(entry)).toString();
                     digest.update(encoded.getBytes(StandardCharsets.UTF_8));
                     digest.update((byte) '\n');
                     var chunk = Json.mapper().createObjectNode().put("snapshotId", id).put("chunkIndex", index++);
-                    if (encoded.getBytes(StandardCharsets.UTF_8).length > 128 * 1024)
-                        chunk.put("entriesBlobRef", wire.payloads().sendText("snapshot-entries", encoded,
-                                wire.sessionId(), generation, "entries"));
-                    else
-                        chunk.put("encodedEntries", encoded);
+                    chunk.put("encodedEntries", encoded);
                     wire.session().sendEvent("session.snapshot.chunk", chunk, wire.sessionId(), generation);
                 }
                 var end = Json.mapper().createObjectNode().put("snapshotId", id).put("totalChunks", index)
@@ -63,13 +59,7 @@ public final class BackendSnapshots implements BackendSessionService.SnapshotSin
     }
 
     private void put(ObjectNode payload, BackendSnapshot snapshot) {
-        var value = snapshot.toJson();
-        String text = value.toString();
-        if (text.length() > 32_000)
-            payload.put("snapshotBlobRef",
-                    wire.payloads().sendText("state-snapshot", text, wire.sessionId(), wire.generation(), "state"));
-        else
-            payload.set("snapshot", value);
+        payload.set("snapshot", snapshot.toJson());
     }
 
     @Override

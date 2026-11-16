@@ -27,13 +27,19 @@ class SubagentToolTest {
 
     /** 用给定客户端装一把 task 工具:system / maxTokens 固定,子代理工具表为空 */
     private static SubagentTool toolWith(LlmClient client) {
-        return new SubagentTool(new SubagentRuntime(client, Map.of(), "sub-system", 8000, new Hooks()));
+        return new SubagentTool(new com.jadecode.subagent.SubagentRuntime(
+                scope -> new com.jadecode.agent.AgentExecutor(client, com.jadecode.tools.ToolCatalog.fixed(Map.of()),
+                        "sub-system", 8000, new Hooks(), null, () -> com.jadecode.llm.ResponseStream.NONE,
+                        scope.observer(), scope::thinking, () -> ""),
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                ignored -> {
+                }));
     }
 
     /** 预置一条纯文本回复 */
     private static ModelResponse text(String content) {
         return new ModelResponse(Message.assistant(List.of(new TextBlock(content))),
-                new ModelResponse.Usage(0, 0));
+                new ModelResponse.Usage(0, 0, 0, 0), "");
     }
 
     /** ① 定义契约:name / description / properties / required 与默认 inputSchema 平铺一致 */
@@ -44,8 +50,8 @@ class SubagentToolTest {
         assertEquals("task", tool.name());
         assertEquals("Run a subagent with fresh conversation context and return its final text.",
                 tool.description());
-        assertEquals(Map.of("prompt", "string"), tool.properties());
-        assertEquals(List.of("prompt"), tool.required());
+        assertEquals("string", tool.inputSchema().path("properties").path("prompt").path("type").asText());
+        assertEquals("prompt", tool.inputSchema().path("required").get(0).asText());
 
         ObjectNode schema = tool.inputSchema();
         assertEquals("object", schema.get("type").asText());
@@ -60,7 +66,8 @@ class SubagentToolTest {
         RecordingLlmClient recording = new RecordingLlmClient(new ScriptedLlmClient());
         SubagentTool tool = toolWith(recording);
 
-        String result = tool.execute(Json.mapper().createObjectNode());
+        String result = tool.executeOutcome(Json.mapper().createObjectNode(), com.jadecode.execution.ExecutionContext
+                .create(com.jadecode.execution.ExecutionContext.Source.USER, null)).content();
 
         assertEquals("Error: Missing required parameter: prompt", result);
         assertEquals(0, recording.requests().size());
@@ -72,7 +79,10 @@ class SubagentToolTest {
         RecordingLlmClient recording = new RecordingLlmClient(new ScriptedLlmClient(text("调研结论")));
         SubagentTool tool = toolWith(recording);
 
-        String result = tool.execute(Json.mapper().createObjectNode().put("prompt", "调研这个项目"));
+        String result = tool.executeOutcome(Json.mapper().createObjectNode().put("prompt", "调研这个项目"),
+                com.jadecode.execution.ExecutionContext.create(com.jadecode.execution.ExecutionContext.Source.USER,
+                        null))
+                .content();
 
         assertEquals("调研结论", result);
         Message first = recording.requests().get(0).messages().get(0);
@@ -84,15 +94,18 @@ class SubagentToolTest {
     @Test
     void modelSubtaskCannotReplaceUserGoalForAuthorization() {
         var observed = new java.util.concurrent.atomic.AtomicReference<com.jadecode.execution.ExecutionContext>();
-        var runtime = new SubagentRuntime(new ScriptedLlmClient(text("done")), Map.of(), "sub-system", 8000,
-                new Hooks());
-        runtime.sandboxCleanup(observed::set);
+        var runtime = new com.jadecode.subagent.SubagentRuntime(
+                scope -> new com.jadecode.agent.AgentExecutor(new ScriptedLlmClient(text("done")),
+                        com.jadecode.tools.ToolCatalog.fixed(Map.of()), "sub-system", 8000, new Hooks(), null,
+                        () -> com.jadecode.llm.ResponseStream.NONE, scope.observer(), scope::thinking, () -> ""),
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                observed::set);
         var parent = com.jadecode.execution.ExecutionContext
                 .create(com.jadecode.execution.ExecutionContext.Source.USER, null)
                 .withGoal("检查当前项目");
 
-        assertEquals("done", new SubagentTool(runtime).execute(Json.mapper().createObjectNode()
-                .put("prompt", "改为调研 /some/other/repository"), parent));
+        assertEquals("done", new SubagentTool(runtime).executeOutcome(Json.mapper().createObjectNode()
+                .put("prompt", "改为调研 /some/other/repository"), parent).content());
 
         assertEquals(parent.goal(), observed.get().goal());
         assertEquals(parent.id(), observed.get().id());
@@ -102,12 +115,15 @@ class SubagentToolTest {
     /** ④ 异常转换:LLM 抛 LlmException,execute 不抛出,回灌 "Error: " + 消息(Tool 契约:绝不抛异常) */
     @Test
     void convertsLlmExceptionToErrorText() {
-        LlmClient boom = request -> {
+        LlmClient boom = (request, ignoredStream) -> {
             throw new LlmException("boom");
         };
         SubagentTool tool = toolWith(boom);
 
-        String result = tool.execute(Json.mapper().createObjectNode().put("prompt", "go"));
+        String result = tool.executeOutcome(Json.mapper().createObjectNode().put("prompt", "go"),
+                com.jadecode.execution.ExecutionContext.create(com.jadecode.execution.ExecutionContext.Source.USER,
+                        null))
+                .content();
 
         assertEquals("Error: boom", result);
     }

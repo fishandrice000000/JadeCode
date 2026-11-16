@@ -11,7 +11,6 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.jadecode.cli.backend.protocol.PayloadTransfer;
 import com.jadecode.cli.backend.protocol.ProtocolException;
 import com.jadecode.cli.backend.protocol.ProtocolSession;
 import com.jadecode.safety.approval.ApprovalAnswer;
@@ -33,7 +32,7 @@ class BridgeApprovalTest {
         channel.audit((kind, payload) -> {
             throw new IllegalStateException("fixture audit failure");
         });
-        var approval = new BridgeApproval(new WireContext(channel, new PayloadTransfer(channel)));
+        var approval = new BridgeApproval(new WireContext(channel));
         assertThrows(IllegalStateException.class, () -> approval.ask(request("failed-publication", null)));
         assertEquals(0, approval.pendingCount());
         assertTrue(approval.requests().isEmpty());
@@ -66,7 +65,7 @@ class BridgeApprovalTest {
                 command -> {
                 }, () -> {
                 });
-        return new BridgeApproval(new WireContext(session, new PayloadTransfer(session.outbox())));
+        return new BridgeApproval(new WireContext(session));
     }
 
     private static BridgeApproval.Presentation presentation(String runId, long revision, long watermark) {

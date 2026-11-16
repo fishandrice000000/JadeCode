@@ -23,11 +23,6 @@ public record AppConfig(String apiKey, String baseUrl, String model, int maxToke
     /** 仅配置层使用的自动标记；模型未知时的回退值由 ModelMetadata 统一决定。 */
     public static final int AUTO_MAX_TOKENS = 0;
 
-    /** 旧调用者仍使用原 Anthropic 兼容入口，不根据 URL 或 Key 内容偷偷切换身份。 */
-    public AppConfig(String apiKey, String baseUrl, String model, int maxTokens) {
-        this(apiKey, baseUrl, model, maxTokens, ModelProvider.ANTHROPIC_COMPATIBLE);
-    }
-
     /**
      * 手工构造也验证接入范围；0 只表示 auto，不代表零 token 请求。
      * Go 的目标模型明确限定，不把改一个字符串误认为其它套餐模型也已适配。

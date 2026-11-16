@@ -98,20 +98,25 @@ class SubagentRuntimeCompactionTest {
             return "fake " + name;
         }
 
-        @Override
-        public Map<String, String> properties() {
+        private Map<String, String> properties() {
             return Map.of();
         }
 
-        @Override
-        public List<String> required() {
+        private List<String> required() {
             return List.of();
         }
 
         @Override
-        public String execute(ObjectNode input) {
+        public com.jadecode.tools.ToolOutcome executeOutcome(ObjectNode input,
+                com.jadecode.execution.ExecutionContext context) {
             calls++;
-            return output;
+            return new com.jadecode.tools.ToolOutcome(output, false);
+        }
+
+        /** 提供完整参数结构；标量构造器只负责组装 Schema，不授予执行权限。 */
+        @Override
+        public com.fasterxml.jackson.databind.node.ObjectNode inputSchema() {
+            return com.jadecode.tools.ToolSchema.objectSchema(properties(), required());
         }
     }
 
@@ -134,11 +139,12 @@ class SubagentRuntimeCompactionTest {
         }
 
         @Override
-        public ModelResponse complete(CompleteRequest request) throws LlmException {
+        public ModelResponse complete(CompleteRequest request, com.jadecode.llm.ResponseStream ignoredStream)
+                throws LlmException {
             // 快照:请求里的 messages 是可变列表,而子代理的内部历史不会对外暴露——
             // 只保存引用会在后续 clear / addAll 之后读到被改写的内容,所以必须复制。
             CompleteRequest snapshot = new CompleteRequest(request.system(), List.copyOf(request.messages()),
-                    request.maxTokens(), request.tools());
+                    request.maxTokens(), request.tools(), com.jadecode.llm.ThinkingSettings.DEFAULT, "");
             if (request.tools().isEmpty()) {
                 events.add("summary");
                 summaryRequests.add(snapshot);
@@ -146,7 +152,7 @@ class SubagentRuntimeCompactionTest {
                     throw summaryFailure;
                 }
                 return new ModelResponse(Message.assistant(List.of(new TextBlock("摘要文本"))),
-                        new ModelResponse.Usage(0, 0));
+                        new ModelResponse.Usage(0, 0, 0, 0), "");
             }
             events.add("normal");
             normalRequests.add(snapshot);
@@ -186,7 +192,7 @@ class SubagentRuntimeCompactionTest {
     }
 
     private static ModelResponse assistant(ContentBlock... blocks) {
-        return new ModelResponse(Message.assistant(List.of(blocks)), new ModelResponse.Usage(0, 0));
+        return new ModelResponse(Message.assistant(List.of(blocks)), new ModelResponse.Usage(0, 0, 0, 0), "");
     }
 
     private static ModelResponse toolReply(String id, String name) {
@@ -326,8 +332,14 @@ class SubagentRuntimeCompactionTest {
         ScriptedClient client = new ScriptedClient(events, textReply("旧路径结论"));
         Hooks hooks = new Hooks();
         List<Map<String, ?>> ends = recordEnds(hooks);
-        SubagentRuntime runtime = new SubagentRuntime(client, Map.of("bash", new FakeTool("bash", "x")),
-                "sub-system", 8000, hooks);
+        SubagentRuntime runtime = new com.jadecode.subagent.SubagentRuntime(
+                scope -> new com.jadecode.agent.AgentExecutor(client,
+                        com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", new FakeTool("bash", "x"))), "sub-system",
+                        8000, hooks, null, () -> com.jadecode.llm.ResponseStream.NONE, scope.observer(),
+                        scope::thinking, () -> ""),
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                ignored -> {
+                });
 
         assertEquals("旧路径结论", assertDoesNotThrowRun(runtime, "旧任务"));
         assertEquals(0, client.summaryRequests.size());
@@ -336,8 +348,15 @@ class SubagentRuntimeCompactionTest {
 
         // (b) 注册了 compact 却没有压缩器:构造时就拒绝,不留到运行期静默失效。
         IllegalArgumentException misconfigured = assertThrows(IllegalArgumentException.class,
-                () -> new SubagentRuntime(client, Map.of("compact", new FakeTool("compact", CompactTool.OUTPUT)),
-                        "sub-system", 8000, hooks));
+                () -> new com.jadecode.subagent.SubagentRuntime(
+                        scope -> new com.jadecode.agent.AgentExecutor(client,
+                                com.jadecode.tools.ToolCatalog
+                                        .fixed(Map.of("compact", new FakeTool("compact", CompactTool.OUTPUT))),
+                                "sub-system", 8000, hooks, null, () -> com.jadecode.llm.ResponseStream.NONE,
+                                scope.observer(), scope::thinking, () -> ""),
+                        com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                        ignored -> {
+                        }).run("task"));
         assertTrue(misconfigured.getMessage().contains("ContextCompactor"));
     }
 
@@ -359,9 +378,15 @@ class SubagentRuntimeCompactionTest {
         ScriptedClient client = new ScriptedClient(events, toolReply("b1", "bash"), textReply("完成"));
         FakeTool bash = new FakeTool("bash", huge);
         Hooks hooks = new Hooks();
-        SubagentRuntime runtime = new SubagentRuntime(client, Map.of("bash", bash), "sub-system", 8000, hooks,
-                new ContextCompactor(client, transcriptDir, toolResultsDir, budgetLimits(),
-                        CompactionPolicy.coursePipeline()));
+        SubagentRuntime runtime = new com.jadecode.subagent.SubagentRuntime(
+                scope -> new com.jadecode.agent.AgentExecutor(client,
+                        com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", bash)), "sub-system", 8000, hooks,
+                        new com.jadecode.context.CourseCompactor(client, transcriptDir, toolResultsDir, budgetLimits(),
+                                CompactionPolicy.coursePipeline()),
+                        () -> com.jadecode.llm.ResponseStream.NONE, scope.observer(), scope::thinking, () -> ""),
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                ignored -> {
+                });
 
         assertEquals("完成", runtime.run("跑一次构建"));
 
@@ -388,10 +413,16 @@ class SubagentRuntimeCompactionTest {
             stopCalls[0]++;
             return stopCalls[0] == 1 ? continuation : null;
         });
-        SubagentRuntime runtime = new SubagentRuntime(client, Map.of("bash", new FakeTool("bash", "x")),
-                "sub-system", 8000, hooks,
-                new ContextCompactor(client, transcriptDir, toolResultsDir, narrowLimits(),
-                        CompactionPolicy.coursePipeline()));
+        SubagentRuntime runtime = new com.jadecode.subagent.SubagentRuntime(
+                scope -> new com.jadecode.agent.AgentExecutor(client,
+                        com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", new FakeTool("bash", "x"))), "sub-system",
+                        8000, hooks,
+                        new com.jadecode.context.CourseCompactor(client, transcriptDir, toolResultsDir, narrowLimits(),
+                                CompactionPolicy.coursePipeline()),
+                        () -> com.jadecode.llm.ResponseStream.NONE, scope.observer(), scope::thinking, () -> ""),
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                ignored -> {
+                });
 
         assertEquals("完成", runtime.run("只查一个模块"));
 
@@ -417,10 +448,17 @@ class SubagentRuntimeCompactionTest {
         Hooks hooks = new Hooks();
         List<String> starts = recordStarts(hooks);
         List<Map<String, ?>> ends = recordEnds(hooks);
-        SubagentRuntime runtime = new SubagentRuntime(client,
-                Map.of("compact", new FakeTool("compact", CompactTool.OUTPUT)), "sub-system", 8000, hooks,
-                new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits(),
-                        CompactionPolicy.coursePipeline()));
+        SubagentRuntime runtime = new com.jadecode.subagent.SubagentRuntime(
+                scope -> new com.jadecode.agent.AgentExecutor(client,
+                        com.jadecode.tools.ToolCatalog
+                                .fixed(Map.of("compact", new FakeTool("compact", CompactTool.OUTPUT))),
+                        "sub-system", 8000, hooks,
+                        new com.jadecode.context.CourseCompactor(client, transcriptDir, toolResultsDir, wideLimits(),
+                                CompactionPolicy.coursePipeline()),
+                        () -> com.jadecode.llm.ResponseStream.NONE, scope.observer(), scope::thinking, () -> ""),
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                ignored -> {
+                });
 
         assertEquals("完成", runtime.run("阶段一"));
 
@@ -428,7 +466,7 @@ class SubagentRuntimeCompactionTest {
         assertSummaryShape(client, 0);
         // 整段闭合历史:prompt + assistant(compact) + tool_result;第三条的正文在 tool_result 块里。
         List<Message> expected = List.of(Message.userText("阶段一"), compactReply.message(),
-                Message.userBlocks(List.of(new ToolResultBlock("c1", CompactTool.OUTPUT))));
+                Message.userBlocks(List.of(new ToolResultBlock("c1", CompactTool.OUTPUT, false))));
         List<String> summarized = contentsOf(linesOf(Json.mapper().readTree(
                 client.summaryRequests.getFirst().messages().getFirst().extractText())));
         assertEquals(3, summarized.size());
@@ -464,11 +502,17 @@ class SubagentRuntimeCompactionTest {
             events.add("sub:" + ((ToolUseBlock) params.get(Hooks.PARAM_BLOCK)).name());
             return null;
         });
-        SubagentRuntime runtime = new SubagentRuntime(client,
-                Map.of("bash", new FakeTool("bash", "普通输出"), "compact", new FakeTool("compact", CompactTool.OUTPUT)),
-                "sub-system", 8000, hooks,
-                new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits(),
-                        CompactionPolicy.coursePipeline()));
+        SubagentRuntime runtime = new com.jadecode.subagent.SubagentRuntime(
+                scope -> new com.jadecode.agent.AgentExecutor(client,
+                        com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", new FakeTool("bash", "普通输出"), "compact",
+                                new FakeTool("compact", CompactTool.OUTPUT))),
+                        "sub-system", 8000, hooks,
+                        new com.jadecode.context.CourseCompactor(client, transcriptDir, toolResultsDir, wideLimits(),
+                                CompactionPolicy.coursePipeline()),
+                        () -> com.jadecode.llm.ResponseStream.NONE, scope.observer(), scope::thinking, () -> ""),
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                ignored -> {
+                });
 
         assertEquals("完成", runtime.run("阶段二"));
 
@@ -494,8 +538,8 @@ class SubagentRuntimeCompactionTest {
                 tailResults.stream().map(ToolResultBlock::content).toList());
         // 归档 = 压缩前的完整历史(含最新交换),按结构核对,不只数行。
         assertArchivedMessages(List.of(Message.userText("阶段二"), mixedReply.message(),
-                Message.userBlocks(List.of(new ToolResultBlock("b1", "普通输出"),
-                        new ToolResultBlock("c1", CompactTool.OUTPUT)))),
+                Message.userBlocks(List.of(new ToolResultBlock("b1", "普通输出", false),
+                        new ToolResultBlock("c1", CompactTool.OUTPUT, false)))),
                 archiveLines());
     }
 
@@ -505,10 +549,17 @@ class SubagentRuntimeCompactionTest {
         ScriptedClient blocked = new ScriptedClient(events, toolReply("c1", "compact"), textReply("完成"));
         Hooks blocking = new Hooks();
         blocking.register(Hooks.PRE_TOOL_USE, params -> CompactTool.OUTPUT);
-        SubagentRuntime blockedRuntime = new SubagentRuntime(blocked,
-                Map.of("compact", new FakeTool("compact", CompactTool.OUTPUT)), "sub-system", 8000, blocking,
-                new ContextCompactor(blocked, transcriptDir, toolResultsDir, wideLimits(),
-                        CompactionPolicy.coursePipeline()));
+        SubagentRuntime blockedRuntime = new com.jadecode.subagent.SubagentRuntime(
+                scope -> new com.jadecode.agent.AgentExecutor(blocked,
+                        com.jadecode.tools.ToolCatalog
+                                .fixed(Map.of("compact", new FakeTool("compact", CompactTool.OUTPUT))),
+                        "sub-system", 8000, blocking,
+                        new com.jadecode.context.CourseCompactor(blocked, transcriptDir, toolResultsDir, wideLimits(),
+                                CompactionPolicy.coursePipeline()),
+                        () -> com.jadecode.llm.ResponseStream.NONE, scope.observer(), scope::thinking, () -> ""),
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                ignored -> {
+                });
         assertEquals("完成", blockedRuntime.run("被拦"));
         assertEquals(0, blocked.summaryRequests.size(), "被拦截的 compact 不得触发摘要");
         assertFalse(Files.exists(transcriptDir));
@@ -516,10 +567,16 @@ class SubagentRuntimeCompactionTest {
         // (b) 别的工具返回同样文案:不误触发。
         transcriptDir = workspace.resolve("transcripts-fake");
         ScriptedClient fake = new ScriptedClient(new ArrayList<>(), toolReply("b1", "bash"), textReply("完成"));
-        SubagentRuntime fakeRuntime = new SubagentRuntime(fake,
-                Map.of("bash", new FakeTool("bash", CompactTool.OUTPUT)), "sub-system", 8000, new Hooks(),
-                new ContextCompactor(fake, transcriptDir, toolResultsDir, wideLimits(),
-                        CompactionPolicy.coursePipeline()));
+        SubagentRuntime fakeRuntime = new com.jadecode.subagent.SubagentRuntime(
+                scope -> new com.jadecode.agent.AgentExecutor(fake,
+                        com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", new FakeTool("bash", CompactTool.OUTPUT))),
+                        "sub-system", 8000, new Hooks(),
+                        new com.jadecode.context.CourseCompactor(fake, transcriptDir, toolResultsDir, wideLimits(),
+                                CompactionPolicy.coursePipeline()),
+                        () -> com.jadecode.llm.ResponseStream.NONE, scope.observer(), scope::thinking, () -> ""),
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                ignored -> {
+                });
         assertEquals("完成", fakeRuntime.run("伪成功"));
         assertEquals(0, fake.summaryRequests.size(), "普通工具返回同样文案不得误触发");
 
@@ -528,11 +585,17 @@ class SubagentRuntimeCompactionTest {
         List<String> resetEvents = new ArrayList<>();
         ScriptedClient reset = new ScriptedClient(resetEvents, toolReply("c1", "compact"),
                 toolReply("b1", "bash"), textReply("完成"));
-        SubagentRuntime resetRuntime = new SubagentRuntime(reset,
-                Map.of("compact", new FakeTool("compact", CompactTool.OUTPUT), "bash", new FakeTool("bash", "输出")),
-                "sub-system", 8000, new Hooks(),
-                new ContextCompactor(reset, transcriptDir, toolResultsDir, wideLimits(),
-                        CompactionPolicy.coursePipeline()));
+        SubagentRuntime resetRuntime = new com.jadecode.subagent.SubagentRuntime(
+                scope -> new com.jadecode.agent.AgentExecutor(reset,
+                        com.jadecode.tools.ToolCatalog.fixed(Map.of("compact",
+                                new FakeTool("compact", CompactTool.OUTPUT), "bash", new FakeTool("bash", "输出"))),
+                        "sub-system", 8000, new Hooks(),
+                        new com.jadecode.context.CourseCompactor(reset, transcriptDir, toolResultsDir, wideLimits(),
+                                CompactionPolicy.coursePipeline()),
+                        () -> com.jadecode.llm.ResponseStream.NONE, scope.observer(), scope::thinking, () -> ""),
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                ignored -> {
+                });
         assertEquals("完成", resetRuntime.run("两批"));
         assertEquals(1, reset.summaryRequests.size(), "第二批复用上一批的压缩标志会多压一次");
     }
@@ -551,10 +614,15 @@ class SubagentRuntimeCompactionTest {
         List<String> starts = recordStarts(hooks);
         List<Map<String, ?>> ends = recordEnds(hooks);
         FakeTool bash = new FakeTool("bash", "小输出");
-        SubagentRuntime runtime = new SubagentRuntime(client, Map.of("bash", bash),
-                "sub-system", 8000, hooks,
-                new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits(),
-                        CompactionPolicy.coursePipeline()));
+        SubagentRuntime runtime = new com.jadecode.subagent.SubagentRuntime(
+                scope -> new com.jadecode.agent.AgentExecutor(client,
+                        com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", bash)), "sub-system", 8000, hooks,
+                        new com.jadecode.context.CourseCompactor(client, transcriptDir, toolResultsDir, wideLimits(),
+                                CompactionPolicy.coursePipeline()),
+                        () -> com.jadecode.llm.ResponseStream.NONE, scope.observer(), scope::thinking, () -> ""),
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                ignored -> {
+                });
 
         assertEquals("搞定", runtime.run("查清楚这个模块"));
 
@@ -583,7 +651,7 @@ class SubagentRuntimeCompactionTest {
         for (int i = 1; i <= 3; i++) {
             expectedArchive.add(assistant(new ToolUseBlock("b" + i, "bash", Json.mapper().createObjectNode()))
                     .message());
-            expectedArchive.add(Message.userBlocks(List.of(new ToolResultBlock("b" + i, "小输出"))));
+            expectedArchive.add(Message.userBlocks(List.of(new ToolResultBlock("b" + i, "小输出", false))));
         }
         assertArchivedMessages(expectedArchive, archiveLines());
         assertSummaryShape(client, 0);
@@ -596,10 +664,16 @@ class SubagentRuntimeCompactionTest {
         ScriptedClient client = new ScriptedClient(events, unauthorized, textReply("不该被调用"));
         Hooks hooks = new Hooks();
         List<Map<String, ?>> ends = recordEnds(hooks);
-        SubagentRuntime runtime = new SubagentRuntime(client, Map.of("bash", new FakeTool("bash", "x")),
-                "sub-system", 8000, hooks,
-                new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits(),
-                        CompactionPolicy.coursePipeline()));
+        SubagentRuntime runtime = new com.jadecode.subagent.SubagentRuntime(
+                scope -> new com.jadecode.agent.AgentExecutor(client,
+                        com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", new FakeTool("bash", "x"))), "sub-system",
+                        8000, hooks,
+                        new com.jadecode.context.CourseCompactor(client, transcriptDir, toolResultsDir, wideLimits(),
+                                CompactionPolicy.coursePipeline()),
+                        () -> com.jadecode.llm.ResponseStream.NONE, scope.observer(), scope::thinking, () -> ""),
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                ignored -> {
+                });
 
         LlmException thrown = assertThrows(LlmException.class, () -> runtime.run("任务"));
 
@@ -623,10 +697,16 @@ class SubagentRuntimeCompactionTest {
         ScriptedClient retry = new ScriptedClient(events, longScript.toArray());
         Hooks retryHooks = new Hooks();
         List<Map<String, ?>> retryEnds = recordEnds(retryHooks);
-        SubagentRuntime retryRuntime = new SubagentRuntime(retry, Map.of("bash", new FakeTool("bash", "x")),
-                "sub-system", 8000, retryHooks,
-                new ContextCompactor(retry, transcriptDir, toolResultsDir, wideLimits(),
-                        CompactionPolicy.coursePipeline()));
+        SubagentRuntime retryRuntime = new com.jadecode.subagent.SubagentRuntime(
+                scope -> new com.jadecode.agent.AgentExecutor(retry,
+                        com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", new FakeTool("bash", "x"))), "sub-system",
+                        8000, retryHooks,
+                        new com.jadecode.context.CourseCompactor(retry, transcriptDir, toolResultsDir, wideLimits(),
+                                CompactionPolicy.coursePipeline()),
+                        () -> com.jadecode.llm.ResponseStream.NONE, scope.observer(), scope::thinking, () -> ""),
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                ignored -> {
+                });
 
         LlmException secondThrown = assertThrows(LlmException.class, () -> retryRuntime.run("任务"));
 
@@ -654,9 +734,15 @@ class SubagentRuntimeCompactionTest {
         Hooks hooks = new Hooks();
         List<Map<String, ?>> ends = recordEnds(hooks);
         FakeTool bash = new FakeTool("bash", "小输出");
-        SubagentRuntime runtime = new SubagentRuntime(client, Map.of("bash", bash), "sub-system", 8000, hooks,
-                new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits(),
-                        CompactionPolicy.coursePipeline()));
+        SubagentRuntime runtime = new com.jadecode.subagent.SubagentRuntime(
+                scope -> new com.jadecode.agent.AgentExecutor(client,
+                        com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", bash)), "sub-system", 8000, hooks,
+                        new com.jadecode.context.CourseCompactor(client, transcriptDir, toolResultsDir, wideLimits(),
+                                CompactionPolicy.coursePipeline()),
+                        () -> com.jadecode.llm.ResponseStream.NONE, scope.observer(), scope::thinking, () -> ""),
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                ignored -> {
+                });
 
         assertEquals("最终结论", assertDoesNotThrowRun(runtime, "长任务"));
 
@@ -678,9 +764,15 @@ class SubagentRuntimeCompactionTest {
         Hooks hooks = new Hooks();
         List<Map<String, ?>> ends = recordEnds(hooks);
         FakeTool bash = new FakeTool("bash", "小输出");
-        SubagentRuntime runtime = new SubagentRuntime(client, Map.of("bash", bash), "sub-system", 8000, hooks,
-                new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits(),
-                        CompactionPolicy.coursePipeline()));
+        SubagentRuntime runtime = new com.jadecode.subagent.SubagentRuntime(
+                scope -> new com.jadecode.agent.AgentExecutor(client,
+                        com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", bash)), "sub-system", 8000, hooks,
+                        new com.jadecode.context.CourseCompactor(client, transcriptDir, toolResultsDir, wideLimits(),
+                                CompactionPolicy.coursePipeline()),
+                        () -> com.jadecode.llm.ResponseStream.NONE, scope.observer(), scope::thinking, () -> ""),
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                ignored -> {
+                });
 
         String result = assertDoesNotThrowRun(runtime, "一直调工具");
 
@@ -701,10 +793,16 @@ class SubagentRuntimeCompactionTest {
         client.summaryFailure = summaryBoom;
         Hooks hooks = new Hooks();
         List<Map<String, ?>> ends = recordEnds(hooks);
-        SubagentRuntime runtime = new SubagentRuntime(client, Map.of("bash", new FakeTool("bash", "x")),
-                "sub-system", 8000, hooks,
-                new ContextCompactor(client, transcriptDir, toolResultsDir, narrowLimits(),
-                        CompactionPolicy.coursePipeline()));
+        SubagentRuntime runtime = new com.jadecode.subagent.SubagentRuntime(
+                scope -> new com.jadecode.agent.AgentExecutor(client,
+                        com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", new FakeTool("bash", "x"))), "sub-system",
+                        8000, hooks,
+                        new com.jadecode.context.CourseCompactor(client, transcriptDir, toolResultsDir, narrowLimits(),
+                                CompactionPolicy.coursePipeline()),
+                        () -> com.jadecode.llm.ResponseStream.NONE, scope.observer(), scope::thinking, () -> ""),
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                ignored -> {
+                });
 
         LlmException thrown = assertThrows(LlmException.class, () -> runtime.run(filler(500)));
 
@@ -723,10 +821,16 @@ class SubagentRuntimeCompactionTest {
         ScriptedClient archiveClient = new ScriptedClient(events, textReply("不该被调用"));
         Hooks archiveHooks = new Hooks();
         List<Map<String, ?>> archiveEnds = recordEnds(archiveHooks);
-        SubagentRuntime archiveRuntime = new SubagentRuntime(archiveClient,
-                Map.of("bash", new FakeTool("bash", "x")), "sub-system", 8000, archiveHooks,
-                new ContextCompactor(archiveClient, transcriptDir, toolResultsDir, narrowLimits(),
-                        CompactionPolicy.coursePipeline()));
+        SubagentRuntime archiveRuntime = new com.jadecode.subagent.SubagentRuntime(
+                scope -> new com.jadecode.agent.AgentExecutor(archiveClient,
+                        com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", new FakeTool("bash", "x"))), "sub-system",
+                        8000, archiveHooks,
+                        new com.jadecode.context.CourseCompactor(archiveClient, transcriptDir, toolResultsDir,
+                                narrowLimits(), CompactionPolicy.coursePipeline()),
+                        () -> com.jadecode.llm.ResponseStream.NONE, scope.observer(), scope::thinking, () -> ""),
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                ignored -> {
+                });
 
         IllegalStateException archiveError = assertThrows(IllegalStateException.class,
                 () -> archiveRuntime.run(filler(500)));
@@ -745,10 +849,16 @@ class SubagentRuntimeCompactionTest {
         client.summaryFailure = keyworded;
         Hooks hooks = new Hooks();
         List<Map<String, ?>> ends = recordEnds(hooks);
-        SubagentRuntime runtime = new SubagentRuntime(client, Map.of("bash", new FakeTool("bash", "x")),
-                "sub-system", 8000, hooks,
-                new ContextCompactor(client, transcriptDir, toolResultsDir, narrowLimits(),
-                        CompactionPolicy.coursePipeline()));
+        SubagentRuntime runtime = new com.jadecode.subagent.SubagentRuntime(
+                scope -> new com.jadecode.agent.AgentExecutor(client,
+                        com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", new FakeTool("bash", "x"))), "sub-system",
+                        8000, hooks,
+                        new com.jadecode.context.CourseCompactor(client, transcriptDir, toolResultsDir, narrowLimits(),
+                                CompactionPolicy.coursePipeline()),
+                        () -> com.jadecode.llm.ResponseStream.NONE, scope.observer(), scope::thinking, () -> ""),
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                ignored -> {
+                });
 
         LlmException thrown = assertThrows(LlmException.class, () -> runtime.run(filler(500)));
 
@@ -769,9 +879,15 @@ class SubagentRuntimeCompactionTest {
         Hooks hooks = new Hooks();
         List<Map<String, ?>> ends = recordEnds(hooks);
         FakeTool compact = new FakeTool("compact", CompactTool.OUTPUT);
-        SubagentRuntime runtime = new SubagentRuntime(client, Map.of("compact", compact), "sub-system", 8000, hooks,
-                new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits(),
-                        CompactionPolicy.coursePipeline()));
+        SubagentRuntime runtime = new com.jadecode.subagent.SubagentRuntime(
+                scope -> new com.jadecode.agent.AgentExecutor(client,
+                        com.jadecode.tools.ToolCatalog.fixed(Map.of("compact", compact)), "sub-system", 8000, hooks,
+                        new com.jadecode.context.CourseCompactor(client, transcriptDir, toolResultsDir, wideLimits(),
+                                CompactionPolicy.coursePipeline()),
+                        () -> com.jadecode.llm.ResponseStream.NONE, scope.observer(), scope::thinking, () -> ""),
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                ignored -> {
+                });
 
         LlmException thrown = assertThrows(LlmException.class, () -> runtime.run("阶段"));
 
@@ -792,10 +908,16 @@ class SubagentRuntimeCompactionTest {
         retry.summaryFailure = reactiveBoom;
         Hooks retryHooks = new Hooks();
         List<Map<String, ?>> retryEnds = recordEnds(retryHooks);
-        SubagentRuntime retryRuntime = new SubagentRuntime(retry, Map.of("bash", new FakeTool("bash", "x")),
-                "sub-system", 8000, retryHooks,
-                new ContextCompactor(retry, transcriptDir, toolResultsDir, wideLimits(),
-                        CompactionPolicy.coursePipeline()));
+        SubagentRuntime retryRuntime = new com.jadecode.subagent.SubagentRuntime(
+                scope -> new com.jadecode.agent.AgentExecutor(retry,
+                        com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", new FakeTool("bash", "x"))), "sub-system",
+                        8000, retryHooks,
+                        new com.jadecode.context.CourseCompactor(retry, transcriptDir, toolResultsDir, wideLimits(),
+                                CompactionPolicy.coursePipeline()),
+                        () -> com.jadecode.llm.ResponseStream.NONE, scope.observer(), scope::thinking, () -> ""),
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                ignored -> {
+                });
 
         LlmException retryThrown = assertThrows(LlmException.class, () -> retryRuntime.run("任务"));
 
@@ -818,10 +940,16 @@ class SubagentRuntimeCompactionTest {
         Hooks hooks = new Hooks();
         List<String> starts = recordStarts(hooks);
         List<Map<String, ?>> ends = recordEnds(hooks);
-        SubagentRuntime runtime = new SubagentRuntime(client, Map.of("bash", new FakeTool("bash", "x")),
-                "sub-system", 8000, hooks,
-                new ContextCompactor(client, transcriptDir, toolResultsDir, narrowLimits(),
-                        CompactionPolicy.coursePipeline()));
+        SubagentRuntime runtime = new com.jadecode.subagent.SubagentRuntime(
+                scope -> new com.jadecode.agent.AgentExecutor(client,
+                        com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", new FakeTool("bash", "x"))), "sub-system",
+                        8000, hooks,
+                        new com.jadecode.context.CourseCompactor(client, transcriptDir, toolResultsDir, narrowLimits(),
+                                CompactionPolicy.coursePipeline()),
+                        () -> com.jadecode.llm.ResponseStream.NONE, scope.observer(), scope::thinking, () -> ""),
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                ignored -> {
+                });
 
         assertEquals("结论甲", runtime.run(goalA));
         assertEquals("结论乙", runtime.run(goalB));
@@ -849,9 +977,15 @@ class SubagentRuntimeCompactionTest {
         Hooks hooks = new Hooks();
         List<Map<String, ?>> ends = recordEnds(hooks);
         FakeTool bash = new FakeTool("bash", "不该执行");
-        SubagentRuntime runtime = new SubagentRuntime(client, Map.of("bash", bash), "sub-system", 8000, hooks,
-                new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits(),
-                        CompactionPolicy.coursePipeline()));
+        SubagentRuntime runtime = new com.jadecode.subagent.SubagentRuntime(
+                scope -> new com.jadecode.agent.AgentExecutor(client,
+                        com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", bash)), "sub-system", 8000, hooks,
+                        new com.jadecode.context.CourseCompactor(client, transcriptDir, toolResultsDir, wideLimits(),
+                                CompactionPolicy.coursePipeline()),
+                        () -> com.jadecode.llm.ResponseStream.NONE, scope.observer(), scope::thinking, () -> ""),
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                ignored -> {
+                });
 
         IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class, () -> runtime.run("任务"));
 
@@ -868,10 +1002,16 @@ class SubagentRuntimeCompactionTest {
             events.add("pre:" + ((ToolUseBlock) params.get(Hooks.PARAM_BLOCK)).name());
             return null;
         });
-        SubagentRuntime unknownRuntime = new SubagentRuntime(unknown, Map.of("bash", new FakeTool("bash", "x")),
-                "sub-system", 8000, unknownHooks,
-                new ContextCompactor(unknown, workspace.resolve("transcripts-unknown"), toolResultsDir, wideLimits(),
-                        CompactionPolicy.coursePipeline()));
+        SubagentRuntime unknownRuntime = new com.jadecode.subagent.SubagentRuntime(
+                scope -> new com.jadecode.agent.AgentExecutor(unknown,
+                        com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", new FakeTool("bash", "x"))), "sub-system",
+                        8000, unknownHooks,
+                        new com.jadecode.context.CourseCompactor(unknown, workspace.resolve("transcripts-unknown"),
+                                toolResultsDir, wideLimits(), CompactionPolicy.coursePipeline()),
+                        () -> com.jadecode.llm.ResponseStream.NONE, scope.observer(), scope::thinking, () -> ""),
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                ignored -> {
+                });
 
         assertEquals("完成", assertDoesNotThrowRun(unknownRuntime, "任务"));
 
@@ -892,10 +1032,16 @@ class SubagentRuntimeCompactionTest {
         Hooks hooks = new Hooks();
         List<String> starts = recordStarts(hooks);
         List<Map<String, ?>> ends = recordEnds(hooks);
-        SubagentRuntime runtime = new SubagentRuntime(client, Map.of("bash", new FakeTool("bash", "x")),
-                "sub-system", 8000, hooks,
-                new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits(),
-                        CompactionPolicy.coursePipeline()));
+        SubagentRuntime runtime = new com.jadecode.subagent.SubagentRuntime(
+                scope -> new com.jadecode.agent.AgentExecutor(client,
+                        com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", new FakeTool("bash", "x"))), "sub-system",
+                        8000, hooks,
+                        new com.jadecode.context.CourseCompactor(client, transcriptDir, toolResultsDir, wideLimits(),
+                                CompactionPolicy.coursePipeline()),
+                        () -> com.jadecode.llm.ResponseStream.NONE, scope.observer(), scope::thinking, () -> ""),
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                ignored -> {
+                });
 
         LlmException thrown = assertThrows(LlmException.class, () -> runtime.run("短任务"));
 
@@ -929,9 +1075,15 @@ class SubagentRuntimeCompactionTest {
         List<String> starts = recordStarts(hooks);
         List<Map<String, ?>> ends = recordEnds(hooks);
         FakeTool bash = new FakeTool("bash", "小输出");
-        SubagentRuntime runtime = new SubagentRuntime(client, Map.of("bash", bash), "sub-system", 8000, hooks,
-                new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits(),
-                        CompactionPolicy.coursePipeline()));
+        SubagentRuntime runtime = new com.jadecode.subagent.SubagentRuntime(
+                scope -> new com.jadecode.agent.AgentExecutor(client,
+                        com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", bash)), "sub-system", 8000, hooks,
+                        new com.jadecode.context.CourseCompactor(client, transcriptDir, toolResultsDir, wideLimits(),
+                                CompactionPolicy.coursePipeline()),
+                        () -> com.jadecode.llm.ResponseStream.NONE, scope.observer(), scope::thinking, () -> ""),
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                ignored -> {
+                });
 
         assertEquals("最终结论", assertDoesNotThrowRun(runtime, "两段超限"));
 
@@ -957,9 +1109,15 @@ class SubagentRuntimeCompactionTest {
         List<String> starts = recordStarts(hooks);
         List<Map<String, ?>> ends = recordEnds(hooks);
         FakeTool compact = new FakeTool("compact", CompactTool.OUTPUT);
-        SubagentRuntime runtime = new SubagentRuntime(client, Map.of("compact", compact), "sub-system", 8000, hooks,
-                new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits(),
-                        CompactionPolicy.coursePipeline()));
+        SubagentRuntime runtime = new com.jadecode.subagent.SubagentRuntime(
+                scope -> new com.jadecode.agent.AgentExecutor(client,
+                        com.jadecode.tools.ToolCatalog.fixed(Map.of("compact", compact)), "sub-system", 8000, hooks,
+                        new com.jadecode.context.CourseCompactor(client, transcriptDir, toolResultsDir, wideLimits(),
+                                CompactionPolicy.coursePipeline()),
+                        () -> com.jadecode.llm.ResponseStream.NONE, scope.observer(), scope::thinking, () -> ""),
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                ignored -> {
+                });
 
         IllegalStateException compactError = assertThrows(IllegalStateException.class, () -> runtime.run("阶段"));
 
@@ -983,9 +1141,15 @@ class SubagentRuntimeCompactionTest {
         List<String> retryStarts = recordStarts(retryHooks);
         List<Map<String, ?>> retryEnds = recordEnds(retryHooks);
         FakeTool retryBash = new FakeTool("bash", "小输出");
-        SubagentRuntime retryRuntime = new SubagentRuntime(retry, Map.of("bash", retryBash), "sub-system", 8000,
-                retryHooks, new ContextCompactor(retry, transcriptDir, toolResultsDir, wideLimits(),
-                        CompactionPolicy.coursePipeline()));
+        SubagentRuntime retryRuntime = new com.jadecode.subagent.SubagentRuntime(
+                scope -> new com.jadecode.agent.AgentExecutor(retry,
+                        com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", retryBash)), "sub-system", 8000, retryHooks,
+                        new com.jadecode.context.CourseCompactor(retry, transcriptDir, toolResultsDir, wideLimits(),
+                                CompactionPolicy.coursePipeline()),
+                        () -> com.jadecode.llm.ResponseStream.NONE, scope.observer(), scope::thinking, () -> ""),
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                ignored -> {
+                });
 
         IllegalStateException reactiveError = assertThrows(IllegalStateException.class,
                 () -> retryRuntime.run("任务"));
@@ -1022,9 +1186,15 @@ class SubagentRuntimeCompactionTest {
             return null;
         });
         FakeTool compact = new FakeTool("compact", unexpected);
-        SubagentRuntime runtime = new SubagentRuntime(client, Map.of("compact", compact), "sub-system", 8000,
-                hooks, new ContextCompactor(client, transcriptDir, toolResultsDir, wideLimits(),
-                        CompactionPolicy.coursePipeline()));
+        SubagentRuntime runtime = new com.jadecode.subagent.SubagentRuntime(
+                scope -> new com.jadecode.agent.AgentExecutor(client,
+                        com.jadecode.tools.ToolCatalog.fixed(Map.of("compact", compact)), "sub-system", 8000, hooks,
+                        new com.jadecode.context.CourseCompactor(client, transcriptDir, toolResultsDir, wideLimits(),
+                                CompactionPolicy.coursePipeline()),
+                        () -> com.jadecode.llm.ResponseStream.NONE, scope.observer(), scope::thinking, () -> ""),
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                ignored -> {
+                });
 
         assertEquals("完成", assertDoesNotThrowRun(runtime, "阶段"));
 

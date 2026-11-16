@@ -13,31 +13,14 @@ package com.jadecode.execution;
  * @param outputTokens USAGE 通知中的真实输出用量，其它类型为零
  * @param elapsedNanos 执行线程用单调时钟测得的耗时；零表示未提供，不是历史任务耗时为零
  * @param startedNanos TURN_START 的轮次起点；暂停/恢复/显示截止事件的生产端采样时刻，
- *        均取同一 JVM 的 nanoTime，绝对值可为负；旧构造的零表示未提供。
+ *        均取同一 JVM 的 nanoTime，绝对值可为负；零表示未提供。
  *                     只在同一 JVM 内给实时计时使用，不保存为墙上时钟或跨进程恢复
- * @param identity 宿主注册的可信工具身份；模型参数不能填写，未知/旧构造为 null。只供
+ * @param identity 宿主注册的可信工具身份；模型参数不能填写，无工具身份的通知为 null。只供
  *                 选择 renderer/来源标签，不改变权限/Gate 结果
  */
 public record ExecutionNotice(String actor, Kind kind, String id, String name, String detail,
         String state, long inputTokens, long outputTokens, long elapsedNanos, long startedNanos,
         ToolIdentity identity) {
-    /** 兼容旧构造：没有可信工具身份时走 fallback renderer。 */
-    public ExecutionNotice(String actor, Kind kind, String id, String name, String detail,
-            String state, long inputTokens, long outputTokens, long elapsedNanos, long startedNanos) {
-        this(actor, kind, id, name, detail, state, inputTokens, outputTokens, elapsedNanos, startedNanos, null);
-    }
-
-    /** 仅提供完成耗时的旧调用仍有效；不会用界面收到事件的时刻伪造执行起点。 */
-    public ExecutionNotice(String actor, Kind kind, String id, String name, String detail,
-            String state, long inputTokens, long outputTokens, long elapsedNanos) {
-        this(actor, kind, id, name, detail, state, inputTokens, outputTokens, elapsedNanos, 0, null);
-    }
-
-    /** 旧调用未提供计时，保持原通知构造方式，不伪造耗时。 */
-    public ExecutionNotice(String actor, Kind kind, String id, String name, String detail,
-            String state, long inputTokens, long outputTokens) {
-        this(actor, kind, id, name, detail, state, inputTokens, outputTokens, 0, 0, null);
-    }
 
     public enum Kind {
         /** 启动取得的模型限额及来源，不包含认证、思考或完整 HTTP 响应。 */
@@ -76,7 +59,7 @@ public record ExecutionNotice(String actor, Kind kind, String id, String name, S
 
     /** 创建没有 token 统计的普通通知；正文只用于显示。 */
     public static ExecutionNotice event(Kind kind, String id, String name, String detail, String state) {
-        return new ExecutionNotice("", kind, id, name, detail, state, 0, 0);
+        return new ExecutionNotice("", kind, id, name, detail, state, 0, 0, 0, 0, null);
     }
 
     /** 工厂绑定真实 Agent 身份，不由模型填写。 */

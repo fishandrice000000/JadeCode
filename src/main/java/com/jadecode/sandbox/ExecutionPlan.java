@@ -12,11 +12,6 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 public record ExecutionPlan(String actor, String runId, long revision, String tool, ObjectNode input,
         Path workspace, boolean readOnly, boolean network, boolean reusable, List<Mount> mounts,
         List<Restriction> restrictions) {
-    /** 没有用户额外路径限制的旧调用，仍使用默认敏感入口保护。 */
-    public ExecutionPlan(String actor, String runId, long revision, String tool, ObjectNode input,
-            Path workspace, boolean readOnly, boolean network, boolean reusable, List<Mount> mounts) {
-        this(actor, runId, revision, tool, input, workspace, readOnly, network, reusable, mounts, List.of());
-    }
 
     /** hidden 拒绝读取；否则扣回只读。路径必须在已暴露视图内，缺失或可变链接明确失败。 */
     public record Restriction(Path path, boolean hidden) {

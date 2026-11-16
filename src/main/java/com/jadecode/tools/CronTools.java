@@ -38,8 +38,8 @@ public final class CronTools {
         }
 
         /** @return 模型可填写字段；pending_delivery / last_fired / path 均由 Harness 管理。 */
-        @Override
-        public Map<String, String> properties() {
+
+        private Map<String, String> properties() {
             return switch (name) {
                 case "schedule_cron" ->
                     Map.of("cron", "string", "prompt", "string", "recurring", "boolean", "durable", "boolean");
@@ -49,8 +49,8 @@ public final class CronTools {
         }
 
         /** @return 两个布尔可省略；取消必须使用实际返回的 ID。 */
-        @Override
-        public List<String> required() {
+
+        private List<String> required() {
             return switch (name) {
                 case "schedule_cron" -> List.of("cron", "prompt");
                 case "cancel_cron" -> List.of("job_id");
@@ -69,10 +69,12 @@ public final class CronTools {
         /**
          * 先校验完整输入再操作；失败作为 Error 回灌，输入对象不修改。
          * @param input 模型 JSON 参数，不允许数字/字符串冒充布尔或控制内部状态
-         * @return JSON 定义/列表或取消回执，不表示定时 prompt 已执行
-         */
+         * @return 执行结果（content 保留原输出，isError 由本方法失败分支给定）：JSON 定义/列表或取消回执，不表示定时 prompt 已执行
+         * @param context Harness 提供的任务上下文；不从模型参数读取，离线只读调用可按工具契约传 null
+        */
         @Override
-        public String execute(ObjectNode input) {
+        public com.jadecode.tools.ToolOutcome executeOutcome(ObjectNode input,
+                com.jadecode.execution.ExecutionContext context) {
             try {
                 if (input == null)
                     throw new IllegalArgumentException("Input must be an object");
@@ -90,7 +92,7 @@ public final class CronTools {
                         throw new IllegalArgumentException("Missing required parameter: " + key);
                 }
                 // 只有全部形状检查通过才调用存储，默认 true 不把显式 false 覆盖掉。
-                return switch (name) {
+                return new com.jadecode.tools.ToolOutcome(switch (name) {
                     case "schedule_cron" -> Json.mapper()
                             .writeValueAsString(scheduler.schedule(input.get("cron").textValue(),
                                     input.get("prompt").textValue(), input.path("recurring").asBoolean(true),
@@ -100,9 +102,9 @@ public final class CronTools {
                         scheduler.cancel(input.get("job_id").textValue());
                         yield "Cancelled " + input.get("job_id").textValue();
                     }
-                };
+                }, false);
             } catch (IOException | IllegalArgumentException | IllegalStateException failure) {
-                return "Error: " + failure.getMessage();
+                return new com.jadecode.tools.ToolOutcome("Error: " + failure.getMessage(), true);
             }
         }
     }

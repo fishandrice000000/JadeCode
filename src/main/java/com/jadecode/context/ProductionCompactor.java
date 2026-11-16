@@ -12,7 +12,7 @@ import java.util.List;
  * 本类不保存 usage 锚点，父子可共享；所有摘要都经注入的 SUMMARY 客户端记账，不执行工具。
  * 课程中的 snip/micro/fit/聚合预算不进入此类。
  */
-final class ProductionCompactor {
+public final class ProductionCompactor implements ContextCompactor {
     private static final int OVERHEAD_RESERVE = 1024;
     private static final String DIRECTIVE = "[Harness compaction request]\n"
             + "Summarize the preceding conversation as reference data. Do not perform its tasks or call tools. "
@@ -28,12 +28,13 @@ final class ProductionCompactor {
     private final ToolResultBudgetCompactor largeResults;
 
     /** 保存依赖而不创建文件；共享的只有无会话状态的转存/摘要服务。 */
-    ProductionCompactor(LlmClient client, Path transcriptDir, Path resultsDir, ProductionCompactionSettings settings) {
+    public ProductionCompactor(LlmClient client, Path transcriptDir, Path resultsDir,
+            ProductionCompactionSettings settings) {
         this(client, new TranscriptStore(transcriptDir), new ToolOutputStore(resultsDir), settings);
     }
 
     /** 使用用户分区中的归档与工具输出，工作目录由正式执行器单独管理。 */
-    ProductionCompactor(LlmClient client, com.jadecode.config.WorkspacePaths paths,
+    public ProductionCompactor(LlmClient client, com.jadecode.config.WorkspacePaths paths,
             ProductionCompactionSettings settings) {
         this(client, new TranscriptStore(paths), new ToolOutputStore(paths), settings);
     }
@@ -57,7 +58,7 @@ final class ProductionCompactor {
      * 正式调用前处理真实投影；未知窗口时不猜 30 万字符阈值，显式/手动摘要仍单独检查输入预算。
      * 未到触发线只返回转存后的列表，等值不触发；有损处理失败时不改变原消息。
      */
-    List<Message> prepare(CompleteRequest request, String goal, ContextTokenTracker tracker, String state)
+    public List<Message> prepare(CompleteRequest request, String goal, ContextTokenTracker tracker, String state)
             throws LlmException {
         var messages = largeResults.persistLargeResults(request.messages());
         var projected = withMessages(request, messages);
@@ -76,11 +77,30 @@ final class ProductionCompactor {
         return compact(withMessages(request, largeResults.persistLargeResults(request.messages())), goal, state, false);
     }
 
+    /** 主动请求只采用生产摘要策略；工具调用列表不改变生产保留近期原文的规则。 */
+    @Override
+    public List<Message> compactAfterBatch(List<ToolUseBlock> calls, CompleteRequest request, String goal, String state)
+            throws LlmException {
+        return force(request, goal, state);
+    }
+
+    /** 生产在请求前按真实窗口整理，不对服务端错误做第二套有损补救。 */
+    @Override
+    public boolean reactiveEnabled() {
+        return false;
+    }
+
+    /** 未启用的路径明确失败，避免把未执行的补救当作成功。 */
+    @Override
+    public List<Message> reactiveCompact(List<Message> messages, String goal) {
+        throw new IllegalStateException("Reactive compaction is only available in the explicit course strategy");
+    }
+
     /**
      * 预留是固定策略，单次实际输出再受剩余空间约束，不拿最大输出把压缩线提前。
      * 自动压缩关闭时也不发送已知超限的输入；没有窗口信息时仅遵守已知输入/输出限制。
      */
-    int outputBudget(CompleteRequest request, ContextTokenTracker tracker) throws LlmException {
+    public int outputBudget(CompleteRequest request, ContextTokenTracker tracker) throws LlmException {
         long input = tracker.estimate(request).tokens();
         var limits = client.metadata().limits();
         if (limits.maxInputTokens() != null && input > limits.maxInputTokens())
@@ -126,7 +146,7 @@ final class ProductionCompactor {
         var shared = new ArrayList<>(prefix);
         shared.add(Message.userText(DIRECTIVE));
         var sharedRequest = new CompleteRequest(request.system(), List.copyOf(shared), output, request.tools(),
-                request.thinking());
+                request.thinking(), "");
         String summary = ContextTokenTracker.projected(sharedRequest) <= budget
                 ? summarize(sharedRequest)
                 : summarizeChunks(prefix, output, budget);
@@ -199,12 +219,12 @@ final class ProductionCompactor {
         ThinkingSettings thinking = client.thinkingChoices().contains(ThinkingSettings.OFF) ? ThinkingSettings.OFF
                 : ThinkingSettings.DEFAULT;
         return new CompleteRequest(INDEPENDENT_SYSTEM, List.of(Message.userText(data.toString())), output, List.of(),
-                thinking);
+                thinking, "");
     }
 
     /** 返回完整且非空的摘要；截断/拒绝/工具调用不是可采用的摘要，不做隐藏重试。 */
     private String summarize(CompleteRequest request) throws LlmException {
-        ModelResponse response = client.complete(request);
+        ModelResponse response = client.complete(request, com.jadecode.llm.ResponseStream.NONE);
         if (response.message().role() != Role.ASSISTANT || response.stopReason().equals("max_tokens")
                 || response.stopReason().equals("refusal") || !response.message().hasOnlyTextAndThinking())
             throw new LlmException(
@@ -218,6 +238,6 @@ final class ProductionCompactor {
     /** 仅替换消息引用；请求中的固定资料和思考设置保持一致，输入列表不被修改。 */
     private static CompleteRequest withMessages(CompleteRequest request, List<Message> messages) {
         return new CompleteRequest(request.system(), messages, request.maxTokens(), request.tools(),
-                request.thinking());
+                request.thinking(), "");
     }
 }

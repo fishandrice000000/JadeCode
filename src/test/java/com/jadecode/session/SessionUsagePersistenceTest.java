@@ -4,7 +4,6 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
-import com.jadecode.config.WorkspacePaths;
 import com.jadecode.llm.ModelResponse;
 import com.jadecode.llm.UsageRecord;
 import com.jadecode.messages.Message;
@@ -26,10 +25,10 @@ class SessionUsagePersistenceTest {
         });
         ledger.limitAdditionalTokens(5);
         ledger.record(new UsageRecord("first", "fixture", "leader", UsageRecord.Purpose.FORMAL,
-                new ModelResponse.Usage(3, 3)));
+                new ModelResponse.Usage(3, 3, 0, 0)));
         assertThrows(IllegalStateException.class, ledger::ensureRequestAllowed);
         ledger.record(new UsageRecord("late", "fixture", "teammate", UsageRecord.Purpose.MEMORY,
-                new ModelResponse.Usage(2, 2)));
+                new ModelResponse.Usage(2, 2, 0, 0)));
         assertEquals(5, ledger.snapshot().total().inputTokens());
         assertEquals(5, ledger.snapshot().total().outputTokens());
         ledger.limitAdditionalTokens(5);
@@ -45,7 +44,7 @@ class SessionUsagePersistenceTest {
         var store = new SessionStore(com.jadecode.support.TestPaths.workspace(workspace), ignored -> {
         });
         String id;
-        try (var opened = store.create("offline")) {
+        try (var opened = store.create("offline", "")) {
             id = opened.journal().metadata().id();
             var ledger = new SessionUsage(ignored -> {
             });
@@ -73,7 +72,7 @@ class SessionUsagePersistenceTest {
             opened.journal().append(JournalEntry.Kind.APPEND, List.of(Message.userText("continue")),
                     Json.mapper().createArrayNode(), "request");
             ledger.record(new UsageRecord("next-call", "offline", "leader", UsageRecord.Purpose.FORMAL,
-                    new ModelResponse.Usage(2, 3)));
+                    new ModelResponse.Usage(2, 3, 0, 0)));
         }
         try (var restored = store.open(id)) {
             assertEquals("continue", restored.restored().history().getFirst().extractText());
@@ -87,7 +86,7 @@ class SessionUsagePersistenceTest {
     void unavailableJournalStillStopsNewRequests() throws Exception {
         var store = new SessionStore(com.jadecode.support.TestPaths.workspace(workspace), ignored -> {
         });
-        try (var opened = store.create("offline")) {
+        try (var opened = store.create("offline", "")) {
             var ledger = new SessionUsage(ignored -> {
             });
             ledger.restore(opened.journal(), opened.restored().entries());

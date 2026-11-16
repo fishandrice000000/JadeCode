@@ -62,8 +62,8 @@ public final class TeamTools {
         }
 
         /** JSON 参数统一 snake_case；摘要与正文由模型分别生成，不额外调用摘要模型。 */
-        @Override
-        public Map<String, String> properties() {
+
+        private Map<String, String> properties() {
             return switch (name) {
                 case "spawn_teammate" -> Map.of("role", "string");
                 case "list_teammates" -> Map.of();
@@ -85,8 +85,8 @@ public final class TeamTools {
         }
 
         /** 必填字段和执行时校验一致，可选参数不能用 null 冒充缺省。 */
-        @Override
-        public List<String> required() {
+
+        private List<String> required() {
             return switch (name) {
                 case "spawn_teammate" -> List.of("role");
                 case "list_teammates" -> List.of();
@@ -104,7 +104,7 @@ public final class TeamTools {
         /** 不接受未知字段，模型不能通过额外 source/owner 绕过真实调用方身份。 */
         @Override
         public ObjectNode inputSchema() {
-            ObjectNode schema = Tool.super.inputSchema();
+            ObjectNode schema = com.jadecode.tools.ToolSchema.objectSchema(properties(), required());
             schema.put("additionalProperties", false);
             if (name.equals("assign_task")) {
                 // 嵌套范围需要完整 schema；不能只声明 object 却不给模型说明列表元素。
@@ -149,25 +149,14 @@ public final class TeamTools {
             return result;
         }
 
-        /** Team 派工需要可信 context；旧的无 context 调用明确失败，不伪造用户授权。 */
-        @Override
-        public String execute(ObjectNode input) {
-            return "Error: Team tools require execution context";
-        }
-
-        /** 本适配器的成功值全部经过 JSON 编码；只有自己生成的固定错误前缀才设置失败标志。 */
-        @Override
-        public ToolOutcome executeOutcome(ObjectNode input, ExecutionContext context) {
-            String result = execute(input, context);
-            return new ToolOutcome(result, result.startsWith("Error: "));
-        }
-
         /**
          * 先检查完整参数，再调用唯一动作。普通参数/IO 错误作为工具结果返回，留给模型决策。
          * 不自动重试业务；部分失败的报告或消息 ID 保留在错误说明与文件中。
-         */
+         * @param context Harness 提供的任务上下文；不从模型参数读取，离线只读调用可按工具契约传 null
+        * @param input 模型参数对象，只读取；具体字段由工具自行校验
+        */
         @Override
-        public String execute(ObjectNode input, ExecutionContext context) {
+        public com.jadecode.tools.ToolOutcome executeOutcome(ObjectNode input, ExecutionContext context) {
             try {
                 if (context == null || context.isCancelled())
                     throw new IllegalStateException("Caller exited or has no task source");
@@ -235,12 +224,13 @@ public final class TeamTools {
                                 input.path("reply_to").asText(null)));
                     }
                 };
-                return Json.mapper().writeValueAsString(result);
+                return new com.jadecode.tools.ToolOutcome(Json.mapper().writeValueAsString(result), false);
             } catch (IOException | IllegalArgumentException | IllegalStateException failure) {
-                return "Error: " + failure.getMessage()
+                return new com.jadecode.tools.ToolOutcome("Error: " + failure.getMessage()
                         + (failure.getSuppressed().length == 0 ? ""
                                 : "; recovery/recording also failed, count=" + failure.getSuppressed().length)
-                        + ". Some state or files may already be saved; check get_task and mail records first, and do not redo the business work.";
+                        + ". Some state or files may already be saved; check get_task and mail records first, and do not redo the business work.",
+                        true);
             }
         }
     }

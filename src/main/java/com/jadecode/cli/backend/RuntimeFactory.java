@@ -116,17 +116,25 @@ public final class RuntimeFactory {
      * @param streams  Leader 每个正式请求的流式出口
      * @param observer 只读运行观察（工具/计时/后台）
      */
-    public SessionRuntime create(Consumer<String> output, Consumer<String> errors,
+    public SessionRuntime create(Consumer<com.jadecode.execution.RuntimeMessage> messages,
             Supplier<ResponseStream> streams, ExecutionObserver observer) {
         created = true;
-        SessionRuntime runtime;
-        if (injectedClient != null)
-            runtime = JadeCodeFactory.create(modelConfig, workspace, injectedClient,
-                    output, errors, (hooks, cwd, ignored) -> {
-                    }, streams, observer, settings, permissions, paths, writeScopes, managed);
-        else
-            runtime = JadeCodeFactory.create((hooks, cwd, ignored) -> {
-            }, output, errors, streams, observer, settings, permissions, modelConfig, workspace, writeScopes, managed);
+        // 真实启动只在这里发现模型参数；注入客户端的离线调用不联网、不读取认证。
+        var client = injectedClient;
+        if (client == null) {
+            var metadata = new com.jadecode.llm.ModelMetadataResolver(
+                    com.jadecode.llm.ModelMetadataResolver.defaultCacheDirectory())
+                    .resolve(modelConfig, settings.modelMetadata());
+            observer.publish(
+                    com.jadecode.execution.ExecutionNotice.event(com.jadecode.execution.ExecutionNotice.Kind.MODEL,
+                            "", modelConfig.model(), metadata.describe(), "READY").actor("leader"));
+            client = new com.jadecode.llm.AnthropicSdkLlmClient(modelConfig, metadata);
+        }
+        var runtime = JadeCodeFactory.create(new JadeCodeFactory.Dependencies(modelConfig, workspace, client,
+                settings, permissions, paths, writeScopes, managed, messages, streams, observer,
+                com.jadecode.hooks.Hooks::new,
+                (summary, workspacePaths) -> new com.jadecode.context.ProductionCompactor(summary, workspacePaths,
+                        settings.contextCompaction())));
         if (tokenBudget > 0)
             runtime.executionTokenBudget(tokenBudget);
         return runtime;

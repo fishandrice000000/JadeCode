@@ -181,8 +181,7 @@ final class MemoryMaintenance implements AutoCloseable {
             byId.put(result.toolUseId(), result);
         for (var call : calls) {
             ToolResultBlock result = byId.get(call.id());
-            if (!call.name().equals("read_file") || result == null || result.isError()
-                    || result.content().startsWith("Error"))
+            if (!call.name().equals("read_file") || result == null || result.isError())
                 continue;
             String raw = call.input().path("path").asText();
             Path path = Path.of(raw);
@@ -295,7 +294,7 @@ final class MemoryMaintenance implements AutoCloseable {
             var response = client.complete(MemoryReply.request(client, resource("extraction.md"),
                     "Workspace: " + store.workspace() + "\nTask outcome: " + job.path("outcome").asText() + "\n"
                             + evidence,
-                    settings.extractionMaxOutputTokens()));
+                    settings.extractionMaxOutputTokens()), com.jadecode.llm.ResponseStream.NONE);
             if (closed)
                 return;
             MemoryReply.validateTextResponse(response);
@@ -460,7 +459,8 @@ final class MemoryMaintenance implements AutoCloseable {
                 if (Json.mapper().writeValueAsString(messages).length() > settings.consolidationInputChars())
                     throw new IOException("Consolidation input budget exceeded");
                 ModelResponse response = client.complete(new CompleteRequest(prompt, List.copyOf(messages),
-                        settings.consolidationMaxOutputTokens(), definitions(), ThinkingSettings.DEFAULT));
+                        settings.consolidationMaxOutputTokens(), definitions(), ThinkingSettings.DEFAULT, ""),
+                        com.jadecode.llm.ResponseStream.NONE);
                 if (closed)
                     return false;
                 if (response == null || response.message() == null || response.message().role() != Role.ASSISTANT

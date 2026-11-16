@@ -245,7 +245,7 @@ public final class PermissionGate {
         if (Set.of("import_resource", "publish_result", "prepare_environment", "workspace_status").contains(tool))
             return new WorkspacePermissionCheck(resolver).analyze(tool, input);
         return new Analysis(tool, resolver.workspaceReal(), List.of(), List.of(), ADMIN_WRITES.contains(tool), true,
-                !INTERNAL.contains(tool), "");
+                !INTERNAL.contains(tool), "", "");
     }
 
     /** 显式拒绝/询问优先；默认硬保护不能被普通 allow 推翻。 */

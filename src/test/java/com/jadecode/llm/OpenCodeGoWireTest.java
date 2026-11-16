@@ -170,7 +170,7 @@ class OpenCodeGoWireTest {
                 new ToolResultBlock("call-2", "missing", true))));
         assertEquals("done",
                 client.complete(new CompleteRequest("fixed system", history, 500, List.of(tool), ThinkingSettings.MAX,
-                        firstRequest.sessionId())).message().extractText());
+                        firstRequest.sessionId()), ResponseStream.NONE).message().extractText());
         for (Captured sent : requests) {
             assertEquals("/inference/go/anthropic/v1/messages", sent.path());
             assertEquals("Bearer fixture-go-key", sent.header("Authorization"));
@@ -198,7 +198,7 @@ class OpenCodeGoWireTest {
         json(message("[{\"type\":\"thinking\",\"thinking\":\"check\"},{\"type\":\"text\",\"text\":\"done\"}]",
                 "end_turn"));
         var client = client();
-        var response = client.complete(request().withThinking(ThinkingSettings.DEFAULT));
+        var response = client.complete(request().withThinking(ThinkingSettings.DEFAULT), ResponseStream.NONE);
         assertNull(response.message().blocksOfType(ThinkingBlock.class).getFirst().signature());
         assertFalse(requests.getFirst().body().has("thinking"));
         assertFalse(requests.getFirst().body().has("output_config"));
@@ -207,8 +207,9 @@ class OpenCodeGoWireTest {
                 List.of(ThinkingSettings.DEFAULT, ThinkingSettings.LOW, ThinkingSettings.HIGH, ThinkingSettings.MAX),
                 client.thinkingChoices());
         assertThrows(IllegalArgumentException.class,
-                () -> client.complete(request().withThinking(ThinkingSettings.OFF)));
-        assertThrows(IllegalArgumentException.class, () -> client.complete(request().withSessionId("")));
+                () -> client.complete(request().withThinking(ThinkingSettings.OFF), ResponseStream.NONE));
+        assertThrows(IllegalArgumentException.class,
+                () -> client.complete(request().withSessionId(""), ResponseStream.NONE));
         assertEquals(1, requests.size(), "非法设置必须在发请求前拒绝");
     }
 
@@ -236,25 +237,36 @@ class OpenCodeGoWireTest {
                 return "fixture";
             }
 
-            public Map<String, String> properties() {
+            private Map<String, String> properties() {
                 return Map.of();
             }
 
-            public List<String> required() {
+            private List<String> required() {
                 return List.of();
             }
 
-            public String execute(com.fasterxml.jackson.databind.node.ObjectNode input) {
+            public com.jadecode.tools.ToolOutcome executeOutcome(com.fasterxml.jackson.databind.node.ObjectNode input,
+                    com.jadecode.execution.ExecutionContext context) {
                 executed.incrementAndGet();
-                return "bad";
+                return new com.jadecode.tools.ToolOutcome("bad", false);
+            }
+
+            /** 提供完整参数结构；标量构造器只负责组装 Schema，不授予执行权限。 */
+            @Override
+            public com.fasterxml.jackson.databind.node.ObjectNode inputSchema() {
+                return com.jadecode.tools.ToolSchema.objectSchema(properties(), required());
             }
         };
-        var engine = new AgentExecutor(new SessionLlmClient(client()), Map.of("inspect", tool), "fixture", 100,
-                new Hooks());
-        try (var runtime = new SessionRuntime(engine, ignored -> {
-        }, ignored -> {
-        })) {
-            assertThrows(LlmException.class, () -> runtime.run(new ArrayList<>(List.of(Message.userText("inspect")))));
+        var engine = new com.jadecode.agent.AgentExecutor(new SessionLlmClient(client()),
+                com.jadecode.tools.ToolCatalog.fixed(Map.of("inspect", tool)), "fixture", 100, new Hooks(), null,
+                () -> com.jadecode.llm.ResponseStream.NONE, com.jadecode.execution.ExecutionObserver.NONE,
+                () -> com.jadecode.llm.ThinkingSettings.DEFAULT, () -> "");
+        try (var runtime = new com.jadecode.session.SessionRuntime(engine, null, null,
+                com.jadecode.support.TestMessages.toText(ignored -> {
+                }, ignored -> {
+                }))) {
+            assertThrows(LlmException.class, () -> com.jadecode.support.SessionRuns.run(runtime,
+                    new ArrayList<>(List.of(Message.userText("inspect")))));
         }
         assertEquals(0, executed.get());
         assertEquals(1, requests.size());
@@ -267,7 +279,7 @@ class OpenCodeGoWireTest {
             replies.add(new Reply(status,
                     "{\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"DO_NOT_ECHO_fixture-go-key\"}}",
                     Map.of("Content-Type", "application/json", "x-should-retry", "false")));
-            var failure = assertThrows(LlmException.class, () -> client().complete(request()));
+            var failure = assertThrows(LlmException.class, () -> client().complete(request(), ResponseStream.NONE));
             assertEquals(status, failure.statusCode());
             assertFalse(failure.getMessage().contains("fixture-go-key"));
             assertNull(failure.getCause());
@@ -282,7 +294,7 @@ class OpenCodeGoWireTest {
                 new Reply(429, "{\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"limited\"}}",
                         Map.of("Content-Type", "application/json", "retry-after-ms", "1")));
         json(message("[{\"type\":\"text\",\"text\":\"done\"}]", "end_turn"));
-        assertEquals("done", client().complete(request()).message().extractText());
+        assertEquals("done", client().complete(request(), ResponseStream.NONE).message().extractText());
         assertEquals(2, requests.size());
         assertTrue(requests.stream().allMatch(sent -> sent.header("x-opencode-session").equals("stable-conversation")));
     }
@@ -291,10 +303,17 @@ class OpenCodeGoWireTest {
     @Test
     void originalAnthropicCompatibleRequestsKeepTheirAuthentication() throws Exception {
         json(message("[{\"type\":\"text\",\"text\":\"done\"}]", "end_turn"));
-        new AnthropicSdkLlmClient(new AppConfig("fixture-direct-key", baseUrl(), "fixture", 100))
-                .complete(request().withThinking(ThinkingSettings.DEFAULT));
+        new AnthropicSdkLlmClient(new AppConfig("fixture-direct-key", baseUrl(), "fixture", 100,
+                com.jadecode.config.ModelProvider.ANTHROPIC_COMPATIBLE))
+                .complete(request().withThinking(ThinkingSettings.DEFAULT), ResponseStream.NONE);
         assertEquals("fixture-direct-key", requests.getFirst().header("x-api-key"));
         assertEquals("", requests.getFirst().header("Authorization"));
         assertEquals("", requests.getFirst().header("x-opencode-session"));
+    }
+
+    /** 回收本用例通过正式队列入口创建的临时会话和日志。 */
+    @org.junit.jupiter.api.AfterEach
+    void closeMigratedSessions() throws Exception {
+        com.jadecode.support.SessionRuns.closeAll();
     }
 }

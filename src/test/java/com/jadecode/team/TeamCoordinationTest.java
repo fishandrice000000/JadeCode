@@ -44,10 +44,10 @@ class TeamCoordinationTest {
         var paths = TestPaths.workspace(dir);
         var team = new TeamManager(paths, new TaskStore(paths), fail -> fail(fail));
         var created = new AtomicInteger();
-        try (var leader = session(request -> text("done"), Map.of())) {
+        try (var leader = session((request, ignoredStream) -> text("done"), Map.of())) {
             team.bind(leader, (id, role) -> {
                 created.incrementAndGet();
-                return session(request -> text("done"), Map.of());
+                return session((request, ignoredStream) -> text("done"), Map.of());
             });
             for (String invalid : List.of("Explorer", "Explorer\n ", "\u001b[31mExplorer\nWork", "探索员\nWork"))
                 assertThrows(IllegalArgumentException.class, () -> team.spawn(invalid));
@@ -77,25 +77,27 @@ class TeamCoordinationTest {
         var assignment = new AtomicReference<String>();
         Tool capture = new TestTool("capture") {
             @Override
-            public String execute(com.fasterxml.jackson.databind.node.ObjectNode input, ExecutionContext context) {
+            public com.jadecode.tools.ToolOutcome executeOutcome(com.fasterxml.jackson.databind.node.ObjectNode input,
+                    ExecutionContext context) {
                 receivedScope.set(context);
-                return "captured";
+                return new com.jadecode.tools.ToolOutcome("captured", false);
             }
         };
         Tool dispatch = new TestTool("dispatch") {
             @Override
-            public String execute(com.fasterxml.jackson.databind.node.ObjectNode input, ExecutionContext context) {
+            public com.jadecode.tools.ToolOutcome executeOutcome(com.fasterxml.jackson.databind.node.ObjectNode input,
+                    ExecutionContext context) {
                 try {
                     String member = team.spawn("Explorer\nInspect the assigned source.");
                     assignment.set(team.assign(member, task.id(), "Trace flow", "Read source", context,
                             new AssignmentScope(List.of("src"), List.of("src/Flow.java"))));
-                    return assignment.get();
+                    return new com.jadecode.tools.ToolOutcome(assignment.get(), false);
                 } catch (Exception failure) {
                     throw new IllegalStateException(failure);
                 }
             }
         };
-        LlmClient parent = request -> switch (leaderCalls.getAndIncrement()) {
+        LlmClient parent = (request, ignoredStream) -> switch (leaderCalls.getAndIncrement()) {
             case 0 -> call("dispatch", "{}");
             case 1 -> {
                 await(memberEntered);
@@ -117,7 +119,7 @@ class TeamCoordinationTest {
                 var tools = new java.util.LinkedHashMap<String, Tool>();
                 TeamTools.forActor(team, id).forEach(tool -> tools.put(tool.name(), tool));
                 tools.put("capture", capture);
-                return session(request -> switch (memberCalls.getAndIncrement()) {
+                return session((request, ignoredStream) -> switch (memberCalls.getAndIncrement()) {
                     case 0 -> {
                         firstMember.set(List.copyOf(request.messages()));
                         memberEntered.countDown();
@@ -163,7 +165,8 @@ class TeamCoordinationTest {
         var memberCalls = new AtomicInteger();
         Tool dispatch = new TestTool("dispatch") {
             @Override
-            public String execute(com.fasterxml.jackson.databind.node.ObjectNode input, ExecutionContext context) {
+            public com.jadecode.tools.ToolOutcome executeOutcome(com.fasterxml.jackson.databind.node.ObjectNode input,
+                    ExecutionContext context) {
                 try {
                     if (member.get() == null)
                         member.set(team.spawn("Explorer\nInspect work and report."));
@@ -171,7 +174,7 @@ class TeamCoordinationTest {
                     String id = team.assign(member.get(), task, "Assigned work", "Read the assigned source", context);
                     if (input.path("second").asBoolean())
                         secondAssigned.set(true);
-                    return id;
+                    return new com.jadecode.tools.ToolOutcome(id, false);
                 } catch (Exception e) {
                     throw new IllegalStateException(e);
                 }
@@ -179,7 +182,8 @@ class TeamCoordinationTest {
         };
         Tool reply = new TestTool("reply") {
             @Override
-            public String execute(com.fasterxml.jackson.databind.node.ObjectNode input, ExecutionContext context) {
+            public com.jadecode.tools.ToolOutcome executeOutcome(com.fasterxml.jackson.databind.node.ObjectNode input,
+                    ExecutionContext context) {
                 try {
                     team.send("leader", member.get(), null, null, "message", "ANSWER_CHOICE", "Use option X",
                             question.get());
@@ -187,10 +191,10 @@ class TeamCoordinationTest {
                     throw new IllegalStateException(e);
                 }
                 answered.countDown();
-                return "Replied";
+                return new com.jadecode.tools.ToolOutcome("Replied", false);
             }
         };
-        LlmClient parent = request -> {
+        LlmClient parent = (request, ignoredStream) -> {
             int call = parentCalls.getAndIncrement();
             if (call == 0)
                 return call("dispatch", "{}");
@@ -221,12 +225,13 @@ class TeamCoordinationTest {
             team.bind(leader, (id, role) -> {
                 Tool ask = new TestTool("ask") {
                     @Override
-                    public String execute(com.fasterxml.jackson.databind.node.ObjectNode input,
+                    public com.jadecode.tools.ToolOutcome executeOutcome(
+                            com.fasterxml.jackson.databind.node.ObjectNode input,
                             ExecutionContext context) {
                         try {
                             question.set(
                                     team.send(id, "leader", null, null, "question", "NEED_CHOICE", "Which option?"));
-                            return question.get();
+                            return new com.jadecode.tools.ToolOutcome(question.get(), false);
                         } catch (Exception e) {
                             throw new IllegalStateException(e);
                         }
@@ -234,19 +239,20 @@ class TeamCoordinationTest {
                 };
                 Tool report = new TestTool("report") {
                     @Override
-                    public String execute(com.fasterxml.jackson.databind.node.ObjectNode input,
+                    public com.jadecode.tools.ToolOutcome executeOutcome(
+                            com.fasterxml.jackson.databind.node.ObjectNode input,
                             ExecutionContext context) {
                         boolean followUp = context.assignment().taskId().equals(second.id());
                         try {
-                            return team.submitResult(id, context.assignment().id(),
+                            return new com.jadecode.tools.ToolOutcome(team.submitResult(id, context.assignment().id(),
                                     followUp ? Task.Status.COMPLETED : Task.Status.BLOCKED,
-                                    followUp ? "SECOND_REPORT" : "BLOCKED_REPORT", "Checked the assigned task");
+                                    followUp ? "SECOND_REPORT" : "BLOCKED_REPORT", "Checked the assigned task"), false);
                         } catch (Exception e) {
                             throw new IllegalStateException(e);
                         }
                     }
                 };
-                return session(request -> switch (memberCalls.getAndIncrement()) {
+                return session((request, ignoredStream) -> switch (memberCalls.getAndIncrement()) {
                     case 0 -> {
                         await(waiting);
                         yield call("ask", "{}");
@@ -289,19 +295,21 @@ class TeamCoordinationTest {
             var calls = new AtomicInteger();
             Tool dispatch = new TestTool("dispatch") {
                 @Override
-                public String execute(com.fasterxml.jackson.databind.node.ObjectNode input, ExecutionContext context) {
+                public com.jadecode.tools.ToolOutcome executeOutcome(
+                        com.fasterxml.jackson.databind.node.ObjectNode input, ExecutionContext context) {
                     try {
                         String id = team.spawn("Explorer\nInspect code.");
-                        return team.assign(id, task.id(), "Inspect", "Inspect code", context);
+                        return new com.jadecode.tools.ToolOutcome(
+                                team.assign(id, task.id(), "Inspect", "Inspect code", context), false);
                     } catch (Exception failure) {
                         throw new IllegalStateException(failure);
                     }
                 }
             };
             try (var leader = session(
-                    request -> calls.getAndIncrement() == 0 ? call("dispatch", "{}") : text("Handled"),
+                    (request, ignoredStream) -> calls.getAndIncrement() == 0 ? call("dispatch", "{}") : text("Handled"),
                     Map.of("dispatch", dispatch))) {
-                team.bind(leader, (id, role) -> session(request -> {
+                team.bind(leader, (id, role) -> session((request, ignoredStream) -> {
                     if (crash)
                         throw new IllegalStateException("synthetic failure");
                     return text("Forgot the report");
@@ -326,8 +334,8 @@ class TeamCoordinationTest {
         });
         var started = new CountDownLatch(1);
         var release = new CountDownLatch(1);
-        try (var leader = session(request -> text("done"), Map.of())) {
-            team.bind(leader, (id, role) -> session(request -> {
+        try (var leader = session((request, ignoredStream) -> text("done"), Map.of())) {
+            team.bind(leader, (id, role) -> session((request, ignoredStream) -> {
                 started.countDown();
                 await(release);
                 return text("done");
@@ -341,7 +349,7 @@ class TeamCoordinationTest {
             assertEquals(report,
                     team.submitResult(member, first, Task.Status.BLOCKED, "Need input", "Question evidence"));
             assertEquals("Question evidence", team.reportText(first));
-            team.review(first, report, "Checked the evidence.");
+            team.review(first, report, "note", "Checked the evidence.");
             team.reopen(task.id());
             String second = team.assign(member, task.id(), "Inspect B", "B", origin,
                     new AssignmentScope(List.of("b"), List.of("b/B.java")));
@@ -370,11 +378,11 @@ class TeamCoordinationTest {
         var team = new TeamManager(paths, new TaskStore(paths), ignored -> {
         });
         var hold = new CountDownLatch(1);
-        try (var leader = session(request -> {
+        try (var leader = session((request, ignoredStream) -> {
             await(hold);
             return text("done");
         }, Map.of())) {
-            team.bind(leader, (id, role) -> session(request -> {
+            team.bind(leader, (id, role) -> session((request, ignoredStream) -> {
                 await(hold);
                 return text("done");
             }, Map.of()));
@@ -409,20 +417,22 @@ class TeamCoordinationTest {
             var calls = new AtomicInteger();
             Tool dispatch = new TestTool("dispatch") {
                 @Override
-                public String execute(com.fasterxml.jackson.databind.node.ObjectNode input, ExecutionContext context) {
+                public com.jadecode.tools.ToolOutcome executeOutcome(
+                        com.fasterxml.jackson.databind.node.ObjectNode input, ExecutionContext context) {
                     try {
                         member.set(team.spawn("Explorer\nInspect code."));
-                        return team.assign(member.get(), task.id(), "Inspect", "Inspect code", context);
+                        return new com.jadecode.tools.ToolOutcome(
+                                team.assign(member.get(), task.id(), "Inspect", "Inspect code", context), false);
                     } catch (Exception failure) {
                         throw new IllegalStateException(failure);
                     }
                 }
             };
             try (var leader = session(
-                    request -> calls.getAndIncrement() == 0 ? call("dispatch", "{}") : text("Handled"),
+                    (request, ignoredStream) -> calls.getAndIncrement() == 0 ? call("dispatch", "{}") : text("Handled"),
                     Map.of("dispatch", dispatch))) {
                 leaderObserver(leader, waiting);
-                team.bind(leader, (id, role) -> session(request -> {
+                team.bind(leader, (id, role) -> session((request, ignoredStream) -> {
                     await(release);
                     return text("Returned without report");
                 }, Map.of()));
@@ -463,7 +473,7 @@ class TeamCoordinationTest {
         var assignment = new AtomicReference<String>();
         var nestedContext = new AtomicReference<ExecutionContext>();
         var accepted = new java.util.concurrent.atomic.AtomicBoolean();
-        LlmClient model = request -> {
+        LlmClient model = (request, ignoredStream) -> {
             if (request.system().contains("Complete the given task")) {
                 return child.getAndIncrement() == 0 ? call("read_file", "{\"path\":\"proof.txt\"}")
                         : text("Verified evidence");
@@ -517,19 +527,27 @@ class TeamCoordinationTest {
                 new com.jadecode.config.JadeSettings.Memory(false, 8000, 16384, 128000), defaults.modelMetadata(),
                 defaults.thinking(), defaults.permissions(), defaults.mcp(), defaults.contextCompaction(),
                 com.jadecode.sandbox.SandboxSettings.defaults());
-        try (var runtime = com.jadecode.bootstrap.JadeCodeFactory.create(
-                new com.jadecode.config.AppConfig("fixture", "http://localhost:1", "fixture", 4000), dir, model,
-                ignored -> {
-                }, ignored -> {
-                }, (hooks, cwd, output) -> hooks.register(Hooks.PRE_TOOL_USE, params -> {
-                    var call = (ToolUseBlock) params.get(Hooks.PARAM_BLOCK);
-                    if (call.name().equals("read_file")) {
-                        nestedContext.set((ExecutionContext) params.get(Hooks.PARAM_CONTEXT));
-                        return "Fixture intercepted before Docker execution";
-                    }
-                    return null;
-                }), () -> com.jadecode.llm.ResponseStream.NONE, com.jadecode.execution.ExecutionObserver.NONE,
-                settings, settings.permissions().state(null), TestPaths.jade(dir))) {
+        try (var runtime = com.jadecode.bootstrap.JadeCodeFactory
+                .create(new com.jadecode.bootstrap.JadeCodeFactory.Dependencies(
+                        new com.jadecode.config.AppConfig("fixture", "http://localhost:1", "fixture", 4000,
+                                com.jadecode.config.ModelProvider.ANTHROPIC_COMPATIBLE),
+                        dir, model, settings, settings.permissions().state(null), TestPaths.jade(dir), null, null,
+                        com.jadecode.support.TestMessages.toText(ignored -> {
+                        }, ignored -> {
+                        }), () -> com.jadecode.llm.ResponseStream.NONE, com.jadecode.execution.ExecutionObserver.NONE,
+                        () -> {
+                            var hooks = new com.jadecode.hooks.Hooks();
+                            hooks.register(Hooks.PRE_TOOL_USE, params -> {
+                                var call = (ToolUseBlock) params.get(Hooks.PARAM_BLOCK);
+                                if (call.name().equals("read_file")) {
+                                    nestedContext.set((ExecutionContext) params.get(Hooks.PARAM_CONTEXT));
+                                    return "Fixture intercepted before Docker execution";
+                                }
+                                return null;
+                            });
+                            return hooks;
+                        }, (summary, paths) -> new com.jadecode.context.ProductionCompactor(summary, paths,
+                                (settings).contextCompaction())))) {
             runtime.start();
             assertEquals("Final answer", runtime.submit("Verify evidence using Team", null).get(5, TimeUnit.SECONDS));
             assertNotNull(nestedContext.get());
@@ -552,7 +570,7 @@ class TeamCoordinationTest {
         var member = new AtomicInteger();
         var approved = new java.util.concurrent.atomic.AtomicBoolean();
         var accepted = new java.util.concurrent.atomic.AtomicBoolean();
-        LlmClient model = request -> {
+        LlmClient model = (request, ignoredStream) -> {
             String history = request.messages().stream().map(Message::extractText)
                     .collect(java.util.stream.Collectors.joining("\n"));
             if (request.system().startsWith("You are JadeCode teammate.")) {
@@ -622,14 +640,18 @@ class TeamCoordinationTest {
                 d.thinking(),
                 d.permissions(), new com.jadecode.config.JadeSettings.Mcp(Map.of()), d.contextCompaction(),
                 com.jadecode.sandbox.SandboxSettings.defaults());
-        try (var runtime = com.jadecode.bootstrap.JadeCodeFactory.create(
-                new com.jadecode.config.AppConfig("fixture", "http://localhost:1", "fixture", 4000), workspace, model,
-                ignored -> {
-                }, ignored -> {
-                }, (hooks, cwd, output) -> {
-                }, () -> com.jadecode.llm.ResponseStream.NONE,
-                ExecutionObserver.NONE, settings, settings.permissions().state(null),
-                new com.jadecode.config.JadePaths(dir.resolve("private")))) {
+        try (var runtime = com.jadecode.bootstrap.JadeCodeFactory
+                .create(new com.jadecode.bootstrap.JadeCodeFactory.Dependencies(
+                        new com.jadecode.config.AppConfig("fixture", "http://localhost:1", "fixture", 4000,
+                                com.jadecode.config.ModelProvider.ANTHROPIC_COMPATIBLE),
+                        workspace, model, settings, settings.permissions().state(null),
+                        new com.jadecode.config.JadePaths(dir.resolve("private")), null, null,
+                        com.jadecode.support.TestMessages.toText(ignored -> {
+                        }, ignored -> {
+                        }), () -> com.jadecode.llm.ResponseStream.NONE, ExecutionObserver.NONE,
+                        com.jadecode.hooks.Hooks::new,
+                        (summary, paths) -> new com.jadecode.context.ProductionCompactor(summary, paths,
+                                (settings).contextCompaction())))) {
             runtime.start();
             assertEquals("Final answer", runtime.submit("Delegate evidence reading", null).get(30, TimeUnit.SECONDS));
             assertTrue(approved.get());
@@ -697,9 +719,13 @@ class TeamCoordinationTest {
     }
 
     private static SessionRuntime session(LlmClient client, Map<String, Tool> tools) {
-        return new SessionRuntime(new AgentExecutor(client, tools, "test", 1000, new Hooks()), ignored -> {
-        }, ignored -> {
-        });
+        return new com.jadecode.session.SessionRuntime(new com.jadecode.agent.AgentExecutor(client,
+                com.jadecode.tools.ToolCatalog.fixed(tools), "test", 1000, new Hooks(), null,
+                () -> com.jadecode.llm.ResponseStream.NONE, com.jadecode.execution.ExecutionObserver.NONE,
+                () -> com.jadecode.llm.ThinkingSettings.DEFAULT, () -> ""), null, null,
+                com.jadecode.support.TestMessages.toText(ignored -> {
+                }, ignored -> {
+                }));
     }
 
     /** 观察器只记录等待状态，借此确定性释放队友的结果。 */
@@ -713,7 +739,7 @@ class TeamCoordinationTest {
     }
 
     private static ModelResponse text(String text) {
-        return new ModelResponse(Message.assistant(List.of(new TextBlock(text))), new ModelResponse.Usage(0, 0),
+        return new ModelResponse(Message.assistant(List.of(new TextBlock(text))), new ModelResponse.Usage(0, 0, 0, 0),
                 "end_turn");
     }
 
@@ -722,7 +748,7 @@ class TeamCoordinationTest {
             return new ModelResponse(
                     Message.assistant(List.of(new ToolUseBlock("call_" + java.util.UUID.randomUUID(), name,
                             (com.fasterxml.jackson.databind.node.ObjectNode) Json.mapper().readTree(input)))),
-                    new ModelResponse.Usage(0, 0), "tool_use");
+                    new ModelResponse.Usage(0, 0, 0, 0), "tool_use");
         } catch (Exception failure) {
             throw new IllegalArgumentException(failure);
         }
@@ -746,19 +772,24 @@ class TeamCoordinationTest {
             return "Offline integration tool";
         }
 
-        @Override
-        public Map<String, String> properties() {
+        private Map<String, String> properties() {
             return Map.of();
         }
 
-        @Override
-        public List<String> required() {
+        private List<String> required() {
             return List.of();
         }
 
         @Override
-        public String execute(com.fasterxml.jackson.databind.node.ObjectNode input) {
+        public com.jadecode.tools.ToolOutcome executeOutcome(com.fasterxml.jackson.databind.node.ObjectNode input,
+                com.jadecode.execution.ExecutionContext context) {
             throw new IllegalStateException("Context required");
+        }
+
+        /** 提供完整参数结构；标量构造器只负责组装 Schema，不授予执行权限。 */
+        @Override
+        public com.fasterxml.jackson.databind.node.ObjectNode inputSchema() {
+            return com.jadecode.tools.ToolSchema.objectSchema(properties(), required());
         }
     }
 }

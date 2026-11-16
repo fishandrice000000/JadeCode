@@ -10,7 +10,6 @@ import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import com.jadecode.agent.AgentExecutor;
-import com.jadecode.config.WorkspacePaths;
 import com.jadecode.cron.CronScheduler;
 import com.jadecode.hooks.Hooks;
 import com.jadecode.llm.ModelResponse;
@@ -29,17 +28,19 @@ class SessionHostStartupTest {
         var cronSeen = new CountDownLatch(1);
         var errors = new CopyOnWriteArrayList<String>();
         try (var host = new SessionHost(com.jadecode.support.TestPaths.workspace(workspace), generation -> {
-            var engine = new AgentExecutor(request -> {
-                // 保存每次模型实际看见的历史；保存的 cron 不应在新会话自动执行。
+            var engine = new com.jadecode.agent.AgentExecutor((request, ignoredStream) -> {
                 String history = request.messages().toString();
                 requests.add(history);
                 if (history.contains("DUE_CRON"))
                     cronSeen.countDown();
                 return new ModelResponse(Message.assistant(List.of(new TextBlock("done"))),
-                        new ModelResponse.Usage(1, 1), "end_turn");
-            }, Map.of(), "test", 1000, new Hooks());
-            return new SessionRuntime(engine, ignored -> {
-            }, errors::add);
+                        new ModelResponse.Usage(1, 1, 0, 0), "end_turn");
+            }, com.jadecode.tools.ToolCatalog.fixed(Map.of()), "test", 1000, new Hooks(), null,
+                    () -> com.jadecode.llm.ResponseStream.NONE, com.jadecode.execution.ExecutionObserver.NONE,
+                    () -> com.jadecode.llm.ThinkingSettings.DEFAULT, () -> "");
+            return new com.jadecode.session.SessionRuntime(engine, null, null,
+                    com.jadecode.support.TestMessages.toText(ignored -> {
+                    }, errors::add));
         }, errors::add)) {
             var opened = host.open(null);
             var result = host.startWithInitial(opened.generation(), "INITIAL_USER", null);

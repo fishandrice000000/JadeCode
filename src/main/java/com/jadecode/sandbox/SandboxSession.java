@@ -3,7 +3,6 @@ package com.jadecode.sandbox;
 import java.io.IOException;
 import java.nio.file.*;
 import java.util.*;
-import java.util.function.Predicate;
 import java.util.regex.Pattern;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -79,14 +78,6 @@ public final class SandboxSession {
                 return delegate.description();
             }
 
-            public Map<String, String> properties() {
-                return delegate.properties();
-            }
-
-            public List<String> required() {
-                return delegate.required();
-            }
-
             public ObjectNode inputSchema() {
                 ObjectNode schema = delegate.inputSchema().deepCopy();
                 if (name().equals("bash")) {
@@ -100,14 +91,6 @@ public final class SandboxSession {
                     properties.set("access_paths", access);
                 }
                 return schema;
-            }
-
-            public String execute(ObjectNode input) {
-                return "Error: Sandbox tools require a Harness execution context";
-            }
-
-            public String execute(ObjectNode input, ExecutionContext context) {
-                return executeOutcome(input, context).content();
             }
 
             public ToolOutcome executeOutcome(ObjectNode input, ExecutionContext context) {
@@ -348,10 +331,9 @@ public final class SandboxSession {
                 throw new IOException("Harness state cannot be exposed to teammates");
             Path source = mountSource(target, write);
             if (!internal) {
-                var action = new com.jadecode.safety.checks.ToolPermissionCheck.Analysis(tool, workspace,
-                        List.of(new com.jadecode.safety.checks.ToolPermissionCheck.Resource(source,
-                                write ? "WRITE" : "READ")),
-                        List.of(), write, !write, false, "");
+                var action = new com.jadecode.safety.checks.ToolPermissionCheck.Analysis(tool, workspace, List.of(
+                        new com.jadecode.safety.checks.ToolPermissionCheck.Resource(source, write ? "WRITE" : "READ")),
+                        List.of(), write, !write, false, "", "");
                 var userDecision = gate.evaluate(action, state.snapshot());
                 if (userDecision.kind() == PermissionDecision.Kind.DENY)
                     throw new IOException(userDecision.reason());

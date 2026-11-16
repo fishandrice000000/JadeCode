@@ -1,7 +1,6 @@
 package com.jadecode.service;
 
 import java.util.*;
-import java.util.function.Function;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jadecode.cli.backend.BackendHistoryProjector.Entry;
 import com.jadecode.cli.backend.BackendHistoryProjector.ToolInfo;
@@ -31,11 +30,11 @@ final class LiveDisplay {
     }
 
     /** 单个事件更新对应卡片；调用者已持有 SessionChannel 锁，不执行文件或网络 IO。 */
-    void accept(String type, ObjectNode p, Function<String, String> blob) {
+    void accept(String type, ObjectNode p) {
         String request = p.path("requestId").asText(), actor = p.path("actor").asText("leader");
         switch (type) {
             case "task.submitted" -> add("task-" + p.path("submissionId").asText(), "USER", "You", "Request",
-                    text(p, "text", "textBlobRef", blob), "", "SUBMITTING", null, null, null, null);
+                    p.path("text").asText(), "", "SUBMITTING", null, null, null, null);
             case "task.result", "task.failed" -> {
                 String id = "task-" + p.path("submissionId").asText();
                 Entry old = rows.get(id);
@@ -83,7 +82,7 @@ final class LiveDisplay {
                 if (old != null)
                     replace(old, old.body(), old.arguments() + p.path("fragment").asText(), old.status(), null, null);
             }
-            case "execution.notice" -> notice(p, blob);
+            case "execution.notice" -> notice(p);
             case "message" -> {
                 String body = p.path("text").asText(), label = p.path("label").asText("Notice");
                 // 整条 Reply 常用于确认同一份流式回复，避免重连后显示两份相同正文。
@@ -102,10 +101,10 @@ final class LiveDisplay {
     }
 
     /** 执行卡按真实调用 ID 关联；Team/工作流等显示为独立通知，不赋予任何权限。 */
-    private void notice(ObjectNode p, Function<String, String> blob) {
+    private void notice(ObjectNode p) {
         String kind = p.path("kind").asText(), state = p.path("state").asText(),
                 actor = p.path("actor").asText("leader");
-        String detail = text(p, "detail", "detailBlobRef", blob), execution = p.path("id").asText();
+        String detail = p.path("detail").asText(), execution = p.path("id").asText();
         if (kind.equals("TOOL_START") || kind.equals("TOOL_END")) {
             Entry old = rows.values().stream().filter(e -> e.kind().equals("TOOL") && e.actor().equals(actor)
                     && (e.entryId().equals("live-execution-" + execution)
@@ -130,10 +129,6 @@ final class LiveDisplay {
             add("live-notice-" + (++ids), "NOTICE", actor, p.path("name").asText(kind), detail, "",
                     state.equals("ERROR") ? "ERROR" : "HISTORICAL", null, null, null, null);
         }
-    }
-
-    private String text(ObjectNode p, String inline, String ref, Function<String, String> blob) {
-        return p.hasNonNull(ref) ? blob.apply(p.path(ref).asText()) : p.path(inline).asText();
     }
 
     private void add(String id, String kind, String actor, String title, String body, String args, String status,

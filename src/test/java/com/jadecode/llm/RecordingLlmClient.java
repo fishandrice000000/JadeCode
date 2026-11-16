@@ -23,10 +23,11 @@ public class RecordingLlmClient implements LlmClient {
     }
 
     @Override
-    public ModelResponse complete(CompleteRequest request) throws LlmException {
+    public ModelResponse complete(CompleteRequest request, com.jadecode.llm.ResponseStream ignoredStream)
+            throws LlmException {
         requests.add(new CompleteRequest(request.system(), List.copyOf(request.messages()),
-                request.maxTokens(), request.tools()));
-        return delegate.complete(request);
+                request.maxTokens(), request.tools(), com.jadecode.llm.ThinkingSettings.DEFAULT, ""));
+        return delegate.complete(request, com.jadecode.llm.ResponseStream.NONE);
     }
 
     /** 测试断言用:收到的全部请求 */

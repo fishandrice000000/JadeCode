@@ -33,7 +33,7 @@ class ActiveRequestExtractionTest {
     }
 
     private static ToolResultBlock result(String id, String content) {
-        return new ToolResultBlock(id, content);
+        return new ToolResultBlock(id, content, false);
     }
 
     /* ---------------- 成功路径 ---------------- */
@@ -55,14 +55,14 @@ class ActiveRequestExtractionTest {
         // 四段文本:一段正常、两段空/纯空白、一段正常;至少一个非空白 → 收下,并原样连接全部四段。
         List<ContentBlock> content = List.of(
                 new TextBlock("第一行"), new TextBlock(""), new TextBlock("   "), new TextBlock("第二行"));
-        List<Message> messages = List.of(new Message(Role.USER, List.copyOf(content)));
+        List<Message> messages = List.of(new Message(Role.USER, List.copyOf(content), null));
 
         assertEquals("第一行\n\n   \n第二行", ContextCompactor.extractActiveRequest(messages));
 
         // 可变的 content 列表同样只读处理,不要求它不可变。
         List<ContentBlock> mutableContent = new ArrayList<>(content);
         assertEquals("第一行\n\n   \n第二行",
-                ContextCompactor.extractActiveRequest(List.of(new Message(Role.USER, mutableContent))));
+                ContextCompactor.extractActiveRequest(List.of(new Message(Role.USER, mutableContent, null))));
     }
 
     @Test
@@ -98,30 +98,30 @@ class ActiveRequestExtractionTest {
     void rejectsLastUserMessageWithoutAnyNonBlankText() {
         // 空 content、只含非文本块、只有空串 / 纯空白:都不是人类请求。
         assertThrows(IllegalArgumentException.class, () -> ContextCompactor.extractActiveRequest(
-                List.of(new Message(Role.USER, List.of()))));
+                List.of(new Message(Role.USER, List.of(), null))));
         assertThrows(IllegalArgumentException.class, () -> ContextCompactor.extractActiveRequest(
-                List.of(new Message(Role.USER, List.of(use("t1"))))));
+                List.of(new Message(Role.USER, List.of(use("t1")), null))));
         assertThrows(IllegalArgumentException.class, () -> ContextCompactor.extractActiveRequest(
                 List.of(Message.userText(""))));
         assertThrows(IllegalArgumentException.class, () -> ContextCompactor.extractActiveRequest(
-                List.of(new Message(Role.USER, List.of(new TextBlock(" \t\n "))))));
+                List.of(new Message(Role.USER, List.of(new TextBlock(" \t\n ")), null))));
         assertThrows(IllegalArgumentException.class, () -> ContextCompactor.extractActiveRequest(
-                List.of(new Message(Role.USER, List.of(new TextBlock(""), new TextBlock("   "))))));
+                List.of(new Message(Role.USER, List.of(new TextBlock(""), new TextBlock("   ")), null))));
     }
 
     @Test
     void rejectsToolResultsEvenWhenTheMessageAlsoCarriesText() {
         // 纯工具结果。
         assertThrows(IllegalArgumentException.class, () -> ContextCompactor.extractActiveRequest(
-                List.of(new Message(Role.USER, List.of(result("t1", "结果"))))));
+                List.of(new Message(Role.USER, List.of(result("t1", "结果")), null))));
 
         // 文本在前 / 工具结果在后。
         assertThrows(IllegalArgumentException.class, () -> ContextCompactor.extractActiveRequest(
-                List.of(new Message(Role.USER, List.of(new TextBlock("看起来像请求"), result("t1", "结果"))))));
+                List.of(new Message(Role.USER, List.of(new TextBlock("看起来像请求"), result("t1", "结果")), null))));
 
         // 工具结果在前 / 文本在后。
         assertThrows(IllegalArgumentException.class, () -> ContextCompactor.extractActiveRequest(
-                List.of(new Message(Role.USER, List.of(result("t1", "结果"), new TextBlock("看起来像请求"))))));
+                List.of(new Message(Role.USER, List.of(result("t1", "结果"), new TextBlock("看起来像请求")), null))));
     }
 
     @Test
@@ -130,14 +130,14 @@ class ActiveRequestExtractionTest {
         List<Message> endsWithToolResult = List.of(
                 Message.userText("更早的请求"),
                 Message.assistant(List.of(use("t1"))),
-                new Message(Role.USER, List.of(result("t1", "工具结果"))));
+                new Message(Role.USER, List.of(result("t1", "工具结果")), null));
         assertThrows(IllegalArgumentException.class,
                 () -> ContextCompactor.extractActiveRequest(endsWithToolResult));
 
         // 末条只有空白文本,更早的合法请求同样不能被拿来顶替。
         List<Message> endsWithBlank = List.of(
                 Message.userText("更早的请求"),
-                new Message(Role.USER, List.of(new TextBlock("   "))));
+                new Message(Role.USER, List.of(new TextBlock("   ")), null));
         assertThrows(IllegalArgumentException.class, () -> ContextCompactor.extractActiveRequest(endsWithBlank));
     }
 
@@ -151,17 +151,17 @@ class ActiveRequestExtractionTest {
 
         // content 为 null。
         assertThrows(IllegalArgumentException.class, () -> ContextCompactor.extractActiveRequest(
-                List.of(new Message(Role.USER, null))));
+                List.of(new Message(Role.USER, null, null))));
 
         // content 里有 null 块(位置在首 / 在尾都要覆盖)。
         assertThrows(IllegalArgumentException.class, () -> ContextCompactor.extractActiveRequest(
-                List.of(new Message(Role.USER, Arrays.asList(null, new TextBlock("hi"))))));
+                List.of(new Message(Role.USER, Arrays.asList(null, new TextBlock("hi")), null))));
         assertThrows(IllegalArgumentException.class, () -> ContextCompactor.extractActiveRequest(
-                List.of(new Message(Role.USER, Arrays.asList(new TextBlock("hi"), null)))));
+                List.of(new Message(Role.USER, Arrays.asList(new TextBlock("hi"), null), null))));
 
         // 文本块的 text 为 null。
         assertThrows(IllegalArgumentException.class, () -> ContextCompactor.extractActiveRequest(
-                List.of(new Message(Role.USER, List.of(new TextBlock(null))))));
+                List.of(new Message(Role.USER, List.of(new TextBlock(null)), null))));
     }
 
     @Test
@@ -173,9 +173,9 @@ class ActiveRequestExtractionTest {
                 messageOf(() -> ContextCompactor.extractActiveRequest(
                         List.of(Message.assistant(List.of(new TextBlock("答")))))),
                 messageOf(() -> ContextCompactor.extractActiveRequest(
-                        List.of(new Message(Role.USER, List.of(result("t1", "结果")))))),
+                        List.of(new Message(Role.USER, List.of(result("t1", "结果")), null)))),
                 messageOf(() -> ContextCompactor.extractActiveRequest(
-                        List.of(new Message(Role.USER, List.of(new TextBlock("   ")))))));
+                        List.of(new Message(Role.USER, List.of(new TextBlock("   ")), null)))));
 
         assertEquals(5, messages.size(), "失败原因必须能区分:" + messages);
         assertTrue(messages.stream().allMatch(m -> m != null && !m.isBlank()));
@@ -187,7 +187,7 @@ class ActiveRequestExtractionTest {
     void doesNotModifyTheObjectGraphOnSuccessOrFailure() {
         // 成功:可变外层列表 + 可变 content,调用前后逐块逐条一致。
         List<ContentBlock> content = new ArrayList<>(List.of(new TextBlock("第一段"), new TextBlock("第二段")));
-        List<Message> messages = new ArrayList<>(List.of(new Message(Role.USER, content)));
+        List<Message> messages = new ArrayList<>(List.of(new Message(Role.USER, content, null)));
         String before = ContextSerialization.toJson(messages);
 
         assertEquals("第一段\n第二段", ContextCompactor.extractActiveRequest(messages));
@@ -200,7 +200,7 @@ class ActiveRequestExtractionTest {
 
         // 失败:同样不得改动对象图。
         List<Message> failing = new ArrayList<>(List.of(
-                new Message(Role.USER, new ArrayList<>(List.of(new TextBlock("  "), result("t1", "结果"))))));
+                new Message(Role.USER, new ArrayList<>(List.of(new TextBlock("  "), result("t1", "结果"))), null)));
         String failingBefore = ContextSerialization.toJson(failing);
 
         assertThrows(IllegalArgumentException.class, () -> ContextCompactor.extractActiveRequest(failing));

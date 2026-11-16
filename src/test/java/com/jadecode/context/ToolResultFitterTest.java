@@ -88,7 +88,7 @@ class ToolResultFitterTest {
         List<ContentBlock> results = new ArrayList<>();
         for (int i = 0; i < outputs.length; i++) {
             calls.add(use("call-" + i));
-            results.add(new ToolResultBlock("call-" + i, outputs[i]));
+            results.add(new ToolResultBlock("call-" + i, outputs[i], false));
         }
         return List.of(Message.assistant(List.copyOf(calls)), Message.userBlocks(List.copyOf(results)));
     }
@@ -175,10 +175,10 @@ class ToolResultFitterTest {
         List<Message> messages = new ArrayList<>();
         messages.add(Message.userText("开始"));
         messages.add(Message.assistant(List.of(use("big"))));
-        messages.add(Message.userBlocks(List.of(new ToolResultBlock("big", longest))));
+        messages.add(Message.userBlocks(List.of(new ToolResultBlock("big", longest, false))));
         messages.add(Message.assistant(List.of(use("small"))));
         // 结果消息里混排的 reminder 文本必须原样留在原位,不能被替换或重排。
-        messages.add(Message.userBlocks(List.of(new ToolResultBlock("small", shorter), reminder)));
+        messages.add(Message.userBlocks(List.of(new ToolResultBlock("small", shorter, false), reminder)));
         // archive marker 形状的普通 user 文本也不参与任何处理。
         messages.add(Message.userText("[7 messages archived at /tmp/history.jsonl]"));
         List<Message> input = List.copyOf(messages);
@@ -233,7 +233,8 @@ class ToolResultFitterTest {
         messages.add(Message.userText("开始"));
         messages.add(Message.assistant(List.of(use("a"), use("b"), use("c"))));
         messages.add(Message.userBlocks(List.of(
-                new ToolResultBlock("a", a), new ToolResultBlock("b", b), new ToolResultBlock("c", c))));
+                new ToolResultBlock("a", a, false), new ToolResultBlock("b", b, false),
+                new ToolResultBlock("c", c, false))));
         List<Message> input = List.copyOf(messages);
         String before = ContextSerialization.toJson(input);
 
@@ -456,7 +457,7 @@ class ToolResultFitterTest {
         assertNotNull(realA);
         String narrowedA = shell(Path.of(realA), escaped.substring(0, 7));
         List<Message> expected = new ArrayList<>(input);
-        expected.set(2, Message.userBlocks(List.of(new ToolResultBlock("call-0", narrowedA),
+        expected.set(2, Message.userBlocks(List.of(new ToolResultBlock("call-0", narrowedA, false),
                 resultAt(input, 2, 1))));
         int target = ContextSerialization.estimateChars(expected);
 

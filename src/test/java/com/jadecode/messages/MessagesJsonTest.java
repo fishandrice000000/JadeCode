@@ -32,7 +32,7 @@ class MessagesJsonTest {
         Message msg = Message.assistant(List.of(
                 new TextBlock("好的"),
                 new ToolUseBlock("toolu_01", "bash", M.readTree("{\"command\":\"ls\"}")),
-                new ToolResultBlock("toolu_01", "pom.xml\nREADME.md")));
+                new ToolResultBlock("toolu_01", "pom.xml\nREADME.md", false)));
 
         String json = M.writeValueAsString(msg);
         JsonNode tree = M.readTree(json);
@@ -119,8 +119,8 @@ class MessagesJsonTest {
 
         assertThrows(IllegalArgumentException.class, () -> new ToolUseBlock(null, "bash", input));
         assertThrows(IllegalArgumentException.class, () -> new ToolUseBlock("   ", "bash", input));
-        assertThrows(IllegalArgumentException.class, () -> new ToolResultBlock(null, "out"));
-        assertThrows(IllegalArgumentException.class, () -> new ToolResultBlock("\t", "out"));
+        assertThrows(IllegalArgumentException.class, () -> new ToolResultBlock(null, "out", false));
+        assertThrows(IllegalArgumentException.class, () -> new ToolResultBlock("\t", "out", false));
     }
 
     /** ⑥ 非法工具 ID 的线上 JSON 同样被拒绝反序列化;合法输入行为不变 */
@@ -138,7 +138,7 @@ class MessagesJsonTest {
         Message legal = Message.assistant(List.of(
                 new TextBlock("调用"),
                 new ToolUseBlock("toolu_01", "bash", M.readTree("{\"command\":\"ls\"}")),
-                new ToolResultBlock("toolu_01", "pom.xml")));
+                new ToolResultBlock("toolu_01", "pom.xml", false)));
         assertEquals(legal, M.readValue(M.writeValueAsString(legal), Message.class));
     }
 }

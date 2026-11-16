@@ -28,13 +28,14 @@ class SessionDisplayTimingTest {
         var release = new CountDownLatch(1);
         var extracted = new CountDownLatch(1);
         var calls = new AtomicInteger();
-        var memory = new MemoryManager(request -> {
+        var memory = new MemoryManager((request, ignoredStream) -> {
             calls.incrementAndGet();
             extracted.countDown();
             return response("{\"rollout_summary\":\"\",\"rollout_slug\":\"\"}");
-        }, com.jadecode.support.TestPaths.workspace(dir), new JadeSettings.Memory(1000), ignored -> {
-        }, ignored -> {
-        });
+        }, com.jadecode.support.TestPaths.workspace(dir), new JadeSettings.Memory(true, 1000, 16384, 128000),
+                ignored -> {
+                }, ignored -> {
+                });
         var hooks = new Hooks();
         var stops = new AtomicInteger();
         hooks.register(Hooks.STOP, ignored -> {
@@ -51,12 +52,15 @@ class SessionDisplayTimingTest {
             return null;
         });
         var notices = new CopyOnWriteArrayList<ExecutionNotice>();
-        var engine = new AgentExecutor(new ScriptedLlmClient(response("first"), response("last")), Map.of(), "test",
-                1000, hooks);
+        var engine = new com.jadecode.agent.AgentExecutor(new ScriptedLlmClient(response("first"), response("last")),
+                com.jadecode.tools.ToolCatalog.fixed(Map.of()), "test", 1000, hooks, null,
+                () -> com.jadecode.llm.ResponseStream.NONE, com.jadecode.execution.ExecutionObserver.NONE,
+                () -> com.jadecode.llm.ThinkingSettings.DEFAULT, () -> "");
         engine.observe(notices::add);
-        try (var runtime = new SessionRuntime(engine, memory, null, ignored -> {
-        }, ignored -> {
-        })) {
+        try (var runtime = new com.jadecode.session.SessionRuntime(engine, memory, null,
+                com.jadecode.support.TestMessages.toText(ignored -> {
+                }, ignored -> {
+                }))) {
             runtime.start();
             var first = runtime.submit("question", null);
             assertTrue(entered.await(5, TimeUnit.SECONDS));
@@ -77,7 +81,7 @@ class SessionDisplayTimingTest {
 
     private static ModelResponse response(String text) {
         return new ModelResponse(Message.assistant(List.of(new com.jadecode.messages.TextBlock(text))),
-                new ModelResponse.Usage(0, 0), "end_turn");
+                new ModelResponse.Usage(0, 0, 0, 0), "end_turn");
     }
 
     @Test
@@ -87,7 +91,7 @@ class SessionDisplayTimingTest {
         var notices = new CopyOnWriteArrayList<ExecutionNotice>();
         var output = new CopyOnWriteArrayList<String>();
         var errors = new CopyOnWriteArrayList<String>();
-        var memory = new MemoryManager(request -> {
+        var memory = new MemoryManager((request, ignoredStream) -> {
             entered.countDown();
             try {
                 if (!release.await(5, TimeUnit.SECONDS))
@@ -97,11 +101,15 @@ class SessionDisplayTimingTest {
                 throw new IllegalStateException(interrupted);
             }
             return response("{\"rollout_summary\":\"\",\"rollout_slug\":\"\"}");
-        }, com.jadecode.support.TestPaths.workspace(dir), new JadeSettings.Memory(1000), output::add, errors::add);
-        var engine = new AgentExecutor(new ScriptedLlmClient(response("final answer")), Map.of(), "test", 1000,
-                new Hooks());
+        }, com.jadecode.support.TestPaths.workspace(dir), new JadeSettings.Memory(true, 1000, 16384, 128000),
+                output::add, errors::add);
+        var engine = new com.jadecode.agent.AgentExecutor(new ScriptedLlmClient(response("final answer")),
+                com.jadecode.tools.ToolCatalog.fixed(Map.of()), "test", 1000, new Hooks(), null,
+                () -> com.jadecode.llm.ResponseStream.NONE, com.jadecode.execution.ExecutionObserver.NONE,
+                () -> com.jadecode.llm.ThinkingSettings.DEFAULT, () -> "");
         engine.observe(notices::add);
-        try (var runtime = new SessionRuntime(engine, memory, null, output::add, errors::add)) {
+        try (var runtime = new com.jadecode.session.SessionRuntime(engine, memory, null,
+                com.jadecode.support.TestMessages.toText(output::add, errors::add))) {
             runtime.start();
             var future = runtime.submit("question", null);
             try {
@@ -132,12 +140,16 @@ class SessionDisplayTimingTest {
         hooks.register(Hooks.STOP, ignored -> checks.getAndIncrement() == 0 ? "continue" : null);
         var notices = new java.util.ArrayList<ExecutionNotice>();
         var output = new java.util.ArrayList<String>();
-        var engine = new AgentExecutor(new ScriptedLlmClient(response("first"), response("last")), Map.of(), "test",
-                1000, hooks);
+        var engine = new com.jadecode.agent.AgentExecutor(new ScriptedLlmClient(response("first"), response("last")),
+                com.jadecode.tools.ToolCatalog.fixed(Map.of()), "test", 1000, hooks, null,
+                () -> com.jadecode.llm.ResponseStream.NONE, com.jadecode.execution.ExecutionObserver.NONE,
+                () -> com.jadecode.llm.ThinkingSettings.DEFAULT, () -> "");
         engine.observe(notices::add);
-        try (var runtime = new SessionRuntime(engine, output::add, ignored -> {
-        })) {
-            runtime.run(new java.util.ArrayList<>(List.of(Message.userText("question"))));
+        try (var runtime = new com.jadecode.session.SessionRuntime(engine, null, null,
+                com.jadecode.support.TestMessages.toText(output::add, ignored -> {
+                }))) {
+            com.jadecode.support.SessionRuns.run(runtime,
+                    new java.util.ArrayList<>(List.of(Message.userText("question"))));
             assertEquals(List.of("[Reply] first", "[Reply] last"),
                     output.stream().filter(s -> s.startsWith("[Reply]")).toList());
             assertEquals(1, notices.stream().filter(n -> n.kind() == ExecutionNotice.Kind.TURN_START).count());
@@ -145,5 +157,11 @@ class SessionDisplayTimingTest {
             assertEquals(1, notices.stream().filter(n -> n.kind() == ExecutionNotice.Kind.TURN_DISPLAY_RESUME).count());
             assertEquals(1, notices.stream().filter(n -> n.kind() == ExecutionNotice.Kind.TURN_END).count());
         }
+    }
+
+    /** 回收本用例通过正式队列入口创建的临时会话和日志。 */
+    @org.junit.jupiter.api.AfterEach
+    void closeMigratedSessions() throws Exception {
+        com.jadecode.support.SessionRuns.closeAll();
     }
 }

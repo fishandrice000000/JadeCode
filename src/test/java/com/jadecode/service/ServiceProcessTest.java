@@ -22,9 +22,10 @@ class ServiceProcessTest {
     @Test
     void headlessUsesDaemonAndRealSdkThenReleasesWorkspaceAndStopsCleanly() throws Exception {
         Path config = Files.createDirectories(root.resolve(".jadecode/config"));
-        Files.writeString(config.resolve("config.json"), """
-                {"memory":{"enabled":false},"sandbox":{"enabled":false},"modelMetadata":{"autoDiscover":false}}
-                """);
+        Files.writeString(config.resolve("config.json"),
+                """
+                        {"version":1,"memory":{"enabled":false},"sandbox":{"enabled":false},"modelMetadata":{"autoDiscover":false}}
+                        """);
         Path workspace = Files.createDirectory(root.resolve("workspace"));
         var calls = new AtomicInteger();
         HttpServer server = HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
@@ -115,7 +116,7 @@ class ServiceProcessTest {
     void sshConnectorUsesFixedRelayCommandAndRemoteRelayReachesTheSamePrivateService() throws Exception {
         Path config = Files.createDirectories(root.resolve(".jadecode/config"));
         Files.writeString(config.resolve("config.json"),
-                "{\"memory\":{\"enabled\":false},\"sandbox\":{\"enabled\":false}}");
+                "{\"version\":1,\"memory\":{\"enabled\":false},\"sandbox\":{\"enabled\":false}}");
         Path bin = Files.createDirectory(root.resolve("bin")), record = root.resolve("ssh-arguments.txt");
         String javaExecutable = Path.of(System.getProperty("java.home"), "bin/java").toString();
         String cp = System.getProperty("java.class.path");
@@ -146,7 +147,7 @@ class ServiceProcessTest {
     void sshRelayStdinEofDetachesEvenBeforeFrontendHandshake() throws Exception {
         Path config = Files.createDirectories(root.resolve(".jadecode/config"));
         Files.writeString(config.resolve("config.json"),
-                "{\"memory\":{\"enabled\":false},\"sandbox\":{\"enabled\":false},\"modelMetadata\":{\"autoDiscover\":false}}");
+                "{\"version\":1,\"memory\":{\"enabled\":false},\"sandbox\":{\"enabled\":false},\"modelMetadata\":{\"autoDiscover\":false}}");
         Path model = config.resolve("fixture.json");
         Files.writeString(model,
                 "{\"apiKey\":\"fixture-not-a-secret\",\"baseUrl\":\"http://127.0.0.1:9\",\"model\":\"fixture\",\"maxTokens\":128}");

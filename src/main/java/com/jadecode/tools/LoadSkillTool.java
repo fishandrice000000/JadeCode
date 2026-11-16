@@ -42,16 +42,16 @@ public final class LoadSkillTool implements Tool {
     /**
      * @return 单参数 name(string)
      */
-    @Override
-    public Map<String, String> properties() {
+
+    private Map<String, String> properties() {
         return Map.of("name", "string");
     }
 
     /**
      * @return 必填 [name]
      */
-    @Override
-    public List<String> required() {
+
+    private List<String> required() {
         return List.of("name");
     }
 
@@ -59,17 +59,27 @@ public final class LoadSkillTool implements Tool {
      * 检查完参数后直接交给 {@link SkillLoader#load(String)}。
      *
      * @param input 模型参数,须含 name
-     * @return 完整 SKILL.md 原文;缺参回 "Error: Missing required parameter: name";
+     * @return 执行结果（content 保留原输出，isError 由本方法失败分支给定）：完整 SKILL.md 原文;缺参回 "Error: Missing required parameter: name";
      *         未命中回 loader 的未知技能文案
+     * @param context Harness 提供的任务上下文；不从模型参数读取，离线只读调用可按工具契约传 null
      */
     @Override
-    public String execute(ObjectNode input) {
+    public com.jadecode.tools.ToolOutcome executeOutcome(ObjectNode input,
+            com.jadecode.execution.ExecutionContext context) {
         for (String key : required()) {
             if (input.get(key) == null) {
-                return "Error: Missing required parameter: " + key;
+                return new com.jadecode.tools.ToolOutcome("Error: Missing required parameter: " + key, true);
             }
         }
 
-        return loader.load(input.get("name").asText());
+        String name = input.get("name").asText();
+        // 技能正文可能以 Error 开头；只按注册表是否命中来报告失败。
+        return new ToolOutcome(loader.load(name), !loader.names().contains(name));
+    }
+
+    /** 提供完整参数结构；标量构造器只负责组装 Schema，不授予执行权限。 */
+    @Override
+    public com.fasterxml.jackson.databind.node.ObjectNode inputSchema() {
+        return com.jadecode.tools.ToolSchema.objectSchema(properties(), required());
     }
 }

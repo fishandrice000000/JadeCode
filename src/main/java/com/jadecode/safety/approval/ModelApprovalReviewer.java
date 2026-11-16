@@ -38,7 +38,8 @@ public final class ModelApprovalReviewer {
                         + "Allow only if the user's task clearly authorizes this scope. Deny credential theft, exfiltration, "
                         + "permission bypass or unrelated destructive actions. Escalate if uncertain. Never execute tools. "
                         + "Return exactly {\"decision\":\"allow|deny|escalate\",\"reason\":\"short explanation\"} without fences.",
-                List.of(Message.userText(data)), 1024, List.of())));
+                List.of(Message.userText(data)), 1024, List.of(), com.jadecode.llm.ThinkingSettings.DEFAULT, ""),
+                com.jadecode.llm.ResponseStream.NONE));
         Thread.ofVirtual().name("jade-approval-review").start(future);
         try {
             var response = future.get(20, TimeUnit.SECONDS);

@@ -44,7 +44,9 @@ public final class PromptGoalEvaluator implements GoalEvaluator {
         var payload = Json.mapper().createObjectNode().put("completion_condition", GoalState.validCondition(condition))
                 .put("conversation", transcript(messages, 24000));
         var response = client.complete(
-                new CompleteRequest(SYSTEM, List.of(Message.userText(payload.toString())), maxTokens, List.of()));
+                new CompleteRequest(SYSTEM, List.of(Message.userText(payload.toString())), maxTokens, List.of(),
+                        com.jadecode.llm.ThinkingSettings.DEFAULT, ""),
+                com.jadecode.llm.ResponseStream.NONE);
         if (response == null || response.message() == null || response.message().role() != Role.ASSISTANT
                 || !response.message().hasOnlyTextAndThinking()
                 || !List.of("end_turn", "stop_sequence").contains(response.stopReason()))
@@ -92,7 +94,7 @@ public final class PromptGoalEvaluator implements GoalEvaluator {
             Message evidence = new Message(original.role(), original.content().stream()
                     .filter(block -> block instanceof TextBlock || block instanceof ToolUseBlock
                             || block instanceof ToolResultBlock)
-                    .toList());
+                    .toList(), null);
             String item = Json.mapper().writeValueAsString(evidence);
             if (selected.isEmpty() && item.length() > limit) {
                 String marker = "\n...[middle omitted; incomplete evidence]...\n";

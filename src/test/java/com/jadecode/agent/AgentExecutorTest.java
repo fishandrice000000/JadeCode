@@ -55,15 +55,18 @@ class AgentExecutorTest {
     /** 自定义工具表的跑法:reminder 用例需要 bash 与 todo_write 同时在场 */
     private List<Message> runWithTools(String userText, Hooks hooks, Map<String, Tool> tools,
             ModelResponse... script) throws Exception {
-        AgentExecutor loop = new AgentExecutor(new ScriptedLlmClient(script), tools, "test-system", 8000, hooks);
+        AgentExecutor loop = new com.jadecode.agent.AgentExecutor(new ScriptedLlmClient(script),
+                com.jadecode.tools.ToolCatalog.fixed(tools), "test-system", 8000, hooks, null,
+                () -> com.jadecode.llm.ResponseStream.NONE, com.jadecode.execution.ExecutionObserver.NONE,
+                () -> com.jadecode.llm.ThinkingSettings.DEFAULT, () -> "");
         List<Message> messages = new ArrayList<>();
         messages.add(Message.userText(userText));
-        SessionRuntime.runExisting(loop, messages);
+        com.jadecode.support.SessionRuns.run(loop, messages);
         return messages;
     }
 
     private static ModelResponse assistant(ContentBlock... blocks) {
-        return new ModelResponse(Message.assistant(List.of(blocks)), new ModelResponse.Usage(0, 0));
+        return new ModelResponse(Message.assistant(List.of(blocks)), new ModelResponse.Usage(0, 0, 0, 0), "");
     }
 
     private static ToolUseBlock toolUse(String id, String name, String command) {
@@ -132,19 +135,23 @@ class AgentExecutorTest {
             return null;
         });
         ContentBlock block = withTool ? toolUse("cut", "bash", "true") : new TextBlock("尚未输出完的结论");
-        AgentExecutor executor = new AgentExecutor(request -> {
-            // 第二条完整回复仅供旧实现结束：测试应捕获截断本身，不能靠假客户端耗尽触发错误。
+        AgentExecutor executor = new com.jadecode.agent.AgentExecutor((request, ignoredStream) -> {
             return requests.getAndIncrement() == 0
-                    ? new ModelResponse(Message.assistant(List.of(block)), new ModelResponse.Usage(0, 1), "max_tokens")
+                    ? new ModelResponse(Message.assistant(List.of(block)), new ModelResponse.Usage(0, 1, 0, 0),
+                            "max_tokens")
                     : assistant(new TextBlock("不应请求这一轮"));
-        }, Map.of("bash", new BashTool()), "test-system", 8000, hooks, null, () -> preview);
+        }, com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", new BashTool())), "test-system", 8000, hooks, null,
+                () -> preview, com.jadecode.execution.ExecutionObserver.NONE,
+                () -> com.jadecode.llm.ThinkingSettings.DEFAULT, () -> "");
         List<Message> messages = new ArrayList<>(List.of(Message.userText("完成任务")));
 
         // 走真实会话结束路径；异常必须来自截断检查，而不是工具或网络失败。
-        try (SessionRuntime session = new SessionRuntime(executor, ignored -> {
-        }, ignored -> {
-        })) {
-            LlmException failure = assertThrows(LlmException.class, () -> session.run(messages));
+        try (SessionRuntime session = new com.jadecode.session.SessionRuntime(executor, null, null,
+                com.jadecode.support.TestMessages.toText(ignored -> {
+                }, ignored -> {
+                }))) {
+            LlmException failure = assertThrows(LlmException.class,
+                    () -> com.jadecode.support.SessionRuns.run(session, messages));
             assertTrue(failure.getMessage().contains("max_tokens"));
             assertEquals(1, requests.get());
             assertEquals(0, executed.get(), "截断回复不能进入工具执行或权限 hook");
@@ -229,10 +236,12 @@ class AgentExecutorTest {
     void requestCarriesInjectedConfig() throws Exception {
         ScriptedLlmClient scripted = new ScriptedLlmClient(assistant(new TextBlock("done")));
         RecordingLlmClient recording = new RecordingLlmClient(scripted);
-        AgentExecutor loop = new AgentExecutor(recording, Map.of("bash", new BashTool()), "test-system", 8000,
-                new Hooks());
+        AgentExecutor loop = new com.jadecode.agent.AgentExecutor(recording,
+                com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", new BashTool())), "test-system", 8000, new Hooks(),
+                null, () -> com.jadecode.llm.ResponseStream.NONE, com.jadecode.execution.ExecutionObserver.NONE,
+                () -> com.jadecode.llm.ThinkingSettings.DEFAULT, () -> "");
 
-        SessionRuntime.runExisting(loop, new ArrayList<>(List.of(Message.userText("hi"))));
+        com.jadecode.support.SessionRuns.run(loop, new ArrayList<>(List.of(Message.userText("hi"))));
 
         List<CompleteRequest> requests = recording.requests();
         assertEquals(1, requests.size());
@@ -405,14 +414,23 @@ class AgentExecutorTest {
                 assistant(new TextBlock("子代理结论")),
                 assistant(new TextBlock("父最终回答"))));
 
-        SubagentRuntime subagent = new SubagentRuntime(recording,
-                Map.of("bash", new BashTool()), "sub-system", 8000, new Hooks());
-        AgentExecutor loop = new AgentExecutor(recording, Map.of("task", new SubagentTool(subagent)),
-                "test-system", 8000, new Hooks());
+        SubagentRuntime subagent = new com.jadecode.subagent.SubagentRuntime(
+                scope -> new com.jadecode.agent.AgentExecutor(recording,
+                        com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", new BashTool())), "sub-system", 8000,
+                        new Hooks(), null, () -> com.jadecode.llm.ResponseStream.NONE, scope.observer(),
+                        scope::thinking, () -> ""),
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                ignored -> {
+                });
+        AgentExecutor loop = new com.jadecode.agent.AgentExecutor(recording,
+                com.jadecode.tools.ToolCatalog.fixed(Map.of("task", new SubagentTool(subagent))), "test-system", 8000,
+                new Hooks(), null, () -> com.jadecode.llm.ResponseStream.NONE,
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                () -> "");
 
         List<Message> messages = new ArrayList<>();
         messages.add(Message.userText("帮我调研"));
-        SessionRuntime.runExisting(loop, messages);
+        com.jadecode.support.SessionRuns.run(loop, messages);
 
         // 父历史恰 4 条:user → assistant(task) → user(task_result) → assistant(text)
         assertEquals(4, messages.size());
@@ -448,11 +466,14 @@ class AgentExecutorTest {
         RecordingLlmClient recording = new RecordingLlmClient(new ScriptedLlmClient(
                 assistant(skillUse("toolu_1", "pdf")),
                 assistant(new TextBlock("done"))));
-        AgentExecutor loop = new AgentExecutor(recording, Map.of("load_skill", new LoadSkillTool(loader)),
-                system, 8000, new Hooks());
+        AgentExecutor loop = new com.jadecode.agent.AgentExecutor(recording,
+                com.jadecode.tools.ToolCatalog.fixed(Map.of("load_skill", new LoadSkillTool(loader))), system, 8000,
+                new Hooks(), null, () -> com.jadecode.llm.ResponseStream.NONE,
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                () -> "");
 
         List<Message> messages = new ArrayList<>(List.of(Message.userText("按 pdf 技能做")));
-        SessionRuntime.runExisting(loop, messages);
+        com.jadecode.support.SessionRuns.run(loop, messages);
 
         // 完整原文(含 frontmatter)作为 tool_result 回灌进 messages
         ToolResultBlock r = (ToolResultBlock) messages.get(2).content().get(0);
@@ -473,14 +494,16 @@ class AgentExecutorTest {
     void invalidExistingHistoryIsRejectedBeforeFirstLlmCall() {
         RecordingLlmClient recording = new RecordingLlmClient(
                 new ScriptedLlmClient(assistant(new TextBlock("never"))));
-        AgentExecutor loop = new AgentExecutor(recording, Map.of("bash", new BashTool()), "test-system", 8000,
-                new Hooks());
+        AgentExecutor loop = new com.jadecode.agent.AgentExecutor(recording,
+                com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", new BashTool())), "test-system", 8000, new Hooks(),
+                null, () -> com.jadecode.llm.ResponseStream.NONE, com.jadecode.execution.ExecutionObserver.NONE,
+                () -> com.jadecode.llm.ThinkingSettings.DEFAULT, () -> "");
 
         List<Message> messages = new ArrayList<>();
         messages.add(Message.userText("hi"));
-        messages.add(Message.userBlocks(List.of(new ToolResultBlock("toolu_stray", "stray"))));
+        messages.add(Message.userBlocks(List.of(new ToolResultBlock("toolu_stray", "stray", false))));
 
-        assertThrows(IllegalArgumentException.class, () -> SessionRuntime.runExisting(loop, messages));
+        assertThrows(IllegalArgumentException.class, () -> com.jadecode.support.SessionRuns.run(loop, messages));
         assertTrue(recording.requests().isEmpty(), "非法历史必须在第一次 LLM 调用前被拒绝");
         assertEquals(2, messages.size(), "入口拒绝不得改动历史");
     }
@@ -491,16 +514,18 @@ class AgentExecutorTest {
         List<Message> messages = new ArrayList<>();
         messages.add(Message.userText("first"));
         messages.add(Message.assistant(List.of(toolUse("toolu_old", "bash", "true"))));
-        messages.add(Message.userBlocks(List.of(new ToolResultBlock("toolu_old", "(no output)"))));
+        messages.add(Message.userBlocks(List.of(new ToolResultBlock("toolu_old", "(no output)", false))));
         messages.add(Message.userText("[2 messages archived at /tmp/transcript.jsonl]"));
         messages.add(Message.userText("继续"));
 
-        AgentExecutor loop = new AgentExecutor(
+        AgentExecutor loop = new com.jadecode.agent.AgentExecutor(
                 new ScriptedLlmClient(assistant(toolUse("toolu_new", "bash", "echo hi")),
                         assistant(new TextBlock("done"))),
-                Map.of("bash", new BashTool()), "test-system", 8000, new Hooks());
+                com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", new BashTool())), "test-system", 8000, new Hooks(),
+                null, () -> com.jadecode.llm.ResponseStream.NONE, com.jadecode.execution.ExecutionObserver.NONE,
+                () -> com.jadecode.llm.ThinkingSettings.DEFAULT, () -> "");
 
-        SessionRuntime.runExisting(loop, messages);
+        com.jadecode.support.SessionRuns.run(loop, messages);
 
         assertEquals("done", messages.getLast().extractText());
         ToolResultBlock r = (ToolResultBlock) messages.get(messages.size() - 2).content().get(0);
@@ -520,24 +545,33 @@ class AgentExecutorTest {
         AtomicInteger executions = new AtomicInteger();
         Tool countingBash = new BashTool() {
             @Override
-            public String execute(ObjectNode input) {
+            public com.jadecode.tools.ToolOutcome executeOutcome(ObjectNode input,
+                    com.jadecode.execution.ExecutionContext context) {
                 executions.incrementAndGet();
-                return "should not run";
+                return new com.jadecode.tools.ToolOutcome("should not run", false);
             }
         };
-        AgentExecutor loop = new AgentExecutor(
-                new ScriptedLlmClient(assistant(toolUse("dup", "bash", "echo one"),
-                        toolUse("dup", "bash", "echo two"))),
-                Map.of("bash", countingBash), "test-system", 8000, hooks);
+        AgentExecutor loop = new com.jadecode.agent.AgentExecutor(
+                new ScriptedLlmClient(
+                        assistant(toolUse("dup", "bash", "echo one"), toolUse("dup", "bash", "echo two"))),
+                com.jadecode.tools.ToolCatalog.fixed(Map.of("bash", countingBash)), "test-system", 8000, hooks, null,
+                () -> com.jadecode.llm.ResponseStream.NONE, com.jadecode.execution.ExecutionObserver.NONE,
+                () -> com.jadecode.llm.ThinkingSettings.DEFAULT, () -> "");
         List<Message> messages = new ArrayList<>();
         messages.add(Message.userText("hi"));
 
         IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
-                () -> SessionRuntime.runExisting(loop, messages));
+                () -> com.jadecode.support.SessionRuns.run(loop, messages));
 
         assertTrue(thrown.getMessage().contains("dup"));
         assertEquals(1, messages.size(), "不得留下半截 assistant 消息");
         assertEquals(0, executions.get(), "重复 ID 批次不得执行任何工具");
         assertFalse(preFired.get(), "PreToolUse 不得触发");
+    }
+
+    /** 回收本用例通过正式队列入口创建的临时会话和日志。 */
+    @org.junit.jupiter.api.AfterEach
+    void closeMigratedSessions() throws Exception {
+        com.jadecode.support.SessionRuns.closeAll();
     }
 }

@@ -107,7 +107,7 @@ class ProtocolSessionTest {
         session.receive(hello(1, BUILD, CREDENTIAL));
         assertTrue(helloOpenedSession.get(), "the session is opened from onHello");
         assertEquals(ProtocolSession.State.HELLO, session.state());
-        session.expectReady("snap-1", 1L);
+        session.expectReady("snap-1", 1L, 2L);
         assertEquals(ProtocolSession.State.SYNC, session.state());
         session.receive(ready(2, "snap-1", 1L, 2L));
         assertEquals(ProtocolSession.State.READY, session.state());
@@ -150,7 +150,7 @@ class ProtocolSessionTest {
     void framesFromAnotherConnectionAreRejectedAfterHandshake() throws Exception {
         ProtocolSession session = session();
         session.receive(hello(1, BUILD, CREDENTIAL));
-        session.expectReady("snap-1", 1L);
+        session.expectReady("snap-1", 1L, 2L);
         session.receive(ready(2, "snap-1", 1L, 2L));
         ProtocolException failure = assertThrows(ProtocolException.class,
                 () -> session.receive(submit(3, "WRONG-CONNECTION")));
@@ -163,7 +163,7 @@ class ProtocolSessionTest {
     void readyRequiresGenerationAndAnExistingSnapshotSequence() throws Exception {
         ProtocolSession session = session();
         session.receive(hello(1, BUILD, CREDENTIAL));
-        session.expectReady("snap-1", 1L);
+        session.expectReady("snap-1", 1L, 2L);
         ObjectNode payload = Json.mapper().createObjectNode();
         payload.put("snapshotId", "snap-1");
         payload.put("lastSnapshotSeq", "2");
@@ -190,7 +190,7 @@ class ProtocolSessionTest {
     void repeatedCommandIdIsNotExecutedTwice() throws Exception {
         ProtocolSession session = session();
         session.receive(hello(1, BUILD, CREDENTIAL));
-        session.expectReady("snap-1", 1L);
+        session.expectReady("snap-1", 1L, 2L);
         session.receive(ready(2, "snap-1", 1L, 2L));
         session.receive(submit(3, "conn-1"));
         session.receive(submit(3, "conn-1"));

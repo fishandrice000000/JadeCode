@@ -46,31 +46,22 @@ public class EditFileTool implements Tool {
     /**
      * @return 参数表:path / old_text / new_text,均为 string 且必填
      */
-    @Override
-    public Map<String, String> properties() {
+
+    private Map<String, String> properties() {
         return Map.of("path", "string", "old_text", "string", "new_text", "string");
     }
 
     /**
      * @return 必填 [path, old_text, new_text]
      */
-    @Override
-    public List<String> required() {
+
+    private List<String> required() {
         return List.of("path", "old_text", "new_text");
     }
 
-    /**
-     * 按 required() 检查缺失参数,然后透传 {@link #run(String, String, String)}。
-     *
-     * @param input 模型参数,须含 path / old_text / new_text
-     * @return 成功:"Edited {path}";错误 "Error: ..." 文案
+    /** 查找失败和 IO 失败单独标记，已发生的写入不伪称回滚。 * @param context Harness 提供的任务上下文；不从模型参数读取，离线只读调用可按工具契约传 null
+     * @param input 模型参数对象，只读取；具体字段由工具自行校验
      */
-    @Override
-    public String execute(ObjectNode input) {
-        return executeOutcome(input, null).content();
-    }
-
-    /** 查找失败和 IO 失败单独标记，已发生的写入不伪称回滚。 */
     @Override
     public ToolOutcome executeOutcome(ObjectNode input, com.jadecode.execution.ExecutionContext context) {
         for (String key : required()) {
@@ -120,4 +111,9 @@ public class EditFileTool implements Tool {
         }
     }
 
+    /** 提供完整参数结构；标量构造器只负责组装 Schema，不授予执行权限。 */
+    @Override
+    public com.fasterxml.jackson.databind.node.ObjectNode inputSchema() {
+        return com.jadecode.tools.ToolSchema.objectSchema(properties(), required());
+    }
 }

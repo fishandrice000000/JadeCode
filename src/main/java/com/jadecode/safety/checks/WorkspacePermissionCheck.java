@@ -54,7 +54,7 @@ public final class WorkspacePermissionCheck implements ToolPermissionCheck {
                     network ? "managed.network" : "");
         } catch (Exception invalid) {
             return new Analysis(tool, resolver.workspaceReal(), List.of(), List.of(), false, false, false,
-                    "Invalid managed operation: " + invalid.getMessage());
+                    "Invalid managed operation: " + invalid.getMessage(), "");
         }
     }
 }

@@ -51,8 +51,8 @@ class SnipCompactorTest {
         history.set(index, Message.assistant(List.of(new TextBlock("执行一批工具"),
                 new ToolUseBlock(prefix + "-a", "bash", Json.mapper().createObjectNode()),
                 new ToolUseBlock(prefix + "-b", "read_file", Json.mapper().createObjectNode()))));
-        history.set(index + 1, Message.userBlocks(List.of(new ToolResultBlock(prefix + "-a", "结果 A"),
-                new TextBlock("reminder"), new ToolResultBlock(prefix + "-b", "结果 B"))));
+        history.set(index + 1, Message.userBlocks(List.of(new ToolResultBlock(prefix + "-a", "结果 A", false),
+                new TextBlock("reminder"), new ToolResultBlock(prefix + "-b", "结果 B", false))));
     }
 
     /** 使用 JSON 结构逐行核对整个快照，不能误把 marker 的 N 当作快照行数。 */

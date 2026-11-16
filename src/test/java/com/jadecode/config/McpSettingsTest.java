@@ -16,7 +16,7 @@ class McpSettingsTest {
     void optionalConfigIsPortableAndPreserved() throws Exception {
         Path file = directory.resolve("config.json");
         assertTrue(new JadeConfigFile(file).load().mcp().servers().get("fetch").enabled());
-        Files.writeString(file, "{\"tui\":{\"theme\":\"dark\"}}");
+        Files.writeString(file, "{\"version\":1,\"tui\":{\"theme\":\"dark\"}}");
         assertEquals(JadeSettings.Mcp.defaults(), new JadeConfigFile(file).load().mcp());
         assertTrue(JadeConfigFile.template().path("mcp").path("servers").path("fetch").path("enabled").booleanValue());
         // 复制仓库样例到临时目录再加载，避免配置迁移逻辑改写仓库样例。
@@ -28,13 +28,14 @@ class McpSettingsTest {
 
         Files.writeString(file,
                 """
-                        {"mcp":{"servers":{"fetch":{"command":"custom-fetch/bin/python","args":["-m","mcp_server_fetch"],"readOnlyTools":["fetch"]}}}}
+                        {"version":1,"mcp":{"servers":{"fetch":{"command":"custom-fetch/bin/python","args":["-m","mcp_server_fetch"],"readOnlyTools":["fetch"]}}}}
                         """);
         var config = new JadeConfigFile(file);
         assertTrue(config.load().mcp().servers().get("fetch").enabled());
         config.saveTheme("dark");
         assertEquals("custom-fetch/bin/python", config.load().mcp().servers().get("fetch").command());
-        Files.writeString(file, "{\"mcp\":{\"servers\":{\"fetch\":{\"command\":\"python\",\"args\":[1]}}}}");
+        Files.writeString(file,
+                "{\"version\":1,\"mcp\":{\"servers\":{\"fetch\":{\"command\":\"python\",\"args\":[1]}}}}");
         assertThrows(java.io.IOException.class, config::load);
     }
 
@@ -43,15 +44,16 @@ class McpSettingsTest {
     void explicitServerTableOverridesDefaultFetch() throws Exception {
         Path file = directory.resolve("config.json");
         var config = new JadeConfigFile(file);
-        Files.writeString(file, "{\"mcp\":{\"servers\":{}}}");
+        Files.writeString(file, "{\"version\":1,\"mcp\":{\"servers\":{}}}");
         assertTrue(config.load().mcp().servers().isEmpty());
-        Files.writeString(file, """
-                {"mcp":{"servers":{"fetch":{"enabled":false,"command":"python","args":["-m","mcp_server_fetch"]}}}}
-                """);
+        Files.writeString(file,
+                """
+                        {"version":1,"mcp":{"servers":{"fetch":{"enabled":false,"command":"python","args":["-m","mcp_server_fetch"]}}}}
+                        """);
         assertFalse(config.load().mcp().servers().get("fetch").enabled());
         config.saveTheme("light");
         assertFalse(config.load().mcp().servers().get("fetch").enabled());
-        Files.writeString(file, "{\"mcp\":null}");
+        Files.writeString(file, "{\"version\":1,\"mcp\":null}");
         assertThrows(java.io.IOException.class, config::load);
     }
 }

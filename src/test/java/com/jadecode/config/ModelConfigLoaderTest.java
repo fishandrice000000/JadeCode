@@ -195,10 +195,12 @@ class ModelConfigLoaderTest {
         assertFalse(failure.getMessage().contains("fixture-secret"));
         assertNull(failure.getCause());
         assertThrows(IllegalArgumentException.class,
-                () -> new AppConfig("fixture-key", endpoint, "deepseek-v4.1-flash", 8000));
+                () -> new AppConfig("fixture-key", endpoint, "deepseek-v4.1-flash", 8000,
+                        com.jadecode.config.ModelProvider.ANTHROPIC_COMPATIBLE));
         // URL 是配置检查依据，不把相似路径或另一个主机自动当成 Go 服务。
         assertDoesNotThrow(
-                () -> new AppConfig("fixture-key", "https://proxy.example/inference/go/anthropic", "fixture", 8000));
+                () -> new AppConfig("fixture-key", "https://proxy.example/inference/go/anthropic", "fixture", 8000,
+                        com.jadecode.config.ModelProvider.ANTHROPIC_COMPATIBLE));
         write(global(), "{\"apiKey\":\"fixture-key\",\"provider\":\"opencode-go\"}");
         assertEquals(ModelProvider.OPENCODE_GO, ModelConfigLoader.load(cwd, global(), null, Map.of()).provider());
     }

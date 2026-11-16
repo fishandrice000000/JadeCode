@@ -58,7 +58,7 @@ final class ToolResultBudgetCompactor {
         if (!changed)
             return messages;
         List<Message> result = new ArrayList<>(messages);
-        result.set(result.size() - 1, new Message(latest.role(), List.copyOf(content)));
+        result.set(result.size() - 1, new Message(latest.role(), List.copyOf(content), null));
         return result;
     }
 
@@ -147,7 +147,7 @@ final class ToolResultBudgetCompactor {
 
         // 7. 返回重建后的消息列表。
         List<Message> budgetedMessages = new ArrayList<>(messages);
-        budgetedMessages.set(budgetedMessages.size() - 1, new Message(Role.USER, budgetedContents));
+        budgetedMessages.set(budgetedMessages.size() - 1, new Message(Role.USER, budgetedContents, null));
         return budgetedMessages;
     }
 

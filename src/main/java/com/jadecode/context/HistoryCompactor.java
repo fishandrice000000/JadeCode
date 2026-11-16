@@ -202,10 +202,10 @@ final class HistoryCompactor {
                 SUMMARY_SYSTEM,
                 List.of(Message.userText(summaryInput(messages))),
                 limits.summaryMaxOutputTokens(),
-                List.of());
+                List.of(), com.jadecode.llm.ThinkingSettings.DEFAULT, "");
 
         // 2. 调一次模型(全类唯一的外部调用点)。
-        ModelResponse response = client.complete(request);
+        ModelResponse response = client.complete(request, com.jadecode.llm.ResponseStream.NONE);
 
         // 3. 只认文本块:extractText 按顺序用 "\n" 连接全部 TextBlock,再 strip 掉首尾空白。
         String summary = response.message().extractText().strip();

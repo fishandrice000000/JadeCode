@@ -27,9 +27,9 @@ class ProductionCompactorTest {
         }
 
         @Override
-        public ModelResponse complete(CompleteRequest r) {
+        public ModelResponse complete(CompleteRequest r, com.jadecode.llm.ResponseStream ignoredStream) {
             requests.add(new CompleteRequest(r.system(), List.copyOf(r.messages()), r.maxTokens(),
-                    List.copyOf(r.tools()), r.thinking()));
+                    List.copyOf(r.tools()), r.thinking(), ""));
             return reply;
         }
     }
@@ -41,14 +41,16 @@ class ProductionCompactorTest {
 
     /** 每例使用独立临时目录；创建服务本身不摘要或建文件。 */
     private ContextCompactor compactor(Client client, ProductionCompactionSettings settings) {
-        return ContextCompactor.production(client, dir.resolve("transcripts"), dir.resolve("results"), settings);
+        return new com.jadecode.context.ProductionCompactor(client, dir.resolve("transcripts"), dir.resolve("results"),
+                settings);
     }
 
     /** 固定 system 和工具目录，令断言只比较本例改变的历史或设置。 */
     private CompleteRequest request(List<Message> messages) {
         return new CompleteRequest("stable system", messages, 393216,
                 List.of(new ToolDefinition("read_file", "read",
-                        Json.mapper().createObjectNode().put("type", "object"))));
+                        Json.mapper().createObjectNode().put("type", "object"))),
+                com.jadecode.llm.ThinkingSettings.DEFAULT, "");
     }
 
     private Message assistant(String value) {
@@ -61,7 +63,7 @@ class ProductionCompactorTest {
         var tracker = new ContextTokenTracker();
         var original = request(List.of(Message.userText("goal")));
         var answer = assistant("answer including output");
-        tracker.accepted(original, new ModelResponse(answer, new ModelResponse.Usage(100, 30, 200, 50)));
+        tracker.accepted(original, new ModelResponse(answer, new ModelResponse.Usage(100, 30, 200, 50), ""));
         var history = new ArrayList<>(original.messages());
         history.add(answer);
         assertEquals(new ContextTokenTracker.Estimate(380, false), tracker.estimate(request(history)));
@@ -69,17 +71,19 @@ class ProductionCompactorTest {
         history.add(delta);
         assertEquals(380 + ContextTokenTracker.message(delta), tracker.estimate(request(history)).tokens());
         assertTrue(tracker.estimate(request(history)).estimated());
-        var changed = new CompleteRequest("changed system", history, 393216, original.tools());
+        var changed = new CompleteRequest("changed system", history, 393216, original.tools(),
+                com.jadecode.llm.ThinkingSettings.DEFAULT, "");
         assertEquals(ContextTokenTracker.projected(changed), tracker.estimate(changed).tokens());
-        var changedTools = new CompleteRequest(original.system(), history, 393216, List.of());
+        var changedTools = new CompleteRequest(original.system(), history, 393216, List.of(),
+                com.jadecode.llm.ThinkingSettings.DEFAULT, "");
         assertEquals(ContextTokenTracker.projected(changedTools), tracker.estimate(changedTools).tokens());
         var changedThinking = request(history).withThinking(ThinkingSettings.OFF);
         assertEquals(ContextTokenTracker.projected(changedThinking), tracker.estimate(changedThinking).tokens());
         assertEquals(ContextTokenTracker.projected(request(history)),
                 new ContextTokenTracker().estimate(request(history)).tokens());
         // 缺 usage 和被截断响应都不能覆盖最近的合法锚点。
-        tracker.accepted(original, new ModelResponse(answer, null));
-        tracker.accepted(original, new ModelResponse(answer, new ModelResponse.Usage(9999, 2), "max_tokens"));
+        tracker.accepted(original, new ModelResponse(answer, null, ""));
+        tracker.accepted(original, new ModelResponse(answer, new ModelResponse.Usage(9999, 2, 0, 0), "max_tokens"));
         assertEquals(380 + ContextTokenTracker.message(delta), tracker.estimate(request(history)).tokens());
         tracker.invalidate();
         assertEquals(ContextTokenTracker.projected(request(history)), tracker.estimate(request(history)).tokens());
@@ -112,12 +116,12 @@ class ProductionCompactorTest {
         var answer = assistant("finished");
         var history = List.of(original.messages().getFirst(), answer);
         long threshold = 1048576 - 16384;
-        tracker.accepted(original, new ModelResponse(answer, new ModelResponse.Usage(threshold - 1, 1)));
+        tracker.accepted(original, new ModelResponse(answer, new ModelResponse.Usage(threshold - 1, 1, 0, 0), ""));
         var compactor = compactor(client, settings(1, null));
         assertSame(history, compactor.prepare(request(history), "goal", tracker, ""));
         // 配置最大输出 384K 不能抢走自动压缩预留；仅收紧当前请求的实际额度。
         assertEquals(15360, compactor.outputBudget(request(history), tracker));
-        tracker.accepted(original, new ModelResponse(answer, new ModelResponse.Usage(threshold, 1)));
+        tracker.accepted(original, new ModelResponse(answer, new ModelResponse.Usage(threshold, 1, 0, 0), ""));
         var reduced = compactor.prepare(request(history), "goal", tracker, "{\"todos\":[]}");
         assertEquals(1, client.requests.size());
         var summary = client.requests.getFirst();
@@ -178,10 +182,10 @@ class ProductionCompactorTest {
     void rejectedSummaryLeavesOriginalHistoryAndArchivesBeforeCalling() throws Exception {
         for (ModelResponse invalid : List.of(
                 new ModelResponse(assistant("cut off"), null, "max_tokens"),
-                new ModelResponse(assistant("  "), null),
+                new ModelResponse(assistant("  "), null, ""),
                 new ModelResponse(
                         Message.assistant(List.of(new ToolUseBlock("x", "bash", Json.mapper().createObjectNode()))),
-                        null))) {
+                        null, ""))) {
             var client = new Client();
             client.reply = invalid;
             var history = new ArrayList<>(List.of(Message.userText("evidence"), assistant("recent")));

@@ -5,7 +5,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionException;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.function.Consumer;
 
@@ -170,9 +169,7 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /** 显示回复、接收通知和本轮计数；回复结束不等于所有业务成功。 */
-    private final Consumer<String> output;
-    /** 显示任务执行错误的函数，不把错误提示当成最终回答。 */
-    private final Consumer<String> errors;
+    private final Consumer<com.jadecode.execution.RuntimeMessage> messages;
     /** volatile 让终端线程看到处理线程更新的状态，但终端仍不能修改 history。 */
     private volatile State state = State.IDLE;
     /** 退出时设为 true，父子 Agent 都可以检查用户是否已经退出。 */
@@ -288,14 +285,6 @@ public final class SessionRuntime implements AutoCloseable {
             String thinkingLabel, List<ThinkingSettings> thinkingChoices, SessionUsage.Snapshot usage,
             ContextUsage context,
             Map<String, List<String>> resources, List<Map<String, Object>> team) {
-        /** 兼容不装配 Team 的离线显示调用。 */
-        public Display(String id, String title, String model, ModelMetadata metadata, ThinkingSettings thinking,
-                String thinkingLabel, List<ThinkingSettings> thinkingChoices, SessionUsage.Snapshot usage,
-                ContextUsage context,
-                Map<String, List<String>> resources) {
-            this(id, title, model, metadata, thinking, thinkingLabel, thinkingChoices, usage, context, resources,
-                    List.of());
-        }
 
         public Display {
             team = List.copyOf(team);
@@ -435,7 +424,7 @@ public final class SessionRuntime implements AutoCloseable {
         };
     }
 
-    /** 工厂登记真实 Todo 和模型名，不开始存盘；旧兼容调用仍可使用没有日志的运行时。 */
+    /** 工厂登记真实 Todo 和模型名，不开始存盘；离线执行器测试可以选择不安装持久日志。 */
     public void historyState(TodoManager manager, String modelName, java.util.function.BooleanSupplier blocked) {
         if (consumer != null || journal != null || closed)
             throw new IllegalStateException("Session is already started or closed");
@@ -513,7 +502,7 @@ public final class SessionRuntime implements AutoCloseable {
         if (consumer != null || closed || journal != null)
             throw new IllegalStateException("Cannot install history into a running session");
         String previousBackend = restored.metadata().backendIdentity();
-        // 原兼容入口保留旧恢复行为；涉及 Go 时必须证明来源一致，不能把旧签名/工具历史交给另一个后端。
+        // Anthropic-compatible 允许同协议恢复；涉及 Go 时必须证明来源一致，不能把旧签名/工具历史交给另一个后端。
         // 先检查再改变内存历史或采用 writer，失败时宿主仍能关闭目标日志并保留旧会话。
         if ((backendIdentity.startsWith("opencode-go:") || previousBackend.startsWith("opencode-go:"))
                 && !backendIdentity.equals(previousBackend))
@@ -546,8 +535,9 @@ public final class SessionRuntime implements AutoCloseable {
             if (display().thinkingChoices().contains(saved))
                 requestThinking.set(saved);
             else
-                errors.accept(
-                        "[Warning] The current model does not support the restored session's thinking setting; using the current configuration default.");
+                emit("Warning",
+                        "The current model does not support the restored session's thinking setting; using the current configuration default.",
+                        true);
         }
     }
 
@@ -661,8 +651,8 @@ public final class SessionRuntime implements AutoCloseable {
                 || !context.assignment().id().equals(incoming.assignmentId()))
             throw new IllegalArgumentException("Explicit assignments require a matching Harness identity");
         var result = new CompletableFuture<String>();
-        var scoped = new ExecutionContext("run_" + java.util.UUID.randomUUID(), context.source(),
-                context.approval(), () -> closed, context.goal(), context.assignment());
+        var scoped = new ExecutionContext("run_" + java.util.UUID.randomUUID(), context.source(), context.approval(),
+                () -> closed, context.goal(), context.assignment(), null, "");
         synchronized (inbox) {
             if (closed || switching || persistenceFailed || !inbox.offer(new SessionInbox.Entry(
                     new SessionEvent.Request(incoming.render(), scoped), result)))
@@ -672,36 +662,25 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 创建不带记忆与后台服务的会话，不启动线程或模型请求。
-     * @param engine 本会话独占使用的执行器，关闭会话时一并标记关闭
-     * @param output 正常进展与结果输出，应尽快返回
-     * @param errors 错误输出，应尽快返回
-     */
-    public SessionRuntime(AgentExecutor engine, Consumer<String> output, Consumer<String> errors) {
-        this(engine, null, null, output, errors);
-    }
-
-    /**
-     * 接收工厂装配的执行器和服务，取得它们的会话级关闭责任。
-     * 记忆在任务入口召回、真正完成后维护；后台命令由本会话持有直到完成或关闭。
-     * @param engine 本会话独占使用的执行器，不可同时交给其它会话
-     * @param memory 记忆服务，可为 null；不在构造时请求辅助模型
-     * @param background 与父 bash 共用的进程服务，可为 null；close 停全部命令
-     * @param output 正常结果输出
-     * @param errors 错误输出
+     * 接收本会话的执行器、记忆、后台与结构化显示出口，取得前三者的关闭责任。
+     * 构造不启动请求；messages 须快速返回，错误与正常消息由各自分支明确标记。
+     * 无记忆或后台服务时显式传 null，仍使用相同的队列执行入口。
      */
     public SessionRuntime(AgentExecutor engine, MemoryManager memory, BackgroundManager background,
-            Consumer<String> output, Consumer<String> errors) {
+            Consumer<com.jadecode.execution.RuntimeMessage> messages) {
         this.engine = java.util.Objects.requireNonNull(engine);
         this.memory = memory;
         this.background = background;
         this.history = new ArrayList<>();
-        this.output = output;
-        this.errors = errors;
-        this.usage = new SessionUsage(errors);
-        if (background != null) {
+        this.messages = java.util.Objects.requireNonNull(messages);
+        this.usage = new SessionUsage(text -> emit("Usage", text, true));
+        if (background != null)
             background.onResult(this::backgroundCompleted);
-        }
+    }
+
+    /** 在真实发生分支给消息加标签；不从正文反向解析任何身份或错误状态。 */
+    private void emit(String label, String text, boolean error) {
+        messages.accept(new com.jadecode.execution.RuntimeMessage("", label, text, error));
     }
 
     /**
@@ -713,7 +692,7 @@ public final class SessionRuntime implements AutoCloseable {
                 "background", notification(result), null, true);
         // 后台拥有独立预留槽；原 run 只用于记录来源，不限制采用轮次。
         if (!receive(incoming) && !closed && !persistenceFailed)
-            errors.accept("[Background] Completion could not be queued: " + result.id());
+            emit("Background", "Completion could not be queued: " + result.id(), true);
     }
 
     /**
@@ -871,7 +850,7 @@ public final class SessionRuntime implements AutoCloseable {
             try {
                 taskCleanup.accept(task.context().id());
             } catch (RuntimeException failed) {
-                errors.accept("[Sandbox] Task resource cleanup did not finish");
+                emit("Sandbox", "Task resource cleanup did not finish", true);
             }
             active = null;
             // 轮次取消不能让消费者永久退出；关闭会话仍保留中断状态。
@@ -957,9 +936,9 @@ public final class SessionRuntime implements AutoCloseable {
                 throw new IllegalStateException("Current execution was cancelled");
             if (reply.calls().isEmpty()) {
                 // 回答先展示一次，再记录显示截止；Memory 还会照常收尾，不能提前宣布业务完成。
-                // 流式时间来自生产端 complete，旧客户端在这里回退输出，不再在多个结束分支重放。
+                // 流式时间来自生产端 complete，非流式响应在这里输出，不再在多个结束分支重放。
                 if (!reply.textDisplayed() && !reply.message().extractText().isBlank())
-                    output.accept("[Reply] " + reply.message().extractText());
+                    emit("Reply", reply.message().extractText(), false);
                 task.timer.answerCompleted(reply.textDisplayed() ? reply.displayCompletedNanos() : null);
             }
             apply(reply);
@@ -967,17 +946,24 @@ public final class SessionRuntime implements AutoCloseable {
                 memory.observeReply(reply.message());
             if (!reply.calls().isEmpty()) {
                 // 3. 执行这一批工具，把每个调用的结果一起写入历史；出错也要配齐调用和结果的 ID。
-                ToolBatch batch = engine.executeTools(reply, task.context(), task.rounds);
+                ToolBatch batch = engine.executeTools(reply, task.context());
                 task.toolCalls += reply.calls().size();
                 // 取消只阻止后续行动，已开始的一批仍须配齐 tool_result 并落盘。
                 if (task.cancelled.get() && !closed)
                     Thread.interrupted();
+                // Todo 提醒属于父会话，不进入可供子代理复用的工具执行内核。
+                task.rounds = batch.usedTodo() ? 0 : task.rounds + 1;
+                if (batch.failure() == null && task.rounds >= 3) {
+                    var results = new ArrayList<ContentBlock>(batch.results());
+                    results.add(new com.jadecode.messages.TextBlock("<reminder>Update your todos.</reminder>"));
+                    batch = new ToolBatch(batch.calls(), results, batch.usedTodo(), batch.compact(), batch.failure());
+                    task.rounds = 0;
+                }
                 apply(batch);
                 if (task.context().isCancelled())
                     throw new IllegalStateException("Current execution was cancelled");
                 if (memory != null)
                     memory.observeTools(batch.calls(), Message.userBlocks(batch.results()));
-                task.rounds = batch.roundsSinceTodo();
                 if (batch.failure() != null)
                     throw batch.failure();
                 // 这一批 tool_use 都已有 tool_result，现在才能压缩，不会把调用与结果拆开。
@@ -1163,8 +1149,9 @@ public final class SessionRuntime implements AutoCloseable {
                 if (memory != null)
                     memory.addHumanInput(incoming.summary());
             }
-            task.notices.add(incoming.kind().equals("background") ? "[Background] 1 command result received"
-                    : "[Incoming] " + incoming.summary());
+            task.notices.add(new com.jadecode.execution.RuntimeMessage("",
+                    incoming.kind().equals("background") ? "Background" : "Incoming",
+                    incoming.kind().equals("background") ? "1 command result received" : incoming.summary(), false));
         }
         return true;
     }
@@ -1174,7 +1161,7 @@ public final class SessionRuntime implements AutoCloseable {
      * history 的先后顺序不受展示缓冲影响，后台结果只显示数量，完整有界输出保留在模型历史中。
      */
     private void flushNotices(Active task) {
-        task.notices.forEach(output);
+        task.notices.forEach(messages);
         task.notices.clear();
     }
 
@@ -1380,7 +1367,7 @@ public final class SessionRuntime implements AutoCloseable {
         turnEnded(task, "FAILED", false);
         task.inputResults.forEach(result -> result.completeExceptionally(failure));
         if (!closed)
-            errors.accept("[Error] " + task.context().id() + ": " + failure.getMessage());
+            emit("Error", "" + task.context().id() + ": " + failure.getMessage(), true);
     }
 
     /**
@@ -1449,7 +1436,7 @@ public final class SessionRuntime implements AutoCloseable {
         /** 已采用用户补充的结果句柄；通知无需再携带整份 Entry 或等待模型响应确认。 */
         final List<CompletableFuture<String>> inputResults = new java.util.concurrent.CopyOnWriteArrayList<>();
         /** 展示通知暂存到合适位置，避免 Incoming 抢在刚生成的阶段回复前面显示。 */
-        final List<String> notices = new ArrayList<>();
+        final List<com.jadecode.execution.RuntimeMessage> notices = new ArrayList<>();
         /** 当前大轮次模型提出的工具调用个数，包含被拒绝调用，不数子代理内部工具。 */
         int toolCalls;
         /** 记忆证据边界属于运行状态，不能由长期记忆反过来充当任务队列。 */
@@ -1472,7 +1459,7 @@ public final class SessionRuntime implements AutoCloseable {
             var origin = entry.request().context();
             timer = new com.jadecode.execution.TurnTimer(origin.id(), notices);
             execution = new ExecutionContext(origin.id(), origin.source(), timer.track(origin.approval()),
-                    () -> origin.isCancelled() || cancelled.get(), origin.goal(), origin.assignment());
+                    () -> origin.isCancelled() || cancelled.get(), origin.goal(), origin.assignment(), null, "");
         }
 
         /**
@@ -1487,56 +1474,6 @@ public final class SessionRuntime implements AutoCloseable {
             return execution.source() == ExecutionContext.Source.USER && execution.assignment() == null;
         }
 
-    }
-
-    /**
-     * 在调用者线程同步处理已有请求，复用相同的 execute，不启动处理线程或定时轮询。
-     *
-     * <p>临时借用 messages 作为当前历史，因此压缩和失败前的采用结果对调用者立即可见。
-     * finally 恢复本会话原列表，不复制或还原 messages；执行器和服务保持可用，须由所有者关闭。
-     * 此入口仅供尚未 start 的会话使用，调用者不得与其它 run 并发执行。</p>
-     * @param messages 已含本次请求的可修改消息列表，期间不可由其它线程修改
-     * @throws LlmException 模型或摘要失败，取出原异常重新抛出
-     * @throws RuntimeException 非法历史、执行失败、会话已启动或已关闭
-     */
-    public void run(List<Message> messages) throws LlmException {
-        ensureOpen();
-        if (journal != null)
-            throw new IllegalStateException("Persistent sessions do not borrow external history");
-        if (consumer != null)
-            throw new IllegalStateException("Session consumer is already started");
-        // 只在这个同步调用内借用列表；正式会话和兼容调用都由同一 active/closed 状态管理。
-        List<Message> ownedHistory = history;
-        history = messages;
-        ExecutionContext context = ExecutionContext.create(ExecutionContext.Source.USER, null, () -> closed);
-        SessionInbox.Entry entry = new SessionInbox.Entry(new SessionEvent.Request("", context),
-                new CompletableFuture<>());
-        try {
-            execute(entry, false);
-            entry.result().join();
-        } catch (CompletionException wrapped) {
-            // join 包装实际异常；保留原类型，旧调用方不需要改错误处理方式。
-            if (wrapped.getCause() instanceof LlmException failure)
-                throw failure;
-            if (wrapped.getCause() instanceof RuntimeException failure)
-                throw failure;
-            throw new IllegalStateException(wrapped.getCause());
-        } finally {
-            history = ownedHistory;
-        }
-    }
-
-    /**
-     * 原先直接调用执行器 run 的无服务调用方使用此同步入口。
-     * @param engine 借用的执行器，返回时不关闭，不可并发执行
-     * @param messages 已含请求的可修改历史；失败前已采用的消息仍保留
-     * @throws LlmException 模型或压缩失败，原样抛出
-     * @throws RuntimeException 非法历史、执行失败或执行器已关闭
-     */
-    public static void runExisting(AgentExecutor engine, List<Message> messages) throws LlmException {
-        new SessionRuntime(engine, ignored -> {
-        }, ignored -> {
-        }).run(messages);
     }
 
     /**
@@ -1567,7 +1504,7 @@ public final class SessionRuntime implements AutoCloseable {
             closeDependents.run();
         } catch (RuntimeException failure) {
             cleanupFailed = true;
-            errors.accept("[Error] Dependent session cleanup failed: " + failure.getMessage());
+            emit("Error", "Dependent session cleanup failed: " + failure.getMessage(), true);
         }
         // 先停止执行器和命令，再通知 future 的调用者；对方可能立即运行自己的代码，不能拖延停止工具。
         engine.close();
@@ -1586,7 +1523,7 @@ public final class SessionRuntime implements AutoCloseable {
             try {
                 consumer.join(2000);
                 if (consumer.isAlive())
-                    errors.accept("[Session] Model/IO still finishing; new tools are disabled.");
+                    emit("Session", "Model/IO still finishing; new tools are disabled.", true);
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
             }
@@ -1598,7 +1535,7 @@ public final class SessionRuntime implements AutoCloseable {
                 try {
                     journal.close();
                 } catch (IOException failure) {
-                    errors.accept("[Error] Failed to close the session journal: " + failure.getMessage());
+                    emit("Error", "Failed to close the session journal: " + failure.getMessage(), true);
                 }
             }
         }

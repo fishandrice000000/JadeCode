@@ -114,16 +114,6 @@ public final class BackendStream implements ResponseStream {
         end(false, stopReason);
     }
 
-    @Override
-    public synchronized void complete() {
-        end(false, "");
-    }
-
-    @Override
-    public synchronized void failed() {
-        end(true, "");
-    }
-
     /** 行动回复失败仍可有真实停止原因；max_tokens 继续触发前端原有的未完成提示。 */
     @Override
     public synchronized void failed(String stopReason) {

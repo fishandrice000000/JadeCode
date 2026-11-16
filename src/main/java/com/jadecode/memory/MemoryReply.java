@@ -62,7 +62,7 @@ final class MemoryReply {
         var thinking = client.thinkingChoices().contains(ThinkingSettings.OFF) ? ThinkingSettings.OFF
                 : ThinkingSettings.DEFAULT;
         return new CompleteRequest(system, java.util.List.of(com.jadecode.messages.Message.userText(input)), maxTokens,
-                java.util.List.of(), thinking);
+                java.util.List.of(), thinking, "");
     }
 
     private MemoryReply() {

@@ -8,7 +8,6 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import com.jadecode.agent.AgentExecutor;
-import com.jadecode.config.WorkspacePaths;
 import com.jadecode.hooks.Hooks;
 import com.jadecode.session.SessionRuntime;
 
@@ -18,14 +17,18 @@ class SessionHostLookupTest {
     Path workspace;
 
     private SessionHost host() {
-        return new SessionHost(com.jadecode.support.TestPaths.workspace(workspace), generation -> new SessionRuntime(
-                new AgentExecutor(request -> {
-                    throw new AssertionError("Lookup must not call a model");
-                },
-                        Map.of(), "test", 1000, new Hooks()),
+        return new SessionHost(com.jadecode.support.TestPaths.workspace(workspace),
+                generation -> new com.jadecode.session.SessionRuntime(
+                        new com.jadecode.agent.AgentExecutor((request, ignoredStream) -> {
+                            throw new AssertionError("Lookup must not call a model");
+                        }, com.jadecode.tools.ToolCatalog.fixed(Map.of()), "test", 1000, new Hooks(), null,
+                                () -> com.jadecode.llm.ResponseStream.NONE,
+                                com.jadecode.execution.ExecutionObserver.NONE,
+                                () -> com.jadecode.llm.ThinkingSettings.DEFAULT, () -> ""),
+                        null, null, com.jadecode.support.TestMessages.toText(ignored -> {
+                        }, ignored -> {
+                        })),
                 ignored -> {
-                }, ignored -> {
-                }), ignored -> {
                 });
     }
 

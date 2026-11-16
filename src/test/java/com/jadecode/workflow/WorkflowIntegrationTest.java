@@ -36,7 +36,7 @@ class WorkflowIntegrationTest {
 
     /** 正常假模型回复，所有类别都报告 5 token，便于检查分类不会重复记账。 */
     private static ModelResponse reply(ContentBlock... blocks) {
-        return new ModelResponse(Message.assistant(List.of(blocks)), new ModelResponse.Usage(2, 3), "end_turn");
+        return new ModelResponse(Message.assistant(List.of(blocks)), new ModelResponse.Usage(2, 3, 0, 0), "end_turn");
     }
 
     /** 给主模型返回一次 Workflow 调用；stepId 是协议 ID，不是 workflow run_id。 */
@@ -55,14 +55,19 @@ class WorkflowIntegrationTest {
         var defaults = JadeSettings.defaults();
         var settings = new JadeSettings(defaults.tui(), defaults.compaction(), defaults.limits(),
                 new JadeSettings.Memory(false, 100, 100, 1000), defaults.modelMetadata(), defaults.thinking(),
-                defaults.permissions(), new JadeSettings.Mcp(Map.of()));
-        return JadeCodeFactory.create(new AppConfig("offline", "http://127.0.0.1:9", "fixture", maxTokens), workspace,
-                client,
-                ignored -> {
+                defaults.permissions(), new JadeSettings.Mcp(Map.of()),
+                com.jadecode.context.ProductionCompactionSettings.defaults()
+                        .withAutomatic(defaults.compaction().autoSummaryEnabled()),
+                com.jadecode.sandbox.SandboxSettings.offline());
+        return com.jadecode.bootstrap.JadeCodeFactory.create(new com.jadecode.bootstrap.JadeCodeFactory.Dependencies(
+                new AppConfig("offline", "http://127.0.0.1:9", "fixture", maxTokens,
+                        com.jadecode.config.ModelProvider.ANTHROPIC_COMPATIBLE),
+                workspace, client, settings, permissions, com.jadecode.support.TestPaths.jade(workspace), null, null,
+                com.jadecode.support.TestMessages.toText(ignored -> {
                 }, ignored -> {
-                }, (hooks, cwd, out) -> {
-                }, () -> ResponseStream.NONE,
-                observer, settings, permissions, com.jadecode.support.TestPaths.jade(workspace));
+                }), () -> ResponseStream.NONE, observer, com.jadecode.hooks.Hooks::new,
+                (summary, paths) -> new com.jadecode.context.ProductionCompactor(summary, paths,
+                        (settings).contextCompaction())));
     }
 
     /** 主历史仅包含两份工具结果；各类请求身份正确，缓存恢复不再请求步骤模型。 */
@@ -70,7 +75,7 @@ class WorkflowIntegrationTest {
     void factoryRunsAndResumesWorkflowWithIsolatedHistoryAndUsage() throws Exception {
         AtomicInteger formal = new AtomicInteger(), steps = new AtomicInteger();
         var progress = new CopyOnWriteArrayList<ExecutionNotice>();
-        LlmClient client = request -> {
+        LlmClient client = (request, ignoredStream) -> {
             if (request.tools().isEmpty()) {
                 steps.incrementAndGet();
                 assertTrue(request.system().startsWith("You are a focused workflow agent."));
@@ -99,7 +104,7 @@ class WorkflowIntegrationTest {
         };
         try (var runtime = session(client, PermissionState.defaults(), progress::add)) {
             var messages = new ArrayList<>(List.of(Message.userText("ROOT_ONLY_CONTEXT")));
-            runtime.run(messages);
+            com.jadecode.support.SessionRuns.run(runtime, messages);
             assertEquals(3, formal.get());
             assertEquals(4, steps.get());
             var usage = runtime.display().usage();
@@ -119,7 +124,7 @@ class WorkflowIntegrationTest {
     @Test
     void factoryDiscoversRunsAndResumesCodeReview() throws Exception {
         AtomicInteger formal = new AtomicInteger(), steps = new AtomicInteger();
-        try (var runtime = session(request -> {
+        try (var runtime = session((request, ignoredStream) -> {
             if (request.tools().isEmpty()) {
                 steps.incrementAndGet();
                 String prompt = request.messages().getFirst().extractText();
@@ -150,7 +155,8 @@ class WorkflowIntegrationTest {
             assertEquals(4, out.path("usage").path("cached_steps").asInt());
             return reply(new TextBlock("reviewed"));
         }, PermissionState.defaults(), ExecutionObserver.NONE)) {
-            runtime.run(new ArrayList<>(List.of(Message.userText("ROOT_ONLY_CONTEXT"))));
+            com.jadecode.support.SessionRuns.run(runtime,
+                    new ArrayList<>(List.of(Message.userText("ROOT_ONLY_CONTEXT"))));
             assertEquals(4, steps.get());
             assertEquals(3, formal.get());
             assertEquals(4, runtime.display().usage().byPurpose().get("WORKFLOW").reportedRequests());
@@ -164,7 +170,7 @@ class WorkflowIntegrationTest {
         var cancelled = new CountDownLatch(3);
         AtomicInteger formal = new AtomicInteger();
         var paths = com.jadecode.support.TestPaths.workspace(workspace);
-        try (var host = new com.jadecode.cli.SessionHost(paths, generation -> session(request -> {
+        try (var host = new com.jadecode.cli.SessionHost(paths, generation -> session((request, ignoredStream) -> {
             assertEquals(8192, request.maxTokens(), "Workflow must use the configured effective formal budget");
             if (request.tools().isEmpty()) {
                 allStarted.countDown();
@@ -173,7 +179,7 @@ class WorkflowIntegrationTest {
                         throw new LlmException("fixture branches did not start");
                     if (request.messages().getFirst().extractText().contains("for correctness."))
                         return new ModelResponse(reply(new TextBlock("{\"findings\":[],\"questions\":[]}")).message(),
-                                new ModelResponse.Usage(20, 8192), "max_tokens");
+                                new ModelResponse.Usage(20, 8192, 0, 0), "max_tokens");
                     new CountDownLatch(1).await();
                     throw new AssertionError("Expected branch cancellation");
                 } catch (InterruptedException stopped) {
@@ -230,7 +236,7 @@ class WorkflowIntegrationTest {
                 "Workflow", "", "", "", false, List.of());
         var permissions = new PermissionState(PermissionProfile.WORKSPACE, List.of(rule), Set.of(), null);
         AtomicInteger formal = new AtomicInteger();
-        try (var runtime = session(request -> {
+        try (var runtime = session((request, ignoredStream) -> {
             assertFalse(request.tools().isEmpty(), "拒绝的工作流不能发内部请求");
             if (formal.getAndIncrement() == 0)
                 return call("denied", json("{\"name\":\"review-changes\",\"args\":{\"changes\":\"code\"}}"));
@@ -239,7 +245,7 @@ class WorkflowIntegrationTest {
             assertTrue(result.content().contains("deny-workflow"));
             return reply(new TextBlock("denied"));
         }, permissions, ExecutionObserver.NONE)) {
-            runtime.run(new ArrayList<>(List.of(Message.userText("review"))));
+            com.jadecode.support.SessionRuns.run(runtime, new ArrayList<>(List.of(Message.userText("review"))));
             assertFalse(Files.exists(com.jadecode.support.TestPaths.workspace(workspace).workflows()));
         }
     }
@@ -248,7 +254,7 @@ class WorkflowIntegrationTest {
     @Test
     void unknownInputAndModelFailureRemainToolErrors() throws Exception {
         AtomicInteger formal = new AtomicInteger(), steps = new AtomicInteger();
-        try (var runtime = session(request -> {
+        try (var runtime = session((request, ignoredStream) -> {
             if (request.tools().isEmpty()) {
                 steps.incrementAndGet();
                 throw new LlmException("offline model failed");
@@ -267,7 +273,7 @@ class WorkflowIntegrationTest {
             assertEquals("failed", json(results.getLast().content()).path("status").asText());
             return reply(new TextBlock("handled"));
         }, PermissionState.defaults(), ExecutionObserver.NONE)) {
-            runtime.run(new ArrayList<>(List.of(Message.userText("review"))));
+            com.jadecode.support.SessionRuns.run(runtime, new ArrayList<>(List.of(Message.userText("review"))));
             assertEquals(2, formal.get());
             assertTrue(steps.get() >= 1 && steps.get() <= 4);
         }
@@ -278,7 +284,7 @@ class WorkflowIntegrationTest {
     void sessionCloseStopsWorkflowAndCompletesPendingFuture() throws Exception {
         CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
         AtomicInteger formal = new AtomicInteger();
-        var runtime = session(request -> {
+        var runtime = session((request, ignoredStream) -> {
             if (!request.tools().isEmpty()) {
                 formal.incrementAndGet();
                 return call("work", json("{\"name\":\"review-changes\",\"args\":{\"changes\":\"code\"}}"));
@@ -308,5 +314,11 @@ class WorkflowIntegrationTest {
             release.countDown();
             runtime.close();
         }
+    }
+
+    /** 回收本用例通过正式队列入口创建的临时会话和日志。 */
+    @org.junit.jupiter.api.AfterEach
+    void closeMigratedSessions() throws Exception {
+        com.jadecode.support.SessionRuns.closeAll();
     }
 }

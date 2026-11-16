@@ -32,37 +32,50 @@ class McpAgentIntegrationTest {
                 "", 15, 5, 20_000, Set.of("echo"));
         var d = JadeSettings.defaults();
         var settings = new JadeSettings(d.tui(), d.compaction(), d.limits(),
-                new JadeSettings.Memory(false, 100, 100, 1000),
-                d.modelMetadata(), d.thinking(), d.permissions(), new JadeSettings.Mcp(Map.of("fixture", server)));
+                new JadeSettings.Memory(false, 100, 100, 1000), d.modelMetadata(), d.thinking(), d.permissions(),
+                new JadeSettings.Mcp(Map.of("fixture", server)),
+                com.jadecode.context.ProductionCompactionSettings.defaults()
+                        .withAutomatic(d.compaction().autoSummaryEnabled()),
+                com.jadecode.sandbox.SandboxSettings.offline());
         AtomicInteger requests = new AtomicInteger();
-        LlmClient fake = request -> {
+        LlmClient fake = (request, ignoredStream) -> {
             int step = requests.getAndIncrement();
             if (step == 0) {
                 assertFalse(request.tools().stream().anyMatch(t -> t.name().startsWith("mcp__")));
                 return new ModelResponse(Message.assistant(List.of(new ToolUseBlock("c", "connect_mcp",
-                        Json.mapper().createObjectNode().put("name", "fixture")))), null);
+                        Json.mapper().createObjectNode().put("name", "fixture")))), null, "");
             }
             if (step == 1) {
                 assertTrue(request.tools().stream().anyMatch(t -> t.name().equals("mcp__fixture__echo")));
                 return new ModelResponse(Message.assistant(List.of(new ToolUseBlock("e", "mcp__fixture__echo",
-                        Json.mapper().createObjectNode().put("text", "hello")))), null);
+                        Json.mapper().createObjectNode().put("text", "hello")))), null, "");
             }
             assertEquals("hello",
                     request.messages().getLast().blocksOfType(ToolResultBlock.class).getFirst().content());
-            return new ModelResponse(Message.assistant(List.of(new TextBlock("done"))), null);
+            return new ModelResponse(Message.assistant(List.of(new TextBlock("done"))), null, "");
         };
-        try (var runtime = JadeCodeFactory.create(new AppConfig("offline", "http://127.0.0.1:1", "offline", 100),
-                workspace,
-                fake, ignored -> {
-                }, ignored -> {
-                }, (hooks, cwd, output) -> {
-                }, () -> ResponseStream.NONE,
-                ExecutionObserver.NONE, settings, settings.permissions().state(null),
-                com.jadecode.support.TestPaths.jade(workspace))) {
-            runtime.run(new java.util.ArrayList<>(List.of(Message.userText("connect fixture and echo hello"))));
+        try (var runtime = com.jadecode.bootstrap.JadeCodeFactory
+                .create(new com.jadecode.bootstrap.JadeCodeFactory.Dependencies(
+                        new AppConfig("offline", "http://127.0.0.1:1", "offline", 100,
+                                com.jadecode.config.ModelProvider.ANTHROPIC_COMPATIBLE),
+                        workspace, fake, settings, settings.permissions().state(null),
+                        com.jadecode.support.TestPaths.jade(workspace), null, null,
+                        com.jadecode.support.TestMessages.toText(ignored -> {
+                        }, ignored -> {
+                        }), () -> ResponseStream.NONE, ExecutionObserver.NONE, com.jadecode.hooks.Hooks::new,
+                        (summary, paths) -> new com.jadecode.context.ProductionCompactor(summary, paths,
+                                (settings).contextCompaction())))) {
+            com.jadecode.support.SessionRuns.run(runtime,
+                    new java.util.ArrayList<>(List.of(Message.userText("connect fixture and echo hello"))));
             assertEquals(3, requests.get());
         }
         long pid = Long.parseLong(Files.readString(pidFile));
         assertFalse(ProcessHandle.of(pid).map(ProcessHandle::isAlive).orElse(false));
+    }
+
+    /** 回收本用例通过正式队列入口创建的临时会话和日志。 */
+    @org.junit.jupiter.api.AfterEach
+    void closeMigratedSessions() throws Exception {
+        com.jadecode.support.SessionRuns.closeAll();
     }
 }

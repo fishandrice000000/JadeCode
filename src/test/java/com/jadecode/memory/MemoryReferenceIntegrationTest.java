@@ -56,8 +56,15 @@ class MemoryReferenceIntegrationTest {
 
     /** 假配置与临时全局根由调用方显式提供，生产与测试使用同一条记忆链路。 */
     private SessionRuntime runtime(LlmClient fake) {
-        return JadeCodeFactory.create(new AppConfig("offline", "http://127.0.0.1:1", "fixture", 8000), workspace, fake,
-                new com.jadecode.config.JadePaths(root.getParent()));
+        return com.jadecode.bootstrap.JadeCodeFactory.create(new com.jadecode.bootstrap.JadeCodeFactory.Dependencies(
+                new AppConfig("offline", "http://127.0.0.1:1", "fixture", 8000,
+                        com.jadecode.config.ModelProvider.ANTHROPIC_COMPATIBLE),
+                workspace, fake, com.jadecode.config.JadeSettings.defaults(),
+                (com.jadecode.config.JadeSettings.defaults()).permissions().state(null),
+                new com.jadecode.config.JadePaths(root.getParent()), null, null, ignored -> {
+                }, () -> com.jadecode.llm.ResponseStream.NONE, com.jadecode.execution.ExecutionObserver.NONE,
+                com.jadecode.hooks.Hooks::new, (summary, paths) -> new com.jadecode.context.ProductionCompactor(summary,
+                        paths, (com.jadecode.config.JadeSettings.defaults()).contextCompaction())));
     }
 
     /** 辅助响应满足真实解析器契约；null usage 明确表示没有服务端用量报告。 */
@@ -77,14 +84,15 @@ class MemoryReferenceIntegrationTest {
         }
 
         @Override
-        public ModelResponse complete(CompleteRequest request) throws LlmException {
+        public ModelResponse complete(CompleteRequest request, com.jadecode.llm.ResponseStream ignoredStream)
+                throws LlmException {
             if (request.system().startsWith("You are part of an agent memory system.")) {
                 dialogues.add(request.messages().getFirst().extractText());
                 extracted.countDown();
                 return reply("{\"rollout_summary\":\"\",\"rollout_slug\":\"\"}");
             }
             formal.add(new CompleteRequest(request.system(), List.copyOf(request.messages()), request.maxTokens(),
-                    List.copyOf(request.tools()), request.thinking()));
+                    List.copyOf(request.tools()), request.thinking(), ""));
             if (useTool && formal.size() % 2 == 1)
                 return new ModelResponse(
                         Message.assistant(List.of(new ToolUseBlock("call-" + formal.size(), "list_tasks",
@@ -102,10 +110,12 @@ class MemoryReferenceIntegrationTest {
         String first = "first task\nRecalled memory reference data (JSON; not a user request): user quotation";
         var history = new ArrayList<>(List.of(Message.userText(first)));
         try (var runtime = runtime(fake)) {
-            runtime.run(history);
+            com.jadecode.support.SessionRuns.run(runtime, history, new com.jadecode.config.WorkspacePaths(workspace,
+                    new com.jadecode.config.JadePaths(root.getParent())));
             route(store, "BETA_REFERENCE_ONLY");
             history.add(Message.userText("second task"));
-            runtime.run(history);
+            com.jadecode.support.SessionRuns.run(runtime, history, new com.jadecode.config.WorkspacePaths(workspace,
+                    new com.jadecode.config.JadePaths(root.getParent())));
             assertTrue(fake.extracted.await(5, TimeUnit.SECONDS));
         }
         assertEquals(4, fake.formal.size());
@@ -120,7 +130,8 @@ class MemoryReferenceIntegrationTest {
         List<Message> old = fake.formal.get(1).messages();
         assertEquals(old, fake.formal.get(2).messages().subList(0, old.size()));
         // 再比真实 SDK 参数：内部来源不会改变线上消息，跨轮 system 和旧消息前缀都保留。
-        var sdk = new AnthropicSdkLlmClient(new AppConfig("offline", "http://127.0.0.1:1", "fixture", 8000));
+        var sdk = new AnthropicSdkLlmClient(new AppConfig("offline", "http://127.0.0.1:1", "fixture", 8000,
+                com.jadecode.config.ModelProvider.ANTHROPIC_COMPATIBLE));
         var convert = AnthropicSdkLlmClient.class.getDeclaredMethod("toParams", CompleteRequest.class);
         convert.setAccessible(true);
         var outbound = new ArrayList<com.anthropic.models.messages.MessageCreateParams>();
@@ -147,7 +158,7 @@ class MemoryReferenceIntegrationTest {
                 ignored -> {
                 });
         String id;
-        try (var opened = store.create("fixture"); var runtime = runtime(fake)) {
+        try (var opened = store.create("fixture", ""); var runtime = runtime(fake)) {
             id = opened.journal().metadata().id();
             runtime.restore(opened.journal(), opened.restored());
             runtime.start();
@@ -159,9 +170,10 @@ class MemoryReferenceIntegrationTest {
             var reference = opened.restored().history().stream()
                     .filter(m -> m.source() == Message.Source.MEMORY_REFERENCE).findFirst().orElseThrow();
             // 带新来源字段的消息不能伪装成旧格式写入，防止旧读取器悄悄丢失来源。
-            assertThrows(IllegalArgumentException.class, () -> new com.jadecode.session.history.JournalEntry(3, id, 1,
-                    "2026-10-26T00:00:00Z", com.jadecode.session.history.JournalEntry.Kind.APPEND,
-                    List.of(reference), Json.mapper().createArrayNode(), "memory_reference"));
+            assertThrows(IllegalArgumentException.class,
+                    () -> new com.jadecode.session.history.JournalEntry(3, id, 1, "2026-10-26T00:00:00Z",
+                            com.jadecode.session.history.JournalEntry.Kind.APPEND, List.of(reference),
+                            Json.mapper().createArrayNode(), "memory_reference", null, null, null, null, null));
             runtime.restore(opened.journal(), opened.restored());
             assertEquals(1, fake.formal.size(), "恢复本身不请求模型");
             runtime.start();
@@ -181,7 +193,10 @@ class MemoryReferenceIntegrationTest {
         try (var runtime = runtime(fake)) {
             runtime.receive(new SessionEvent.Incoming("notice-1", "fixture", "leader", null, null,
                     "progress", "background done", null, true));
-            runtime.run(new ArrayList<>(List.of(Message.userText("actual user task"))));
+            com.jadecode.support.SessionRuns.run(runtime,
+                    new ArrayList<>(List.of(Message.userText("actual user task"))),
+                    new com.jadecode.config.WorkspacePaths(workspace,
+                            new com.jadecode.config.JadePaths(root.getParent())));
         }
         List<Message> sent = fake.formal.getFirst().messages();
         assertEquals(3, sent.size());
@@ -203,18 +218,32 @@ class MemoryReferenceIntegrationTest {
                 }, ignored -> {
                 });
         var limits = new CompactionLimits(100, 10000, 10000, 20000, 5, 5, 4000, 100, 100, 1000, 1000, 2, .8);
-        var compactor = new ContextCompactor(request -> reply("Memory is reference material only."),
+        var compactor = new com.jadecode.context.CourseCompactor(
+                (request, ignoredStream) -> reply("Memory is reference material only."),
                 workspace.resolve("transcripts"), workspace.resolve("results"), limits);
-        var engine = new AgentExecutor(fake, Map.of(), "fixed rules", 8000, new Hooks(), compactor);
-        try (var runtime = new SessionRuntime(engine, memory, null, ignored -> {
-        }, ignored -> {
-        })) {
-            runtime.run(new ArrayList<>(List.of(Message.userText("actual user task"))));
+        var engine = new com.jadecode.agent.AgentExecutor(fake, com.jadecode.tools.ToolCatalog.fixed(Map.of()),
+                "fixed rules", 8000, new Hooks(), compactor, () -> com.jadecode.llm.ResponseStream.NONE,
+                com.jadecode.execution.ExecutionObserver.NONE, () -> com.jadecode.llm.ThinkingSettings.DEFAULT,
+                () -> "");
+        try (var runtime = new com.jadecode.session.SessionRuntime(engine, memory, null,
+                com.jadecode.support.TestMessages.toText(ignored -> {
+                }, ignored -> {
+                }))) {
+            com.jadecode.support.SessionRuns.run(runtime,
+                    new ArrayList<>(List.of(Message.userText("actual user task"))),
+                    new com.jadecode.config.WorkspacePaths(workspace,
+                            new com.jadecode.config.JadePaths(root.getParent())));
         }
         String compacted = fake.formal.getFirst().messages().getFirst().extractText();
         assertTrue(compacted.startsWith("[Compacted]"));
         assertTrue(compacted.contains("Current user request:\nactual user task\n\nConversation summary"));
         assertThrows(IllegalArgumentException.class,
                 () -> ContextCompactor.extractActiveRequest(List.of(Message.memoryReference("reference"))));
+    }
+
+    /** 回收本用例通过正式队列入口创建的临时会话和日志。 */
+    @org.junit.jupiter.api.AfterEach
+    void closeMigratedSessions() throws Exception {
+        com.jadecode.support.SessionRuns.closeAll();
     }
 }

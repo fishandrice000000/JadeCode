@@ -40,13 +40,11 @@ public final class McpTool implements Tool {
         return descriptor.description();
     }
 
-    @Override
-    public Map<String, String> properties() {
+    private Map<String, String> properties() {
         return Map.of();
     }
 
-    @Override
-    public List<String> required() {
+    private List<String> required() {
         return List.of();
     }
 
@@ -55,13 +53,9 @@ public final class McpTool implements Tool {
         return descriptor.inputSchema();
     }
 
-    /** 兼容直接文本调用；正式执行器使用 executeOutcome 保留错误标志。 */
-    @Override
-    public String execute(ObjectNode input) {
-        return executeOutcome(input, null).content();
-    }
-
-    /** 权限通过后只调用一次服务；关闭检查来自可信任务上下文，失败仍交给模型处理。 */
+    /** 权限通过后只调用一次服务；关闭检查来自可信任务上下文，失败仍交给模型处理。 * @param context Harness 提供的任务上下文；不从模型参数读取，离线只读调用可按工具契约传 null
+     * @param input 模型参数对象，只读取；具体字段由工具自行校验
+     */
     @Override
     public ToolOutcome executeOutcome(ObjectNode input, ExecutionContext context) {
         if (context != null && context.isCancelled())

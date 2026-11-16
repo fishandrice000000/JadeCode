@@ -41,11 +41,6 @@ public final class PayloadTransfer {
         sink = part -> outbox.offer(part.type(), part.payload(), part.sessionId(), part.generation(), null);
     }
 
-    /** 常驻会话使用的出口；离线分块仍由服务保存/投影，不写失效的 socket。 */
-    public PayloadTransfer(EventEndpoint endpoint) {
-        sink = part -> endpoint.sendEvent(part.type(), part.payload(), part.sessionId(), part.generation());
-    }
-
     /**
      * 把一段文本拆成 blob 事件送出。
      *
@@ -106,7 +101,7 @@ public final class PayloadTransfer {
      * 接收方向的组装器：Node 发出的长文本（提交、会话名等）先分块，再由这里校验。
      *
      * <p>它与发送器分开是因为方向、错误处理和生命周期不同：入站 blob 跟连接走，出站 blob
-     * 跟会话代次走。任何未知 id 的分块都会被拒绝，离开代次/断连时整体清空。</p>
+     * 也只属于发送连接。任何未知 id 的分块都会被拒绝，离开代次/断连时整体清空。</p>
      */
     public static final class Assembler {
         private record Assembly(String kind, int totalBytes, String hash,

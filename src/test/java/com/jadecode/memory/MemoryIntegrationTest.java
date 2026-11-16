@@ -37,7 +37,7 @@ class MemoryIntegrationTest {
         var requests = new CopyOnWriteArrayList<CompleteRequest>();
         var extractionInput = new CompletableFuture<String>();
         var completed = new CountDownLatch(1);
-        LlmClient fake = request -> {
+        LlmClient fake = (request, ignoredStream) -> {
             requests.add(request);
             if (request.tools().isEmpty()) {
                 extractionInput.complete(request.messages().getFirst().extractText());
@@ -65,14 +65,18 @@ class MemoryIntegrationTest {
         var sessions = new SessionStore(
                 new com.jadecode.config.WorkspacePaths(workspace, new com.jadecode.config.JadePaths(root.getParent())),
                 warnings::add);
-        try (var opened = sessions.create("offline");
-                var runtime = JadeCodeFactory.create(
-                        new AppConfig("offline", "http://127.0.0.1:1", "fixture", 8000), workspace, fake,
-                        ignored -> {
-                        }, warnings::add, (hooks, cwd, output) -> {
-                        }, () -> ResponseStream.NONE,
-                        ExecutionObserver.NONE, settings, settings.permissions().state(null),
-                        new com.jadecode.config.JadePaths(root.getParent()))) {
+        try (var opened = sessions.create("offline", "");
+                var runtime = com.jadecode.bootstrap.JadeCodeFactory
+                        .create(new com.jadecode.bootstrap.JadeCodeFactory.Dependencies(
+                                new AppConfig("offline", "http://127.0.0.1:1", "fixture", 8000,
+                                        com.jadecode.config.ModelProvider.ANTHROPIC_COMPATIBLE),
+                                workspace, fake, settings, settings.permissions().state(null),
+                                new com.jadecode.config.JadePaths(root.getParent()), null, null,
+                                com.jadecode.support.TestMessages.toText(ignored -> {
+                                }, warnings::add), () -> ResponseStream.NONE, ExecutionObserver.NONE,
+                                com.jadecode.hooks.Hooks::new,
+                                (summary, paths) -> new com.jadecode.context.ProductionCompactor(summary, paths,
+                                        (settings).contextCompaction())))) {
             runtime.restore(opened.journal(), opened.restored());
             runtime.start();
             assertTrue(runtime.submit("Check the project fact", null).get(5, TimeUnit.SECONDS).contains("Verified"));
@@ -97,20 +101,23 @@ class MemoryIntegrationTest {
                 root = temporary.resolve("global-memory");
         var d = JadeSettings.defaults();
         var settings = new JadeSettings(d.tui(), d.compaction(), d.limits(),
-                new JadeSettings.Memory(false, 8000, 16384, 128000),
-                d.modelMetadata(), d.thinking(), d.permissions(), d.mcp(), d.contextCompaction());
-        try (var runtime = JadeCodeFactory.create(new AppConfig("offline", "http://127.0.0.1:1", "fixture", 8000),
-                workspace,
-                request -> {
-                    assertFalse(request.tools().isEmpty());
-                    return text("done");
-                }, ignored -> {
-                }, ignored -> {
-                },
-                (hooks, cwd, output) -> {
-                }, () -> ResponseStream.NONE, ExecutionObserver.NONE, settings,
-                settings.permissions().state(null), new com.jadecode.config.JadePaths(root.getParent()))) {
-            runtime.run(new ArrayList<>(List.of(Message.userText("hello"))));
+                new JadeSettings.Memory(false, 8000, 16384, 128000), d.modelMetadata(), d.thinking(), d.permissions(),
+                d.mcp(), d.contextCompaction(), com.jadecode.sandbox.SandboxSettings.offline());
+        try (var runtime = com.jadecode.bootstrap.JadeCodeFactory
+                .create(new com.jadecode.bootstrap.JadeCodeFactory.Dependencies(
+                        new AppConfig("offline", "http://127.0.0.1:1", "fixture", 8000,
+                                com.jadecode.config.ModelProvider.ANTHROPIC_COMPATIBLE),
+                        workspace, (request, ignoredStream) -> {
+                            assertFalse(request.tools().isEmpty());
+                            return text("done");
+                        }, settings, settings.permissions().state(null),
+                        new com.jadecode.config.JadePaths(root.getParent()), null, null,
+                        com.jadecode.support.TestMessages.toText(ignored -> {
+                        }, ignored -> {
+                        }), () -> ResponseStream.NONE, ExecutionObserver.NONE, com.jadecode.hooks.Hooks::new,
+                        (summary, paths) -> new com.jadecode.context.ProductionCompactor(summary, paths,
+                                (settings).contextCompaction())))) {
+            com.jadecode.support.SessionRuns.run(runtime, new ArrayList<>(List.of(Message.userText("hello"))));
         }
         assertFalse(Files.exists(root));
     }
@@ -125,23 +132,26 @@ class MemoryIntegrationTest {
                 new com.jadecode.config.WorkspacePaths(workspace, new com.jadecode.config.JadePaths(root.getParent())),
                 ignored -> {
                 });
-        try (var opened = sessions.create("offline")) {
-            var runtime = JadeCodeFactory.create(new AppConfig("offline", "http://127.0.0.1:1", "fixture", 8000),
-                    workspace,
-                    request -> {
-                        entered.countDown();
-                        try {
-                            release.await(5, TimeUnit.SECONDS);
-                        } catch (InterruptedException interrupted) {
-                            Thread.currentThread().interrupt();
-                        }
-                        return text("Late response");
-                    }, ignored -> {
-                    }, ignored -> {
-                    }, (hooks, cwd, output) -> {
-                    }, () -> ResponseStream.NONE,
-                    ExecutionObserver.NONE, settings, settings.permissions().state(null),
-                    new com.jadecode.config.JadePaths(root.getParent()));
+        try (var opened = sessions.create("offline", "")) {
+            var runtime = com.jadecode.bootstrap.JadeCodeFactory
+                    .create(new com.jadecode.bootstrap.JadeCodeFactory.Dependencies(
+                            new AppConfig("offline", "http://127.0.0.1:1", "fixture", 8000,
+                                    com.jadecode.config.ModelProvider.ANTHROPIC_COMPATIBLE),
+                            workspace, (request, ignoredStream) -> {
+                                entered.countDown();
+                                try {
+                                    release.await(5, TimeUnit.SECONDS);
+                                } catch (InterruptedException interrupted) {
+                                    Thread.currentThread().interrupt();
+                                }
+                                return text("Late response");
+                            }, settings, settings.permissions().state(null),
+                            new com.jadecode.config.JadePaths(root.getParent()), null, null,
+                            com.jadecode.support.TestMessages.toText(ignored -> {
+                            }, ignored -> {
+                            }), () -> ResponseStream.NONE, ExecutionObserver.NONE, com.jadecode.hooks.Hooks::new,
+                            (summary, paths) -> new com.jadecode.context.ProductionCompactor(summary, paths,
+                                    (settings).contextCompaction())));
             try {
                 runtime.restore(opened.journal(), opened.restored());
                 runtime.start();
@@ -158,7 +168,7 @@ class MemoryIntegrationTest {
                 });
         assertEquals(1, store.jobs().size());
         assertEquals("interrupted", store.jobs().getFirst().path("outcome").asText());
-        try (var maintenance = new MemoryMaintenance(store, request -> {
+        try (var maintenance = new MemoryMaintenance(store, (request, ignoredStream) -> {
             assertTrue(request.messages().getFirst().extractText().contains("An unfinished human task"));
             return text("{\"rollout_summary\":\"\",\"rollout_slug\":\"\"}");
         }, settings.memory(), ignored -> {
@@ -171,5 +181,11 @@ class MemoryIntegrationTest {
 
     private static ModelResponse text(String body) {
         return new ModelResponse(Message.assistant(List.of(new TextBlock(body))), null, "end_turn");
+    }
+
+    /** 回收本用例通过正式队列入口创建的临时会话和日志。 */
+    @org.junit.jupiter.api.AfterEach
+    void closeMigratedSessions() throws Exception {
+        com.jadecode.support.SessionRuns.closeAll();
     }
 }

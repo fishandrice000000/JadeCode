@@ -1,99 +1,44 @@
 package com.jadecode.tools;
 
-import java.util.List;
-import java.util.Map;
-
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jadecode.execution.ExecutionContext;
 import com.jadecode.llm.ToolDefinition;
 
 /**
- * 模型可以调用的工具。AgentExecutor 按 tool_use 中的 name 找到实现，再依次调用 execute。
+ * 模型可以调用的工具：声明完整参数结构，并对一次已通过权限检查的调用返回明确结果。
  *
- * <p>每个工具要告诉模型自己的名字、用途、参数和必填字段，实际读取的参数要和说明一致。
- * 普通参数错误或可预期的执行失败返回 Error 文字，让模型决定是否换方法。
- * 如果实现意外抛运行异常，父执行器会补上这一批缺失的结果说明，再结束任务，
- * 不能当作工具已经成功。</p>
+ * <p>执行器先固定工具目录、检查权限，再调用 executeOutcome。工具自行校验模型参数，
+ * 以 isError 报告预期失败；不能扫描文件正文或模型文本的 Error 前缀猜测结果。
+ * 意外异常继续交给执行器补齐整批结果，已经发生的文件或进程副作用不会回滚。</p>
  */
 public interface Tool {
+    /** @return 固定工具名，用于与模型 tool_use 的 name 精确匹配 */
+    String name();
+
+    /** @return 模型选择工具时使用的用途、边界和结果说明 */
+    String description();
+
     /**
-     * 生成本次模型请求所需的数据快照；真正执行仍由本接口的 execute 完成。
-     * 每次请求重新读取工具说明，保留原来的请求时机，不缓存可变化的工具定义。
-     * @return 名称、说明与完整 schema 的快照，不包含本工具实例或执行回调
+     * 提供完整 JSON Schema；简单参数可以复用 ToolSchema 的静态构造器。
+     * @return 非 null 的参数对象结构，不读文件、不执行工具，也不授予权限
+     */
+    ObjectNode inputSchema();
+
+    /**
+     * 固定本次请求的模型定义。定义自行复制 Schema，不携带执行对象或可变权限状态。
+     * @return 名称、说明和完整结构的快照；动态工具在每次请求时重新读取
      */
     default ToolDefinition definition() {
         return new ToolDefinition(name(), description(), inputSchema());
     }
 
     /**
-     * @return 工具名,如 "bash";模型 tool_use 块的 name 字段用它匹配
+     * 在权限通过后执行一次调用；不修改输入，不在这里重放失败操作。
+     * @param input 模型参数，具体工具负责判型和缺参检查
+     * @param context Harness 提供的任务来源、取消条件与调用级许可；正式执行器始终提供，
+     *                直接离线检查可传 null，需要可信身份的工具必须明确拒绝
+     * @return 非 null 的正文和明确错误标志；预期错误可交回模型继续处理
+     * @throws RuntimeException 意外执行故障，由执行器保留已发生结果并结束任务
      */
-    String name();
-
-    /**
-     * @return 给模型看的说明:何时用、怎么用、返回什么
-     */
-    String description();
-
-    /**
-     * @return 参数表:参数名 → JSON Schema 类型名("string" / "integer" / ...);
-     *         单层标量表表达不了数组/嵌套时,返回空表并 override {@link #inputSchema()}
-     */
-    Map<String, String> properties();
-
-    /**
-     * @return 必填参数名列表,execute 据此检查缺失并回 "Error: Missing required parameter: ..."
-     */
-    List<String> required();
-
-    /**
-     * 参数结构的完整 JSON Schema,随工具定义序列化后发给模型。
-     *
-     * <p>默认实现把平铺的 properties/required 合成 {"type":"object",...},只支持单层
-     * 标量;需要数组、嵌套对象或枚举的工具必须 override 手拼完整 schema
-     * (例:todo_write 的 todos 数组,见 {@link TodoWriteTool})。</p>
-     *
-     * @return JSON Schema 根节点
-     */
-    default ObjectNode inputSchema() {
-        return ToolSchema.objectSchema(properties(), required());
-    }
-
-    /**
-     * 执行模型的一次工具调用，工具实现自己检查缺参和字段类型。
-     * @param input 模型给出的参数对象，字段可能缺失或类型错误
-     * @return 成功时的结果文字，或预期失败时以 Error 开头的说明；
-     *         执行器会用原调用 ID 把它写成 tool_result，加进 history
-     */
-    String execute(ObjectNode input);
-
-    /**
-     * 执行工具时，额外传入程序记录的任务信息；父 Agent 和子 Agent 都在检查权限后调用它。
-     *
-     * <p>后台 bash 需要任务 ID 来保存结果，task 工具需要把任务来源和退出检查传给子代理，
-     * 所以它们重写这个方法。普通工具不需要这些信息，默认直接调用原来的 execute(input)，
-     * 不用为此重写。这里不另开线程、不自动检查权限，也不修改 history。</p>
-     *
-     * <p>context 不写进工具参数说明，也不能从模型 input 中读取同名字段代替。
-     * 否则模型只要自称“用户任务”，就可能绕过定时任务不能询问用户的限制。</p>
-     * @param input 模型给出的非 null 参数对象，具体字段由工具自己检查
-     * @param context 程序提供的任务 ID、来源、询问用户的函数和退出检查；
-     *                默认实现不使用它，重写的方法自行规定能否为 null
-     * @return 工具的普通结果文字，仍由执行器配上原 tool_use_id 写进 history
-     */
-    default String execute(ObjectNode input, ExecutionContext context) {
-        return execute(input);
-    }
-
-    /**
-     * 提供带明确状态的结果，父子执行器在权限通过后调用，不另行执行第二次工具。
-     * 旧工具仍通过 execute(input, context) 执行一次，保留原来的文本契约；默认不猜测 Error 前缀。
-     * 有结构化失败标志的工具重写此入口，返回失败时仍允许模型继续处理。
-     * @param input 模型参数，具体字段由工具检查，不应修改
-     * @param context 程序提供的可信任务上下文
-     * @return 正文和失败标志，不包含 tool_use_id，不修改历史
-     */
-    default ToolOutcome executeOutcome(ObjectNode input, ExecutionContext context) {
-        return new ToolOutcome(execute(input, context), false);
-    }
+    ToolOutcome executeOutcome(ObjectNode input, ExecutionContext context);
 }

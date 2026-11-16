@@ -55,12 +55,7 @@ public final class SessionLlmClient implements LlmClient {
     }
 
     @Override
-    public ModelResponse complete(CompleteRequest request) throws LlmException {
-        return delegate.complete(bind(request));
-    }
-
-    @Override
     public ModelResponse complete(CompleteRequest request, ResponseStream stream) throws LlmException {
-        return delegate.complete(bind(request), stream);
+        return delegate.complete(bind(request), java.util.Objects.requireNonNull(stream, "stream"));
     }
 }

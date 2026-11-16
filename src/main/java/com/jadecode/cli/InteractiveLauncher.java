@@ -6,10 +6,7 @@ import java.nio.file.Path;
 import java.security.SecureRandom;
 import java.util.Base64;
 
-import com.jadecode.cli.backend.BackendApplication;
 import com.jadecode.cli.backend.BackendSessionService;
-import com.jadecode.cli.backend.transport.LocalControlServer;
-import com.jadecode.config.JadeConfigFile;
 
 /**
  * 交互入口：一个 Java 后端 + 一个 Node 界面，Node 独占终端。
@@ -23,64 +20,9 @@ import com.jadecode.config.JadeConfigFile;
  * 失败返回 1；正常退出 0。信号（SIGINT/SIGTERM）由 JVM 默认处理，退出码为 130/143。</p>
  */
 public final class InteractiveLauncher {
-    // 根 CLI 由 ServiceCli 连接常驻服务；run 保留进程内兼容装配，spawn/finish 供新入口共用。
+    // ServiceCli 负责连接常驻服务；本类只拥有 Node 进程的启动与退出。
     /** 启动 Node 后最多等待其退出的时间（正常关闭会更快）。 */
     private static final long NODE_EXIT_GRACE_MILLIS = 5_000;
-
-    /**
-     * 运行交互模式；返回进程退出码。
-     *
-     * @param options 已解析的根参数（不含 headless）
-     */
-    public int run(LaunchOptions options) {
-        FrontendDistribution distribution;
-        try {
-            distribution = FrontendDistribution.locate();
-            distribution.nodeExecutable();
-        } catch (FrontendDistribution.Missing missing) {
-            System.err.println("Cannot start the interactive UI:");
-            System.err.println(missing.getMessage());
-            return 2;
-        }
-        if (System.console() == null) {
-            System.err.println("The interactive UI needs a real terminal. Use --headless <prompt> for automation.");
-            return 2;
-        }
-        LocalControlServer server = null;
-        Process node = null;
-        try {
-            server = LocalControlServer.open();
-            String credential = newCredential();
-            node = spawn(distribution, server.socketPath(), credential);
-            BackendSessionService.Startup startup = startup(options);
-            BackendApplication.Options backendOptions = new BackendApplication.Options(
-                    JadeConfigFile.defaultPath(), options.permission(), startup, options.modelConfig());
-            int code;
-            String backendFailure;
-            try (LocalControlServer endpoint = server;
-                    BackendApplication application = new BackendApplication(backendOptions, endpoint, credential,
-                            distribution.buildId())) {
-                code = application.run();
-                backendFailure = application.failureMessage();
-            }
-            int exit = finish(code, node);
-            // 单独发给 Node 的信号会先关闭 UDS；随后 broken pipe 是退出结果，不覆盖信号身份。
-            if (code != 0 && exit != 129 && exit != 130 && exit != 143 && backendFailure != null
-                    && !backendFailure.isBlank())
-                System.err.println("Backend stopped: " + backendFailure);
-            return exit;
-        } catch (IOException | RuntimeException failure) {
-            System.err.println("Could not start the interactive UI: " + failure.getMessage());
-            if (node != null)
-                node.destroy();
-            return 1;
-        } finally {
-            if (node != null && node.isAlive())
-                node.destroy();
-            if (server != null)
-                server.close();
-        }
-    }
 
     /**
      * 有界等待界面退出；Node 的 SIGHUP/SIGINT/SIGTERM 身份优先于其断连引出的后端 IO 失败。

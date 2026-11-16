@@ -23,7 +23,6 @@ import com.jadecode.cli.backend.protocol.WireMessage;
 import com.jadecode.config.JadeSettings;
 import com.jadecode.config.WorkspacePaths;
 import com.jadecode.execution.ExecutionObserver;
-import com.jadecode.llm.ResponseStream;
 import com.jadecode.llm.ThinkingSettings;
 import com.jadecode.safety.PermissionProfile;
 import com.jadecode.session.SessionRuntime;
@@ -48,7 +47,7 @@ import com.jadecode.util.Json;
 public final class BackendSessionService implements AutoCloseable {
     /** 快照出口：完整快照（含历史）与只读状态刷新分开，避免每帧重发历史。 */
     public interface SnapshotSink {
-        void full(String snapshotId, long generation, long sourceSeq,
+        void full(String snapshotId, long generation,
                 List<BackendHistoryProjector.Entry> entries, BackendSnapshot snapshot);
 
         void state(BackendSnapshot snapshot);
@@ -74,12 +73,17 @@ public final class BackendSessionService implements AutoCloseable {
         final DisplayClock clock;
         final BackendObserver observer;
         final BackendMessages messages;
+        final WireContext wire;
         final BridgeApproval approval;
         volatile String sessionId = "";
 
         Generation(BackendSessionService owner, long generation, WireContext wire) {
             this.generation = generation;
-            this.clock = new DisplayClock((actor, tick) -> owner.sendClock(wire, actor, tick));
+            this.wire = new WireContext(wire.session());
+            this.wire.update("", generation);
+            wire = this.wire;
+            WireContext generationWire = wire;
+            this.clock = new DisplayClock((actor, tick) -> owner.sendClock(generationWire, actor, tick));
             this.observer = new BackendObserver(wire, clock, ignored -> owner.requestStateSnapshot());
             this.messages = new BackendMessages(wire);
             this.approval = new BridgeApproval(wire);
@@ -161,10 +165,8 @@ public final class BackendSessionService implements AutoCloseable {
     private SessionRuntime createRuntime(long generation) {
         Generation candidate = new Generation(this, generation, wire);
         pending = candidate;
-        Consumer<String> output = text -> candidate.messages.message(text, false);
-        Consumer<String> errors = text -> candidate.messages.message(text, true);
         ExecutionObserver observer = candidate.observer;
-        return factory.create(output, errors, () -> new BackendStream(wire, "leader"), observer);
+        return factory.create(candidate.messages::emit, () -> new BackendStream(candidate.wire, "leader"), observer);
     }
 
     /**
@@ -186,6 +188,7 @@ public final class BackendSessionService implements AutoCloseable {
         if (generation == null || generation.generation != opened.generation())
             throw new IOException("The backend session factory did not produce the requested generation");
         generation.sessionId = host.current().sessionId();
+        generation.wire.update(generation.sessionId, generation.generation);
         current = generation;
         submissions.clear();
         restored = opened.restored();
@@ -272,8 +275,7 @@ public final class BackendSessionService implements AutoCloseable {
         String body = host.current().teamReport(id);
         ObjectNode result = Json.mapper().createObjectNode();
         result.put("assignmentId", id);
-        result.put("textBlobRef",
-                wire.payloads().sendText("team-report", body, wire.sessionId(), wire.generation(), "team"));
+        result.put("text", body);
         wire.session().sendOk(command.commandId(), result, wire.sessionId(), wire.generation());
     }
 
@@ -763,9 +765,7 @@ public final class BackendSessionService implements AutoCloseable {
             return;
         List<BackendHistoryProjector.Entry> entries = BackendHistoryProjector.project(restored);
         String snapshotId = "snap-" + generation.generation + "-" + (++snapshotCounter);
-        long sourceSeq = wire.session().sentSeq();
-        wire.session().expectReady(snapshotId, generation.generation, sourceSeq);
-        snapshots.full(snapshotId, generation.generation, sourceSeq, entries, snapshot());
+        snapshots.full(snapshotId, generation.generation, entries, snapshot());
     }
 
     /** 组装当前只读资料；历史条目不在其中，避免每帧重发。 */
@@ -799,13 +799,7 @@ public final class BackendSessionService implements AutoCloseable {
         payload.put("submissionId", submissionId);
         payload.put("entryId", "task-" + submissionId);
         payload.put("state", "SUBMITTING");
-        if (text != null && text.length() > 32_768) {
-            payload.put("text", "");
-            payload.put("textBlobRef", wire.payloads().sendText("task-text", text, wire.sessionId(),
-                    wire.generation(), "task"));
-        } else {
-            payload.put("text", text == null ? "" : text);
-        }
+        payload.put("text", text == null ? "" : text);
         return payload;
     }
 
@@ -834,13 +828,7 @@ public final class BackendSessionService implements AutoCloseable {
                 wire.session().sendEvent("task.failed", payload, wire.sessionId(), wire.generation());
             } else {
                 String value = text == null ? "" : text;
-                if (value.length() > 32_768) {
-                    payload.put("text", "");
-                    payload.put("textBlobRef", wire.payloads().sendText("task-reply", value,
-                            wire.sessionId(), wire.generation(), "reply"));
-                } else {
-                    payload.put("text", value);
-                }
+                payload.put("text", value);
                 wire.session().sendEvent("task.result", payload, wire.sessionId(), wire.generation());
             }
             sendStateSnapshot();

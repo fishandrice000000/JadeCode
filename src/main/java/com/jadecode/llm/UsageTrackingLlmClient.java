@@ -48,27 +48,19 @@ public final class UsageTrackingLlmClient implements LlmClient {
         return delegate.thinkingLabel(value);
     }
 
-    @Override
-    public ModelResponse complete(CompleteRequest request) throws LlmException {
-        return call(request, null);
-    }
-
+    /**
+     * 正式与辅助请求都只经过一次记账。失败没有完整 usage 时登记缺失，不伪造 token。
+     * 思考来源存在时读取其当前快照；无来源时保留请求本身的设置，不修改输入对象。
+     */
     @Override
     public ModelResponse complete(CompleteRequest request, ResponseStream stream) throws LlmException {
-        return call(request, stream);
-    }
-
-    /**
-     * 两种调用只经过这里一次。流式返回的完整 usage 才计入，不把每个 delta 当成新增花费。
-     * 网络/流失败没有完整报告时登记缺失并原样抛出；记账失败不能触发业务重试。
-     */
-    private ModelResponse call(CompleteRequest request, ResponseStream stream) throws LlmException {
+        java.util.Objects.requireNonNull(stream, "stream");
         beforeRequest.run();
         String id = UUID.randomUUID().toString();
         CompleteRequest actual = thinking == null ? request : request.withThinking(thinking.get());
         ModelResponse response;
         try {
-            response = stream == null ? delegate.complete(actual) : delegate.complete(actual, stream);
+            response = delegate.complete(actual, stream);
         } catch (LlmException | RuntimeException failure) {
             // 服务端可能已经收费，但没提供可用报告。只登记缺失，不假装知道实际数字。
             try {

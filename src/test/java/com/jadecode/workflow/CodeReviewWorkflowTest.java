@@ -41,7 +41,7 @@ class CodeReviewWorkflowTest {
     /** 审查与复核的响应使用严格 JSON，真实用量用于检查步骤数和恢复零重调。 */
     private static ModelResponse reply(JsonNode value) {
         return new ModelResponse(Message.assistant(List.of(new TextBlock(value.toString()))),
-                new ModelResponse.Usage(2, 3), "end_turn");
+                new ModelResponse.Usage(2, 3, 0, 0), "end_turn");
     }
 
     /** 复核结构明确表示确认/否定/缺上下文，空 needed_context 才能接受确定结论。 */
@@ -70,7 +70,7 @@ class CodeReviewWorkflowTest {
     /** 每维返回调用方提供的结构；复核请求可断言看见完整源资料与候选，统计真实步骤。 */
     private static LlmClient model(Function<String, ObjectNode> audit, Function<String, ObjectNode> verify,
             AtomicInteger calls) {
-        return request -> {
+        return (request, ignoredStream) -> {
             calls.incrementAndGet();
             assertTrue(request.tools().isEmpty());
             assertEquals(1, request.messages().size());
@@ -99,9 +99,9 @@ class CodeReviewWorkflowTest {
             assertTrue(prompt.contains("Candidate:"));
             return verdict("confirmed", "");
         }, calls);
-        LlmClient client = request -> {
+        LlmClient client = (request, ignoredStream) -> {
             prompts.add(request.messages().getFirst().extractText());
-            return scripted.complete(request);
+            return scripted.complete(request, com.jadecode.llm.ResponseStream.NONE);
         };
         ObjectNode first;
         try (var runtime = runtime(client)) {
@@ -241,7 +241,7 @@ class CodeReviewWorkflowTest {
     /** 输入结构、重复标签和总量失败在任何模型请求前拒绝；标签不会被当作真实路径读取。 */
     @Test
     void rejectsBadAndOversizedInputsBeforeModelCalls() throws Exception {
-        try (var runtime = runtime(request -> {
+        try (var runtime = runtime((request, ignoredStream) -> {
             fail("invalid input must not call models");
             return null;
         })) {

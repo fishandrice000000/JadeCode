@@ -12,25 +12,13 @@ import com.jadecode.session.SessionUsage;
 public record SessionMetadata(int version, String id, String workspace, String title,
         String createdAt, String updatedAt, String model, boolean customTitle, SessionUsage.Totals usage,
         ThinkingSettings thinking, String backendIdentity) {
-    /** 版本 5 增加无凭据的后端恢复身份；仍读取版本 1–4，旧读取器不得写回新日志。 */
+    /** 当前唯一的会话格式版本；读取器拒绝其它版本，避免猜补旧记录。 */
     public static final int VERSION = 5;
-
-    /** 原构造与旧清单都没有后端身份，不能推断它们来自 Go。 */
-    public SessionMetadata(int version, String id, String workspace, String title, String createdAt, String updatedAt,
-            String model, boolean customTitle, SessionUsage.Totals usage, ThinkingSettings thinking) {
-        this(version, id, workspace, title, createdAt, updatedAt, model, customTitle, usage, thinking, "");
-    }
-
-    /** 兼容旧创建代码和版本 1 文件；旧文件没有用量，并不代表真实花费为零。 */
-    public SessionMetadata(int version, String id, String workspace, String title, String createdAt, String updatedAt,
-            String model) {
-        this(version, id, workspace, title, createdAt, updatedAt, model, false, SessionUsage.Totals.empty(), null);
-    }
 
     /** 校验文件身份；不允许把任意路径字符串当成会话 ID。 */
     public SessionMetadata {
         requireId(id);
-        if (version < 1 || version > VERSION || workspace == null || workspace.isBlank() || title == null
+        if (version != VERSION || workspace == null || workspace.isBlank() || title == null
                 || model == null)
             throw new IllegalArgumentException("Session manifest fields or version are invalid");
         if (usage == null)
@@ -38,8 +26,8 @@ public record SessionMetadata(int version, String id, String workspace, String t
         if (backendIdentity == null)
             backendIdentity = "";
         // 只接受本项目生成的无秘密摘要，拒绝将原 URL、Key 或任意多行文字混入身份。
-        if (!backendIdentity.isEmpty() && (version < 5
-                || !backendIdentity.matches("(anthropic-compatible|opencode-go):messages:[0-9a-f]{64}")))
+        if (!backendIdentity.isEmpty()
+                && (!backendIdentity.matches("(anthropic-compatible|opencode-go):messages:[0-9a-f]{64}")))
             throw new IllegalArgumentException("Invalid session backend identity");
         Instant.parse(createdAt);
         Instant.parse(updatedAt);
@@ -63,11 +51,10 @@ public record SessionMetadata(int version, String id, String workspace, String t
     }
 
     /**
-     * 新日志的默认标题是英文；旧版本持久化的默认标题仍按“未命名”处理，
-     * 这样恢复旧会话时首条请求仍能补上标题，同时不修改历史原文。
+     * 只有当前默认标题视为未命名；其它标题均保留原文。
      */
     private static boolean isDefaultTitle(String value) {
-        return value.equals("New session") || value.equals("新会话");
+        return value.equals("New session");
     }
 
     /** 写入用量后更新列表用的汇总；逐次日志仍是恢复统计的依据。 */

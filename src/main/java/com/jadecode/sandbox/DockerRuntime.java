@@ -80,7 +80,7 @@ public final class DockerRuntime implements AutoCloseable {
         this(settings, cache, diagnostics, null);
     }
 
-    /** 服务注入顶层会话的范围领取器；离线旧调用保持不依赖服务的契约。 */
+    /** 服务注入顶层会话的范围领取器；无范围领取器的离线装配只使用自身的沙箱约束。 */
     public DockerRuntime(SandboxSettings settings, Path cache, Consumer<String> diagnostics, WriteScopes scopes) {
         this.writeScopes = scopes;
         this.settings = settings;

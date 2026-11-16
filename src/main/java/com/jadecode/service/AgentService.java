@@ -12,7 +12,6 @@ import com.jadecode.cli.backend.*;
 import com.jadecode.cli.backend.protocol.*;
 import com.jadecode.config.*;
 import com.jadecode.safety.*;
-import com.jadecode.session.SessionRuntime;
 import com.jadecode.util.Json;
 
 /**
@@ -354,7 +353,7 @@ public final class AgentService implements AutoCloseable {
         public final String workspaceId;
         final WorkspaceClaims.Lease lease;
         public final SessionChannel channel = new SessionChannel();
-        public final WireContext wire = new WireContext(channel, new PayloadTransfer(channel));
+        public final WireContext wire = new WireContext(channel);
         public final BackendSessionService backend;
         private final ServiceJournal journal;
         private final BackendSessionService.Startup startup;

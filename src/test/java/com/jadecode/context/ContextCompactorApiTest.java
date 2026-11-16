@@ -14,7 +14,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * ContextCompactor 对外 API 可见性契约测试。
+ * CourseCompactor 对外 API 可见性契约测试。
  *
  * <p>
  * 固定本次收敛的结果:loop 集成需要的外部入口保持 public;管线内部层与工程工具
@@ -25,22 +25,22 @@ class ContextCompactorApiTest {
 
     /** 反射:public 方法必须存在且可见 */
     private static boolean isPublic(String name, Class<?>... parameterTypes) throws Exception {
-        return Modifier.isPublic(ContextCompactor.class.getMethod(name, parameterTypes).getModifiers());
+        return Modifier.isPublic(CourseCompactor.class.getMethod(name, parameterTypes).getModifiers());
     }
 
     /** 反射:包内方法(仅要求"存在且不是 public") */
     private static Method declared(String name, Class<?>... parameterTypes) throws Exception {
-        return ContextCompactor.class.getDeclaredMethod(name, parameterTypes);
+        return CourseCompactor.class.getDeclaredMethod(name, parameterTypes);
     }
 
     /** 构造 API、规格常量与 loop 集成入口保持 public */
     @Test
     void loopIntegrationEntriesStayPublic() throws Exception {
-        assertTrue(Modifier.isPublic(ContextCompactor.class
+        assertTrue(Modifier.isPublic(CourseCompactor.class
                 .getConstructor(LlmClient.class, Path.class, Path.class).getModifiers()));
-        assertTrue(Modifier.isPublic(ContextCompactor.class
+        assertTrue(Modifier.isPublic(CourseCompactor.class
                 .getConstructor(LlmClient.class, Path.class, Path.class, CompactionLimits.class).getModifiers()));
-        assertTrue(Modifier.isPublic(ContextCompactor.class
+        assertTrue(Modifier.isPublic(CourseCompactor.class
                 .getField("MAX_REACTIVE_RETRIES").getModifiers()));
 
         assertTrue(isPublic("limits"));
@@ -54,8 +54,10 @@ class ContextCompactorApiTest {
         assertTrue(isPublic("compactAfterBatch", List.class, List.class, String.class));
         // 响应式补救与父子共用判定
         assertTrue(isPublic("reactiveCompact", List.class, String.class));
-        assertTrue(isPublic("extractActiveRequest", List.class));
-        assertTrue(isPublic("isContextOverflow", LlmException.class));
+        assertTrue(
+                Modifier.isPublic(ContextCompactor.class.getMethod("extractActiveRequest", List.class).getModifiers()));
+        assertTrue(Modifier
+                .isPublic(ContextCompactor.class.getMethod("isContextOverflow", LlmException.class).getModifiers()));
     }
 
     /** 管线内部层与工程工具不再是对外 public API */

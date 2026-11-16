@@ -10,10 +10,10 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jadecode.util.Json;
 
 /**
- * 拼接平铺工具参数结构（JSON Schema），供 {@link Tool#inputSchema()} 的默认实现使用。
+ * 拼接平铺工具参数结构（JSON Schema），供简单工具显式实现 {@link Tool#inputSchema()} 使用。
  *
  * <p>只支持单层标量参数。需要数组、嵌套对象或枚举的工具不用它，
- * 自己重写 {@link Tool#inputSchema()} 手拼（例如 todo_write 的 todos 数组）。
+ * 在 {@link Tool#inputSchema()} 中手拼（例如 todo_write 的 todos 数组）。
  */
 public final class ToolSchema {
     /** 纯静态工具类,禁止实例化 */

@@ -46,31 +46,22 @@ public class WriteFileTool implements Tool {
     /**
      * @return 参数表:path(string)、content(string),均必填
      */
-    @Override
-    public Map<String, String> properties() {
+
+    private Map<String, String> properties() {
         return Map.of("path", "string", "content", "string");
     }
 
     /**
      * @return 必填 [path, content]
      */
-    @Override
-    public List<String> required() {
+
+    private List<String> required() {
         return List.of("path", "content");
     }
 
-    /**
-     * 按 required() 检查缺失参数,然后透传 {@link #run(String, String)}。
-     *
-     * @param input 模型参数,须含 path 与 content
-     * @return 成功:写入字节数与路径;错误 "Error: ..." 文案
+    /** 保存实际 IO 状态，宿主与容器使用同一份实现。 * @param context Harness 提供的任务上下文；不从模型参数读取，离线只读调用可按工具契约传 null
+     * @param input 模型参数对象，只读取；具体字段由工具自行校验
      */
-    @Override
-    public String execute(ObjectNode input) {
-        return executeOutcome(input, null).content();
-    }
-
-    /** 保存实际 IO 状态，宿主与容器使用同一份实现。 */
     @Override
     public ToolOutcome executeOutcome(ObjectNode input, com.jadecode.execution.ExecutionContext context) {
         for (String key : required()) {
@@ -106,4 +97,9 @@ public class WriteFileTool implements Tool {
         return new ToolOutcome("Wrote " + content.getBytes(StandardCharsets.UTF_8).length + " bytes to " + path, false);
     }
 
+    /** 提供完整参数结构；标量构造器只负责组装 Schema，不授予执行权限。 */
+    @Override
+    public com.fasterxml.jackson.databind.node.ObjectNode inputSchema() {
+        return com.jadecode.tools.ToolSchema.objectSchema(properties(), required());
+    }
 }

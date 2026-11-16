@@ -37,11 +37,11 @@ class FileToolsTest {
         Files.writeString(ws.resolve("f.txt"), "a\nb\nc");
 
         ReadFileTool read = new ReadFileTool(resolver);
-        assertEquals("a\nb\nc", read.execute(input("path", "f.txt")));
+        assertEquals("a\nb\nc", read.executeOutcome(input("path", "f.txt"), null).content());
 
         ObjectNode limited = input("path", "f.txt");
         limited.put("limit", 1);
-        assertEquals("a\n... (2 more lines)", read.execute(limited));
+        assertEquals("a\n... (2 more lines)", read.executeOutcome(limited, null).content());
     }
 
     /** ② write:父目录不存在时一并创建,返回消息带 UTF-8 字节数 */
@@ -49,7 +49,7 @@ class FileToolsTest {
     void writeFileCreatesParentsAndReportsBytes() throws IOException {
         WriteFileTool write = new WriteFileTool(resolver);
 
-        String out = write.execute(input("path", "nested/dir/f.txt").put("content", "hello"));
+        String out = write.executeOutcome(input("path", "nested/dir/f.txt").put("content", "hello"), null).content();
 
         assertEquals("Wrote 5 bytes to nested/dir/f.txt", out);
         assertEquals("hello", Files.readString(ws.resolve("nested/dir/f.txt")));
@@ -64,13 +64,13 @@ class FileToolsTest {
         ObjectNode in = input("path", "f.txt");
         in.put("old_text", "hello");
         in.put("new_text", "hi");
-        assertEquals("Edited f.txt", edit.execute(in));
+        assertEquals("Edited f.txt", edit.executeOutcome(in, null).content());
         assertEquals("hi world hello", Files.readString(ws.resolve("f.txt")));
 
         ObjectNode missing = input("path", "f.txt");
         missing.put("old_text", "not-there");
         missing.put("new_text", "x");
-        assertTrue(edit.execute(missing).contains("not found"));
+        assertTrue(edit.executeOutcome(missing, null).content().contains("not found"));
     }
 
     /** ④ glob:匹配结果排序输出;无匹配返回占位符 */
@@ -82,7 +82,7 @@ class FileToolsTest {
         Files.writeString(ws.resolve("sub/c.md"), "");
         GlobTool glob = new GlobTool(resolver);
 
-        assertEquals("a.txt\nb.txt", glob.execute(input("pattern", "*.txt")));
-        assertEquals("(no matches)", glob.execute(input("pattern", "*.java")));
+        assertEquals("a.txt\nb.txt", glob.executeOutcome(input("pattern", "*.txt"), null).content());
+        assertEquals("(no matches)", glob.executeOutcome(input("pattern", "*.java"), null).content());
     }
 }

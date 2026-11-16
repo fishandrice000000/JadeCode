@@ -18,7 +18,6 @@ import com.jadecode.safety.PermissionState;
 import com.jadecode.tools.BashTool;
 import com.jadecode.util.PathResolver;
 import com.jadecode.util.Json;
-import com.jadecode.workspace.WorkspaceFiles;
 
 /** 真实 UDS/管理协议验证成果断点下载、摘要与拒绝覆盖；不启动模型或 Docker。 */
 class WorkspaceDownloadTest {
@@ -29,7 +28,7 @@ class WorkspaceDownloadTest {
     void resumesPublishedBytesAndRejectsCorruptPrefixOrExistingDestination() throws Exception {
         var paths = new JadePaths(root.resolve("data"));
         paths.directory(paths.config(), true);
-        Files.writeString(paths.config().resolve("config.json"), "{\"memory\":{\"enabled\":false}}");
+        Files.writeString(paths.config().resolve("config.json"), "{\"version\":1,\"memory\":{\"enabled\":false}}");
         var service = new AgentService(paths, "fixture", (workspace, permissions, configuration) -> {
             throw new AssertionError("Download must not create an Agent");
         });
