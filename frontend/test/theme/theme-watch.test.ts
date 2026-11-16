@@ -4,7 +4,7 @@ import { ThemeController } from "../../src/theme/theme-controller.ts";
 import { parseThemeDocument } from "../../src/theme/theme-document.ts";
 
 function document(name: string, accent: string) {
-	return parseThemeDocument(JSON.stringify({ name, colors: { accent, text: "#ffffff", background: "#000000" } }));
+	return parseThemeDocument(JSON.stringify({ schemaVersion: 2, name, variants: { dark: { colors: { accent, text: "#ffffff", background: "#000000" } }, light: { colors: { accent, text: "#ffffff", background: "#000000" } } } }));
 }
 
 test("the current subscription survives repeated updates, and switching themes moves it", () => {

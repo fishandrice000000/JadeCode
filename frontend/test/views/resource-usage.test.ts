@@ -8,7 +8,7 @@ import { parseThemeDocument } from "../../src/theme/theme-document.ts";
 import { resolveTheme } from "../../src/theme/theme-resolver.ts";
 
 test("wire resource names appear only when expanded and CH comes from the reported request", () => {
-	const theme = resolveTheme(parseThemeDocument(JSON.stringify({ name: "t", colors: {} })), "dark", { mode: "256color", noColor: true });
+	const theme = resolveTheme(parseThemeDocument(JSON.stringify({ schemaVersion: 2, name: "t", variants: { dark: { colors: {} }, light: { colors: {} } } })), "dark", { mode: "256color", noColor: true });
 	const session = new SessionStore();
 	session.applySnapshot({ snapshot: { sessionId: "s", generation: "1", tui: { quietStartup: true },
 		resources: { Context: ["AGENTS.md"], Skills: ["local"] }, usage: { recentCacheHitPercent: 60 } } } as never);
@@ -24,7 +24,7 @@ test("wire resource names appear only when expanded and CH comes from the report
 });
 
 test("context marks local estimates and preserves reported occupancy without the estimate marker", () => {
-	const theme = resolveTheme(parseThemeDocument(JSON.stringify({ name: "t", colors: {} })), "dark", { mode: "256color", noColor: true });
+	const theme = resolveTheme(parseThemeDocument(JSON.stringify({ schemaVersion: 2, name: "t", variants: { dark: { colors: {} }, light: { colors: {} } } })), "dark", { mode: "256color", noColor: true });
 	const session = new SessionStore();
 	for (const estimated of [true, false]) {
 		session.applySnapshot({ snapshot: { sessionId: "s", generation: "1", tui: {}, usage: {},

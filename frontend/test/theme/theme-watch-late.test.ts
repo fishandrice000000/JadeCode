@@ -5,10 +5,10 @@ import { ThemeController } from "../../src/theme/theme-controller.ts";
 import { parseThemeDocument } from "../../src/theme/theme-document.ts";
 
 const docs = {
-	a: parseThemeDocument(JSON.stringify({ name: "a", colors: { accent: "#ff0000", text: "#ffffff", background: "#000000" } })),
-	b: parseThemeDocument(JSON.stringify({ name: "b", colors: { accent: "#00ff00", text: "#ffffff", background: "#000000" } })),
-	c: parseThemeDocument(JSON.stringify({ name: "c", colors: { accent: "#0000ff", text: "#ffffff", background: "#000000" } })),
-	a2: parseThemeDocument(JSON.stringify({ name: "a", colors: { accent: "#123456", text: "#ffffff", background: "#000000" } })),
+	a: parseThemeDocument(JSON.stringify({ schemaVersion: 2, name: "a", variants: { dark: { colors: { accent: "#ff0000", text: "#ffffff", background: "#000000" } }, light: { colors: { accent: "#ff0000", text: "#ffffff", background: "#000000" } } } })),
+	b: parseThemeDocument(JSON.stringify({ schemaVersion: 2, name: "b", variants: { dark: { colors: { accent: "#00ff00", text: "#ffffff", background: "#000000" } }, light: { colors: { accent: "#00ff00", text: "#ffffff", background: "#000000" } } } })),
+	c: parseThemeDocument(JSON.stringify({ schemaVersion: 2, name: "c", variants: { dark: { colors: { accent: "#0000ff", text: "#ffffff", background: "#000000" } }, light: { colors: { accent: "#0000ff", text: "#ffffff", background: "#000000" } } } })),
+	a2: parseThemeDocument(JSON.stringify({ schemaVersion: 2, name: "a", variants: { dark: { colors: { accent: "#123456", text: "#ffffff", background: "#000000" } }, light: { colors: { accent: "#123456", text: "#ffffff", background: "#000000" } } } })),
 };
 
 test("a late failure for an older commit must not overwrite a newer preview", () => {

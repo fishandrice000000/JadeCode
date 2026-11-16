@@ -10,7 +10,7 @@ import {
 	styleText,
 	type TerminalColorMode,
 } from "@earendil-works/pi-tui";
-import { DARK, LIGHT, SINGLE, type RawColor, type RawVariant, type ThemeDocument } from "./theme-document.ts";
+import { DARK, LIGHT, type RawColor, type RawVariant, type ThemeDocument } from "./theme-document.ts";
 
 /**
  * 主题解析：变量 → 语义角色 → 可渲染快照。
@@ -197,7 +197,7 @@ export interface ResolveOptions {
  * 解析一个文档变体。
  *
  * @param document 已通过结构校验的主题文件
- * @param variantKey dark/light，或 v1 的 single
+ * @param variantKey dark/light
  */
 export function resolveTheme(document: ThemeDocument, variantKey: string, options: ResolveOptions): ResolvedTheme {
 	const variant = pickVariant(document, variantKey);
@@ -247,7 +247,7 @@ export function resolveTheme(document: ThemeDocument, variantKey: string, option
 		if (contrast) colors.set(fgRole, contrast);
 	}
 	return {
-		name: variantKey === SINGLE ? document.name : `${document.name}:${variantKey}`,
+		name: `${document.name}:${variantKey}`,
 		appearance,
 		mode: options.mode,
 		colors,
@@ -275,7 +275,6 @@ export function resolveTheme(document: ThemeDocument, variantKey: string, option
 function pickVariant(document: ThemeDocument, key: string): RawVariant {
 	const direct = document.variants[key];
 	if (direct) return direct;
-	if (document.schemaVersion === 1) return document.variants[SINGLE]!;
 	const fallback = document.variants[DARK] ?? document.variants[LIGHT];
 	if (!fallback) throw new Error("Theme has no usable variant");
 	return fallback;

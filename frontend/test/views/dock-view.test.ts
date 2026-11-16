@@ -5,7 +5,7 @@ import { DockView, framePage } from "../../src/views/dock-view.ts";
 import { parseThemeDocument } from "../../src/theme/theme-document.ts";
 import { resolveTheme } from "../../src/theme/theme-resolver.ts";
 
-const theme = resolveTheme(parseThemeDocument(JSON.stringify({ name: "t", colors: {} })), "dark",
+const theme = resolveTheme(parseThemeDocument(JSON.stringify({ schemaVersion: 2, name: "t", variants: { dark: { colors: {} }, light: { colors: {} } } })), "dark",
 	{ mode: "256color", noColor: true });
 
 function page(title: string, body: string[], hint = ""): never {

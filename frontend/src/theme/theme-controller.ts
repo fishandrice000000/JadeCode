@@ -263,9 +263,6 @@ export class ThemeController {
 	}
 
 	private resolveDocument(loaded: ThemeLoadResult, mode: TerminalColorMode): ResolvedTheme {
-		if (loaded.document.schemaVersion === 1) {
-			return resolveTheme(loaded.document, "single", { mode, noColor: this.noColor });
-		}
 		return resolveTheme(loaded.document, this.dark ? "dark" : "light", { mode, noColor: this.noColor });
 	}
 

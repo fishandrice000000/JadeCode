@@ -16,13 +16,12 @@ test("v2 builtin resolves both variants and every role colour", () => {
 	}
 });
 
-test("v1 single-appearance themes still parse and use semantic fallbacks", () => {
-	const document = parseThemeDocument(JSON.stringify({
-		name: "legacy", colors: { accent: "#00ff00", text: "#ffffff", background: "#000000" },
-	}));
-	const theme = resolveTheme(document, "single", { mode: "256color" });
-	assert.equal(theme.appearance, "dark");
-	assert.ok(theme.colors.has("mdHeading"), "missing newer roles fall back to accent/text");
+test("v1 themes are rejected and v2 semantic fallbacks remain available", () => {
+	const colors = { accent: "#00ff00", text: "#ffffff", background: "#000000" };
+	assert.throws(() => parseThemeDocument(JSON.stringify({ name: "legacy", colors })));
+	const document = parseThemeDocument(JSON.stringify({ schemaVersion: 2, variants: { dark: { colors }, light: { colors } } }));
+	const theme = resolveTheme(document, "dark", { mode: "256color" });
+	assert.ok(theme.colors.has("mdHeading"));
 });
 
 test("system theme keeps terminal fg/bg and NO_COLOR emits no styling", () => {

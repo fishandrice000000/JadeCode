@@ -10,7 +10,7 @@ const builtin = new URL("../../../assets/themes/", import.meta.url).pathname;
 
 function controller(): { value: ThemeController; errors: string[]; saved: Array<Record<string, unknown>>; directory: string } {
 	const custom = mkdtempSync(join(tmpdir(), "jade-theme-"));
-	writeFileSync(join(custom, "custom.json"), JSON.stringify({ name: "custom", colors: { accent: "#00ff00", text: "#ffffff", background: "#000000" } }));
+	writeFileSync(join(custom, "custom.json"), JSON.stringify({ schemaVersion: 2, name: "custom", variants: { dark: { colors: { accent: "#00ff00", text: "#ffffff", background: "#000000" } }, light: { colors: { accent: "#00ff00", text: "#ffffff", background: "#000000" } } } }));
 	const errors: string[] = [];
 	const saved: Array<Record<string, unknown>> = [];
 	const value = new ThemeController({
