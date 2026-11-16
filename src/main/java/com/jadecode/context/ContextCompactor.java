@@ -61,11 +61,14 @@ public final class ContextCompactor {
             ProductionCompactionSettings settings) {
         var facade = new ContextCompactor(client, paths, CompactionLimits.defaults(),
                 new CompactionPolicy(true, false, false, false, false, settings.autoSummaryEnabled(), false));
-        facade.production = new ProductionCompactor(client, paths, settings); return facade;
+        facade.production = new ProductionCompactor(client, paths, settings);
+        return facade;
     }
 
     /** @return 是否使用 Token 生产主干，供装配与验证区分课程路径。 */
-    public boolean productionMode() { return production != null; }
+    public boolean productionMode() {
+        return production != null;
+    }
 
     /** 固定一次实际请求投影，生产只判断 Token，课程继续使用显式教学阈值。 */
     public List<Message> prepare(com.jadecode.llm.CompleteRequest request, String activeRequest,
@@ -157,7 +160,8 @@ public final class ContextCompactor {
     }
 
     /** 显式课程策略也可使用全局布局，使用与生产相同的运行目录。 */
-    public ContextCompactor(LlmClient client, com.jadecode.config.WorkspacePaths paths, CompactionLimits limits, CompactionPolicy policy) {
+    public ContextCompactor(LlmClient client, com.jadecode.config.WorkspacePaths paths, CompactionLimits limits,
+            CompactionPolicy policy) {
         this(client, paths.transcripts(), paths.toolResults(), limits, policy, paths);
     }
 
@@ -179,8 +183,11 @@ public final class ContextCompactor {
     public CompactionLimits limits() {
         return limits;
     }
+
     /** 固定的开关快照；执行器据此决定是否允许服务端超限后的补救，关闭时不偷偷重试。 */
-    public CompactionPolicy policy() { return policy; }
+    public CompactionPolicy policy() {
+        return policy;
+    }
 
     /* ===================== 总入口 ===================== */
 
@@ -197,17 +204,25 @@ public final class ContextCompactor {
      * @throws LlmException 生成摘要失败，原样抛出，不装作压缩成功
      */
     public List<Message> prepare(List<Message> messages, String activeRequest) throws LlmException {
-        if (production != null) throw new IllegalStateException("Production compaction requires the actual request projection and history token tracker");
+        if (production != null)
+            throw new IllegalStateException(
+                    "Production compaction requires the actual request projection and history token tracker");
         // 1. 只处理新鲜批次，不遍历旧结果改写缓存前缀。两种预算开关在同一入口分开判断。
         List<Message> current = toolResultBudget(messages);
-        if (policy.snipEnabled()) current = snipCompact(current);
-        if (smallEnough(current)) return current;
+        if (policy.snipEnabled())
+            current = snipCompact(current);
+        if (smallEnough(current))
+            return current;
 
         // 2. 这些是可选的课程增强。关掉某项时完全跳过，不写它的转存／归档文件。
-        if (policy.microEnabled()) current = microCompact(current, limits.targetChars());
-        if (smallEnough(current)) return current;
-        if (policy.fitEnabled()) current = fitToolResults(current, limits.targetChars());
-        if (smallEnough(current)) return current;
+        if (policy.microEnabled())
+            current = microCompact(current, limits.targetChars());
+        if (smallEnough(current))
+            return current;
+        if (policy.fitEnabled())
+            current = fitToolResults(current, limits.targetChars());
+        if (smallEnough(current))
+            return current;
 
         // 3. 摘要仍保护尚未消费的最新工具交换。失败原样传播，不当作整理成功。
         return policy.autoSummaryEnabled() ? compactHistory(current, activeRequest) : current;
@@ -279,7 +294,8 @@ public final class ContextCompactor {
      * @return 处理后的列表;无需处理时原样返回入参
      */
     public List<Message> toolResultBudget(List<Message> messages) {
-        List<Message> current = policy.largeResultEnabled() ? toolResultBudgetCompactor.persistLargeResults(messages) : messages;
+        List<Message> current = policy.largeResultEnabled() ? toolResultBudgetCompactor.persistLargeResults(messages)
+                : messages;
         return policy.batchBudgetEnabled() ? toolResultBudgetCompactor.toolResultBudget(current) : current;
     }
 
@@ -605,10 +621,12 @@ public final class ContextCompactor {
     public static String extractActiveRequest(List<Message> messages) {
         // 1. 列表本身:入口至少要有一条"人类请求"可言。
         if (messages == null) {
-            throw new IllegalArgumentException("messages cannot be null: the entry point requires at least one human request");
+            throw new IllegalArgumentException(
+                    "messages cannot be null: the entry point requires at least one human request");
         }
         if (messages.isEmpty()) {
-            throw new IllegalArgumentException("messages cannot be empty: the entry point requires at least one human request");
+            throw new IllegalArgumentException(
+                    "messages cannot be empty: the entry point requires at least one human request");
         }
 
         // 2. 末条消息:必须存在、来自 USER,并且 content 不为 null。

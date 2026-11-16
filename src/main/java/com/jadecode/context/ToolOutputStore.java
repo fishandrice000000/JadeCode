@@ -23,12 +23,14 @@ final class ToolOutputStore {
      * @param toolResultsDir 工具结果落盘目录
      */
     ToolOutputStore(Path toolResultsDir) {
-        this.toolResultsDir = toolResultsDir; this.paths = null;
+        this.toolResultsDir = toolResultsDir;
+        this.paths = null;
     }
 
     /** 使用统一布局，逐级检查用户数据目录。 */
     ToolOutputStore(com.jadecode.config.WorkspacePaths paths) {
-        this.toolResultsDir = paths.toolResults(); this.paths = paths;
+        this.toolResultsDir = paths.toolResults();
+        this.paths = paths;
     }
 
     /**
@@ -74,8 +76,10 @@ final class ToolOutputStore {
 
         // 2. 建目录。失败即抛出,绝不返回一个写不进去的路径。
         try {
-            if (paths == null) Files.createDirectories(toolResultsDir);
-            else paths.directory(toolResultsDir, true);
+            if (paths == null)
+                Files.createDirectories(toolResultsDir);
+            else
+                paths.directory(toolResultsDir, true);
         } catch (IOException e) {
             throw new IllegalStateException("Failed to create tool result directory: " + toolResultsDir, e);
         }
@@ -155,7 +159,8 @@ final class ToolOutputStore {
         // 3. 真实路径校验:候选与落盘目录都解析到真实路径后再判包含关系。
         // toRealPath 会把符号链接解到最终目标,所以"指向目录外的软链"会在这里被拒。
         try {
-            if (paths != null) paths.directory(toolResultsDir, false);
+            if (paths != null)
+                paths.directory(toolResultsDir, false);
             Path realDir = toolResultsDir.toRealPath();
             Path realFile = path.toRealPath();
             if (!realFile.startsWith(realDir) || !Files.isRegularFile(realFile)) {

@@ -14,7 +14,8 @@ import com.jadecode.util.Json;
  * 三个实例共用父会话的一个调度器，仍然由 AgentExecutor 在权限检查通过后执行。
  */
 public final class CronTools {
-    private CronTools() { }
+    private CronTools() {
+    }
 
     /** 构造工具定义，不读写磁盘、不启动调度线程。 */
     public static List<Tool> forScheduler(CronScheduler scheduler) {
@@ -28,8 +29,9 @@ public final class CronTools {
         @Override
         public String description() {
             return switch (name) {
-                case "schedule_cron" -> "Schedule a prompt using five-field local-time cron. recurring and durable default to true."
-                        + " Runs only while this REPL is alive; durable preserves state, not an external daemon. Delivery may repeat after crashes.";
+                case "schedule_cron" ->
+                    "Schedule a prompt using five-field local-time cron. recurring and durable default to true."
+                            + " Runs only while this REPL is alive; durable preserves state, not an external daemon. Delivery may repeat after crashes.";
                 case "list_crons" -> "List cron definitions and pending delivery state; does not run them.";
                 default -> "Cancel a cron definition by job_id. Does not undo an already delivered task.";
             };
@@ -39,7 +41,8 @@ public final class CronTools {
         @Override
         public Map<String, String> properties() {
             return switch (name) {
-                case "schedule_cron" -> Map.of("cron", "string", "prompt", "string", "recurring", "boolean", "durable", "boolean");
+                case "schedule_cron" ->
+                    Map.of("cron", "string", "prompt", "string", "recurring", "boolean", "durable", "boolean");
                 case "cancel_cron" -> Map.of("job_id", "string");
                 default -> Map.of();
             };
@@ -71,7 +74,8 @@ public final class CronTools {
         @Override
         public String execute(ObjectNode input) {
             try {
-                if (input == null) throw new IllegalArgumentException("Input must be an object");
+                if (input == null)
+                    throw new IllegalArgumentException("Input must be an object");
                 var fields = input.fields();
                 while (fields.hasNext()) {
                     var field = fields.next();
@@ -82,12 +86,15 @@ public final class CronTools {
                     }
                 }
                 for (String key : required()) {
-                    if (!input.has(key)) throw new IllegalArgumentException("Missing required parameter: " + key);
+                    if (!input.has(key))
+                        throw new IllegalArgumentException("Missing required parameter: " + key);
                 }
                 // 只有全部形状检查通过才调用存储，默认 true 不把显式 false 覆盖掉。
                 return switch (name) {
-                    case "schedule_cron" -> Json.mapper().writeValueAsString(scheduler.schedule(input.get("cron").textValue(),
-                            input.get("prompt").textValue(), input.path("recurring").asBoolean(true), input.path("durable").asBoolean(true)));
+                    case "schedule_cron" -> Json.mapper()
+                            .writeValueAsString(scheduler.schedule(input.get("cron").textValue(),
+                                    input.get("prompt").textValue(), input.path("recurring").asBoolean(true),
+                                    input.path("durable").asBoolean(true)));
                     case "list_crons" -> Json.mapper().writeValueAsString(scheduler.list());
                     default -> {
                         scheduler.cancel(input.get("job_id").textValue());

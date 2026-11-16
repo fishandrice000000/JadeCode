@@ -25,10 +25,14 @@ public record Message(Role role, List<ContentBlock> content,
         @JsonInclude(JsonInclude.Include.NON_NULL) Source source) {
 
     /** 标识宿主注入的召回资料，不表示用户授权，也不由正文标签推断。 */
-    public enum Source { MEMORY_REFERENCE }
+    public enum Source {
+        MEMORY_REFERENCE
+    }
 
     /** 普通消息与旧日志没有来源字段；保持既有构造方式和 JSON 形状。 */
-    public Message(Role role, List<ContentBlock> content) { this(role, content, null); }
+    public Message(Role role, List<ContentBlock> content) {
+        this(role, content, null);
+    }
 
     /** 已标记参考消息必须是非空 USER 文本，不能伪装工具调用、结果或模型回答。 */
     public Message {

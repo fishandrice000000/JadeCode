@@ -10,15 +10,20 @@ import java.util.UUID;
  */
 public record GoalState(String id, String condition, Status status, int evaluations, String startedAt, String reason) {
     public enum Status {
-        /** 未满足，或遇到额度/判断错误后等待用户继续。 */ ACTIVE,
-        /** 独立判断器认为条件已由当前证据满足；仍不保证模型绝对正确。 */ ACHIEVED,
-        /** 判断器认为无法完成的失败终态，不自动恢复成活跃目标。 */ IMPOSSIBLE,
-        /** 用户主动清除，只停目标推动，不撤销已开始的工具。 */ CLEARED
+        /** 未满足，或遇到额度/判断错误后等待用户继续。 */
+        ACTIVE,
+        /** 独立判断器认为条件已由当前证据满足；仍不保证模型绝对正确。 */
+        ACHIEVED,
+        /** 判断器认为无法完成的失败终态，不自动恢复成活跃目标。 */
+        IMPOSSIBLE,
+        /** 用户主动清除，只停目标推动，不撤销已开始的工具。 */
+        CLEARED
     }
 
     /** 日志与新输入使用同一校验；null、空条件和非法状态不能悄悄恢复成活跃目标。 */
     public GoalState {
-        if (id == null || !UUID.fromString(id).toString().equals(id) || status == null || evaluations < 0 || reason == null)
+        if (id == null || !UUID.fromString(id).toString().equals(id) || status == null || evaluations < 0
+                || reason == null)
             throw new IllegalArgumentException("Invalid goal state");
         condition = validCondition(condition);
         Instant.parse(startedAt);
@@ -32,5 +37,7 @@ public record GoalState(String id, String condition, Status status, int evaluati
     }
 
     /** @return 是否仍欠完成判断；失败/清除不会在恢复聊天时重新启动。 */
-    public boolean active() { return status == Status.ACTIVE; }
+    public boolean active() {
+        return status == Status.ACTIVE;
+    }
 }

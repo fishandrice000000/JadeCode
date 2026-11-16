@@ -16,8 +16,10 @@ public record WorkflowAgentRunner(LlmClient client, String model, int maxTokens,
 
     /** 构造只检查依赖和请求预算，不发 API 请求。 */
     public WorkflowAgentRunner {
-        java.util.Objects.requireNonNull(client); java.util.Objects.requireNonNull(thinking);
-        if (model == null || model.isBlank() || maxTokens < 1) throw new IllegalArgumentException("Invalid workflow runner");
+        java.util.Objects.requireNonNull(client);
+        java.util.Objects.requireNonNull(thinking);
+        if (model == null || model.isBlank() || maxTokens < 1)
+            throw new IllegalArgumentException("Invalid workflow runner");
     }
 
     /** 端点/模型和格式提示版本参与缓存身份；只存哈希，不把端点可能携带的认证片段写进快照。 */
@@ -26,7 +28,9 @@ public record WorkflowAgentRunner(LlmClient client, String model, int maxTokens,
             String basis = "workflow-runner-v1|" + model + "|" + maxTokens + "|" + thinking.name();
             return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
                     .digest(basis.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
-        } catch (java.security.NoSuchAlgorithmException impossible) { throw new IllegalStateException("SHA-256 unavailable", impossible); }
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 unavailable", impossible);
+        }
     }
 
     /**
@@ -43,8 +47,10 @@ public record WorkflowAgentRunner(LlmClient client, String model, int maxTokens,
      * 输入不被修改，返回模型原响应和用量；网络/模型异常向上传递，结构校验仍归 Context。
      */
     ModelResponse call(String commonPrefix, JsonNode schema, String task) throws LlmException {
-        String request = commonPrefix + (schema == null ? "" : "\nReturn only one JSON value matching this schema:\n" + schema)
+        String request = commonPrefix
+                + (schema == null ? "" : "\nReturn only one JSON value matching this schema:\n" + schema)
                 + (task == null ? "" : "\n" + task);
-        return client.complete(new CompleteRequest(SYSTEM, List.of(Message.userText(request)), maxTokens, List.of(), thinking));
+        return client.complete(
+                new CompleteRequest(SYSTEM, List.of(Message.userText(request)), maxTokens, List.of(), thinking));
     }
 }

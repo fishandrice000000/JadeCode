@@ -29,31 +29,38 @@ class BackendHistoryProjectorTest {
                 List.of(entries), List.of(), entries.length, 0, false, false));
     }
 
-    @Test void notificationDoesNotOverwriteUserOrBecomeUserHistory() {
+    @Test
+    void notificationDoesNotOverwriteUserOrBecomeUserHistory() {
         var entries = project(entry(1, JournalEntry.Kind.APPEND, "user", message(Role.USER, "my request")),
-                entry(2, JournalEntry.Kind.REPLACE_LAST, "notification", message(Role.USER, "my request\nbackground done")));
+                entry(2, JournalEntry.Kind.REPLACE_LAST, "notification",
+                        message(Role.USER, "my request\nbackground done")));
         assertEquals(List.of("USER", "NOTICE"), entries.stream().map(BackendHistoryProjector.Entry::kind).toList());
         assertEquals("my request", entries.getFirst().body());
         assertEquals("background done", entries.getLast().body());
     }
 
     /** 召回资料只属于模型上下文；恢复后普通请求与独立通知保持原显示身份。 */
-    @Test void memoryReferenceDoesNotBecomeUserHistory() {
+    @Test
+    void memoryReferenceDoesNotBecomeUserHistory() {
         var reference = new JournalEntry(4, ID, 2, "2026-10-26T00:00:00Z", JournalEntry.Kind.APPEND,
                 List.of(Message.memoryReference("old memory reference")), JSON.createArrayNode(), "memory_reference");
-        var entries = project(entry(1, JournalEntry.Kind.APPEND, "request", Message.userText("real request")), reference,
+        var entries = project(entry(1, JournalEntry.Kind.APPEND, "request", Message.userText("real request")),
+                reference,
                 entry(3, JournalEntry.Kind.APPEND, "notification", Message.userText("background done")),
                 entry(4, JournalEntry.Kind.APPEND, "reply", Message.assistant(List.of(new TextBlock("answer")))));
-        assertEquals(List.of("USER", "NOTICE", "REPLY"), entries.stream().map(BackendHistoryProjector.Entry::kind).toList());
+        assertEquals(List.of("USER", "NOTICE", "REPLY"),
+                entries.stream().map(BackendHistoryProjector.Entry::kind).toList());
         assertEquals("real request", entries.getFirst().body());
         assertTrue(entries.stream().noneMatch(e -> e.body().contains("old memory reference")));
         // 若第一轮在模型回答前失败，下一次真实输入也不能覆盖第一条已显示的请求。
         var next = project(entry(1, JournalEntry.Kind.APPEND, "request", Message.userText("first request")), reference,
                 entry(3, JournalEntry.Kind.APPEND, "request", Message.userText("next request")));
-        assertEquals(List.of("first request", "next request"), next.stream().map(BackendHistoryProjector.Entry::body).toList());
+        assertEquals(List.of("first request", "next request"),
+                next.stream().map(BackendHistoryProjector.Entry::body).toList());
     }
 
-    @Test void compactionPreservesEarlierDisplayAndRollbackRemovesOnlyCurrentTurn() {
+    @Test
+    void compactionPreservesEarlierDisplayAndRollbackRemovesOnlyCurrentTurn() {
         var entries = project(entry(1, JournalEntry.Kind.APPEND, "user", message(Role.USER, "original")),
                 entry(2, JournalEntry.Kind.APPEND, "reply", message(Role.ASSISTANT, "old reply")),
                 entry(3, JournalEntry.Kind.REPLACE_HISTORY, "compact", message(Role.USER, "summary")),

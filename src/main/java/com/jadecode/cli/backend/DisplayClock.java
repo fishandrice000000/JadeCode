@@ -17,10 +17,12 @@ import java.util.function.BiConsumer;
 public final class DisplayClock {
     /** 一次快照：Node 用它更新时间标签。 */
     public record Tick(String actor, String runId, long elapsedMs, boolean running, boolean paused,
-            boolean displayStopped, long revision) { }
+            boolean displayStopped, long revision) {
+    }
 
     private record Turn(String runId, long sampledAtNanos, long sampledElapsedNanos,
-            int pauseDepth, boolean displayStopped) { }
+            int pauseDepth, boolean displayStopped) {
+    }
 
     private final Map<String, Turn> turns = new HashMap<>();
     private final Map<String, Long> completed = new HashMap<>();
@@ -28,7 +30,9 @@ public final class DisplayClock {
     private long revision;
 
     /** @param sink 接收显示计时事件（第二参数为快照，第一参数为 actor） */
-    public DisplayClock(BiConsumer<String, Tick> sink) { this.sink = sink; }
+    public DisplayClock(BiConsumer<String, Tick> sink) {
+        this.sink = sink;
+    }
 
     /** 新的大轮次开始；id 是执行线程给出的 run 编号。 */
     public synchronized void started(String actor, String runId) {
@@ -40,7 +44,8 @@ public final class DisplayClock {
     /** 进入/离开人工审批等待；重叠暂停只扣一次。 */
     public synchronized void paused(String actor, boolean pause, long sampledElapsedNanos) {
         Turn turn = turns.get(actor);
-        if (turn == null) return;
+        if (turn == null)
+            return;
         long now = System.nanoTime();
         // 先把本次采样带进新对象；不能先写 map，再用旧 turn 覆盖回去。
         // DISPLAY_STOP 后的审批恢复不能把 Memory 阶段时间加回已经冻结的回答。
@@ -54,7 +59,8 @@ public final class DisplayClock {
     /** 最后回答显示截止/恢复；只冻结显示，不结束业务轮次。 */
     public synchronized void displayStopped(String actor, boolean stopped, long sampledElapsedNanos) {
         Turn turn = turns.get(actor);
-        if (turn == null) return;
+        if (turn == null)
+            return;
         long now = System.nanoTime();
         long sampled = sampledElapsedNanos > 0 ? sampledElapsedNanos : elapsed(turn, now);
         turns.put(actor, new Turn(turn.runId(), now, sampled, turn.pauseDepth(), stopped));
@@ -82,7 +88,8 @@ public final class DisplayClock {
     /** @return 当前快照；没有活动轮次时返回最近冻结耗时（running=false）。 */
     public synchronized Tick tick(String actor) {
         Turn turn = turns.get(actor);
-        if (turn != null) return snapshot(actor, turn, System.nanoTime());
+        if (turn != null)
+            return snapshot(actor, turn, System.nanoTime());
         Long frozen = completed.get(actor);
         return new Tick(actor, "", frozen == null ? 0 : frozen / 1_000_000L, false, false, true, revision);
     }
@@ -90,8 +97,10 @@ public final class DisplayClock {
     /** 所有 actor 的当前快照；Node 在快照/诊断刷新时使用。 */
     public synchronized Map<String, Tick> all() {
         Map<String, Tick> result = new HashMap<>();
-        for (String actor : turns.keySet()) result.put(actor, tick(actor));
-        for (String actor : completed.keySet()) result.putIfAbsent(actor, tick(actor));
+        for (String actor : turns.keySet())
+            result.put(actor, tick(actor));
+        for (String actor : completed.keySet())
+            result.putIfAbsent(actor, tick(actor));
         return Map.copyOf(result);
     }
 
@@ -112,6 +121,7 @@ public final class DisplayClock {
 
     private void publishAll() {
         revision++;
-        for (var entry : all().entrySet()) sink.accept(entry.getKey(), entry.getValue());
+        for (var entry : all().entrySet())
+            sink.accept(entry.getKey(), entry.getValue());
     }
 }

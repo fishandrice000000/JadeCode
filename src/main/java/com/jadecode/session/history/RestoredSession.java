@@ -14,8 +14,14 @@ public record RestoredSession(SessionMetadata metadata, List<Message> history, A
         List<JournalEntry> entries, List<String> warnings, long sequence, long validBytes,
         boolean hasPartialTail, boolean repairedHistory) {
     public RestoredSession {
-        history = List.copyOf(history); entries = List.copyOf(entries);
-        warnings = List.copyOf(warnings); todos = todos.deepCopy();
+        history = List.copyOf(history);
+        entries = List.copyOf(entries);
+        warnings = List.copyOf(warnings);
+        todos = todos.deepCopy();
     }
-    @Override public ArrayNode todos() { return todos.deepCopy(); }
+
+    @Override
+    public ArrayNode todos() {
+        return todos.deepCopy();
+    }
 }

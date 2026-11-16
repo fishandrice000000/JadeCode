@@ -22,7 +22,8 @@ public final class ContextTokenTracker {
     private long occupied;
 
     /** 当前输入的估计与来源；estimated=false 仅表示没有新增内容且使用了服务端锚点。 */
-    public record Estimate(long tokens, boolean estimated) { }
+    public record Estimate(long tokens, boolean estimated) {
+    }
 
     /**
      * 只在调用方确认助手回复完整且会被采用后登记。请求历史先复制，再追加该回复，
@@ -31,11 +32,16 @@ public final class ContextTokenTracker {
     public synchronized void accepted(CompleteRequest request, ModelResponse response) {
         // 防御调用方遗漏校验：不把截断、拒绝或非助手消息登记为可复用的完整锚点。
         if (response.message().role() != com.jadecode.messages.Role.ASSISTANT
-                || response.stopReason().equals("max_tokens") || response.stopReason().equals("refusal")) return;
+                || response.stopReason().equals("max_tokens") || response.stopReason().equals("refusal"))
+            return;
         var usage = response.usage();
-        if (usage == null || Math.addExact(usage.totalInputTokens(), usage.outputTokens()) == 0) return;
-        system = request.system(); tools = List.copyOf(request.tools()); thinking = request.thinking();
-        var afterReply = new ArrayList<>(request.messages()); afterReply.add(response.message());
+        if (usage == null || Math.addExact(usage.totalInputTokens(), usage.outputTokens()) == 0)
+            return;
+        system = request.system();
+        tools = List.copyOf(request.tools());
+        thinking = request.thinking();
+        var afterReply = new ArrayList<>(request.messages());
+        afterReply.add(response.message());
         prefix = List.copyOf(afterReply);
         occupied = Math.addExact(usage.totalInputTokens(), usage.outputTokens());
     }
@@ -55,18 +61,25 @@ public final class ContextTokenTracker {
     }
 
     /** 历史替换后由拥有者清除；不影响别的 Agent，也不改已有计费记录。 */
-    public synchronized void invalidate() { prefix = null; tools = null; system = null; occupied = 0; }
+    public synchronized void invalidate() {
+        prefix = null;
+        tools = null;
+        system = null;
+        occupied = 0;
+    }
 
     /** 完整请求的本地估计：固定部分只计一次，认证、额度和内部来源不属于上下文。 */
     public static long projected(CompleteRequest request) {
         return Math.addExact(messages(request.messages()),
-                Math.addExact(text(request.system()), text(Json.mapper().valueToTree(request.tools()).toString())) + 16);
+                Math.addExact(text(request.system()), text(Json.mapper().valueToTree(request.tools()).toString()))
+                        + 16);
     }
 
     /** 消息类型由既有 content JSON 表达，覆盖文本、思考、工具名/参数/结果，并留角色边界开销。 */
     public static long messages(List<Message> messages) {
         long total = 0;
-        for (Message message : messages) total = Math.addExact(total, message(message));
+        for (Message message : messages)
+            total = Math.addExact(total, message(message));
         return total;
     }
 
@@ -80,12 +93,16 @@ public final class ContextTokenTracker {
      * 不把中文也除以四；粗估仍可能有误差，不能宣称服务端绝不会拒绝。
      */
     public static long text(String value) {
-        if (value == null || value.isEmpty()) return 0;
+        if (value == null || value.isEmpty())
+            return 0;
         long ascii = 0, unicode = 0;
         for (int index = 0; index < value.length();) {
-            int point = value.codePointAt(index); index += Character.charCount(point);
-            if (point < 128) ascii++;
-            else unicode += point <= 0x7ff ? 2 : point <= 0xffff ? 3 : 4;
+            int point = value.codePointAt(index);
+            index += Character.charCount(point);
+            if (point < 128)
+                ascii++;
+            else
+                unicode += point <= 0x7ff ? 2 : point <= 0xffff ? 3 : 4;
         }
         return (ascii + 3) / 4 + unicode;
     }

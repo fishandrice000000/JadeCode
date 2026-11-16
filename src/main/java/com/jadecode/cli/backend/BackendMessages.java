@@ -15,11 +15,14 @@ import com.jadecode.util.Json;
  */
 public final class BackendMessages {
     /** 一条已解析的程序消息。 */
-    public record Parsed(String actor, String label, String body, boolean error) { }
+    public record Parsed(String actor, String label, String body, boolean error) {
+    }
 
     private final WireContext wire;
 
-    public BackendMessages(WireContext wire) { this.wire = wire; }
+    public BackendMessages(WireContext wire) {
+        this.wire = wire;
+    }
 
     /** 解析并发送一条程序消息。 */
     public void message(String value, boolean error) {
@@ -45,21 +48,30 @@ public final class BackendMessages {
         String actor = "System";
         String body = value == null ? "" : value;
         String label = error ? "Error" : "Notice";
-        if (body.startsWith("[Leader] ")) { actor = "leader"; body = body.substring(9); }
-        else if (body.startsWith("[Leader]")) { actor = "leader"; body = body.substring(8); }
-        else if (body.startsWith("[Teammate ")) {
+        if (body.startsWith("[Leader] ")) {
+            actor = "leader";
+            body = body.substring(9);
+        } else if (body.startsWith("[Leader]")) {
+            actor = "leader";
+            body = body.substring(8);
+        } else if (body.startsWith("[Teammate ")) {
             int end = body.indexOf("] ");
-            if (end > 0) { actor = body.substring(10, end); body = body.substring(end + 2); }
+            if (end > 0) {
+                actor = body.substring(10, end);
+                body = body.substring(end + 2);
+            }
         }
         if (body.startsWith("[")) {
             int end = body.indexOf(']');
             if (end > 0) {
                 label = body.substring(1, end);
                 body = body.substring(end + 1);
-                if (body.startsWith(" ")) body = body.substring(1);
+                if (body.startsWith(" "))
+                    body = body.substring(1);
             }
         }
-        if (actor.equals("System") && label.equals("Reply")) actor = "leader";
+        if (actor.equals("System") && label.equals("Reply"))
+            actor = "leader";
         return new Parsed(actor, label, body, error);
     }
 }

@@ -45,7 +45,9 @@ public final class HeadlessRunner {
     private final PrintStream out;
     private final PrintStream err;
 
-    public HeadlessRunner() { this(System.out, System.err); }
+    public HeadlessRunner() {
+        this(System.out, System.err);
+    }
 
     /** 可注入输出流，便于测试真实 stdout/stderr 语义。 */
     public HeadlessRunner(PrintStream out, PrintStream err) {
@@ -73,7 +75,8 @@ public final class HeadlessRunner {
             RuntimeFactory factory = new RuntimeFactory(settings, permissions, options.modelConfig());
             Path workspace = Path.of("").toAbsolutePath().normalize();
             HostFactory hostFactory = ignored -> new SessionHost(new WorkspacePaths(workspace),
-                    generation -> factory.create(noOutput(), ignoredErr -> { }, () -> ResponseStream.NONE,
+                    generation -> factory.create(noOutput(), ignoredErr -> {
+                    }, () -> ResponseStream.NONE,
                             ExecutionObserver.NONE),
                     warning -> ignored.println(warning));
             return execute(options, hostFactory);
@@ -91,7 +94,8 @@ public final class HeadlessRunner {
 
     /** 无界面不打印模型进展；只有真错误走 stderr。 */
     private static java.util.function.Consumer<String> noOutput() {
-        return ignored -> { };
+        return ignored -> {
+        };
     }
 
     /**
@@ -108,12 +112,14 @@ public final class HeadlessRunner {
             CompletableFuture<String> result = host.startWithInitial(opened.generation(), options.initialPrompt(),
                     null);
             String answer = result.get();
-            if (answer != null && !answer.isBlank()) out.println(TerminalText.display(answer));
+            if (answer != null && !answer.isBlank())
+                out.println(TerminalText.display(answer));
             out.flush();
             return 0;
         } catch (ExecutionException failure) {
             Throwable cause = failure.getCause() == null ? failure : failure.getCause();
-            err.println("Execution did not finish: " + (cause.getMessage() == null ? cause.toString() : cause.getMessage()));
+            err.println("Execution did not finish: "
+                    + (cause.getMessage() == null ? cause.toString() : cause.getMessage()));
             return 1;
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
@@ -125,8 +131,9 @@ public final class HeadlessRunner {
             return 1;
         } finally {
             if (host != null) {
-                try { host.close(); }
-                catch (RuntimeException failure) {
+                try {
+                    host.close();
+                } catch (RuntimeException failure) {
                     err.println("Session cleanup failed: " + failure.getMessage());
                 }
             }

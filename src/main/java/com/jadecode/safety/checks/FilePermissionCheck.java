@@ -8,21 +8,29 @@ import com.jadecode.util.PathResolver;
 /** 文件工具共用读写语义与真实路径解析；输出资料只给规则层，不产生读写副作用。 */
 public final class FilePermissionCheck implements ToolPermissionCheck {
     private final PathResolver resolver;
-    public FilePermissionCheck(PathResolver resolver) { this.resolver = resolver; }
+
+    public FilePermissionCheck(PathResolver resolver) {
+        this.resolver = resolver;
+    }
+
     /** Glob 的 root 也是读取资源，不能因为是搜索工具就漏掉外部目录或路径规则。 */
     public Analysis analyzeGlob(ObjectNode input) {
         if (input.has("root") && !input.path("root").isTextual())
-            return new Analysis("glob", resolver.workspaceReal(), List.of(), List.of(), false, true, false, "glob.root must be a string");
+            return new Analysis("glob", resolver.workspaceReal(), List.of(), List.of(), false, true, false,
+                    "glob.root must be a string");
         String raw = input.path("root").asText(".");
         Path target = resolver.resolve(raw), original = resolver.workspaceReal().resolve(raw).normalize();
         var resources = target.equals(original) ? List.of(new Resource(target, "READ"))
                 : List.of(new Resource(target, "READ"), new Resource(original, "READ"));
         return new Analysis("glob", resolver.workspaceReal(), resources, List.of(), false, true, false, "");
     }
-    @Override public Analysis analyze(String tool, ObjectNode input) {
+
+    @Override
+    public Analysis analyze(String tool, ObjectNode input) {
         Path cwd = resolver.workspaceReal();
         if (!input.path("path").isTextual() || input.path("path").textValue().isBlank())
-            return new Analysis(tool, cwd, List.of(), List.of(), false, false, false, "Tool is missing a non-empty path");
+            return new Analysis(tool, cwd, List.of(), List.of(), false, false, false,
+                    "Tool is missing a non-empty path");
         // 同一份解析器交给实际文件工具，不能让检查与执行各自使用不同 cwd。
         Path target = resolver.resolve(input.path("path").textValue());
         boolean write = !tool.equals("read_file");

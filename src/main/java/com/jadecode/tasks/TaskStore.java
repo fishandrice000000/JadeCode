@@ -154,7 +154,8 @@ public final class TaskStore {
             dependencies.add(dependency);
         }
         // 2. Task 重建后统一保存；调用方持有的旧 Task / List 都不会被原地改变。
-        Task updated = new Task(id, task.subject(), task.description(), task.status(), task.owner(), List.copyOf(dependencies));
+        Task updated = new Task(id, task.subject(), task.description(), task.status(), task.owner(),
+                List.copyOf(dependencies));
         save(updated);
         return updated;
     }

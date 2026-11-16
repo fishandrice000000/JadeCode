@@ -24,37 +24,52 @@ final class MemoryTransaction {
 
     private MemoryTransaction(Path root, Path backup, Map<String, String> originals,
             Map<String, String> replacements, String oldIndex, String newIndex) {
-        this.root = root; this.backup = backup; this.originals = originals;
-        this.replacements = replacements; this.oldIndex = oldIndex; this.newIndex = newIndex;
+        this.root = root;
+        this.backup = backup;
+        this.originals = originals;
+        this.replacements = replacements;
+        this.oldIndex = oldIndex;
+        this.newIndex = newIndex;
     }
 
     /**
      * 保存完整可恢复材料；本方法失败时旧库完全未动，不创建 READY。
      * 文件名已经由 Store 分配，本层仍检查单层文件名以防将来调用者把目录写进清单。
      */
-    static MemoryTransaction prepare(Path root, Map<String, String> originals, Map<String, String> replacements, String newIndex) throws IOException {
+    static MemoryTransaction prepare(Path root, Map<String, String> originals, Map<String, String> replacements,
+            String newIndex) throws IOException {
         Path backup = Files.createTempDirectory(root, ".memory-backup-");
         Path old = Files.createDirectory(backup.resolve("old")), next = Files.createDirectory(backup.resolve("new"));
-        for (var entry : originals.entrySet()) write(old.resolve(filename(entry.getKey())), entry.getValue());
-        for (var entry : replacements.entrySet()) write(next.resolve(filename(entry.getKey())), entry.getValue());
+        for (var entry : originals.entrySet())
+            write(old.resolve(filename(entry.getKey())), entry.getValue());
+        for (var entry : replacements.entrySet())
+            write(next.resolve(filename(entry.getKey())), entry.getValue());
         Path index = root.resolve("MEMORY.md");
         String oldIndex = Files.exists(index, LinkOption.NOFOLLOW_LINKS) ? readPlain(index) : null;
-        if (oldIndex != null) write(backup.resolve("index-old.txt"), oldIndex);
+        if (oldIndex != null)
+            write(backup.resolve("index-old.txt"), oldIndex);
         write(backup.resolve("index-new.txt"), newIndex);
         var manifest = Json.mapper().createObjectNode();
         manifest.put("version", 1).put("hadIndex", oldIndex != null);
         var oldNames = manifest.putArray("originals");
         var newNames = manifest.putArray("replacements");
-        originals.keySet().forEach(oldNames::add); replacements.keySet().forEach(newNames::add);
+        originals.keySet().forEach(oldNames::add);
+        replacements.keySet().forEach(newNames::add);
         write(backup.resolve("manifest.json"), manifest.toString());
-        force(old); force(next); force(backup); force(root);
-        write(backup.resolve("READY"), "prepared\n"); force(backup);
+        force(old);
+        force(next);
+        force(backup);
+        force(root);
+        write(backup.resolve("READY"), "prepared\n");
+        force(backup);
         return new MemoryTransaction(root, backup, Map.copyOf(originals), Map.copyOf(replacements), oldIndex, newIndex);
     }
 
     /** 新记录与索引已经发布后刷新目录，再记录成功。标记前崩溃仍按旧库恢复。 */
     void commit() throws IOException {
-        force(root); write(backup.resolve("COMMITTED"), "committed\n"); force(backup);
+        force(root);
+        write(backup.resolve("COMMITTED"), "committed\n");
+        force(backup);
     }
 
     /**
@@ -64,27 +79,39 @@ final class MemoryTransaction {
     void rollback() throws IOException {
         // commit 的最后一次目录刷新也可能失败。先取消可能已写入的成功标记，
         // 若本次回滚再次中断，下次仍必须按 READY 恢复，不能误以为发布已完整结束。
-        Files.deleteIfExists(backup.resolve("COMMITTED")); force(backup);
-        var known = new java.util.LinkedHashSet<>(originals.keySet()); known.addAll(replacements.keySet());
+        Files.deleteIfExists(backup.resolve("COMMITTED"));
+        force(backup);
+        var known = new java.util.LinkedHashSet<>(originals.keySet());
+        known.addAll(replacements.keySet());
         for (String name : known) {
             Path file = root.resolve(filename(name));
             if (Files.exists(file, LinkOption.NOFOLLOW_LINKS)) {
                 String current = readPlain(file);
                 if (!current.equals(originals.get(name)) && !current.equals(replacements.get(name)))
-                    throw new IOException("Memory recovery found unknown external changes; the disk backup is preserved and the file was not overwritten");
+                    throw new IOException(
+                            "Memory recovery found unknown external changes; the disk backup is preserved and the file was not overwritten");
             }
         }
         Path index = root.resolve("MEMORY.md");
         if (Files.exists(index, LinkOption.NOFOLLOW_LINKS)) {
             String current = readPlain(index);
             if (!current.equals(oldIndex) && !current.equals(newIndex))
-                throw new IOException("Memory recovery found unknown index changes; the disk backup is preserved and the file was not overwritten");
+                throw new IOException(
+                        "Memory recovery found unknown index changes; the disk backup is preserved and the file was not overwritten");
         }
         // 不能先删除所有文件再写回；逐项原子替换，恢复过程中也尽量保留可用正文。
-        for (var entry : originals.entrySet()) atomicReplace(root.resolve(entry.getKey()), entry.getValue());
-        for (String name : replacements.keySet()) if (!originals.containsKey(name)) Files.deleteIfExists(root.resolve(name));
-        if (oldIndex == null) Files.deleteIfExists(index); else atomicReplace(index, oldIndex);
-        force(root); write(backup.resolve("ROLLED_BACK"), "restored\n"); force(backup);
+        for (var entry : originals.entrySet())
+            atomicReplace(root.resolve(entry.getKey()), entry.getValue());
+        for (String name : replacements.keySet())
+            if (!originals.containsKey(name))
+                Files.deleteIfExists(root.resolve(name));
+        if (oldIndex == null)
+            Files.deleteIfExists(index);
+        else
+            atomicReplace(index, oldIndex);
+        force(root);
+        write(backup.resolve("ROLLED_BACK"), "restored\n");
+        force(backup);
     }
 
     /**
@@ -97,10 +124,12 @@ final class MemoryTransaction {
             backups = entries.filter(p -> p.getFileName().toString().startsWith(".memory-backup-")).sorted().toList();
         }
         for (Path backup : backups) {
-            if (!Files.isDirectory(backup, LinkOption.NOFOLLOW_LINKS)) throw new IOException("Memory backup path is not a regular directory");
+            if (!Files.isDirectory(backup, LinkOption.NOFOLLOW_LINKS))
+                throw new IOException("Memory backup path is not a regular directory");
             if (!Files.exists(backup.resolve("READY"), LinkOption.NOFOLLOW_LINKS)
                     || Files.exists(backup.resolve("COMMITTED"), LinkOption.NOFOLLOW_LINKS)
-                    || Files.exists(backup.resolve("ROLLED_BACK"), LinkOption.NOFOLLOW_LINKS)) continue;
+                    || Files.exists(backup.resolve("ROLLED_BACK"), LinkOption.NOFOLLOW_LINKS))
+                continue;
             var manifest = Json.mapper().readTree(readPlain(backup.resolve("manifest.json")));
             if (manifest == null || manifest.path("version").asInt() != 1 || !manifest.path("hadIndex").isBoolean())
                 throw new IOException("Memory recovery manifest has an invalid format");
@@ -109,20 +138,26 @@ final class MemoryTransaction {
             new MemoryTransaction(root, backup, old, next,
                     manifest.path("hadIndex").booleanValue() ? readPlain(backup.resolve("index-old.txt")) : null,
                     readPlain(backup.resolve("index-new.txt"))).rollback();
-            warnings.accept("[Warning] [Memory] Recovered an unfinished consolidation from the disk backup; the backup is still retained");
+            warnings.accept(
+                    "[Warning] [Memory] Recovered an unfinished consolidation from the disk backup; the backup is still retained");
         }
     }
 
     /** 校验清单后再读恢复正文，拒绝目录逃逸、重名或空清单。 */
-    private static Map<String, String> readDocuments(Path backup, String directory, com.fasterxml.jackson.databind.JsonNode names) throws IOException {
-        if (names == null || !names.isArray() || names.isEmpty()) throw new IOException("Memory recovery file list is invalid");
+    private static Map<String, String> readDocuments(Path backup, String directory,
+            com.fasterxml.jackson.databind.JsonNode names) throws IOException {
+        if (names == null || !names.isArray() || names.isEmpty())
+            throw new IOException("Memory recovery file list is invalid");
         Path dir = backup.resolve(directory);
-        if (!Files.isDirectory(dir, LinkOption.NOFOLLOW_LINKS)) throw new IOException("Memory recovery body directory is invalid");
+        if (!Files.isDirectory(dir, LinkOption.NOFOLLOW_LINKS))
+            throw new IOException("Memory recovery body directory is invalid");
         var documents = new LinkedHashMap<String, String>();
         for (var item : names) {
-            if (!item.isTextual()) throw new IOException("Memory recovery filename is not text");
+            if (!item.isTextual())
+                throw new IOException("Memory recovery filename is not text");
             String name = filename(item.textValue());
-            if (documents.putIfAbsent(name, readPlain(dir.resolve(name))) != null) throw new IOException("Memory recovery filename is duplicated");
+            if (documents.putIfAbsent(name, readPlain(dir.resolve(name))) != null)
+                throw new IOException("Memory recovery filename is duplicated");
         }
         return documents;
     }
@@ -136,7 +171,8 @@ final class MemoryTransaction {
     }
 
     private static String readPlain(Path file) throws IOException {
-        if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) throw new IOException("Memory backup or recovery target is not a regular file");
+        if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS))
+            throw new IOException("Memory backup or recovery target is not a regular file");
         return Files.readString(file, StandardCharsets.UTF_8);
     }
 
@@ -144,7 +180,8 @@ final class MemoryTransaction {
     static void write(Path file, String text) throws IOException {
         try (var channel = FileChannel.open(file, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)) {
             var data = StandardCharsets.UTF_8.newEncoder().encode(java.nio.CharBuffer.wrap(text));
-            while (data.hasRemaining()) channel.write(data);
+            while (data.hasRemaining())
+                channel.write(data);
             channel.force(true);
         }
     }
@@ -156,15 +193,20 @@ final class MemoryTransaction {
         try {
             try (var channel = FileChannel.open(temporary, StandardOpenOption.WRITE)) {
                 var data = StandardCharsets.UTF_8.newEncoder().encode(java.nio.CharBuffer.wrap(text));
-                while (data.hasRemaining()) channel.write(data);
+                while (data.hasRemaining())
+                    channel.write(data);
                 channel.force(true);
             }
             Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-        } finally { Files.deleteIfExists(temporary); }
+        } finally {
+            Files.deleteIfExists(temporary);
+        }
     }
 
     /** Linux 本地文件系统上的目录刷新；不支持时明确失败，不能假称备份持久化完成。 */
     private static void force(Path directory) throws IOException {
-        try (var channel = FileChannel.open(directory, StandardOpenOption.READ)) { channel.force(true); }
+        try (var channel = FileChannel.open(directory, StandardOpenOption.READ)) {
+            channel.force(true);
+        }
     }
 }

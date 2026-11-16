@@ -50,11 +50,13 @@ public final class BackendSessionService implements AutoCloseable {
     public interface SnapshotSink {
         void full(String snapshotId, long generation, long sourceSeq,
                 List<BackendHistoryProjector.Entry> entries, BackendSnapshot snapshot);
+
         void state(BackendSnapshot snapshot);
     }
 
     /** 一次启动的意图，进入 server.bootstrap 供 Node 决定首轮/选择器行为。 */
-    public record Startup(String mode, String prompt, String resumeTarget, boolean autoSubmit) { }
+    public record Startup(String mode, String prompt, String resumeTarget, boolean autoSubmit) {
+    }
 
     /**
      * full-access 二次确认的一次性票据。
@@ -63,7 +65,8 @@ public final class BackendSessionService implements AutoCloseable {
      */
     private record Ticket(String id, long revision, String intent, boolean presented, String frameId,
             long terminalEpoch, long rawWatermark, long decodedWatermark,
-            List<BridgeApproval.Rect> rects, int columns, int rows) { }
+            List<BridgeApproval.Rect> rects, int columns, int rows) {
+    }
 
     /** 一个会话代次的全部前端协作对象；切换会话时整体替换。 */
     private static final class Generation {
@@ -106,8 +109,14 @@ public final class BackendSessionService implements AutoCloseable {
     private long snapshotCounter;
     private volatile boolean startupRegistered;
     private boolean headless;
+
     /** 装配阶段选择无人工通道；连接前设置，运行后不从客户端临时改变。 */
-    public void headless(boolean value) { if (startupRegistered) throw new IllegalStateException("Session already started"); headless=value; }
+    public void headless(boolean value) {
+        if (startupRegistered)
+            throw new IllegalStateException("Session already started");
+        headless = value;
+    }
+
     /** 当前终端代次；resize/模式切换/暂停/编辑器交接后 Node 会递增，旧呈现证据随之作废。 */
     private long terminalEpoch;
     /** 收口阶段的真实失败；非 null 时进程退出码必须是 1。 */
@@ -127,7 +136,8 @@ public final class BackendSessionService implements AutoCloseable {
         this.preferences = preferences;
         this.factory = factory;
         this.snapshots = snapshots;
-        this.diagnostics = diagnostics == null ? ignored -> { } : diagnostics;
+        this.diagnostics = diagnostics == null ? ignored -> {
+        } : diagnostics;
         this.startup = startup;
         Path workspace = factory.workspace();
         this.host = new SessionHost(new WorkspacePaths(workspace, factory.paths()), this::createRuntime,
@@ -135,10 +145,14 @@ public final class BackendSessionService implements AutoCloseable {
     }
 
     /** @return 当前配置版本；Node 用它拒绝陈旧 patch。 */
-    public long configRevision() { return preferences.state().revision(); }
+    public long configRevision() {
+        return preferences.state().revision();
+    }
 
     /** @return 当前已保存设置；bootstrap 与快照使用同一份。 */
-    public JadeSettings settings() { return preferences.state().settings(); }
+    public JadeSettings settings() {
+        return preferences.state().settings();
+    }
 
     /**
      * 由 SessionHost 在切换/新开时调用：为这一代建立观察器/审批/流出口。
@@ -160,7 +174,8 @@ public final class BackendSessionService implements AutoCloseable {
      */
     public void openInitial() throws IOException {
         String target = startup.mode().equals("resume") && !startup.resumeTarget().isBlank()
-                ? startup.resumeTarget() : null;
+                ? startup.resumeTarget()
+                : null;
         open(target);
     }
 
@@ -186,7 +201,8 @@ public final class BackendSessionService implements AutoCloseable {
      */
     public void ready() {
         serial.execute(() -> {
-            if (closed.get()) return;
+            if (closed.get())
+                return;
             Generation generation = current;
             if (generation == null) {
                 sendDiagnostic("Node reported ready before a session was opened");
@@ -205,7 +221,10 @@ public final class BackendSessionService implements AutoCloseable {
                     attachResult(result, submissionId);
                 } else {
                     if (!startupRegistered) {
-                        if (headless) host.current().start(); else host.start(generation.generation);
+                        if (headless)
+                            host.current().start();
+                        else
+                            host.start(generation.generation);
                     }
                     startupRegistered = true;
                 }
@@ -219,15 +238,22 @@ public final class BackendSessionService implements AutoCloseable {
     /** 处理一条已通过协议层校验的业务命令。 */
     public void dispatch(WireMessage command) {
         serial.execute(() -> {
-            if (closed.get()) return;
+            if (closed.get())
+                return;
             try {
                 handle(command);
             } catch (ProtocolException rejected) {
-                if (command.commandId() == null) { sendDiagnostic("Task submit rejected: " + rejected.getMessage()); return; }
+                if (command.commandId() == null) {
+                    sendDiagnostic("Task submit rejected: " + rejected.getMessage());
+                    return;
+                }
                 wire.session().sendError(command.commandId(), rejected.error(), rejected.getMessage(),
                         wire.sessionId(), wire.generation());
             } catch (IOException | RuntimeException failure) {
-                if (command.commandId() == null) { sendDiagnostic("Task submit failed: " + failure.getMessage()); return; }
+                if (command.commandId() == null) {
+                    sendDiagnostic("Task submit failed: " + failure.getMessage());
+                    return;
+                }
                 wire.session().sendError(command.commandId(), ProtocolError.PERSISTENCE_FAILED,
                         failure.getMessage() == null ? failure.toString() : failure.getMessage(),
                         wire.sessionId(), wire.generation());
@@ -246,7 +272,8 @@ public final class BackendSessionService implements AutoCloseable {
         String body = host.current().teamReport(id);
         ObjectNode result = Json.mapper().createObjectNode();
         result.put("assignmentId", id);
-        result.put("textBlobRef", wire.payloads().sendText("team-report", body, wire.sessionId(), wire.generation(), "team"));
+        result.put("textBlobRef",
+                wire.payloads().sendText("team-report", body, wire.sessionId(), wire.generation(), "team"));
         wire.session().sendOk(command.commandId(), result, wire.sessionId(), wire.generation());
     }
 
@@ -276,16 +303,21 @@ public final class BackendSessionService implements AutoCloseable {
                 wire.session().sendOk(command.commandId(), status("ok"), wire.sessionId(), wire.generation());
             }
             case "session.stop" -> {
-                requireSession(command).cancelCurrent(); current.approval.cancelPending();
+                requireSession(command).cancelCurrent();
+                current.approval.cancelPending();
                 wire.session().sendOk(command.commandId(), status("stopping"), wire.sessionId(), wire.generation());
             }
-            case "session.close" -> { requireSession(command); shutdown("session-closed"); }
+            case "session.close" -> {
+                requireSession(command);
+                shutdown("session-closed");
+            }
             case "client.shutdown" -> {
                 if (persistent) {
-                    wire.session().sendEvent("client.detached", status("detached"), wire.sessionId(), wire.generation());
+                    wire.session().sendEvent("client.detached", status("detached"), wire.sessionId(),
+                            wire.generation());
                     wire.session().flushAndClose();
-                }
-                else shutdown(command.payload().path("reason").asText("user"));
+                } else
+                    shutdown(command.payload().path("reason").asText("user"));
             }
             default -> throw new ProtocolException(ProtocolError.UNSUPPORTED,
                     "Unsupported command type: " + command.type());
@@ -299,17 +331,24 @@ public final class BackendSessionService implements AutoCloseable {
                 : command.payload().path("text").asText("");
         if (persistent && text.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 1024 * 1024)
             throw new ProtocolException(ProtocolError.PAYLOAD_TOO_LARGE, "Service prompt limit is 1 MiB");
-        if (text.isBlank()) throw new ProtocolException(ProtocolError.INVALID_MESSAGE, "Prompt must not be blank");
+        if (text.isBlank())
+            throw new ProtocolException(ProtocolError.INVALID_MESSAGE, "Prompt must not be blank");
         String submissionId = command.payload().path("clientSubmissionId").asText("");
-        if (submissionId.isBlank()) submissionId = "sub-" + System.nanoTime();
+        if (submissionId.isBlank())
+            submissionId = "sub-" + System.nanoTime();
         String fingerprint;
-        try { fingerprint = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
-                .digest(text.getBytes(java.nio.charset.StandardCharsets.UTF_8))); }
-        catch (java.security.NoSuchAlgorithmException impossible) { throw new IllegalStateException(impossible); }
+        try {
+            fingerprint = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(text.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException(impossible);
+        }
         if (submissions.containsKey(submissionId)) {
             if (!submissions.get(submissionId).equals(fingerprint))
                 throw new ProtocolException(ProtocolError.INVALID_MESSAGE, "Submission ID belongs to different text");
-            if (command.commandId() != null) wire.session().sendOk(command.commandId(), status("already-dispatched"), wire.sessionId(), wire.generation());
+            if (command.commandId() != null)
+                wire.session().sendOk(command.commandId(), status("already-dispatched"), wire.sessionId(),
+                        wire.generation());
             return;
         }
         if (submissions.size() >= 4096)
@@ -323,18 +362,21 @@ public final class BackendSessionService implements AutoCloseable {
         } catch (RuntimeException rejected) {
             wire.session().sendEvent("task.failed", taskFailed(submissionId, rejected.getMessage()),
                     wire.sessionId(), wire.generation());
-            throw new ProtocolException(ProtocolError.BUSY, "The session did not accept the prompt: " + rejected.getMessage());
+            throw new ProtocolException(ProtocolError.BUSY,
+                    "The session did not accept the prompt: " + rejected.getMessage());
         }
         submissions.put(submissionId, fingerprint);
         attachResult(result, submissionId);
-        if (command.commandId() != null) wire.session().sendOk(command.commandId(), status("dispatched"), wire.sessionId(), wire.generation());
+        if (command.commandId() != null)
+            wire.session().sendOk(command.commandId(), status("dispatched"), wire.sessionId(), wire.generation());
     }
 
     /** 终端补全在执行机器枚举工作区文件名；不读正文，不跟随链接到外部或敏感目录。 */
     private void completePath(WireMessage command) throws ProtocolException, IOException {
         requireSession(command);
         String prefix = command.payload().path("prefix").asText();
-        if (prefix.length() > 4096) throw new IOException("Completion prefix is too long");
+        if (prefix.length() > 4096)
+            throw new IOException("Completion prefix is too long");
         boolean at = prefix.startsWith("@");
         String query = at ? prefix.substring(1) : prefix;
         Path workspace = factory.workspace().toRealPath();
@@ -348,16 +390,18 @@ public final class BackendSessionService implements AutoCloseable {
                 for (Path child : children.sorted().limit(1000).toList()) {
                     String name = child.getFileName().toString();
                     if (!name.startsWith(leaf) || java.nio.file.Files.isSymbolicLink(child)
-                            || com.jadecode.sandbox.PathProtection.sensitive(child)) continue;
+                            || com.jadecode.sandbox.PathProtection.sensitive(child))
+                        continue;
                     int slash = query.lastIndexOf('/');
-                    String value = (at ? "@" : "") + (slash < 0 ? "" : query.substring(0,slash+1)) + name
+                    String value = (at ? "@" : "") + (slash < 0 ? "" : query.substring(0, slash + 1)) + name
                             + (java.nio.file.Files.isDirectory(child) ? "/" : "");
-                    items.addObject().put("value",value).put("label",name);
-                    if (items.size() >= 100) break;
+                    items.addObject().put("value", value).put("label", name);
+                    if (items.size() >= 100)
+                        break;
                 }
             }
         }
-        wire.session().sendOk(command.commandId(),result,wire.sessionId(),wire.generation());
+        wire.session().sendOk(command.commandId(), result, wire.sessionId(), wire.generation());
     }
 
     private void promoteBuffer(WireMessage command) throws ProtocolException {
@@ -376,7 +420,8 @@ public final class BackendSessionService implements AutoCloseable {
         } catch (IOException failure) {
             // 失败时保留旧会话与旧界面；旧代次的审批也不会被这次失败取消。
             pending = null;
-            throw new ProtocolException(ProtocolError.BUSY, "Could not switch session: " + failure.getMessage(), failure);
+            throw new ProtocolException(ProtocolError.BUSY, "Could not switch session: " + failure.getMessage(),
+                    failure);
         }
         // 刚切换成功：上一代若还有等待中的审批，必须明确拒绝，不能让它挂到新会话上。
         previous.approval.close();
@@ -386,7 +431,8 @@ public final class BackendSessionService implements AutoCloseable {
     private void list(WireMessage command) throws ProtocolException, IOException {
         requireSession(command);
         ArrayNode items = Json.mapper().createArrayNode();
-        for (SessionMetadata metadata : host.list()) items.add(metadata(metadata));
+        for (SessionMetadata metadata : host.list())
+            items.add(metadata(metadata));
         ObjectNode payload = Json.mapper().createObjectNode();
         payload.set("sessions", items);
         wire.session().sendOk(command.commandId(), payload, wire.sessionId(), wire.generation());
@@ -396,7 +442,8 @@ public final class BackendSessionService implements AutoCloseable {
         requireSession(command);
         String name = requiredText(command, "name");
         ArrayNode items = Json.mapper().createArrayNode();
-        for (SessionMetadata metadata : host.find(name)) items.add(metadata(metadata));
+        for (SessionMetadata metadata : host.find(name))
+            items.add(metadata(metadata));
         ObjectNode payload = Json.mapper().createObjectNode();
         payload.set("sessions", items);
         wire.session().sendOk(command.commandId(), payload, wire.sessionId(), wire.generation());
@@ -418,8 +465,9 @@ public final class BackendSessionService implements AutoCloseable {
         SessionRuntime runtime = requireSession(command);
         String value = requiredText(command, "value");
         ThinkingSettings next;
-        try { next = ThinkingSettings.parse(value); }
-        catch (IllegalArgumentException invalid) {
+        try {
+            next = ThinkingSettings.parse(value);
+        } catch (IllegalArgumentException invalid) {
             throw new ProtocolException(ProtocolError.INVALID_MESSAGE, invalid.getMessage(), invalid);
         }
         try {
@@ -443,7 +491,8 @@ public final class BackendSessionService implements AutoCloseable {
         node.properties().forEach(entry -> patch.put(entry.getKey(), plain(entry.getValue())));
         wire.session().sendOk(command.commandId(), status("accepted"), wire.sessionId(), wire.generation());
         preferences.apply(patch, expected, new PreferenceService.Callback() {
-            @Override public void saved(JadeSettings settings, long revision, Map<String, Object> applied) {
+            @Override
+            public void saved(JadeSettings settings, long revision, Map<String, Object> applied) {
                 ObjectNode payload = Json.mapper().createObjectNode();
                 payload.put("configRevision", Long.toString(revision));
                 payload.set("tui", tuiJson(settings));
@@ -452,7 +501,8 @@ public final class BackendSessionService implements AutoCloseable {
                 requestStateSnapshot();
             }
 
-            @Override public void failed(IOException failure, Map<String, Object> applied) {
+            @Override
+            public void failed(IOException failure, Map<String, Object> applied) {
                 ObjectNode payload = Json.mapper().createObjectNode();
                 payload.put("message", failure.getMessage() == null ? failure.toString() : failure.getMessage());
                 payload.put("configRevision", Long.toString(configRevision()));
@@ -466,17 +516,20 @@ public final class BackendSessionService implements AutoCloseable {
         SessionRuntime runtime = requireSession(command);
         String value = requiredText(command, "profile");
         PermissionProfile profile;
-        try { profile = PermissionProfile.parse(value); }
-        catch (IllegalArgumentException invalid) {
+        try {
+            profile = PermissionProfile.parse(value);
+        } catch (IllegalArgumentException invalid) {
             throw new ProtocolException(ProtocolError.INVALID_MESSAGE, invalid.getMessage(), invalid);
         }
         var state = runtime.permissionState();
         long expected = longValue(command.payload(), "expectedPermissionRevision", -1);
         if (expected != state.snapshot().revision())
             throw new ProtocolException(ProtocolError.STALE_REVISION, "The permission revision changed");
-        if (profile == PermissionProfile.FULL_ACCESS && factory.managed()!=null)
-            throw new ProtocolException(ProtocolError.INVALID_MESSAGE,"Managed workspaces require the Docker sandbox; Full Access is unavailable");
-        if (profile == PermissionProfile.FULL_ACCESS) requireFullAccessEvidence(command, "runtime");
+        if (profile == PermissionProfile.FULL_ACCESS && factory.managed() != null)
+            throw new ProtocolException(ProtocolError.INVALID_MESSAGE,
+                    "Managed workspaces require the Docker sandbox; Full Access is unavailable");
+        if (profile == PermissionProfile.FULL_ACCESS)
+            requireFullAccessEvidence(command, "runtime");
         state.select(profile);
         ObjectNode payload = status("ok");
         payload.put("profile", profile.value());
@@ -525,11 +578,14 @@ public final class BackendSessionService implements AutoCloseable {
         boolean confirmButton = false;
         for (BridgeApproval.Rect rect : rects) {
             if (rect.x() < 0 || rect.y() < 0 || rect.x() + rect.width() > columns || rect.y() + rect.height() > rows)
-                throw new ProtocolException(ProtocolError.INVALID_MESSAGE, "A confirmation button is outside the viewport");
-            if (rect.choice() == 1) confirmButton = true;
+                throw new ProtocolException(ProtocolError.INVALID_MESSAGE,
+                        "A confirmation button is outside the viewport");
+            if (rect.choice() == 1)
+                confirmButton = true;
         }
         if (!confirmButton)
-            throw new ProtocolException(ProtocolError.INVALID_MESSAGE, "The confirmation frame has no enabled confirm button");
+            throw new ProtocolException(ProtocolError.INVALID_MESSAGE,
+                    "The confirmation frame has no enabled confirm button");
         tickets.put(id, new Ticket(id, revision, intent, true, frameId, epoch,
                 longValue(command.payload(), "rawReceiptWatermark", 0),
                 longValue(command.payload(), "decodedWatermark", 0), rects, columns, rows));
@@ -546,14 +602,17 @@ public final class BackendSessionService implements AutoCloseable {
         requireSession(command);
         String value = requiredText(command, "profile");
         PermissionProfile profile;
-        try { profile = PermissionProfile.parse(value); }
-        catch (IllegalArgumentException invalid) {
+        try {
+            profile = PermissionProfile.parse(value);
+        } catch (IllegalArgumentException invalid) {
             throw new ProtocolException(ProtocolError.INVALID_MESSAGE, invalid.getMessage(), invalid);
         }
         long expected = longValue(command.payload(), "expectedConfigRevision", -1);
-        if (profile == PermissionProfile.FULL_ACCESS) requireFullAccessEvidence(command, "default");
+        if (profile == PermissionProfile.FULL_ACCESS)
+            requireFullAccessEvidence(command, "default");
         preferences.saveDefaultPermission(profile, expected, new PreferenceService.Callback() {
-            @Override public void saved(JadeSettings settings, long revision, Map<String, Object> applied) {
+            @Override
+            public void saved(JadeSettings settings, long revision, Map<String, Object> applied) {
                 ObjectNode payload = status("saved");
                 payload.put("configRevision", Long.toString(revision));
                 payload.put("defaultProfile", settings.permissions().defaultProfile().value());
@@ -562,7 +621,8 @@ public final class BackendSessionService implements AutoCloseable {
                 requestStateSnapshot();
             }
 
-            @Override public void failed(IOException failure, Map<String, Object> applied) {
+            @Override
+            public void failed(IOException failure, Map<String, Object> applied) {
                 wire.session().sendError(command.commandId(), ProtocolError.PERSISTENCE_FAILED,
                         failure.getMessage(), wire.sessionId(), wire.generation());
             }
@@ -578,9 +638,11 @@ public final class BackendSessionService implements AutoCloseable {
         String id = command.payload().path("fullAccessConfirmationId").asText("");
         Ticket ticket = tickets.get(id);
         if (ticket == null || !ticket.presented())
-            throw new ProtocolException(ProtocolError.NOT_READY, "Full Access must be confirmed on the permission page");
+            throw new ProtocolException(ProtocolError.NOT_READY,
+                    "Full Access must be confirmed on the permission page");
         if (!requiredIntent.equals(ticket.intent()))
-            throw new ProtocolException(ProtocolError.STALE_REVISION, "This confirmation was prepared for a different intent");
+            throw new ProtocolException(ProtocolError.STALE_REVISION,
+                    "This confirmation was prepared for a different intent");
         if (ticket.revision() != runtime.permissionState().snapshot().revision())
             throw new ProtocolException(ProtocolError.STALE_REVISION, "The permission revision changed");
         JsonNode evidence = command.payload().path("evidence");
@@ -601,8 +663,8 @@ public final class BackendSessionService implements AutoCloseable {
             boolean hit = "press".equals(mouse.path("type").asText())
                     && "left".equals(mouse.path("button").asText())
                     && ticket.rects().stream().anyMatch(rect -> rect.choice() == 1
-                        && x >= rect.x() && x < rect.x() + rect.width()
-                        && y >= rect.y() && y < rect.y() + rect.height());
+                            && x >= rect.x() && x < rect.x() + rect.width()
+                            && y >= rect.y() && y < rect.y() + rect.height());
             if (!hit)
                 throw new ProtocolException(ProtocolError.INVALID_MESSAGE, "The Full Access click missed its button");
         } else if (!"approval.confirm".equals(evidence.path("keyAction").asText())) {
@@ -616,7 +678,8 @@ public final class BackendSessionService implements AutoCloseable {
         String requestId = requiredText(command, "requestId");
         long epoch = longValue(command.payload(), "terminalEpoch", -1);
         if (epoch != terminalEpoch)
-            throw new ProtocolException(ProtocolError.STALE_REVISION, "The terminal epoch changed; present the approval again");
+            throw new ProtocolException(ProtocolError.STALE_REVISION,
+                    "The terminal epoch changed; present the approval again");
         BridgeApproval.Presentation presentation = new BridgeApproval.Presentation(
                 command.payload().path("frameId").asText(""),
                 epoch,
@@ -677,22 +740,27 @@ public final class BackendSessionService implements AutoCloseable {
     }
 
     /** 当前终端代次；测试与诊断使用。 */
-    public long terminalEpoch() { return terminalEpoch; }
+    public long terminalEpoch() {
+        return terminalEpoch;
+    }
 
     /** 请求一次节流的状态刷新；观察器线程只投递请求，不等待渲染。 */
     public void requestStateSnapshot() {
-        if (closed.get()) return;
+        if (closed.get())
+            return;
         serial.execute(this::sendStateSnapshot);
     }
 
     private void sendStateSnapshot() {
-        if (closed.get() || current == null) return;
+        if (closed.get() || current == null)
+            return;
         snapshots.state(snapshot());
     }
 
     private void sendFullSnapshot() {
         Generation generation = current;
-        if (generation == null || restored == null) return;
+        if (generation == null || restored == null)
+            return;
         List<BackendHistoryProjector.Entry> entries = BackendHistoryProjector.project(restored);
         String snapshotId = "snap-" + generation.generation + "-" + (++snapshotCounter);
         long sourceSeq = wire.session().sentSeq();
@@ -752,13 +820,16 @@ public final class BackendSessionService implements AutoCloseable {
     /** 任务 Future 完成只投递结果；共享 Future 的多次提交都会各自收到同一次最终回答。 */
     private void attachResult(CompletableFuture<String> result, String submissionId) {
         result.whenComplete((text, failure) -> serial.execute(() -> {
-            if (closed.get()) return;
+            if (closed.get())
+                return;
             ObjectNode payload = Json.mapper().createObjectNode();
             payload.put("submissionId", submissionId);
             payload.put("runId", "");
             if (failure != null) {
-                Throwable cause = failure instanceof java.util.concurrent.CompletionException && failure.getCause() != null
-                        ? failure.getCause() : failure;
+                Throwable cause = failure instanceof java.util.concurrent.CompletionException
+                        && failure.getCause() != null
+                                ? failure.getCause()
+                                : failure;
                 payload.put("message", cause.getMessage() == null ? cause.toString() : cause.getMessage());
                 wire.session().sendEvent("task.failed", payload, wire.sessionId(), wire.generation());
             } else {
@@ -778,10 +849,12 @@ public final class BackendSessionService implements AutoCloseable {
 
     private SessionRuntime requireSession(WireMessage command) throws ProtocolException {
         Generation generation = current;
-        if (generation == null) throw new ProtocolException(ProtocolError.NOT_READY, "No session is open yet");
+        if (generation == null)
+            throw new ProtocolException(ProtocolError.NOT_READY, "No session is open yet");
         // 会话命令必须带完整身份；缺失身份不能默认解释为“当前代次”。
         if (command.generation() == null || command.generation() != generation.generation)
-            throw new ProtocolException(ProtocolError.STALE_GENERATION, "This command belongs to an older session generation");
+            throw new ProtocolException(ProtocolError.STALE_GENERATION,
+                    "This command belongs to an older session generation");
         if (command.sessionId() == null || !command.sessionId().equals(generation.sessionId))
             throw new ProtocolException(ProtocolError.STALE_GENERATION, "This command belongs to another session");
         try {
@@ -800,9 +873,14 @@ public final class BackendSessionService implements AutoCloseable {
 
     private static long longValue(JsonNode payload, String field, long fallback) {
         JsonNode node = payload.path(field);
-        if (node.isIntegralNumber()) return node.asLong();
+        if (node.isIntegralNumber())
+            return node.asLong();
         if (node.isTextual()) {
-            try { return Long.parseLong(node.asText()); } catch (NumberFormatException ignored) { return fallback; }
+            try {
+                return Long.parseLong(node.asText());
+            } catch (NumberFormatException ignored) {
+                return fallback;
+            }
         }
         return fallback;
     }
@@ -814,7 +892,8 @@ public final class BackendSessionService implements AutoCloseable {
     }
 
     private static List<BridgeApproval.Rect> rects(JsonNode node) {
-        if (!node.isArray()) return List.of();
+        if (!node.isArray())
+            return List.of();
         List<BridgeApproval.Rect> rects = new ArrayList<>();
         for (JsonNode item : node) {
             rects.add(new BridgeApproval.Rect(item.path("x").asInt(0), item.path("y").asInt(0),
@@ -834,10 +913,14 @@ public final class BackendSessionService implements AutoCloseable {
     }
 
     private static Object plain(JsonNode node) {
-        if (node.isTextual()) return node.asText();
-        if (node.isBoolean()) return node.asBoolean();
-        if (node.isIntegralNumber()) return node.asLong();
-        if (node.isFloatingPointNumber()) return node.asDouble();
+        if (node.isTextual())
+            return node.asText();
+        if (node.isBoolean())
+            return node.asBoolean();
+        if (node.isIntegralNumber())
+            return node.asLong();
+        if (node.isFloatingPointNumber())
+            return node.asDouble();
         if (node.isArray()) {
             List<Object> values = new ArrayList<>();
             node.forEach(item -> values.add(plain(item)));
@@ -860,15 +943,18 @@ public final class BackendSessionService implements AutoCloseable {
     /** 已组装入站 blob 的解析；未知引用明确失败，不使用截断内容。 */
     public void registerBlob(String id, String text) {
         serial.execute(() -> {
-            while (blobs.size() >= 16) blobs.remove(blobs.keySet().iterator().next());
+            while (blobs.size() >= 16)
+                blobs.remove(blobs.keySet().iterator().next());
             blobs.put(id, text);
         });
     }
 
     private String blob(String ref) throws ProtocolException {
-        if (ref == null || ref.isBlank()) return "";
+        if (ref == null || ref.isBlank())
+            return "";
         String text = blobs.remove(ref);
-        if (text == null) throw new ProtocolException(ProtocolError.INVALID_MESSAGE, "Unknown blob reference: " + ref);
+        if (text == null)
+            throw new ProtocolException(ProtocolError.INVALID_MESSAGE, "Unknown blob reference: " + ref);
         return text;
     }
 
@@ -877,7 +963,8 @@ public final class BackendSessionService implements AutoCloseable {
     }
 
     private void sendDiagnostic(String message) {
-        if (closed.get()) return;
+        if (closed.get())
+            return;
         ObjectNode payload = Json.mapper().createObjectNode();
         payload.put("severity", "warning");
         payload.put("message", message == null ? "" : message);
@@ -887,13 +974,16 @@ public final class BackendSessionService implements AutoCloseable {
 
     /** 有序收口：拒绝审批、保存设置、关闭会话与依赖，最后通知前端。 */
     public void shutdown(String reason) {
-        if (!closed.compareAndSet(false, true)) return;
+        if (!closed.compareAndSet(false, true))
+            return;
         Generation generation = current;
-        if (generation != null) generation.approval.close();
+        if (generation != null)
+            generation.approval.close();
         String lastSession = wire.sessionId();
         try {
             host.close();
-            if (!host.isStopped()) shutdownFailure = "Session resources have not stopped; workspace remains held";
+            if (!host.isStopped())
+                shutdownFailure = "Session resources have not stopped; workspace remains held";
         } catch (RuntimeException failure) {
             shutdownFailure = "Session close failed: " + failure.getMessage();
             sendDiagnostic(shutdownFailure);
@@ -914,7 +1004,8 @@ public final class BackendSessionService implements AutoCloseable {
         payload.put("cleanupError", shutdownFailure == null ? "" : shutdownFailure);
         stoppedPayload = payload;
         // 常驻服务还拥有审计写者和目录占用，外层确认这些资源后才公布关闭回执。
-        if (persistent) return;
+        if (persistent)
+            return;
         wire.session().sendEvent("server.stopped", payload, wire.sessionId(), wire.generation());
         wire.session().flushAndClose();
     }
@@ -922,20 +1013,26 @@ public final class BackendSessionService implements AutoCloseable {
     /** 服务在释放自身资源后公布最终回执；未知清理结果必须让客户端看见失败。 */
     public void publishClosed(String outerFailure) {
         ObjectNode payload = stoppedPayload == null ? Json.mapper().createObjectNode() : stoppedPayload.deepCopy();
-        if (outerFailure != null) payload.put("cleanupError",outerFailure).put("cleanupConfirmed",false);
-        wire.session().sendEvent("server.stopped",payload,wire.sessionId(),wire.generation());
+        if (outerFailure != null)
+            payload.put("cleanupError", outerFailure).put("cleanupConfirmed", false);
+        wire.session().sendEvent("server.stopped", payload, wire.sessionId(), wire.generation());
         wire.session().flushAndClose();
     }
 
     /** @return 收口阶段的失败原因；null 表示正常。 */
-    public String shutdownFailure() { return shutdownFailure; }
+    public String shutdownFailure() {
+        return shutdownFailure;
+    }
 
     /** 断连只使旧呈现和票据失效，审批账本仍由当前会话持有。 */
     public void disconnected() {
-        if (closed.get()) return;
+        if (closed.get())
+            return;
         serial.execute(() -> {
-            if (current != null) current.approval.invalidatePresented();
-            tickets.clear(); terminalEpoch = 0;
+            if (current != null)
+                current.approval.invalidatePresented();
+            tickets.clear();
+            terminalEpoch = 0;
         });
     }
 
@@ -944,33 +1041,58 @@ public final class BackendSessionService implements AutoCloseable {
         var result = new CompletableFuture<Void>();
         serial.execute(() -> {
             try {
-                if (closed.get()) throw new IllegalStateException("Session is closed");
+                if (closed.get())
+                    throw new IllegalStateException("Session is closed");
                 synchronized (wire.session()) {
-                    sendFullSnapshot(); synchronizedDisplay.run(); current.approval.reconnect();
+                    sendFullSnapshot();
+                    synchronizedDisplay.run();
+                    current.approval.reconnect();
                 }
                 result.complete(null);
-            } catch (Exception failure) { result.completeExceptionally(failure); }
+            } catch (Exception failure) {
+                result.completeExceptionally(failure);
+            }
         });
         return result;
     }
+
     /** 管理连接可以取消当前轮次；真正的执行停止仍由 runtime 的取消链完成。 */
     public CompletableFuture<Void> cancelCurrent() {
         var result = new CompletableFuture<Void>();
         serial.execute(() -> {
-            try { host.current().cancelCurrent(); current.approval.cancelPending(); result.complete(null); }
-            catch (Exception failure) { result.completeExceptionally(failure); }
+            try {
+                host.current().cancelCurrent();
+                current.approval.cancelPending();
+                result.complete(null);
+            } catch (Exception failure) {
+                result.completeExceptionally(failure);
+            }
         });
         return result;
     }
-    public SessionRuntime runtime() { return host.current(); }
-    public boolean stopped() { return closed.get() && host.isStopped(); }
-    public boolean closed() { return closed.get(); }
-    public boolean started() { return startupRegistered; }
+
+    public SessionRuntime runtime() {
+        return host.current();
+    }
+
+    public boolean stopped() {
+        return closed.get() && host.isStopped();
+    }
+
+    public boolean closed() {
+        return closed.get();
+    }
+
+    public boolean started() {
+        return startupRegistered;
+    }
+
     public List<com.jadecode.safety.approval.ApprovalRequest> pendingApprovals() {
         return current == null ? List.of() : current.approval.requests();
     }
 
-    @Override public void close() {
+    @Override
+    public void close() {
         shutdown("closed");
         serial.shutdown();
         try {
@@ -978,6 +1100,7 @@ public final class BackendSessionService implements AutoCloseable {
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
         }
-        if (!persistent) preferences.close();
+        if (!persistent)
+            preferences.close();
     }
 }

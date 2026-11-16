@@ -172,7 +172,8 @@ public final class ToolExchangeProtocol {
                 // assistant 只能发起调用,不能携带结果
                 if (!results.isEmpty()) {
                     throw new IllegalArgumentException(
-                            "Invalid history at message #" + i + " is an assistant message and must not contain tool_result");
+                            "Invalid history at message #" + i
+                                    + " is an assistant message and must not contain tool_result");
                 }
                 if (uses.isEmpty()) {
                     continue; // 普通 assistant 文本
@@ -181,30 +182,35 @@ public final class ToolExchangeProtocol {
                 requireDistinctCallIds(uses);
                 if (i + 1 >= messages.size()) {
                     throw new IllegalArgumentException(
-                            "Invalid history at message #" + i + " is an assistant message whose tool_use has no result message");
+                            "Invalid history at message #" + i
+                                    + " is an assistant message whose tool_use has no result message");
                 }
 
                 Message resultMessage = messages.get(i + 1);
                 if (resultMessage.role() != Role.USER) {
                     throw new IllegalArgumentException(
-                            "Invalid history at message #" + i + " is an assistant message whose tool_use must be followed immediately by a user result message");
+                            "Invalid history at message #" + i
+                                    + " is an assistant message whose tool_use must be followed immediately by a user result message");
                 }
                 if (!resultMessage.blocksOfType(ToolUseBlock.class).isEmpty()) {
                     throw new IllegalArgumentException(
-                            "Invalid history at message #" + (i + 1) + " is a user message and must not contain tool_use");
+                            "Invalid history at message #" + (i + 1)
+                                    + " is a user message and must not contain tool_use");
                 }
 
                 List<ToolResultBlock> resultBlocks = resultMessage.blocksOfType(ToolResultBlock.class);
                 if (resultBlocks.size() != uses.size()) {
                     throw new IllegalArgumentException(
-                            "Invalid history at message #" + i + " assistant tool_use count does not match the user result in message #" + (i + 1)
+                            "Invalid history at message #" + i
+                                    + " assistant tool_use count does not match the user result in message #" + (i + 1)
                                     + " user tool_result count");
                 }
                 for (int k = 0; k < uses.size(); k++) {
                     if (!uses.get(k).id().equals(resultBlocks.get(k).toolUseId())) {
                         throw new IllegalArgumentException(
                                 "Invalid history at message #" + i + " assistant tool_use id " + uses.get(k).id()
-                                        + " does not match the user result in message #" + (i + 1) + " user tool_result #" + k + " id "
+                                        + " does not match the user result in message #" + (i + 1)
+                                        + " user tool_result #" + k + " id "
                                         + resultBlocks.get(k).toolUseId() + " mismatch");
                     }
                 }

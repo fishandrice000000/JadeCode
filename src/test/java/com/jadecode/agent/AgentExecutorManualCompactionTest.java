@@ -121,7 +121,8 @@ class AgentExecutorManualCompactionTest {
         private final List<ModelResponse> replies = new ArrayList<>();
         private final List<CompleteRequest> normalRequests = new ArrayList<>();
         private final List<CompleteRequest> summaryRequests = new ArrayList<>();
-        private Runnable onSummary = () -> { };
+        private Runnable onSummary = () -> {
+        };
         private LlmException summaryFailure;
 
         FakeClient(ModelResponse... replies) {
@@ -431,7 +432,7 @@ class AgentExecutorManualCompactionTest {
     void multipleCompactCallsCompressOnceAndFlagDoesNotLeakAcrossBatchesOrRuns() throws Exception {
         FakeClient client = new FakeClient(
                 assistant(use("c1", "compact"), use("c2", "compact")), // 同一批两个 compact
-                assistant(use("b1", "bash")),                          // 下一批只有普通工具
+                assistant(use("b1", "bash")), // 下一批只有普通工具
                 assistant(new TextBlock("完成")),
                 assistant(new TextBlock("第二轮的回复")));
         FakeTool bash = new FakeTool("bash", "输出");
@@ -556,9 +557,9 @@ class AgentExecutorManualCompactionTest {
     @Test
     void stopHookInjectedMessageDoesNotReplaceTheCapturedRequest() throws Exception {
         FakeClient client = new FakeClient(
-                assistant(use("c1", "compact")),   // 第一次压缩
+                assistant(use("c1", "compact")), // 第一次压缩
                 assistant(new TextBlock("先停一下")), // 触发 Stop hook 注入
-                assistant(use("c2", "compact")),   // 第二次压缩(发生在注入之后)
+                assistant(use("c2", "compact")), // 第二次压缩(发生在注入之后)
                 assistant(new TextBlock("完成")));
         Hooks hooks = new Hooks();
         java.util.concurrent.atomic.AtomicBoolean firstStop = new java.util.concurrent.atomic.AtomicBoolean(true);

@@ -23,7 +23,8 @@ import com.jadecode.util.Json;
 class PromptLanguageTest {
     private static final Pattern CJK = Pattern.compile("[\\u4e00-\\u9fff]");
 
-    @Test void mainAndSubagentPromptsAreEnglishAndKeepRoleAndSkills() {
+    @Test
+    void mainAndSubagentPromptsAreEnglishAndKeepRoleAndSkills() {
         String main = JadeCodeFactory.systemPrompt(Path.of("/work"), "- pdf: read PDFs");
         assertFalse(CJK.matcher(main).find(), main);
         assertTrue(main.contains("You are Jade Code"));
@@ -35,14 +36,17 @@ class PromptLanguageTest {
         assertTrue(sub.contains("Complete the given task"));
     }
 
-    @Test void builtInAuxiliaryPromptsAreEnglishAndKeepMachineFields() throws Exception {
+    @Test
+    void builtInAuxiliaryPromptsAreEnglishAndKeepMachineFields() throws Exception {
         assertPrompt("com.jadecode.context.HistoryCompactor", "SUMMARY_SYSTEM",
                 List.of("factual state", "Preserve the current goal"));
-        assertResource("/memory/extraction.md", List.of("rollout_summary", "rollout_slug", "Write task history, not a user profile"));
+        assertResource("/memory/extraction.md",
+                List.of("rollout_summary", "rollout_slug", "Write task history, not a user profile"));
         assertResource("/memory/consolidation.md", List.of("read_source", "stage_memory", "workspace", "global"));
     }
 
-    @Test void approvalReviewerBuildsEnglishPromptAndKeepsJsonContract() {
+    @Test
+    void approvalReviewerBuildsEnglishPromptAndKeepsJsonContract() {
         var captured = new CapturingClient();
         var request = new ApprovalRequest("id", "leader", "run", "bash",
                 Json.mapper().createObjectNode().put("command", "rm x"),
@@ -66,8 +70,9 @@ class PromptLanguageTest {
         String prompt = (String) value.get(null);
         assertNotNull(prompt, className + "." + field);
         assertFalse(CJK.matcher(prompt).find(), className + "." + field + " must be English");
-        for (String fragment : fragments) assertTrue(prompt.contains(fragment),
-                className + "." + field + " missing " + fragment + ": " + prompt);
+        for (String fragment : fragments)
+            assertTrue(prompt.contains(fragment),
+                    className + "." + field + " missing " + fragment + ": " + prompt);
     }
 
     /** 维护提示来自真实打包资源；不再反射已删除的算法类或字符串常量。 */
@@ -76,13 +81,16 @@ class PromptLanguageTest {
             assertNotNull(input, resource);
             String prompt = new String(input.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
             assertFalse(CJK.matcher(prompt).find(), resource);
-            for (String fragment : fragments) assertTrue(prompt.contains(fragment), resource + " missing " + fragment);
+            for (String fragment : fragments)
+                assertTrue(prompt.contains(fragment), resource + " missing " + fragment);
         }
     }
 
     private static final class CapturingClient implements LlmClient {
         private CompleteRequest last;
-        @Override public ModelResponse complete(CompleteRequest request) {
+
+        @Override
+        public ModelResponse complete(CompleteRequest request) {
             last = request;
             return new ModelResponse(Message.assistant(List.of(new TextBlock(
                     "{\"decision\":\"escalate\",\"reason\":\"test\"}"))),

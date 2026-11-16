@@ -77,8 +77,10 @@ public class GlobTool implements Tool {
     public String execute(ObjectNode input) {
         return executeOutcome(input, null).content();
     }
+
     /** 将匹配内容与 IO 状态分开，文件名中的 Error 不参与权限/失败判断。 */
-    @Override public ToolOutcome executeOutcome(ObjectNode input, com.jadecode.execution.ExecutionContext context) {
+    @Override
+    public ToolOutcome executeOutcome(ObjectNode input, com.jadecode.execution.ExecutionContext context) {
         for (String key : required()) {
             if (input.get(key) == null) {
                 return new ToolOutcome("Error: Missing required parameter: " + key, true);
@@ -104,16 +106,28 @@ public class GlobTool implements Tool {
         try {
             Files.walkFileTree(root, new SimpleFileVisitor<>() {
                 private void collect(Path path) {
-                    if (!path.equals(root) && matcher.matches(root.relativize(path))) matches.add(root.relativize(path).toString());
+                    if (!path.equals(root) && matcher.matches(root.relativize(path)))
+                        matches.add(root.relativize(path).toString());
                 }
-                @Override public FileVisitResult preVisitDirectory(Path path, BasicFileAttributes attrs) {
-                    collect(path); return FileVisitResult.CONTINUE;
+
+                @Override
+                public FileVisitResult preVisitDirectory(Path path, BasicFileAttributes attrs) {
+                    collect(path);
+                    return FileVisitResult.CONTINUE;
                 }
-                @Override public FileVisitResult visitFile(Path path, BasicFileAttributes attrs) {
-                    collect(path); return FileVisitResult.CONTINUE;
+
+                @Override
+                public FileVisitResult visitFile(Path path, BasicFileAttributes attrs) {
+                    collect(path);
+                    return FileVisitResult.CONTINUE;
                 }
-                @Override public FileVisitResult visitFileFailed(Path path, IOException failure) throws IOException {
-                    if (!path.equals(root) && failure instanceof AccessDeniedException) { omitted[0] = true; return FileVisitResult.CONTINUE; }
+
+                @Override
+                public FileVisitResult visitFileFailed(Path path, IOException failure) throws IOException {
+                    if (!path.equals(root) && failure instanceof AccessDeniedException) {
+                        omitted[0] = true;
+                        return FileVisitResult.CONTINUE;
+                    }
                     throw failure;
                 }
             });
@@ -128,8 +142,10 @@ public class GlobTool implements Tool {
             shown = new ArrayList<>(matches.subList(0, MAX_MATCHES));
             shown.add("... (more matches omitted; narrow the pattern)");
         }
-        if (shown.isEmpty()) shown.add("(no matches)");
-        if (omitted[0]) shown.add("... (unreadable paths omitted)");
+        if (shown.isEmpty())
+            shown.add("(no matches)");
+        if (omitted[0])
+            shown.add("... (unreadable paths omitted)");
         return new ToolOutcome(String.join("\n", shown), false);
     }
 }

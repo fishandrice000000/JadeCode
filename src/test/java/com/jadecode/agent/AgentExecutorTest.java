@@ -111,12 +111,26 @@ class AgentExecutorTest {
         AtomicInteger previewCompletions = new AtomicInteger();
         var stopReason = new java.util.concurrent.atomic.AtomicReference<String>();
         ResponseStream preview = new ResponseStream() {
-            @Override public void failed(String reason) { stopReason.set(reason); previewFailures.incrementAndGet(); }
-            @Override public void complete(String reason) { previewCompletions.incrementAndGet(); }
+            @Override
+            public void failed(String reason) {
+                stopReason.set(reason);
+                previewFailures.incrementAndGet();
+            }
+
+            @Override
+            public void complete(String reason) {
+                previewCompletions.incrementAndGet();
+            }
         };
         Hooks hooks = new Hooks();
-        hooks.register(Hooks.PRE_TOOL_USE, params -> { executed.incrementAndGet(); return null; });
-        hooks.register(Hooks.TURN_END, params -> { completed.incrementAndGet(); return null; });
+        hooks.register(Hooks.PRE_TOOL_USE, params -> {
+            executed.incrementAndGet();
+            return null;
+        });
+        hooks.register(Hooks.TURN_END, params -> {
+            completed.incrementAndGet();
+            return null;
+        });
         ContentBlock block = withTool ? toolUse("cut", "bash", "true") : new TextBlock("尚未输出完的结论");
         AgentExecutor executor = new AgentExecutor(request -> {
             // 第二条完整回复仅供旧实现结束：测试应捕获截断本身，不能靠假客户端耗尽触发错误。
@@ -127,7 +141,9 @@ class AgentExecutorTest {
         List<Message> messages = new ArrayList<>(List.of(Message.userText("完成任务")));
 
         // 走真实会话结束路径；异常必须来自截断检查，而不是工具或网络失败。
-        try (SessionRuntime session = new SessionRuntime(executor, ignored -> { }, ignored -> { })) {
+        try (SessionRuntime session = new SessionRuntime(executor, ignored -> {
+        }, ignored -> {
+        })) {
             LlmException failure = assertThrows(LlmException.class, () -> session.run(messages));
             assertTrue(failure.getMessage().contains("max_tokens"));
             assertEquals(1, requests.get());
@@ -213,7 +229,8 @@ class AgentExecutorTest {
     void requestCarriesInjectedConfig() throws Exception {
         ScriptedLlmClient scripted = new ScriptedLlmClient(assistant(new TextBlock("done")));
         RecordingLlmClient recording = new RecordingLlmClient(scripted);
-        AgentExecutor loop = new AgentExecutor(recording, Map.of("bash", new BashTool()), "test-system", 8000, new Hooks());
+        AgentExecutor loop = new AgentExecutor(recording, Map.of("bash", new BashTool()), "test-system", 8000,
+                new Hooks());
 
         SessionRuntime.runExisting(loop, new ArrayList<>(List.of(Message.userText("hi"))));
 

@@ -65,16 +65,20 @@ public final class InteractiveLauncher {
             }
             int exit = finish(code, node);
             // 单独发给 Node 的信号会先关闭 UDS；随后 broken pipe 是退出结果，不覆盖信号身份。
-            if (code != 0 && exit != 129 && exit != 130 && exit != 143 && backendFailure != null && !backendFailure.isBlank())
+            if (code != 0 && exit != 129 && exit != 130 && exit != 143 && backendFailure != null
+                    && !backendFailure.isBlank())
                 System.err.println("Backend stopped: " + backendFailure);
             return exit;
         } catch (IOException | RuntimeException failure) {
             System.err.println("Could not start the interactive UI: " + failure.getMessage());
-            if (node != null) node.destroy();
+            if (node != null)
+                node.destroy();
             return 1;
         } finally {
-            if (node != null && node.isAlive()) node.destroy();
-            if (server != null) server.close();
+            if (node != null && node.isAlive())
+                node.destroy();
+            if (server != null)
+                server.close();
         }
     }
 
@@ -90,8 +94,10 @@ public final class InteractiveLauncher {
                 return backendCode == 0 ? 1 : backendCode;
             }
             int exit = node.exitValue();
-            if (exit == 129 || exit == 130 || exit == 143) return exit;
-            if (backendCode != 0) return backendCode;
+            if (exit == 129 || exit == 130 || exit == 143)
+                return exit;
+            if (backendCode != 0)
+                return backendCode;
             if (exit != 0) {
                 System.err.println("The Node frontend exited with code " + exit + ".");
                 return 1;
@@ -140,7 +146,8 @@ public final class InteractiveLauncher {
         var environment = builder.environment();
         var forwarded = FrontendDistribution.forwardedEnvironment(System.getenv());
         environment.clear();
-        for (String name : forwarded) environment.put(name, System.getenv(name));
+        for (String name : forwarded)
+            environment.put(name, System.getenv(name));
         environment.put("JADE_BRIDGE_SOCKET", socketPath.toString());
         environment.put("JADE_BRIDGE_CREDENTIAL", credential);
         environment.put("JADE_BRIDGE_BUILD_ID", distribution.buildId());

@@ -67,7 +67,8 @@ public class AgentExecutor implements AutoCloseable {
 
     /** 装配时绑定真实思考设置与宿主计划快照，摘要不能从工具参数伪造运行状态。 */
     public void contextState(Supplier<com.jadecode.llm.ThinkingSettings> thinking, Supplier<String> state) {
-        contextThinking = java.util.Objects.requireNonNull(thinking); rebuildState = java.util.Objects.requireNonNull(state);
+        contextThinking = java.util.Objects.requireNonNull(thinking);
+        rebuildState = java.util.Objects.requireNonNull(state);
     }
 
     /** 当前投影的占用，与压缩使用相同锚点；无模型请求或 IO，不修改历史。 */
@@ -77,12 +78,19 @@ public class AgentExecutor implements AutoCloseable {
     }
 
     /** 历史恢复或回滚不能继承此前的占用锚点。 */
-    public void invalidateContext() { contextTokens.invalidate(); }
+    public void invalidateContext() {
+        contextTokens.invalidate();
+    }
 
     /** 安装快速、只读的显示接收者，不替换权限 hook。须在会话 start 前调用。 */
-    public void observe(ExecutionObserver value) { observer = java.util.Objects.requireNonNull(value); }
+    public void observe(ExecutionObserver value) {
+        observer = java.util.Objects.requireNonNull(value);
+    }
+
     /** 会话共用本 Agent 的身份通道；调用只发快照，不授予显示端修改历史的权力。 */
-    public void notice(ExecutionNotice notice) { observer.publish(notice); }
+    public void notice(ExecutionNotice notice) {
+        observer.publish(notice);
+    }
 
     /** 用来识别本批是否调用 todo_write，调用后重新计数，不据此判断任务已完成。 */
     private static final String TODO_TOOL = "todo_write";
@@ -138,7 +146,8 @@ public class AgentExecutor implements AutoCloseable {
      * 动态工具装配入口；只保存目录，不连接外部服务，不启动执行线程。
      * 每次请求的目录将随 ModelReply 交给会话，执行时再原样传回，避免发现后的目录变化影响当前批次。
      */
-    public AgentExecutor(LlmClient client, com.jadecode.tools.ToolCatalog tools, String system, int maxTokens, Hooks hooks,
+    public AgentExecutor(LlmClient client, com.jadecode.tools.ToolCatalog tools, String system, int maxTokens,
+            Hooks hooks,
             ContextCompactor compactor, Supplier<ResponseStream> streams) {
         // 有控制工具却没有处理器会形成假成功，仍在构造时拒绝这种装配。
         if (compactor == null && tools.hasBuiltin(COMPACT_TOOL)) {
@@ -155,13 +164,21 @@ public class AgentExecutor implements AutoCloseable {
     }
 
     /** @return 原 hook 表；只在开始运行前注册，不因读取而触发 hook。 */
-    public Hooks hooks() { return hooks; }
+    public Hooks hooks() {
+        return hooks;
+    }
 
     /** @return 原基础提示词；不召回记忆、不修改消息，关闭后拒绝继续准备任务。 */
-    public String system() { ensureOpen(); return system; }
+    public String system() {
+        ensureOpen();
+        return system;
+    }
 
     /** @return 是否启用压缩，供会话判断是否需要在入口保存请求原文；不执行压缩。 */
-    public boolean usesCompaction() { ensureOpen(); return compactor != null; }
+    public boolean usesCompaction() {
+        ensureOpen();
+        return compactor != null;
+    }
 
     /**
      * 请求一次模型回答，必要时先压缩；如果模型明确说上下文太长，可在限次内压缩后重试。
@@ -194,10 +211,12 @@ public class AgentExecutor implements AutoCloseable {
             // 工具定义只固定一次，预算与真正请求使用同一投影；MCP 增删自然使旧锚点失效。
             lastTaskSystem = taskSystem;
             com.jadecode.tools.ToolCatalog.Snapshot snapshot = tools.snapshot();
-            CompleteRequest projection = new CompleteRequest(taskSystem, messages, maxTokens, snapshot.definitions(), contextThinking.get());
+            CompleteRequest projection = new CompleteRequest(taskSystem, messages, maxTokens, snapshot.definitions(),
+                    contextThinking.get());
             if (compactor != null) {
                 // adoptHistory 会立即把压缩后的消息放回原列表，下面发给模型的就是更新后的历史。
-                List<Message> prepared = compactor.prepare(projection, activeRequest, contextTokens, rebuildState.get());
+                List<Message> prepared = compactor.prepare(projection, activeRequest, contextTokens,
+                        rebuildState.get());
                 if (prepared != messages) {
                     adoptHistory.accept(prepared);
                 }
@@ -213,23 +232,41 @@ public class AgentExecutor implements AutoCloseable {
             // 回调只更新屏幕，不碰 history；用户退出后不再打印晚到片段。
             // 工具参数预览与最终正文走同一观察对象，但都只是只读展示，不能触发执行。
             ResponseStream observed = display == ResponseStream.NONE ? display : new ResponseStream() {
-                @Override public void text(String text) {
+                @Override
+                public void text(String text) {
                     ensureOpen();
                     display.text(text);
                     textDisplayed[0] |= !text.isEmpty();
                 }
-                @Override public void thinking(String text) { ensureOpen(); display.thinking(text); }
-                @Override public void toolBlockStarted(int blockIndex, String callId, String name, String initialInputJson) {
-                    ensureOpen(); display.toolBlockStarted(blockIndex, callId, name, initialInputJson);
+
+                @Override
+                public void thinking(String text) {
+                    ensureOpen();
+                    display.thinking(text);
                 }
-                @Override public void toolInputDelta(int blockIndex, String fragment) {
-                    ensureOpen(); display.toolInputDelta(blockIndex, fragment);
+
+                @Override
+                public void toolBlockStarted(int blockIndex, String callId, String name, String initialInputJson) {
+                    ensureOpen();
+                    display.toolBlockStarted(blockIndex, callId, name, initialInputJson);
                 }
-                @Override public void toolBlockClosed(int blockIndex) { ensureOpen(); display.toolBlockClosed(blockIndex); }
+
+                @Override
+                public void toolInputDelta(int blockIndex, String fragment) {
+                    ensureOpen();
+                    display.toolInputDelta(blockIndex, fragment);
+                }
+
+                @Override
+                public void toolBlockClosed(int blockIndex) {
+                    ensureOpen();
+                    display.toolBlockClosed(blockIndex);
+                }
             };
             try {
                 ensureOpen();
-                projection = new CompleteRequest(taskSystem, messages, maxTokens, snapshot.definitions(), contextThinking.get());
+                projection = new CompleteRequest(taskSystem, messages, maxTokens, snapshot.definitions(),
+                        contextThinking.get());
                 int outputBudget = compactor == null ? maxTokens : compactor.outputBudget(projection, contextTokens);
                 CompleteRequest request = new CompleteRequest(taskSystem, messages, outputBudget,
                         snapshot.definitions(), contextThinking.get());
@@ -241,7 +278,8 @@ public class AgentExecutor implements AutoCloseable {
                 // 输出额度耗尽与输入上下文太长是两种失败，不能靠压缩或执行半份行动来掩盖。
                 // 在生成 ModelReply 之前拒绝，Leader 和常驻队友便都不会把它判成正常完成。
                 if ("max_tokens".equals(response.stopReason())) {
-                    throw new LlmException("Model output reached max_tokens; the response is incomplete and its tool calls were not executed");
+                    throw new LlmException(
+                            "Model output reached max_tokens; the response is incomplete and its tool calls were not executed");
                 }
                 if (response.message().role() != Role.ASSISTANT) {
                     throw new IllegalArgumentException("Formal model response must be ASSISTANT");
@@ -258,11 +296,14 @@ public class AgentExecutor implements AutoCloseable {
                 display.failed(stopReason);
                 // 配置关闭就直接暴露本次错误，不额外重试同一历史。开启时也只补救真正的上下文超限。
                 ensureOpen();
-                if (compactor == null || !compactor.policy().reactiveEnabled() || !ContextCompactor.isContextOverflow(failure)
-                        || retries >= ContextCompactor.MAX_REACTIVE_RETRIES) throw failure;
+                if (compactor == null || !compactor.policy().reactiveEnabled()
+                        || !ContextCompactor.isContextOverflow(failure)
+                        || retries >= ContextCompactor.MAX_REACTIVE_RETRIES)
+                    throw failure;
                 retries++;
                 List<Message> recovered = compactor.reactiveCompact(messages, activeRequest);
-                if (recovered != messages) adoptHistory.accept(recovered);
+                if (recovered != messages)
+                    adoptHistory.accept(recovered);
             } catch (RuntimeException failure) {
                 display.failed();
                 throw failure;
@@ -292,7 +333,8 @@ public class AgentExecutor implements AutoCloseable {
 
     /** 正式会话用请求时的快照执行；旧手工构造的 ModelReply 沿用即时目录，不影响旧离线调用。 */
     public ToolBatch executeTools(ModelReply reply, ExecutionContext context, int previousRounds) {
-        return executeTools(reply.calls(), context, previousRounds, reply.tools() == null ? tools.snapshot() : reply.tools(),
+        return executeTools(reply.calls(), context, previousRounds,
+                reply.tools() == null ? tools.snapshot() : reply.tools(),
                 reply.observationRequestId());
     }
 
@@ -315,11 +357,13 @@ public class AgentExecutor implements AutoCloseable {
         // 预览与执行共用同一个请求观察前缀；同一 actor 的重试/跨批同名工具也不会串卡。
         // 真实 tool_use ID 仍是 call.id()，观察 ID 不进入 wire/历史。
         String batchId = observationRequestId == null || observationRequestId.isBlank()
-                ? java.util.UUID.randomUUID().toString() : observationRequestId;
+                ? java.util.UUID.randomUUID().toString()
+                : observationRequestId;
         for (ToolUseBlock call : calls) {
             var queuedEntry = snapshot.entries().get(call.name());
             notice(ExecutionNotice.event(ExecutionNotice.Kind.TOOL_START,
-                    batchId + "/" + call.id(), call.name(), call.input() == null ? "{}" : call.input().toString(), "QUEUED")
+                    batchId + "/" + call.id(), call.name(), call.input() == null ? "{}" : call.input().toString(),
+                    "QUEUED")
                     .withIdentity(queuedEntry == null ? null : queuedEntry.identity()));
         }
         int executing = -1;
@@ -333,27 +377,35 @@ public class AgentExecutor implements AutoCloseable {
                 toolStarted = 0;
                 // 1. 先查是否退出，再查权限；被拒绝或未知的工具，也要返回与调用 ID 对应的结果。
                 ensureOpen();
-                if (context.isCancelled()) throw new IllegalStateException("Parent session is closed");
+                if (context.isCancelled())
+                    throw new IllegalStateException("Parent session is closed");
                 var entry = snapshot.entries().get(call.name());
                 if (entry == null) {
                     results.add(new ToolResultBlock(call.id(), "Error: Unknown tool: " + call.name(), true));
-                    notice(ExecutionNotice.event(ExecutionNotice.Kind.TOOL_END, batchId + "/" + call.id(), call.name(), "Unknown tool", "NOT_RUN"));
+                    notice(ExecutionNotice.event(ExecutionNotice.Kind.TOOL_END, batchId + "/" + call.id(), call.name(),
+                            "Unknown tool", "NOT_RUN"));
                     continue;
                 }
                 String blocked = hooks.trigger(Hooks.PRE_TOOL_USE,
-                        Map.of(Hooks.PARAM_BLOCK, call, Hooks.PARAM_CONTEXT, context, Hooks.PARAM_TOOL_IDENTITY, entry.identity()));
+                        Map.of(Hooks.PARAM_BLOCK, call, Hooks.PARAM_CONTEXT, context, Hooks.PARAM_TOOL_IDENTITY,
+                                entry.identity()));
                 if (blocked != null) {
                     results.add(new ToolResultBlock(call.id(), blocked, true));
-                    notice(ExecutionNotice.event(ExecutionNotice.Kind.TOOL_END, batchId + "/" + call.id(), call.name(), blocked, "BLOCKED")
+                    notice(ExecutionNotice
+                            .event(ExecutionNotice.Kind.TOOL_END, batchId + "/" + call.id(), call.name(), blocked,
+                                    "BLOCKED")
                             .withIdentity(entry.identity()));
                     continue;
                 }
                 Tool tool = entry.tool();
                 // 等用户批准可能很久；用户若已退出，即使现在收到批准，也不能再执行工具。
                 ensureOpen();
-                if (context.isCancelled()) throw new IllegalStateException("Parent session is closed");
+                if (context.isCancelled())
+                    throw new IllegalStateException("Parent session is closed");
                 ObjectNode input = call.input() instanceof ObjectNode node ? node : Json.mapper().createObjectNode();
-                notice(ExecutionNotice.event(ExecutionNotice.Kind.TOOL_START, batchId + "/" + call.id(), call.name(), input.toString(), "RUNNING")
+                notice(ExecutionNotice
+                        .event(ExecutionNotice.Kind.TOOL_START, batchId + "/" + call.id(), call.name(),
+                                input.toString(), "RUNNING")
                         .withIdentity(entry.identity()));
                 // 权限检查和审批已经结束，现在才开始计工具执行时间。
                 // 整轮用时另由 Session 的 TurnTimer 统计，并扣除人工审批等待，不能在这里累加。
@@ -363,7 +415,9 @@ public class AgentExecutor implements AutoCloseable {
                 String output = outcome.content();
                 // 先记下工具确实返回的结果，再显示日志，免得日志出错后连执行结果都丢掉。
                 results.add(new ToolResultBlock(call.id(), output, outcome.isError()));
-                notice(ExecutionNotice.event(ExecutionNotice.Kind.TOOL_END, batchId + "/" + call.id(), call.name(), output, outcome.isError() ? "ERROR" : "RETURNED")
+                notice(ExecutionNotice
+                        .event(ExecutionNotice.Kind.TOOL_END, batchId + "/" + call.id(), call.name(), output,
+                                outcome.isError() ? "ERROR" : "RETURNED")
                         .timed(System.nanoTime() - toolStarted).withIdentity(entry.identity()));
                 usedTodo |= call.name().equals(TODO_TOOL);
                 compact |= call.name().equals(COMPACT_TOOL) && CompactTool.OUTPUT.equals(output);
@@ -375,9 +429,13 @@ public class AgentExecutor implements AutoCloseable {
             failure = unexpected;
             for (int index = results.size(); index < calls.size(); index++) {
                 ToolUseBlock unfinished = calls.get(index);
-                notice(ExecutionNotice.event(ExecutionNotice.Kind.TOOL_END, batchId + "/" + unfinished.id(), unfinished.name(),
-                        index == executing && attempted ? "did not return normally and may already have side effects: " + unexpected.getMessage() : "batch interrupted; not executed",
-                        index == executing && attempted ? "ERROR" : "NOT_RUN")
+                notice(ExecutionNotice
+                        .event(ExecutionNotice.Kind.TOOL_END, batchId + "/" + unfinished.id(), unfinished.name(),
+                                index == executing && attempted
+                                        ? "did not return normally and may already have side effects: "
+                                                + unexpected.getMessage()
+                                        : "batch interrupted; not executed",
+                                index == executing && attempted ? "ERROR" : "NOT_RUN")
                         .timed(index == executing && attempted ? System.nanoTime() - toolStarted : 0));
                 results.add(new ToolResultBlock(calls.get(index).id(),
                         "Error: Tool batch interrupted; this call did not produce a result. The task failed.", true));
@@ -407,12 +465,15 @@ public class AgentExecutor implements AutoCloseable {
      */
     public void compactAfterBatch(ToolBatch batch, List<Message> messages, String activeRequest,
             Consumer<List<Message>> adoptHistory) throws LlmException {
-        if (!batch.compact()) return;
+        if (!batch.compact())
+            return;
         ensureOpen();
         CompleteRequest request = new CompleteRequest(lastTaskSystem == null ? system : lastTaskSystem,
                 messages, maxTokens, tools.snapshot().definitions(), contextThinking.get());
-        List<Message> compacted = compactor.compactAfterBatch(batch.calls(), request, activeRequest, rebuildState.get());
-        if (compacted != messages) adoptHistory.accept(compacted);
+        List<Message> compacted = compactor.compactAfterBatch(batch.calls(), request, activeRequest,
+                rebuildState.get());
+        if (compacted != messages)
+            adoptHistory.accept(compacted);
     }
 
     /**
@@ -438,17 +499,20 @@ public class AgentExecutor implements AutoCloseable {
      * @param tools 本次请求使用的执行目录；只在内存传递，不随 message 持久化
      * @param displayCompletedNanos 显示 complete 返回的单调时间；旧构造可为 null，非流式回退另取真正输出时刻
      */
-    public record ModelReply(Message message, List<ToolUseBlock> calls, boolean textDisplayed, ModelResponse.Usage usage,
+    public record ModelReply(Message message, List<ToolUseBlock> calls, boolean textDisplayed,
+            ModelResponse.Usage usage,
             com.jadecode.tools.ToolCatalog.Snapshot tools, String observationRequestId, Long displayCompletedNanos) {
         /** 兼容旧六参数调用；没有时间来源时不伪造时间戳。 */
         public ModelReply(Message message, List<ToolUseBlock> calls, boolean textDisplayed, ModelResponse.Usage usage,
                 com.jadecode.tools.ToolCatalog.Snapshot tools, String observationRequestId) {
             this(message, calls, textDisplayed, usage, tools, observationRequestId, null);
         }
+
         /** 兼容旧调用；正式请求始终提供本次工具快照，不把它写进模型消息或历史。 */
         public ModelReply(Message message, List<ToolUseBlock> calls, boolean textDisplayed, ModelResponse.Usage usage) {
             this(message, calls, textDisplayed, usage, null, "");
         }
+
         /** 兼容没有观察 ID 的旧离线调用；执行仍生成独立批次前缀。 */
         public ModelReply(Message message, List<ToolUseBlock> calls, boolean textDisplayed, ModelResponse.Usage usage,
                 com.jadecode.tools.ToolCatalog.Snapshot tools) {
@@ -456,9 +520,15 @@ public class AgentExecutor implements AutoCloseable {
         }
 
         /** 兼容没有报告用量的旧离线调用，不伪造实际数字。 */
-        public ModelReply(Message message, List<ToolUseBlock> calls, boolean textDisplayed) { this(message, calls, textDisplayed, null); }
+        public ModelReply(Message message, List<ToolUseBlock> calls, boolean textDisplayed) {
+            this(message, calls, textDisplayed, null);
+        }
+
         /** 普通非流式调用保持原构造方式，完成时仍由 Session 显示正文。 */
-        public ModelReply(Message message, List<ToolUseBlock> calls) { this(message, calls, false); }
+        public ModelReply(Message message, List<ToolUseBlock> calls) {
+            this(message, calls, false);
+        }
+
         /**
          * 复制工具调用列表，保持顺序；角色和 ID 由 AgentExecutor 检查，这里不再查。
          * @param message 模型回答
@@ -468,7 +538,8 @@ public class AgentExecutor implements AutoCloseable {
          */
         public ModelReply {
             calls = List.copyOf(calls);
-            if (observationRequestId == null) observationRequestId = "";
+            if (observationRequestId == null)
+                observationRequestId = "";
         }
     }
 
@@ -505,11 +576,13 @@ public class AgentExecutor implements AutoCloseable {
      * Stop hook 说还有工作要做，让模型继续当前任务，不排成另一项任务。
      * @param prompt 加入 history 的提示文字，不替换程序记住的用户原始请求
      */
-    public record Continue(String prompt) { }
+    public record Continue(String prompt) {
+    }
 
     /** 检查执行器是否已经退出；不能取消已发生的副作用或强行停止网络请求。 */
     private void ensureOpen() {
-        if (closed) throw new IllegalStateException("Agent loop is closed");
+        if (closed)
+            throw new IllegalStateException("Agent loop is closed");
     }
 
     /**
@@ -517,5 +590,7 @@ public class AgentExecutor implements AutoCloseable {
      * 会话在关闭本执行器后另行停止命令、拒绝 future 并等待处理线程。
      */
     @Override
-    public void close() { closed = true; }
+    public void close() {
+        closed = true;
+    }
 }

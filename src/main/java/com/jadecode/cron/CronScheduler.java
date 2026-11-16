@@ -68,16 +68,22 @@ public final class CronScheduler {
      * @throws IOException 恢复或保存失败；旧任务表保持不变
      * @throws IllegalArgumentException 无效规则/正文或任务已达上限
      */
-    public synchronized CronJob schedule(String cron, String prompt, boolean recurring, boolean durable) throws IOException {
+    public synchronized CronJob schedule(String cron, String prompt, boolean recurring, boolean durable)
+            throws IOException {
         load();
-        if (jobs.size() >= MAX_JOBS) throw new IllegalArgumentException("At most 100 cron jobs are supported");
+        if (jobs.size() >= MAX_JOBS)
+            throw new IllegalArgumentException("At most 100 cron jobs are supported");
         String id = null;
         // 随机碰撞极少，但不能把随机数永不冲突当作循环终止保证。
         for (int attempt = 0; attempt < 100; attempt++) {
             String candidate = "cron_" + UUID.randomUUID().toString().substring(0, 8);
-            if (!jobs.containsKey(candidate)) { id = candidate; break; }
+            if (!jobs.containsKey(candidate)) {
+                id = candidate;
+                break;
+            }
         }
-        if (id == null) throw new IllegalStateException("Unable to allocate a cron ID");
+        if (id == null)
+            throw new IllegalStateException("Unable to allocate a cron ID");
         CronJob job = new CronJob(id, cron, prompt, recurring, durable, false, null);
         Map<String, CronJob> next = new LinkedHashMap<>(jobs);
         next.put(id, job);
@@ -99,7 +105,8 @@ public final class CronScheduler {
      */
     public synchronized void cancel(String id) throws IOException {
         load();
-        if (!jobs.containsKey(id)) throw new IllegalArgumentException("Cron job not found: " + id);
+        if (!jobs.containsKey(id))
+            throw new IllegalArgumentException("Cron job not found: " + id);
         Map<String, CronJob> next = new LinkedHashMap<>(jobs);
         next.remove(id);
         commit(next);
@@ -118,13 +125,15 @@ public final class CronScheduler {
         Map<String, CronJob> next = new LinkedHashMap<>(jobs);
         List<String> due = new ArrayList<>();
         for (CronJob job : jobs.values()) {
-            if (job.pendingDelivery() || minute.equals(job.lastFired())) continue;
+            if (job.pendingDelivery() || minute.equals(job.lastFired()))
+                continue;
             if (CronExpression.parse(job.cron()).matches(now)) {
                 next.put(job.id(), job.delivery(true, minute));
                 due.add(job.id());
             }
         }
-        if (due.isEmpty()) return;
+        if (due.isEmpty())
+            return;
         commit(next);
         ready.addAll(due);
     }
@@ -138,7 +147,8 @@ public final class CronScheduler {
         while (!ready.isEmpty()) {
             String id = ready.removeFirst();
             CronJob job = jobs.get(id);
-            if (job != null && job.pendingDelivery() && leased.add(id)) return job;
+            if (job != null && job.pendingDelivery() && leased.add(id))
+                return job;
         }
         return null;
     }
@@ -146,7 +156,8 @@ public final class CronScheduler {
     /** 首次模型回复前失败，将仍存在的待交付项放回；取消的任务不能被复活。 */
     public synchronized void restore(String id) {
         CronJob job = jobs.get(id);
-        if (leased.remove(id) && job != null && job.pendingDelivery()) ready.addFirst(id);
+        if (leased.remove(id) && job != null && job.pendingDelivery())
+            ready.addFirst(id);
     }
 
     /**
@@ -157,24 +168,30 @@ public final class CronScheduler {
      */
     public synchronized void acknowledge(String id) throws IOException {
         CronJob job = jobs.get(id);
-        if (job == null || !leased.contains(id)) return;
+        if (job == null || !leased.contains(id))
+            return;
         Map<String, CronJob> next = new LinkedHashMap<>(jobs);
-        if (job.recurring()) next.put(id, job.delivery(false, job.lastFired()));
-        else next.remove(id);
+        if (job.recurring())
+            next.put(id, job.delivery(false, job.lastFired()));
+        else
+            next.remove(id);
         commit(next);
         leased.remove(id);
     }
 
     /** 首次恢复采用完整候选；坏记录阻断恢复，不静默跳过后覆盖用户的状态文件。 */
     private void load() throws IOException {
-        if (loaded) return;
+        if (loaded)
+            return;
         checkFile();
         Map<String, CronJob> recovered = new LinkedHashMap<>();
         if (Files.exists(file, LinkOption.NOFOLLOW_LINKS)) {
             // 需容纳本类允许的 100 × 16000 字符及 JSON 转义，不能让合法写出的文件自己读不回。
-            if (Files.size(file) > 16_000_000) throw new IOException("Cron state exceeds 16 MB");
+            if (Files.size(file) > 16_000_000)
+                throw new IOException("Cron state exceeds 16 MB");
             JsonNode root = Json.mapper().readTree(Files.readString(file, StandardCharsets.UTF_8));
-            if (root == null || !root.isArray() || root.size() > MAX_JOBS) throw new IOException("Invalid cron state list");
+            if (root == null || !root.isArray() || root.size() > MAX_JOBS)
+                throw new IOException("Invalid cron state list");
             try {
                 for (JsonNode node : root) {
                     CronJob job = decode(node);
@@ -187,21 +204,27 @@ public final class CronScheduler {
             }
         }
         jobs = recovered;
-        for (CronJob job : jobs.values()) if (job.pendingDelivery()) ready.addLast(job.id());
+        for (CronJob job : jobs.values())
+            if (job.pendingDelivery())
+                ready.addLast(job.id());
         loaded = true;
     }
 
     /** 只读取明确 wire 字段并检查原始 JSON 类型，禁止字符串冒充 boolean。 */
     private static CronJob decode(JsonNode node) {
-        if (!node.isObject() || node.size() != 7) throw new IllegalArgumentException("Invalid cron fields");
+        if (!node.isObject() || node.size() != 7)
+            throw new IllegalArgumentException("Invalid cron fields");
         for (String key : List.of("id", "cron", "prompt")) {
-            if (!node.path(key).isTextual()) throw new IllegalArgumentException("Invalid cron text field");
+            if (!node.path(key).isTextual())
+                throw new IllegalArgumentException("Invalid cron text field");
         }
         for (String key : List.of("recurring", "durable", "pending_delivery")) {
-            if (!node.path(key).isBoolean()) throw new IllegalArgumentException("Invalid cron boolean field");
+            if (!node.path(key).isBoolean())
+                throw new IllegalArgumentException("Invalid cron boolean field");
         }
         JsonNode last = node.get("last_fired");
-        if (last == null || !(last.isNull() || last.isTextual())) throw new IllegalArgumentException("Invalid last_fired");
+        if (last == null || !(last.isNull() || last.isTextual()))
+            throw new IllegalArgumentException("Invalid last_fired");
         return new CronJob(node.get("id").textValue(), node.get("cron").textValue(), node.get("prompt").textValue(),
                 node.get("recurring").booleanValue(), node.get("durable").booleanValue(),
                 node.get("pending_delivery").booleanValue(), last.isNull() ? null : last.textValue());
@@ -211,12 +234,16 @@ public final class CronScheduler {
     private static ArrayNode payload(Map<String, CronJob> state) {
         ArrayNode array = Json.mapper().createArrayNode();
         for (CronJob job : state.values()) {
-            if (!job.durable()) continue;
+            if (!job.durable())
+                continue;
             ObjectNode node = array.addObject();
             node.put("id", job.id()).put("cron", job.cron()).put("prompt", job.prompt())
-                    .put("recurring", job.recurring()).put("durable", true).put("pending_delivery", job.pendingDelivery());
-            if (job.lastFired() == null) node.putNull("last_fired");
-            else node.put("last_fired", job.lastFired());
+                    .put("recurring", job.recurring()).put("durable", true)
+                    .put("pending_delivery", job.pendingDelivery());
+            if (job.lastFired() == null)
+                node.putNull("last_fired");
+            else
+                node.put("last_fired", job.lastFired());
         }
         return array;
     }
@@ -243,8 +270,10 @@ public final class CronScheduler {
                 try {
                     Files.deleteIfExists(temporary);
                 } catch (IOException cleanup) {
-                    if (original != null) original.addSuppressed(cleanup);
-                    else throw cleanup;
+                    if (original != null)
+                        original.addSuppressed(cleanup);
+                    else
+                        throw cleanup;
                 }
             }
         }

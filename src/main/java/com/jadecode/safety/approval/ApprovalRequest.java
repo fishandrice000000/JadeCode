@@ -10,7 +10,13 @@ import com.jadecode.safety.rules.PermissionRule;
  */
 public record ApprovalRequest(String id, String actor, String runId, String tool, ObjectNode input,
         Path cwd, String reason, long revision, PermissionRule suggestion) {
-    public ApprovalRequest { input = input.deepCopy(); }
+    public ApprovalRequest {
+        input = input.deepCopy();
+    }
+
     /** 调用者取得自己的副本，不能修改原申请的实际授权内容。 */
-    @Override public ObjectNode input() { return input.deepCopy(); }
+    @Override
+    public ObjectNode input() {
+        return input.deepCopy();
+    }
 }

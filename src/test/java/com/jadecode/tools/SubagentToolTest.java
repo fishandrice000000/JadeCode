@@ -84,9 +84,11 @@ class SubagentToolTest {
     @Test
     void modelSubtaskCannotReplaceUserGoalForAuthorization() {
         var observed = new java.util.concurrent.atomic.AtomicReference<com.jadecode.execution.ExecutionContext>();
-        var runtime = new SubagentRuntime(new ScriptedLlmClient(text("done")), Map.of(), "sub-system", 8000, new Hooks());
+        var runtime = new SubagentRuntime(new ScriptedLlmClient(text("done")), Map.of(), "sub-system", 8000,
+                new Hooks());
         runtime.sandboxCleanup(observed::set);
-        var parent = com.jadecode.execution.ExecutionContext.create(com.jadecode.execution.ExecutionContext.Source.USER, null)
+        var parent = com.jadecode.execution.ExecutionContext
+                .create(com.jadecode.execution.ExecutionContext.Source.USER, null)
                 .withGoal("检查当前项目");
 
         assertEquals("done", new SubagentTool(runtime).execute(Json.mapper().createObjectNode()

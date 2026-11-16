@@ -44,7 +44,8 @@ public final class BackendObserver implements ExecutionObserver {
         this.snapshotRefresh = snapshotRefresh;
     }
 
-    @Override public void accept(ExecutionNotice notice) {
+    @Override
+    public void accept(ExecutionNotice notice) {
         // 计时先更新：即使下面的展示事件失败，业务状态也不会被显示端裁决。
         clockNotice(notice);
         ObjectNode payload = Json.mapper().createObjectNode();
@@ -60,12 +61,14 @@ public final class BackendObserver implements ExecutionObserver {
         String detail = notice.detail() == null ? "" : notice.detail();
         if (detail.length() > INLINE_DETAIL_LIMIT) {
             payload.put("detail", "");
-            payload.put("detailBlobRef", wire.payloads().sendText("notice-detail", detail, wire.sessionId(), wire.generation(), "notice"));
+            payload.put("detailBlobRef",
+                    wire.payloads().sendText("notice-detail", detail, wire.sessionId(), wire.generation(), "notice"));
         } else {
             payload.put("detail", detail);
         }
         ToolIdentity identity = notice.identity();
-        if (identity == null) payload.putNull("toolIdentity");
+        if (identity == null)
+            payload.putNull("toolIdentity");
         else {
             ObjectNode tool = payload.putObject("toolIdentity");
             tool.put("kind", identity.kind().name());
@@ -87,7 +90,8 @@ public final class BackendObserver implements ExecutionObserver {
             case TURN_DISPLAY_STOP -> clock.displayStopped(actor, true, notice.elapsedNanos());
             case TURN_DISPLAY_RESUME -> clock.displayStopped(actor, false, notice.elapsedNanos());
             case TURN_END -> clock.ended(actor, notice.id(), notice.elapsedNanos());
-            default -> { }
+            default -> {
+            }
         }
     }
 
@@ -96,12 +100,17 @@ public final class BackendObserver implements ExecutionObserver {
             case SESSION -> {
                 String actor = notice.actor();
                 if (!actor.isBlank()) {
-                    if ("CLOSED".equals(notice.state())) actors.remove(actor); else actors.put(actor, notice.state());
+                    if ("CLOSED".equals(notice.state()))
+                        actors.remove(actor);
+                    else
+                        actors.put(actor, notice.state());
                 }
                 if ("CLOSED".equals(notice.state())) {
                     // 关闭单个队友只冻结它的时钟；Leader 仍在执行/等待，不能把全队计时清空。
-                    if ("leader".equals(actor)) clock.reset();
-                    else if (!actor.isBlank()) clock.ended(actor, null, 0);
+                    if ("leader".equals(actor))
+                        clock.reset();
+                    else if (!actor.isBlank())
+                        clock.ended(actor, null, 0);
                 }
             }
             case BUFFER -> {
@@ -110,10 +119,14 @@ public final class BackendObserver implements ExecutionObserver {
             }
             case BACKGROUND -> {
                 String key = notice.actor() + "/" + notice.id();
-                if ("STOPPED".equals(notice.state()) || "DONE".equals(notice.state()) || "CANCELLED".equals(notice.state())) background.remove(key);
-                else background.put(key, notice.state());
+                if ("STOPPED".equals(notice.state()) || "DONE".equals(notice.state())
+                        || "CANCELLED".equals(notice.state()))
+                    background.remove(key);
+                else
+                    background.put(key, notice.state());
             }
-            default -> { }
+            default -> {
+            }
         }
     }
 
@@ -123,25 +136,36 @@ public final class BackendObserver implements ExecutionObserver {
             case USAGE, TOOL_END, TURN_END, SESSION, MODEL, BUFFER, BACKGROUND, COMPACT, WORKFLOW, GOAL, TEAM -> true;
             default -> false;
         };
-        if (!interesting || snapshotRefresh == null) return;
+        if (!interesting || snapshotRefresh == null)
+            return;
         long now = System.nanoTime();
         long previous = lastRefresh.get();
-        if (kind != ExecutionNotice.Kind.TEAM && kind != ExecutionNotice.Kind.SESSION && now - previous < 250_000_000L) return;
-        if (!lastRefresh.compareAndSet(previous, now)) return;
+        if (kind != ExecutionNotice.Kind.TEAM && kind != ExecutionNotice.Kind.SESSION && now - previous < 250_000_000L)
+            return;
+        if (!lastRefresh.compareAndSet(previous, now))
+            return;
         snapshotRefresh.accept(null);
     }
 
     /** @return 真实 Actor → 状态快照；Node 用它显示 Team 身份。 */
-    public Map<String, String> actors() { return Map.copyOf(actors); }
+    public Map<String, String> actors() {
+        return Map.copyOf(actors);
+    }
 
     /** @return 后台任务键 → 状态。 */
-    public Map<String, String> background() { return Map.copyOf(background); }
+    public Map<String, String> background() {
+        return Map.copyOf(background);
+    }
 
     /** @return 最近一次业务缓冲摘要；空串表示没有缓冲。 */
-    public String bufferSummary() { return bufferSummary; }
+    public String bufferSummary() {
+        return bufferSummary;
+    }
 
     /** @return 缓冲状态（QUEUED/INSERTION）。 */
-    public String bufferState() { return bufferState; }
+    public String bufferState() {
+        return bufferState;
+    }
 
     /** 新会话代次：清空旧事实，避免快照混入上一会话的 Team/后台状态。 */
     public void reset() {

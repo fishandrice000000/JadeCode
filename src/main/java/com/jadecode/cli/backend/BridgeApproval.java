@@ -37,13 +37,24 @@ public final class BridgeApproval implements Approval, AutoCloseable {
     /** 三个按钮的线上序号；与界面竖排顺序一致（绿/黄/红）。 */
     public enum Choice {
         ALLOW_ONCE(0), ALLOW_SIMILAR(1), DENY(2);
+
         private final int index;
-        Choice(int index) { this.index = index; }
-        public int index() { return index; }
+
+        Choice(int index) {
+            this.index = index;
+        }
+
+        public int index() {
+            return index;
+        }
+
         public static Choice of(int index) {
-            for (Choice choice : values()) if (choice.index == index) return choice;
+            for (Choice choice : values())
+                if (choice.index == index)
+                    return choice;
             throw new IllegalArgumentException("Unknown approval choice: " + index);
         }
+
         ApprovalAnswer answer() {
             return switch (this) {
                 case ALLOW_ONCE -> ApprovalAnswer.ALLOW_ONCE;
@@ -54,11 +65,13 @@ public final class BridgeApproval implements Approval, AutoCloseable {
     }
 
     /** 一个已提交帧中的按钮矩形（0 基格坐标）。 */
-    public record Rect(int x, int y, int width, int height, int choice) { }
+    public record Rect(int x, int y, int width, int height, int choice) {
+    }
 
     /** Node 报告的“这一帧确实提交成功”的证据；不是终端像素 ACK。 */
     public record Presentation(String frameId, long terminalEpoch, int columns, int rows, List<Rect> rects,
-            String layoutDigest, long rawReceiptWatermark, long decodedWatermark, long revision, String runId) { }
+            String layoutDigest, long rawReceiptWatermark, long decodedWatermark, long revision, String runId) {
+    }
 
     /**
      * 一次显式输入的来源；paste/release/repeat 不应走到这里。
@@ -73,22 +86,29 @@ public final class BridgeApproval implements Approval, AutoCloseable {
      * @param mouse      鼠标确认证据；键盘确认时为 null
      */
     public record InputEvidence(String phase, long revision, String frameId, long terminalEpoch,
-            long rawStartReceipt, long rawEndReceipt, long decodedSeq, String keyAction, MouseEvidence mouse) { }
+            long rawStartReceipt, long rawEndReceipt, long decodedSeq, String keyAction, MouseEvidence mouse) {
+    }
 
     /** 鼠标证据：只有左键按下且落在同帧矩形内才算数。 */
-    public record MouseEvidence(String type, String button, int x, int y) { }
+    public record MouseEvidence(String type, String button, int x, int y) {
+    }
 
     private record Pending(ApprovalRequest request, CompletableFuture<ApprovalAnswer> result,
             Presentation presentation) {
-        Pending withPresentation(Presentation value) { return new Pending(request, result, value); }
+        Pending withPresentation(Presentation value) {
+            return new Pending(request, result, value);
+        }
     }
 
     private final WireContext wire;
     private final Map<String, Pending> waiting = new HashMap<>();
     private boolean closed;
-    private final com.jadecode.safety.approval.ApprovalBroker broker = new com.jadecode.safety.approval.ApprovalBroker(java.time.Duration.ofHours(1));
+    private final com.jadecode.safety.approval.ApprovalBroker broker = new com.jadecode.safety.approval.ApprovalBroker(
+            java.time.Duration.ofHours(1));
 
-    public BridgeApproval(WireContext wire) { this.wire = wire; }
+    public BridgeApproval(WireContext wire) {
+        this.wire = wire;
+    }
 
     /**
      * 登记一次申请并等待用户答复；工具线程阻塞在这里，界面线程不会。
@@ -96,13 +116,18 @@ public final class BridgeApproval implements Approval, AutoCloseable {
      * <p>关闭/中断/异常都按 DENY 返回，不把“没人回答”当成允许。申请资料先复制成显示
      * 文本，之后模型或工具不能再改写屏幕上已展示的内容。</p>
      */
-    @Override public ApprovalAnswer ask(ApprovalRequest request) {
+    @Override
+    public ApprovalAnswer ask(ApprovalRequest request) {
         com.jadecode.safety.approval.ApprovalBroker.Pending registered;
-        try { registered = broker.register(request); }
-        catch (IllegalStateException closedChannel) { return ApprovalAnswer.DENY; }
+        try {
+            registered = broker.register(request);
+        } catch (IllegalStateException closedChannel) {
+            return ApprovalAnswer.DENY;
+        }
         Pending pending = new Pending(request, registered.result(), null);
         synchronized (this) {
-            if (closed) return ApprovalAnswer.DENY;
+            if (closed)
+                return ApprovalAnswer.DENY;
             waiting.put(request.id(), pending);
         }
         ApprovalAnswer answer = ApprovalAnswer.DENY;
@@ -114,7 +139,9 @@ public final class BridgeApproval implements Approval, AutoCloseable {
             Thread.currentThread().interrupt();
         } finally {
             broker.answer(request.id(), ApprovalAnswer.DENY);
-            synchronized (this) { waiting.remove(request.id()); }
+            synchronized (this) {
+                waiting.remove(request.id());
+            }
             sendRemoved(request.id(), answer);
         }
         return answer;
@@ -131,7 +158,8 @@ public final class BridgeApproval implements Approval, AutoCloseable {
         String input = request.input() == null ? "{}" : request.input().toString();
         if (input.length() > 4096) {
             payload.put("inputJson", "");
-            payload.put("inputBlobRef", wire.payloads().sendText("approval-input", input, wire.sessionId(), wire.generation(), "approval"));
+            payload.put("inputBlobRef",
+                    wire.payloads().sendText("approval-input", input, wire.sessionId(), wire.generation(), "approval"));
         } else {
             payload.put("inputJson", input);
         }
@@ -167,7 +195,8 @@ public final class BridgeApproval implements Approval, AutoCloseable {
     public synchronized void presented(String requestId, Presentation presentation) throws ProtocolException {
         Pending pending = waiting.get(requestId);
         if (pending == null)
-            throw new ProtocolException(ProtocolError.STALE_GENERATION, "No pending approval matches this presentation");
+            throw new ProtocolException(ProtocolError.STALE_GENERATION,
+                    "No pending approval matches this presentation");
         ApprovalRequest request = pending.request();
         if (presentation.revision() != request.revision())
             throw new ProtocolException(ProtocolError.STALE_REVISION, "The approval revision changed");
@@ -180,9 +209,11 @@ public final class BridgeApproval implements Approval, AutoCloseable {
             if (rect.width() <= 0 || rect.height() <= 0 || rect.x() < 0 || rect.y() < 0
                     || rect.x() + rect.width() > presentation.columns()
                     || rect.y() + rect.height() > presentation.rows())
-                throw new ProtocolException(ProtocolError.INVALID_MESSAGE, "An approval action rectangle is outside the viewport");
-            try { Choice.of(rect.choice()); }
-            catch (IllegalArgumentException invalid) {
+                throw new ProtocolException(ProtocolError.INVALID_MESSAGE,
+                        "An approval action rectangle is outside the viewport");
+            try {
+                Choice.of(rect.choice());
+            } catch (IllegalArgumentException invalid) {
                 throw new ProtocolException(ProtocolError.INVALID_MESSAGE, "Unknown approval choice in a rectangle");
             }
             if (rect.choice() == Choice.ALLOW_SIMILAR.index() && request.suggestion() == null)
@@ -202,21 +233,25 @@ public final class BridgeApproval implements Approval, AutoCloseable {
      */
     public void answer(String requestId, int choiceIndex, InputEvidence evidence) throws ProtocolException {
         Pending pending;
-        synchronized (this) { pending = waiting.get(requestId); }
+        synchronized (this) {
+            pending = waiting.get(requestId);
+        }
         if (pending == null)
             throw new ProtocolException(ProtocolError.STALE_GENERATION, "This approval request is no longer pending");
         Presentation presentation = pending.presentation();
         if (presentation == null)
             throw new ProtocolException(ProtocolError.NOT_READY, "The approval page has not been presented yet");
         Choice choice;
-        try { choice = Choice.of(choiceIndex); }
-        catch (IllegalArgumentException invalid) {
+        try {
+            choice = Choice.of(choiceIndex);
+        } catch (IllegalArgumentException invalid) {
             throw new ProtocolException(ProtocolError.INVALID_MESSAGE, "Unknown approval choice");
         }
         ApprovalRequest request = pending.request();
         if (evidence.revision() != presentation.revision() || evidence.revision() != request.revision())
             throw new ProtocolException(ProtocolError.STALE_REVISION, "The approval revision is stale");
-        if (!presentation.frameId().equals(evidence.frameId()) || presentation.terminalEpoch() != evidence.terminalEpoch())
+        if (!presentation.frameId().equals(evidence.frameId())
+                || presentation.terminalEpoch() != evidence.terminalEpoch())
             throw new ProtocolException(ProtocolError.STALE_REVISION,
                     "That key press belongs to an older layout; the approval is still pending");
         if (!"PRESS".equals(evidence.phase()))
@@ -234,20 +269,25 @@ public final class BridgeApproval implements Approval, AutoCloseable {
             // Esc 是明确的“拒绝当前请求”；它只能产生 DENY，不能借动作名批准。
             if ("approval.deny".equals(evidence.keyAction())) {
                 if (choice != Choice.DENY)
-                    throw new ProtocolException(ProtocolError.INVALID_MESSAGE, "The deny key can only deny the current request");
+                    throw new ProtocolException(ProtocolError.INVALID_MESSAGE,
+                            "The deny key can only deny the current request");
             } else if (!"approval.confirm".equals(evidence.keyAction())) {
-                throw new ProtocolException(ProtocolError.INVALID_MESSAGE, "Only a fresh confirm or deny key answers an approval");
+                throw new ProtocolException(ProtocolError.INVALID_MESSAGE,
+                        "Only a fresh confirm or deny key answers an approval");
             }
         } else {
             MouseEvidence mouse = evidence.mouse();
             if (!"press".equals(mouse.type()) || !"left".equals(mouse.button()))
-                throw new ProtocolException(ProtocolError.INVALID_MESSAGE, "Only a fresh left-button press can answer an approval");
+                throw new ProtocolException(ProtocolError.INVALID_MESSAGE,
+                        "Only a fresh left-button press can answer an approval");
             if (!hits(presentation, choice, mouse.x(), mouse.y()))
-                throw new ProtocolException(ProtocolError.INVALID_MESSAGE, "The click did not land on that approval option");
+                throw new ProtocolException(ProtocolError.INVALID_MESSAGE,
+                        "The click did not land on that approval option");
         }
         synchronized (this) {
             if (waiting.remove(requestId) == null)
-                throw new ProtocolException(ProtocolError.STALE_GENERATION, "This approval request was already answered");
+                throw new ProtocolException(ProtocolError.STALE_GENERATION,
+                        "This approval request was already answered");
             if (!broker.answer(requestId, choice.answer()))
                 throw new ProtocolException(ProtocolError.STALE_GENERATION, "This approval is no longer pending");
         }
@@ -266,7 +306,8 @@ public final class BridgeApproval implements Approval, AutoCloseable {
     /**
      * 权限 revision 变化时唤醒旧申请，由 Gate 重新判断；变化本身不是批准。
      */
-    @Override public synchronized void reconsider(long revision) {
+    @Override
+    public synchronized void reconsider(long revision) {
         List<Pending> stale = waiting.values().stream()
                 .filter(pending -> pending.request().revision() < revision).toList();
         for (Pending pending : stale) {
@@ -292,8 +333,10 @@ public final class BridgeApproval implements Approval, AutoCloseable {
     }
 
     /** 会话关闭：所有未答复申请明确 DENY；单纯断连只失效呈现证据，Future 不会永久悬空。 */
-    @Override public synchronized void close() {
-        if (closed) return;
+    @Override
+    public synchronized void close() {
+        if (closed)
+            return;
         closed = true;
         broker.close();
         waiting.clear();
@@ -302,17 +345,25 @@ public final class BridgeApproval implements Approval, AutoCloseable {
     /** 新连接必须重新呈现；只重发仍在等待的请求，不恢复旧按键或批准。 */
     public synchronized void reconnect() {
         invalidatePresented();
-        for (var request : broker.requests()) sendRequested(request);
+        for (var request : broker.requests())
+            sendRequested(request);
     }
 
     /** 取消当前运行时结束人工等待，通道仍可供下一轮使用。 */
-    public synchronized void cancelPending() { broker.cancelAll(ApprovalAnswer.DENY); waiting.clear(); }
+    public synchronized void cancelPending() {
+        broker.cancelAll(ApprovalAnswer.DENY);
+        waiting.clear();
+    }
 
     /** 服务状态只保存请求快照，不保存 Future 或终端帧。 */
-    public java.util.List<ApprovalRequest> requests() { return broker.requests(); }
+    public java.util.List<ApprovalRequest> requests() {
+        return broker.requests();
+    }
 
     /** @return 当前等待答复的数量；测试与快照诊断使用。 */
-    public synchronized int pendingCount() { return waiting.size(); }
+    public synchronized int pendingCount() {
+        return waiting.size();
+    }
 
     /** 供测试注入/检查的资料：某申请的当前呈现证据。 */
     public synchronized Presentation presentationOf(String requestId) {
@@ -336,7 +387,10 @@ public final class BridgeApproval implements Approval, AutoCloseable {
 
     /** 供诊断：某次申请的输入 JSON 长度（不返回内容）。 */
     public static int inputLength(ApprovalRequest request) {
-        try { return request.input() == null ? 0 : Json.mapper().writeValueAsString(request.input()).length(); }
-        catch (IOException ignored) { return 0; }
+        try {
+            return request.input() == null ? 0 : Json.mapper().writeValueAsString(request.input()).length();
+        } catch (IOException ignored) {
+            return 0;
+        }
     }
 }

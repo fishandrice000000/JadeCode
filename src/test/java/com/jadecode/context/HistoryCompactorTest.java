@@ -362,7 +362,8 @@ class HistoryCompactorTest {
 
         // 只把前缀交给摘要模型。
         assertEquals(1, recording.requests().size());
-        assertEquals(compactor.summaryInput(prefix), recording.requests().getFirst().messages().getFirst().extractText());
+        assertEquals(compactor.summaryInput(prefix),
+                recording.requests().getFirst().messages().getFirst().extractText());
 
         // 归档保存的是整段原历史(含尾部两条)。
         assertArchiveMatches(onlyTranscriptFile(), messages);
@@ -444,7 +445,8 @@ class HistoryCompactorTest {
         // 退化 = 整段摘要:一条消息、且摘要输入是整段历史。
         assertEquals(1, compacted.size());
         assertTrue(summaryTextOf(compacted).startsWith("[Compacted]"));
-        assertEquals(compactor.summaryInput(messages), recording.requests().getFirst().messages().getFirst().extractText());
+        assertEquals(compactor.summaryInput(messages),
+                recording.requests().getFirst().messages().getFirst().extractText());
         assertArchiveMatches(onlyTranscriptFile(), messages);
         assertEquals(before, ContextSerialization.toJson(messages), "原对象图不得被修改");
     }
@@ -522,7 +524,8 @@ class HistoryCompactorTest {
         // 情形 A:确定性层(fit)能把结果换成可恢复外壳 → 不调用摘要模型。
         RecordingLlmClient shrunken = new RecordingLlmClient(
                 new ScriptedLlmClient(assistant(new TextBlock("不该被调用"))));
-        ContextCompactor fitting = new ContextCompactor(shrunken, transcriptDir, toolResultsDir, small, CompactionPolicy.coursePipeline());
+        ContextCompactor fitting = new ContextCompactor(shrunken, transcriptDir, toolResultsDir, small,
+                CompactionPolicy.coursePipeline());
         List<Message> shrinkable = List.of(
                 Message.userText("开始"),
                 Message.assistant(List.of(use("t1"))),
@@ -538,7 +541,8 @@ class HistoryCompactorTest {
         // 情形 B:整段都是普通文本,前三层都动不了 → 第四层整段摘要,且请求不带工具。
         RecordingLlmClient summarized = new RecordingLlmClient(
                 new ScriptedLlmClient(assistant(new TextBlock("真的摘要了"))));
-        ContextCompactor summarizing = new ContextCompactor(summarized, transcriptDir, toolResultsDir, small, CompactionPolicy.coursePipeline());
+        ContextCompactor summarizing = new ContextCompactor(summarized, transcriptDir, toolResultsDir, small,
+                CompactionPolicy.coursePipeline());
         List<Message> unsquashable = List.of(
                 Message.userText("开始"),
                 Message.assistant(List.of(new TextBlock("y".repeat(4000)))));

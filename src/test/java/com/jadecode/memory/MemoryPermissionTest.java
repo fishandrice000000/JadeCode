@@ -11,11 +11,17 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /** 验证记忆例外是窄只读授权，不能越过用户显式规则或覆盖正式库。 */
 class MemoryPermissionTest {
-    @TempDir Path temporary;
+    @TempDir
+    Path temporary;
 
-    @Test void explicitDenyStillWinsAndFullAccessDoesNotEnableDirectMemoryWrites() throws Exception {
+    @Test
+    void explicitDenyStillWinsAndFullAccessDoesNotEnableDirectMemoryWrites() throws Exception {
         Path workspace = Files.createDirectory(temporary.resolve("project")), root = temporary.resolve("memory");
-        var store = new MemoryStore(new com.jadecode.config.WorkspacePaths(workspace, new com.jadecode.config.JadePaths(root.getParent())), ignored -> { }); store.initialize();
+        var store = new MemoryStore(
+                new com.jadecode.config.WorkspacePaths(workspace, new com.jadecode.config.JadePaths(root.getParent())),
+                ignored -> {
+                });
+        store.initialize();
         String path = root.resolve("MEMORY.md").toString();
         var deny = new PermissionRule("deny.memory", PermissionRule.Effect.DENY, PermissionRule.Kind.TOOL,
                 "read_file", "", "", "", false, List.of());
@@ -23,8 +29,10 @@ class MemoryPermissionTest {
         var gate = new PermissionGate(new PathResolver(workspace), state, (com.jadecode.safety.approval.Approval) null);
         gate.memoryAccess(root, store::readable);
         assertTrue(gate.check("read_file", Json.mapper().createObjectNode().put("path", path)).contains("deny.memory"));
-        assertTrue(gate.check("write_file", Json.mapper().createObjectNode().put("path", path).put("content", "bad")).contains("read-only"));
-        assertTrue(gate.check("bash", Json.mapper().createObjectNode().put("command", "rm -rf " + root)).contains("read-only"));
+        assertTrue(gate.check("write_file", Json.mapper().createObjectNode().put("path", path).put("content", "bad"))
+                .contains("read-only"));
+        assertTrue(gate.check("bash", Json.mapper().createObjectNode().put("command", "rm -rf " + root))
+                .contains("read-only"));
         assertFalse(store.readable(root.resolve("state/maintenance.json")));
     }
 }

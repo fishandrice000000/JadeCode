@@ -14,8 +14,10 @@ import com.jadecode.session.SessionUsage;
 
 /** 用真实去重账本经过 wire 投影，防止 Node 分类资料与累计总数脱节或重复相加。 */
 class BackendSnapshotTest {
-    @Test void cacheHitUsesTheLastFormalLeaderReportAndMissingClearsIt() {
-        var ledger = new SessionUsage(ignored -> { });
+    @Test
+    void cacheHitUsesTheLastFormalLeaderReportAndMissingClearsIt() {
+        var ledger = new SessionUsage(ignored -> {
+        });
         ledger.record(new UsageRecord("r1", "fixture", "leader", UsageRecord.Purpose.FORMAL,
                 new ModelResponse.Usage(20, 10, 60, 20)));
         ledger.record(new UsageRecord("m", "fixture", "leader", UsageRecord.Purpose.MEMORY,
@@ -33,10 +35,14 @@ class BackendSnapshotTest {
                 "", "", Map.of(), Map.of()).toJson();
     }
 
-    @Test void serializesRealUsageGroupsAndMissingReportsWithoutDoubleCounting() {
-        SessionUsage ledger = new SessionUsage(ignored -> { });
-        var formal = new UsageRecord("r1", "fixture", "leader", UsageRecord.Purpose.FORMAL, new ModelResponse.Usage(20, 10));
-        ledger.record(formal); ledger.record(formal);
+    @Test
+    void serializesRealUsageGroupsAndMissingReportsWithoutDoubleCounting() {
+        SessionUsage ledger = new SessionUsage(ignored -> {
+        });
+        var formal = new UsageRecord("r1", "fixture", "leader", UsageRecord.Purpose.FORMAL,
+                new ModelResponse.Usage(20, 10));
+        ledger.record(formal);
+        ledger.record(formal);
         ledger.record(new UsageRecord("r2", "fixture", "agent_1", UsageRecord.Purpose.SUBAGENT, null));
         var display = new SessionRuntime.Display("session", "title", "fixture",
                 new ModelMetadata(ModelMetadata.Limits.unknown(), "fixture"), ThinkingSettings.DEFAULT,

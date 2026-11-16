@@ -25,17 +25,38 @@ public final class UsageTrackingLlmClient implements LlmClient {
     public UsageTrackingLlmClient(LlmClient delegate, String model, String actor, UsageRecord.Purpose purpose,
             Consumer<UsageRecord> sink, Runnable beforeRequest, Supplier<ThinkingSettings> thinking) {
         this.delegate = java.util.Objects.requireNonNull(delegate);
-        this.model = model; this.actor = actor; this.purpose = purpose;
+        this.model = model;
+        this.actor = actor;
+        this.purpose = purpose;
         this.sink = java.util.Objects.requireNonNull(sink);
-        this.beforeRequest = java.util.Objects.requireNonNull(beforeRequest); this.thinking = thinking;
+        this.beforeRequest = java.util.Objects.requireNonNull(beforeRequest);
+        this.thinking = thinking;
     }
 
-    @Override public ModelMetadata metadata() { return delegate.metadata(); }
-    @Override public List<ThinkingSettings> thinkingChoices() { return delegate.thinkingChoices(); }
-    @Override public String thinkingLabel(ThinkingSettings value) { return delegate.thinkingLabel(value); }
+    @Override
+    public ModelMetadata metadata() {
+        return delegate.metadata();
+    }
 
-    @Override public ModelResponse complete(CompleteRequest request) throws LlmException { return call(request, null); }
-    @Override public ModelResponse complete(CompleteRequest request, ResponseStream stream) throws LlmException { return call(request, stream); }
+    @Override
+    public List<ThinkingSettings> thinkingChoices() {
+        return delegate.thinkingChoices();
+    }
+
+    @Override
+    public String thinkingLabel(ThinkingSettings value) {
+        return delegate.thinkingLabel(value);
+    }
+
+    @Override
+    public ModelResponse complete(CompleteRequest request) throws LlmException {
+        return call(request, null);
+    }
+
+    @Override
+    public ModelResponse complete(CompleteRequest request, ResponseStream stream) throws LlmException {
+        return call(request, stream);
+    }
 
     /**
      * 两种调用只经过这里一次。流式返回的完整 usage 才计入，不把每个 delta 当成新增花费。
@@ -46,11 +67,15 @@ public final class UsageTrackingLlmClient implements LlmClient {
         String id = UUID.randomUUID().toString();
         CompleteRequest actual = thinking == null ? request : request.withThinking(thinking.get());
         ModelResponse response;
-        try { response = stream == null ? delegate.complete(actual) : delegate.complete(actual, stream); }
-        catch (LlmException | RuntimeException failure) {
+        try {
+            response = stream == null ? delegate.complete(actual) : delegate.complete(actual, stream);
+        } catch (LlmException | RuntimeException failure) {
             // 服务端可能已经收费，但没提供可用报告。只登记缺失，不假装知道实际数字。
-            try { sink.accept(new UsageRecord(id, model, actor, purpose, null)); }
-            catch (RuntimeException recording) { failure.addSuppressed(recording); }
+            try {
+                sink.accept(new UsageRecord(id, model, actor, purpose, null));
+            } catch (RuntimeException recording) {
+                failure.addSuppressed(recording);
+            }
             throw failure;
         }
         sink.accept(new UsageRecord(id, model, actor, purpose, response.usage()));

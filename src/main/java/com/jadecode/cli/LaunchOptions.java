@@ -20,20 +20,29 @@ import java.nio.file.Path;
  * @param permission      本次运行的权限覆盖；未指定为 null（保留已保存默认 / headless 缺省 auto-review）
  * @param modelConfig     本次选用的模型 JSON 路径；null 表示全局默认，解析时不读文件
  */
-public record LaunchOptions(Mode mode, String initialPrompt, String resume, PermissionProfile permission, Path modelConfig) {
+public record LaunchOptions(Mode mode, String initialPrompt, String resume, PermissionProfile permission,
+        Path modelConfig) {
     /** 根入口的四种结果。 */
-    public enum Mode { INTERACTIVE, HEADLESS, HELP, VERSION }
+    public enum Mode {
+        INTERACTIVE, HEADLESS, HELP, VERSION
+    }
 
     /** 参数错误：调用方打印到 stderr 并返回 2，不启动模型或读取配置。 */
     public static final class UsageException extends Exception {
-        public UsageException(String message) { super(message); }
+        public UsageException(String message) {
+            super(message);
+        }
     }
 
     /** @return 是否使用无界面模式。 */
-    public boolean headless() { return mode == Mode.HEADLESS; }
+    public boolean headless() {
+        return mode == Mode.HEADLESS;
+    }
 
     /** @return 是否有需要自动提交的首轮任务。 */
-    public boolean hasPrompt() { return !initialPrompt.isBlank(); }
+    public boolean hasPrompt() {
+        return !initialPrompt.isBlank();
+    }
 
     /**
      * 解析命令行。
@@ -53,21 +62,39 @@ public record LaunchOptions(Mode mode, String initialPrompt, String resume, Perm
         boolean literal = false;
         for (int i = 0; i < args.length; i++) {
             String arg = args[i] == null ? "" : args[i];
-            if (!literal && arg.equals("--")) { literal = true; continue; }
-            if (!literal && (arg.equals("--help") || arg.equals("-h"))) { help = true; continue; }
-            if (!literal && (arg.equals("--version") || arg.equals("-V"))) { version = true; continue; }
-            if (!literal && (arg.equals("--headless"))) { headless = true; continue; }
+            if (!literal && arg.equals("--")) {
+                literal = true;
+                continue;
+            }
+            if (!literal && (arg.equals("--help") || arg.equals("-h"))) {
+                help = true;
+                continue;
+            }
+            if (!literal && (arg.equals("--version") || arg.equals("-V"))) {
+                version = true;
+                continue;
+            }
+            if (!literal && (arg.equals("--headless"))) {
+                headless = true;
+                continue;
+            }
             if (!literal && (arg.equals("--model-config") || arg.startsWith("--model-config="))) {
-                if (modelConfig != null) throw new UsageException("--model-config may only be specified once");
+                if (modelConfig != null)
+                    throw new UsageException("--model-config may only be specified once");
                 String value;
                 if (arg.equals("--model-config")) {
                     if (i + 1 >= args.length || args[i + 1] == null || args[i + 1].startsWith("-"))
                         throw new UsageException("--model-config requires a JSON file path");
                     value = args[++i];
-                } else value = arg.substring("--model-config=".length());
-                if (value == null || value.isBlank()) throw new UsageException("--model-config requires a JSON file path");
-                try { modelConfig = Path.of(value); }
-                catch (InvalidPathException invalid) { throw new UsageException("Invalid --model-config path"); }
+                } else
+                    value = arg.substring("--model-config=".length());
+                if (value == null || value.isBlank())
+                    throw new UsageException("--model-config requires a JSON file path");
+                try {
+                    modelConfig = Path.of(value);
+                } catch (InvalidPathException invalid) {
+                    throw new UsageException("Invalid --model-config path");
+                }
                 continue;
             }
             if (!literal && arg.startsWith("--permission=")) {
@@ -75,19 +102,23 @@ public record LaunchOptions(Mode mode, String initialPrompt, String resume, Perm
                 continue;
             }
             if (!literal && arg.equals("--permission")) {
-                if (i + 1 >= args.length) throw new UsageException("--permission requires a value");
+                if (i + 1 >= args.length)
+                    throw new UsageException("--permission requires a value");
                 permission = parsePermission(args[++i]);
                 continue;
             }
             if (!literal && arg.startsWith("--resume=")) {
                 String value = arg.substring("--resume=".length());
-                if (value.isBlank()) throw new UsageException("--resume=<id|name> must not be empty; use --resume to choose");
-                if (resume != null) throw new UsageException("--resume may only be specified once");
+                if (value.isBlank())
+                    throw new UsageException("--resume=<id|name> must not be empty; use --resume to choose");
+                if (resume != null)
+                    throw new UsageException("--resume may only be specified once");
                 resume = value;
                 continue;
             }
             if (!literal && arg.equals("--resume")) {
-                if (resume != null) throw new UsageException("--resume may only be specified once");
+                if (resume != null)
+                    throw new UsageException("--resume may only be specified once");
                 // 裸 --resume 打开选择器；不接受 `--resume <value>`，避免吞掉首轮 prompt。
                 resume = "";
                 continue;
@@ -95,13 +126,17 @@ public record LaunchOptions(Mode mode, String initialPrompt, String resume, Perm
             if (!literal && arg.startsWith("-") && arg.length() > 1) {
                 throw new UsageException("Unknown option: " + arg);
             }
-            if (prompt.length() > 0) prompt.append(' ');
+            if (prompt.length() > 0)
+                prompt.append(' ');
             prompt.append(arg);
         }
-        if (help) return new LaunchOptions(Mode.HELP, "", null, null, null);
-        if (version) return new LaunchOptions(Mode.VERSION, "", null, null, null);
+        if (help)
+            return new LaunchOptions(Mode.HELP, "", null, null, null);
+        if (version)
+            return new LaunchOptions(Mode.VERSION, "", null, null, null);
         String text = prompt.toString();
-        if (headless && (text.isBlank())) throw new UsageException("--headless requires a non-empty task");
+        if (headless && (text.isBlank()))
+            throw new UsageException("--headless requires a non-empty task");
         if (!headless && !text.isEmpty() && text.isBlank())
             throw new UsageException("The task description must not be blank");
         if (resume != null && !text.isBlank())

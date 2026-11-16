@@ -20,66 +20,102 @@ public final class SessionUsage {
     public record Totals(long inputTokens, long outputTokens, long cacheReadTokens, long cacheWriteTokens,
             long reportedRequests, long missingRequests) {
         public Totals {
-            if (inputTokens < 0 || outputTokens < 0 || cacheReadTokens < 0 || cacheWriteTokens < 0 || reportedRequests < 0 || missingRequests < 0)
+            if (inputTokens < 0 || outputTokens < 0 || cacheReadTokens < 0 || cacheWriteTokens < 0
+                    || reportedRequests < 0 || missingRequests < 0)
                 throw new IllegalArgumentException("Accumulated usage cannot be negative");
         }
-        public static Totals empty() { return new Totals(0, 0, 0, 0, 0, 0); }
+
+        public static Totals empty() {
+            return new Totals(0, 0, 0, 0, 0, 0);
+        }
+
         /** 缺报告也记一次，避免把“未报告”算成一次已报告为零的请求。 */
         public Totals add(ModelResponse.Usage usage) {
             return usage == null ? new Totals(inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens,
                     reportedRequests, Math.addExact(missingRequests, 1))
-                    : new Totals(Math.addExact(inputTokens, usage.totalInputTokens()), Math.addExact(outputTokens, usage.outputTokens()),
-                            Math.addExact(cacheReadTokens, usage.cacheReadInputTokens()), Math.addExact(cacheWriteTokens, usage.cacheCreationInputTokens()),
+                    : new Totals(Math.addExact(inputTokens, usage.totalInputTokens()),
+                            Math.addExact(outputTokens, usage.outputTokens()),
+                            Math.addExact(cacheReadTokens, usage.cacheReadInputTokens()),
+                            Math.addExact(cacheWriteTokens, usage.cacheCreationInputTokens()),
                             Math.addExact(reportedRequests, 1), missingRequests);
         }
     }
+
     /** 分类不写入大段清单；需要时可从逐次记录重建，避免 session.json 随队友调用无限膨胀。 */
-    public record Snapshot(Totals total, Map<String, Totals> byActor, Map<String, Totals> byPurpose, Map<String, Totals> byModel,
+    public record Snapshot(Totals total, Map<String, Totals> byActor, Map<String, Totals> byPurpose,
+            Map<String, Totals> byModel,
             ModelResponse.Usage recentLeaderUsage) {
-        public Snapshot { byActor = Map.copyOf(byActor); byPurpose = Map.copyOf(byPurpose); byModel = Map.copyOf(byModel); }
+        public Snapshot {
+            byActor = Map.copyOf(byActor);
+            byPurpose = Map.copyOf(byPurpose);
+            byModel = Map.copyOf(byModel);
+        }
+
         /** 没有逐次报告来源的旧调用不得用累计值推算最近请求命中率。 */
-        public Snapshot(Totals total, Map<String, Totals> byActor, Map<String, Totals> byPurpose, Map<String, Totals> byModel) {
+        public Snapshot(Totals total, Map<String, Totals> byActor, Map<String, Totals> byPurpose,
+                Map<String, Totals> byModel) {
             this(total, byActor, byPurpose, byModel, null);
         }
     }
+
     private final Set<String> seen = new HashSet<>();
-    private final Map<String, Totals> actors = new LinkedHashMap<>(), purposes = new LinkedHashMap<>(), models = new LinkedHashMap<>();
+    private final Map<String, Totals> actors = new LinkedHashMap<>(), purposes = new LinkedHashMap<>(),
+            models = new LinkedHashMap<>();
     private volatile Snapshot snapshot = new Snapshot(Totals.empty(), Map.of(), Map.of(), Map.of());
     private volatile boolean failed;
     private SessionJournal journal;
     private boolean closed, lateWarning;
     private final Consumer<String> warnings;
 
-    public SessionUsage(Consumer<String> warnings) { this.warnings = java.util.Objects.requireNonNull(warnings); }
-    public Snapshot snapshot() { return snapshot; }
-    public boolean failed() { return failed; }
+    public SessionUsage(Consumer<String> warnings) {
+        this.warnings = java.util.Objects.requireNonNull(warnings);
+    }
+
+    public Snapshot snapshot() {
+        return snapshot;
+    }
+
+    public boolean failed() {
+        return failed;
+    }
 
     /** 恢复只读的旧事实，不再写一次日志；必须在新请求开始前调用。 */
-    public synchronized void restore(SessionJournal writer, Iterable<com.jadecode.session.history.JournalEntry> entries) {
-        if (journal != null || !seen.isEmpty() || closed) throw new IllegalStateException("Usage ledger is already in use");
-        for (var entry : entries) if (entry.usage() != null) adopt(entry.usage());
+    public synchronized void restore(SessionJournal writer,
+            Iterable<com.jadecode.session.history.JournalEntry> entries) {
+        if (journal != null || !seen.isEmpty() || closed)
+            throw new IllegalStateException("Usage ledger is already in use");
+        for (var entry : entries)
+            if (entry.usage() != null)
+                adopt(entry.usage());
         journal = java.util.Objects.requireNonNull(writer);
     }
 
     /** 请求前检查；不能在日志已经损坏后继续付费请求而只显示一份内存累计数。 */
     public synchronized void ensureOpen() {
-        if (closed || failed) throw new IllegalStateException("Session usage ledger is closed or failed to save");
+        if (closed || failed)
+            throw new IllegalStateException("Session usage ledger is closed or failed to save");
     }
+
     /** 仅在新请求开始前检查软预算；在途请求的真实用量始终允许记录。 */
     public synchronized void ensureRequestAllowed() {
         ensureOpen();
-        if (tokenCeiling > 0 && Math.addExact(snapshot.total().inputTokens(), snapshot.total().outputTokens()) >= tokenCeiling)
-            throw new IllegalStateException("Execution reported-token budget reached; no further model request was started");
+        if (tokenCeiling > 0
+                && Math.addExact(snapshot.total().inputTokens(), snapshot.total().outputTokens()) >= tokenCeiling)
+            throw new IllegalStateException(
+                    "Execution reported-token budget reached; no further model request was started");
     }
 
     private long tokenCeiling;
+
     /**
      * 顶层轮次开始时设置软预算；所有 actor/purpose 共用本账本，不能绕到辅助请求继续花费。
      * 按已报告用量在下一请求前检查，无法撤回在途请求，不表示服务商计费硬上限。
      */
     public synchronized void limitAdditionalTokens(long maximum) {
-        if (maximum < 1) throw new IllegalArgumentException("Token budget must be positive");
-        tokenCeiling = Math.addExact(Math.addExact(snapshot.total().inputTokens(), snapshot.total().outputTokens()),maximum);
+        if (maximum < 1)
+            throw new IllegalArgumentException("Token budget must be positive");
+        tokenCeiling = Math.addExact(Math.addExact(snapshot.total().inputTokens(), snapshot.total().outputTokens()),
+                maximum);
     }
 
     /**
@@ -88,13 +124,18 @@ public final class SessionUsage {
      */
     public synchronized void record(UsageRecord record) {
         if (closed) {
-            if (!lateWarning) warnings.accept("[Warning] Session is closed; late model usage was not saved. Statistics may be incomplete.");
-            lateWarning = true; return;
+            if (!lateWarning)
+                warnings.accept(
+                        "[Warning] Session is closed; late model usage was not saved. Statistics may be incomplete.");
+            lateWarning = true;
+            return;
         }
         ensureOpen();
-        if (seen.contains(record.requestId())) return;
+        if (seen.contains(record.requestId()))
+            return;
         try {
-            if (journal != null) journal.usage(record);
+            if (journal != null)
+                journal.usage(record);
             adopt(record);
         } catch (IOException | RuntimeException failure) {
             failed = true;
@@ -105,7 +146,8 @@ public final class SessionUsage {
 
     /** 更新总量与分类视图；发布快照后界面才看得到，不暴露内部可改 Map。 */
     private void adopt(UsageRecord record) {
-        if (!seen.add(record.requestId())) return;
+        if (!seen.add(record.requestId()))
+            return;
         Totals total = snapshot.total().add(record.usage());
         actors.put(record.actor(), actors.getOrDefault(record.actor(), Totals.empty()).add(record.usage()));
         String purpose = record.purpose().name();
@@ -114,10 +156,13 @@ public final class SessionUsage {
         // 页脚 CH 只取 Leader 最近一次正式请求，Memory/队友不能覆盖它。
         // 正式请求缺报时清空旧值；restore 也经过这里，按日志事实重建而非额外保存一份统计。
         var recent = record.purpose() == UsageRecord.Purpose.FORMAL && record.actor().equals("leader")
-                ? record.usage() : snapshot.recentLeaderUsage();
+                ? record.usage()
+                : snapshot.recentLeaderUsage();
         snapshot = new Snapshot(total, actors, purposes, models, recent);
     }
 
     /** 只关闭账本，日志仍由拥有它的主 SessionRuntime 关闭并释放文件锁。 */
-    public synchronized void close() { closed = true; }
+    public synchronized void close() {
+        closed = true;
+    }
 }

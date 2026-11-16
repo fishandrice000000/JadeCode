@@ -18,6 +18,7 @@ import com.fasterxml.jackson.annotation.JsonTypeInfo;
         @JsonSubTypes.Type(value = ThinkingBlock.class, name = "thinking"),
         @JsonSubTypes.Type(value = RedactedThinkingBlock.class, name = "redacted_thinking")
 })
-public sealed interface ContentBlock permits TextBlock, ToolUseBlock, ToolResultBlock, ThinkingBlock, RedactedThinkingBlock {
+public sealed interface ContentBlock
+        permits TextBlock, ToolUseBlock, ToolResultBlock, ThinkingBlock, RedactedThinkingBlock {
 
 }

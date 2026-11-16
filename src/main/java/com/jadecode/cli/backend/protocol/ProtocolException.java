@@ -9,7 +9,9 @@ package com.jadecode.cli.backend.protocol;
 public final class ProtocolException extends Exception {
     private final ProtocolError error;
 
-    public ProtocolException(ProtocolError error, String message) { this(error, message, null); }
+    public ProtocolException(ProtocolError error, String message) {
+        this(error, message, null);
+    }
 
     public ProtocolException(ProtocolError error, String message, Throwable cause) {
         super(message, cause);
@@ -17,5 +19,7 @@ public final class ProtocolException extends Exception {
     }
 
     /** @return 稳定的协议错误类别，Node 用它区分可重试与致命错误。 */
-    public ProtocolError error() { return error; }
+    public ProtocolError error() {
+        return error;
+    }
 }

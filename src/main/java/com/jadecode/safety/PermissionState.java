@@ -10,9 +10,14 @@ import com.jadecode.safety.rules.*;
  * 快照与版本一并取得；配置变化通知只负责唤醒审批，不直接批准任何操作。
  */
 public final class PermissionState {
-    public record Snapshot(PermissionProfile profile, List<PermissionRule> rules, Set<String> disabledDefaults, long revision) {
-        public Snapshot { rules = List.copyOf(rules); disabledDefaults = Set.copyOf(disabledDefaults); }
+    public record Snapshot(PermissionProfile profile, List<PermissionRule> rules, Set<String> disabledDefaults,
+            long revision) {
+        public Snapshot {
+            rules = List.copyOf(rules);
+            disabledDefaults = Set.copyOf(disabledDefaults);
+        }
     }
+
     private PermissionProfile profile;
     private final List<PermissionRule> rules;
     private final Set<String> disabled;
@@ -21,34 +26,65 @@ public final class PermissionState {
     private volatile Snapshot published;
     private final PermissionRuleStore store;
     private final CopyOnWriteArrayList<Runnable> listeners = new CopyOnWriteArrayList<>();
-    public PermissionState(PermissionProfile profile, List<PermissionRule> rules, Set<String> disabled, PermissionRuleStore store) {
-        this.profile = Objects.requireNonNull(profile); this.rules = new ArrayList<>(rules);
-        this.disabled = Set.copyOf(disabled); this.store = store;
+
+    public PermissionState(PermissionProfile profile, List<PermissionRule> rules, Set<String> disabled,
+            PermissionRuleStore store) {
+        this.profile = Objects.requireNonNull(profile);
+        this.rules = new ArrayList<>(rules);
+        this.disabled = Set.copyOf(disabled);
+        this.store = store;
         published = new Snapshot(profile, List.copyOf(rules), this.disabled, 0);
     }
+
     /** 离线装配不写用户配置；保存操作明确失败，而不是假装持久化。 */
-    public static PermissionState defaults() { return new PermissionState(PermissionProfile.WORKSPACE, List.of(), Set.of(), null); }
-    public Snapshot snapshot() { return published; }
+    public static PermissionState defaults() {
+        return new PermissionState(PermissionProfile.WORKSPACE, List.of(), Set.of(), null);
+    }
+
+    public Snapshot snapshot() {
+        return published;
+    }
+
     /** 原子更新档位，锁外通知，避免唤醒审批时互相等待。 */
     public void select(PermissionProfile value) {
         Objects.requireNonNull(value);
         synchronized (this) {
-            if (profile == value) return;
-            profile = value; revision++; published = new Snapshot(profile, List.copyOf(rules), disabled, revision);
-        }
-        changed();
-    }
-    /** 先持久化，再发布内存规则。IO 失败时不生成一次虚假的长期批准。 */
-    public void remember(PermissionRule rule, long expectedRevision) throws IOException {
-        synchronized (this) {
-            if (revision != expectedRevision) throw new IOException("Permissions changed; confirm again");
-            if (store == null) throw new IOException("No long-term permission store is configured for this run");
-            store.save(rule); rules.add(rule); revision++;
+            if (profile == value)
+                return;
+            profile = value;
+            revision++;
             published = new Snapshot(profile, List.copyOf(rules), disabled, revision);
         }
         changed();
     }
+
+    /** 先持久化，再发布内存规则。IO 失败时不生成一次虚假的长期批准。 */
+    public void remember(PermissionRule rule, long expectedRevision) throws IOException {
+        synchronized (this) {
+            if (revision != expectedRevision)
+                throw new IOException("Permissions changed; confirm again");
+            if (store == null)
+                throw new IOException("No long-term permission store is configured for this run");
+            store.save(rule);
+            rules.add(rule);
+            revision++;
+            published = new Snapshot(profile, List.copyOf(rules), disabled, revision);
+        }
+        changed();
+    }
+
     /** 请求结束后移除监听，避免已完成申请永久占用内存。 */
-    public AutoCloseable onChange(Runnable listener) { listeners.add(listener); return () -> listeners.remove(listener); }
-    private void changed() { listeners.forEach(listener -> { try { listener.run(); } catch (RuntimeException ignored) { } }); }
+    public AutoCloseable onChange(Runnable listener) {
+        listeners.add(listener);
+        return () -> listeners.remove(listener);
+    }
+
+    private void changed() {
+        listeners.forEach(listener -> {
+            try {
+                listener.run();
+            } catch (RuntimeException ignored) {
+            }
+        });
+    }
 }

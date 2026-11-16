@@ -16,8 +16,14 @@ class HooksTest {
     void hooksRunInRegistrationOrder() {
         Hooks hooks = new Hooks();
         List<String> calls = new ArrayList<>();
-        hooks.register(Hooks.PRE_TOOL_USE, params -> { calls.add("first"); return null; });
-        hooks.register(Hooks.PRE_TOOL_USE, params -> { calls.add("second"); return null; });
+        hooks.register(Hooks.PRE_TOOL_USE, params -> {
+            calls.add("first");
+            return null;
+        });
+        hooks.register(Hooks.PRE_TOOL_USE, params -> {
+            calls.add("second");
+            return null;
+        });
 
         assertNull(hooks.trigger(Hooks.PRE_TOOL_USE, Map.of()));
         assertEquals(List.of("first", "second"), calls);
@@ -28,8 +34,14 @@ class HooksTest {
     void firstNonNullShortCircuitsLaterHooks() {
         Hooks hooks = new Hooks();
         List<String> calls = new ArrayList<>();
-        hooks.register(Hooks.PRE_TOOL_USE, params -> { calls.add("first"); return "blocked"; });
-        hooks.register(Hooks.PRE_TOOL_USE, params -> { calls.add("second"); return null; });
+        hooks.register(Hooks.PRE_TOOL_USE, params -> {
+            calls.add("first");
+            return "blocked";
+        });
+        hooks.register(Hooks.PRE_TOOL_USE, params -> {
+            calls.add("second");
+            return null;
+        });
 
         assertEquals("blocked", hooks.trigger(Hooks.PRE_TOOL_USE, Map.of()));
         assertEquals(List.of("first"), calls);
@@ -61,7 +73,10 @@ class HooksTest {
     void paramsMapIsPassedThroughUntouched() {
         Hooks hooks = new Hooks();
         AtomicReference<Map<String, ?>> received = new AtomicReference<>();
-        hooks.register(Hooks.POST_TOOL_USE, params -> { received.set(params); return null; });
+        hooks.register(Hooks.POST_TOOL_USE, params -> {
+            received.set(params);
+            return null;
+        });
 
         Map<String, ?> sent = Map.of(Hooks.PARAM_BLOCK, "a-block", Hooks.PARAM_OUTPUT, "out");
         hooks.trigger(Hooks.POST_TOOL_USE, sent);

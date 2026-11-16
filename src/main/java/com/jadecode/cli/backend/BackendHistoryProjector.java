@@ -36,8 +36,9 @@ public final class BackendHistoryProjector {
     /** 工具可信身份的可传输形式；未知来源为 null。 */
     public record ToolInfo(String kind, String serverName, String originalName, boolean hostReadOnly) {
         static ToolInfo of(ToolIdentity identity) {
-            return identity == null ? null : new ToolInfo(identity.kind().name(), identity.serverName(),
-                    identity.originalName(), identity.hostReadOnly());
+            return identity == null ? null
+                    : new ToolInfo(identity.kind().name(), identity.serverName(),
+                            identity.originalName(), identity.hostReadOnly());
         }
     }
 
@@ -86,18 +87,22 @@ public final class BackendHistoryProjector {
             for (JournalEntry entry : restored.entries()) {
                 switch (entry.kind()) {
                     case TURN_STARTED -> turnMark = entries.size();
-                    case TURN_FINISHED, TURN_FAILED, USAGE, RENAMED, THINKING -> { }
+                    case TURN_FINISHED, TURN_FAILED, USAGE, RENAMED, THINKING -> {
+                    }
                     case GOAL -> notice("System", "Goal", entry.goal().status() + ": " + entry.goal().condition()
-                            + "\n" + entry.goal().reason(), entry.goal().status() == com.jadecode.goal.GoalState.Status.IMPOSSIBLE);
+                            + "\n" + entry.goal().reason(),
+                            entry.goal().status() == com.jadecode.goal.GoalState.Status.IMPOSSIBLE);
                     case APPEND -> {
                         lastModel = entry.messages().getFirst();
                         // 自动继续虽使用 USER wire role，来源仍是宿主，不能污染用户输入历史。
                         if (entry.reason().equals("goal_continue")) {
-                            notice("System", "Goal", lastModel.extractText(), false); lastUser = null;
+                            notice("System", "Goal", lastModel.extractText(), false);
+                            lastUser = null;
                         } else if (entry.reason().equals("notification")) {
                             // 参考消息保持独立后，首条通知可能是 APPEND；按宿主通知显示。
                             notice("System", "Incoming", lastModel.extractText(), false);
-                        } else lastUser = message(lastModel, lastUser);
+                        } else
+                            lastUser = message(lastModel, lastUser);
                     }
                     case REPLACE_LAST -> {
                         Message replacement = entry.messages().getFirst();
@@ -105,10 +110,12 @@ public final class BackendHistoryProjector {
                             String previous = lastModel == null ? "" : lastModel.extractText();
                             String text = replacement.extractText();
                             String added = text.startsWith(previous) ? text.substring(previous.length()).strip() : text;
-                            if (!added.isBlank()) notice("System", "Incoming", added, false);
+                            if (!added.isBlank())
+                                notice("System", "Incoming", added, false);
                         }
                         // 通知是注入模型的系统资料，不是用户新输入；不能污染输入历史。
-                        else lastUser = message(replacement, lastUser);
+                        else
+                            lastUser = message(replacement, lastUser);
                         lastModel = replacement;
                     }
                     case REPLACE_HISTORY -> {
@@ -120,7 +127,8 @@ public final class BackendHistoryProjector {
                                 lastUser = null;
                             }
                             case "recovery" -> {
-                                if (!entry.messages().isEmpty()) lastUser = message(entry.messages().getLast(), lastUser);
+                                if (!entry.messages().isEmpty())
+                                    lastUser = message(entry.messages().getLast(), lastUser);
                             }
                             default -> {
                                 notice("System", "Context",
@@ -136,28 +144,33 @@ public final class BackendHistoryProjector {
         } catch (RuntimeException failure) {
             notice("System", "Warning", "History display is partially available: " + failure.getMessage(), true);
         }
-        for (String warning : restored.warnings()) notice("System", "Warning", warning, true);
+        for (String warning : restored.warnings())
+            notice("System", "Warning", warning, true);
     }
 
     /** 回滚到本轮开始前的显示长度，并丢弃已经失效的工具索引。 */
     private void truncateTo(int size) {
-        while (entries.size() > size) entries.removeLast();
+        while (entries.size() > size)
+            entries.removeLast();
         toolIndex.clear();
         for (int i = 0; i < entries.size(); i++) {
             Entry entry = entries.get(i);
-            if (entry.callId() != null) toolIndex.put(entry.callId(), i);
+            if (entry.callId() != null)
+                toolIndex.put(entry.callId(), i);
         }
     }
 
     /** 把一条模型消息展开成用户文字、回答、思考与工具卡；返回当前用户条目下标。 */
     private Integer message(Message message, Integer lastUser) {
         // 召回资料是模型上下文，恢复时不伪装成用户输入，也不进入输入历史。
-        if (message.source() == Message.Source.MEMORY_REFERENCE) return null;
+        if (message.source() == Message.Source.MEMORY_REFERENCE)
+            return null;
         Integer user = null;
         if (message.role() == Role.USER) {
             String text = message.extractText();
             if (!text.isBlank()) {
-                if (lastUser == null || lastUser >= entries.size()) user = add("USER", "System", "Request", text, "HISTORICAL");
+                if (lastUser == null || lastUser >= entries.size())
+                    user = add("USER", "System", "Request", text, "HISTORICAL");
                 else {
                     entries.set(lastUser, replaceBody(entries.get(lastUser), text));
                     user = lastUser;
@@ -201,12 +214,14 @@ public final class BackendHistoryProjector {
                 "TOOL", actor, name == null ? "Tool" : name, "", arguments == null ? "" : arguments,
                 "NOT_RUN", null, callId, null, null, true, null);
         entries.add(entry);
-        if (callId != null) toolIndex.put(callId, entries.size() - 1);
+        if (callId != null)
+            toolIndex.put(callId, entries.size() - 1);
     }
 
     private void completeTool(String callId, String result, boolean error) {
         Integer index = callId == null ? null : toolIndex.get(callId);
-        if (index == null || index >= entries.size()) return;
+        if (index == null || index >= entries.size())
+            return;
         Entry current = entries.get(index);
         entries.set(index, new Entry(current.entryId(), current.kind(), current.actor(), current.title(),
                 result == null ? "" : result, current.arguments(), error ? "ERROR" : "HISTORICAL",

@@ -14,8 +14,8 @@ import java.util.Set;
  * 不启动任务、不读系统时钟、不修改状态。
  */
 final class CronExpression {
-    private static final int[] MIN = {0, 0, 1, 1, 0};
-    private static final int[] MAX = {59, 23, 31, 12, 6};
+    private static final int[] MIN = { 0, 0, 1, 1, 0 };
+    private static final int[] MAX = { 59, 23, 31, 12, 6 };
     private final List<Set<Integer>> fields;
     private final boolean anyDay;
     private final boolean anyWeekday;
@@ -64,23 +64,27 @@ final class CronExpression {
                 throw new IllegalArgumentException("cron step must be positive");
             }
             for (int value = min; value <= max; value++) {
-                if (value % step == 0) values.add(value);
+                if (value % step == 0)
+                    values.add(value);
             }
             return;
         }
         String[] range = part.split("-", -1);
-        if (range.length > 2) throw new IllegalArgumentException("Invalid cron field: " + part);
+        if (range.length > 2)
+            throw new IllegalArgumentException("Invalid cron field: " + part);
         int first = number(range[0]);
         int last = range.length == 1 ? first : number(range[1]);
         if (first < min || last > max || first > last) {
             throw new IllegalArgumentException("cron field outside [" + min + "-" + max + "]: " + part);
         }
-        for (int value = first; value <= last; value++) values.add(value);
+        for (int value = first; value <= last; value++)
+            values.add(value);
     }
 
     /** 数字必须为十进制非负整数字面量，溢出同样按无效输入拒绝。 */
     private static int number(String text) {
-        if (!text.matches("[0-9]+")) throw new IllegalArgumentException("Invalid cron number: " + text);
+        if (!text.matches("[0-9]+"))
+            throw new IllegalArgumentException("Invalid cron number: " + text);
         try {
             return Integer.parseInt(text);
         } catch (NumberFormatException invalid) {
@@ -95,11 +99,14 @@ final class CronExpression {
      */
     boolean matches(ZonedDateTime moment) {
         if (!fields.get(0).contains(moment.getMinute()) || !fields.get(1).contains(moment.getHour())
-                || !fields.get(3).contains(moment.getMonthValue())) return false;
+                || !fields.get(3).contains(moment.getMonthValue()))
+            return false;
         boolean day = fields.get(2).contains(moment.getDayOfMonth());
         boolean weekday = fields.get(4).contains(moment.getDayOfWeek().getValue() % 7);
-        if (anyDay) return weekday;
-        if (anyWeekday) return day;
+        if (anyDay)
+            return weekday;
+        if (anyWeekday)
+            return day;
         return day || weekday;
     }
 }

@@ -30,8 +30,11 @@ public final class PayloadTransfer {
     public static final int CHUNK_BYTES = 32 * 1024;
 
     private final java.util.function.Consumer<Part> sink;
+
     /** 大资料只依赖事件出口，分块过程不需要知道当前有没有客户端。 */
-    private record Part(String type, ObjectNode payload, String sessionId, Long generation) { }
+    private record Part(String type, ObjectNode payload, String sessionId, Long generation) {
+    }
+
     private final AtomicLong ids = new AtomicLong();
 
     public PayloadTransfer(EventOutbox outbox) {
@@ -64,14 +67,17 @@ public final class PayloadTransfer {
         while (offset < value.length()) {
             // 按 UTF-16 下标前进，但要保证不把代理对劈开：提升到码点边界。
             int end = Math.min(value.length(), offset + CHUNK_BYTES / 4 + 1);
-            if (end < value.length() && Character.isHighSurrogate(value.charAt(end - 1))) end++;
+            if (end < value.length() && Character.isHighSurrogate(value.charAt(end - 1)))
+                end++;
             // 粗调：把小段逐步扩展到接近目标字节数，避免块太小。
             while (end < value.length()
                     && value.substring(offset, end).getBytes(StandardCharsets.UTF_8).length < CHUNK_BYTES) {
                 end = Math.min(value.length(), end + Math.max(1, (CHUNK_BYTES / 4)));
-                if (end < value.length() && Character.isHighSurrogate(value.charAt(end - 1))) end++;
+                if (end < value.length() && Character.isHighSurrogate(value.charAt(end - 1)))
+                    end++;
             }
-            if (end < value.length() && Character.isHighSurrogate(value.charAt(end - 1))) end--;
+            if (end < value.length() && Character.isHighSurrogate(value.charAt(end - 1)))
+                end--;
             ObjectNode chunk = Json.mapper().createObjectNode();
             chunk.put("id", id);
             chunk.put("index", index++);
@@ -104,7 +110,8 @@ public final class PayloadTransfer {
      */
     public static final class Assembler {
         private record Assembly(String kind, int totalBytes, String hash,
-                ByteArrayOutputStream data, int nextIndex, int chunks) { }
+                ByteArrayOutputStream data, int nextIndex, int chunks) {
+        }
 
         private final Map<String, Assembly> active = new HashMap<>();
         private long budget;
@@ -114,7 +121,8 @@ public final class PayloadTransfer {
             if (active.containsKey(id))
                 throw new ProtocolException(ProtocolError.DUPLICATE, "Duplicate payload id: " + id);
             if (totalBytes < 0 || totalBytes > MAX_PAYLOAD_BYTES)
-                throw new ProtocolException(ProtocolError.PAYLOAD_TOO_LARGE, "Payload declared " + totalBytes + " bytes");
+                throw new ProtocolException(ProtocolError.PAYLOAD_TOO_LARGE,
+                        "Payload declared " + totalBytes + " bytes");
             if (active.size() >= MAX_ASSEMBLIES)
                 throw new ProtocolException(ProtocolError.OVERLOADED, "Too many payloads are being assembled");
             if (budget + totalBytes > MAX_PAYLOAD_BYTES)
@@ -157,7 +165,9 @@ public final class PayloadTransfer {
         }
 
         /** 取回已完成但不在此处消费的资料标识（供测试/诊断）。 */
-        public synchronized int activeCount() { return active.size(); }
+        public synchronized int activeCount() {
+            return active.size();
+        }
 
         /** 断连或代次切换时丢弃所有未完成组装。 */
         public synchronized void clear() {

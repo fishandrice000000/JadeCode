@@ -20,20 +20,30 @@ public record CompleteRequest(String system, List<Message> messages, int maxToke
     public CompleteRequest(String system, List<Message> messages, int maxTokens, List<ToolDefinition> tools) {
         this(system, messages, maxTokens, tools, ThinkingSettings.DEFAULT, "");
     }
+
     /** 旧的显式思考调用也不伪造会话 ID；生产装配在最外层统一绑定。 */
     public CompleteRequest(String system, List<Message> messages, int maxTokens, List<ToolDefinition> tools,
             ThinkingSettings thinking) {
         this(system, messages, maxTokens, tools, thinking, "");
     }
+
     /** 路由 ID 只接受可安全写入 HTTP 头的有限字符；不允许换行注入或无限长身份。 */
     public CompleteRequest {
-        if (thinking == null) thinking = ThinkingSettings.DEFAULT;
-        if (sessionId == null) sessionId = "";
+        if (thinking == null)
+            thinking = ThinkingSettings.DEFAULT;
+        if (sessionId == null)
+            sessionId = "";
         if (!sessionId.isEmpty() && !sessionId.matches("[A-Za-z0-9._:/-]{1,200}"))
             throw new IllegalArgumentException("Model session ID must be a short HTTP-header-safe identifier");
     }
+
     /** 创建这次请求的设置副本，不改系统提示词、历史或工具定义。 */
-    public CompleteRequest withThinking(ThinkingSettings value) { return new CompleteRequest(system, messages, maxTokens, tools, value, sessionId); }
+    public CompleteRequest withThinking(ThinkingSettings value) {
+        return new CompleteRequest(system, messages, maxTokens, tools, value, sessionId);
+    }
+
     /** 只替换路由元数据，不改变用户内容、输出预算或思考设置。 */
-    public CompleteRequest withSessionId(String value) { return new CompleteRequest(system, messages, maxTokens, tools, thinking, value); }
+    public CompleteRequest withSessionId(String value) {
+        return new CompleteRequest(system, messages, maxTokens, tools, thinking, value);
+    }
 }

@@ -14,12 +14,19 @@ import com.jadecode.session.SessionRuntime;
 
 /** 用真实清单验证 UUID 优先和标题回退；运行时不 start，任何模型请求都会使测试失败。 */
 class SessionHostLookupTest {
-    @TempDir Path workspace;
+    @TempDir
+    Path workspace;
 
     private SessionHost host() {
         return new SessionHost(com.jadecode.support.TestPaths.workspace(workspace), generation -> new SessionRuntime(
-                new AgentExecutor(request -> { throw new AssertionError("Lookup must not call a model"); },
-                        Map.of(), "test", 1000, new Hooks()), ignored -> { }, ignored -> { }), ignored -> { });
+                new AgentExecutor(request -> {
+                    throw new AssertionError("Lookup must not call a model");
+                },
+                        Map.of(), "test", 1000, new Hooks()),
+                ignored -> {
+                }, ignored -> {
+                }), ignored -> {
+                });
     }
 
     /** 准备真实会话清单与名称，身份仍由存储层生成，不伪造 UUID 目录。 */
@@ -30,16 +37,19 @@ class SessionHostLookupTest {
         return id;
     }
 
-    @Test void anExistingUuidWinsOverAnIdenticalTitleAndAcceptsUpperCase() throws Exception {
+    @Test
+    void anExistingUuidWinsOverAnIdenticalTitleAndAcceptsUpperCase() throws Exception {
         try (var host = host()) {
             String id = create(host, "Original");
             create(host, id); // 另一会话恰好以该 UUID 作标题，仍应优先恢复原身份。
             assertEquals(List.of(id), host.find(id).stream().map(item -> item.id()).toList());
-            assertEquals(List.of(id), host.find(" " + id.toUpperCase(Locale.ROOT) + " ").stream().map(item -> item.id()).toList());
+            assertEquals(List.of(id),
+                    host.find(" " + id.toUpperCase(Locale.ROOT) + " ").stream().map(item -> item.id()).toList());
         }
     }
 
-    @Test void anUnmatchedUuidFallsBackToAllExactTitleMatches() throws Exception {
+    @Test
+    void anUnmatchedUuidFallsBackToAllExactTitleMatches() throws Exception {
         try (var host = host()) {
             String title = "00000000-0000-0000-0000-000000000001";
             String first = create(host, title);
@@ -51,7 +61,8 @@ class SessionHostLookupTest {
         }
     }
 
-    @Test void ordinaryTextAndUuidShortFormsUseOnlyTitleMatching() throws Exception {
+    @Test
+    void ordinaryTextAndUuidShortFormsUseOnlyTitleMatching() throws Exception {
         try (var host = host()) {
             String first = create(host, "Daily Review");
             String shortForm = create(host, "1-1-1-1-1");

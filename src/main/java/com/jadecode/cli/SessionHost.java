@@ -17,9 +17,15 @@ import com.jadecode.session.history.SessionStore;
  * 所有可能读盘、装配客户端或等待关闭的方法由 CLI 工作线程调用，不占住界面线程。</p>
  */
 public final class SessionHost implements AutoCloseable {
-    @FunctionalInterface public interface Factory { SessionRuntime create(long generation); }
+    @FunctionalInterface
+    public interface Factory {
+        SessionRuntime create(long generation);
+    }
+
     /** 只把恢复资料和代次交给 UI，不把历史的写入权交出去。 */
-    public record Opened(long generation, RestoredSession restored, String currentModel) { }
+    public record Opened(long generation, RestoredSession restored, String currentModel) {
+    }
+
     private final SessionStore store;
     private final Factory factory;
     private final AtomicBoolean closed = new AtomicBoolean();
@@ -30,17 +36,24 @@ public final class SessionHost implements AutoCloseable {
     private boolean changing;
 
     public SessionHost(WorkspacePaths paths, Factory factory, Consumer<String> warnings) {
-        store = new SessionStore(paths, warnings); this.factory = factory;
+        store = new SessionStore(paths, warnings);
+        this.factory = factory;
     }
 
-    public boolean hasCurrent() { return current != null; }
+    public boolean hasCurrent() {
+        return current != null;
+    }
+
     /** 关闭后检查不能调用 current()；保留未完成清理的失败状态供服务拒绝释放占用。 */
-    public boolean isStopped() { return current == null || current.isStopped(); }
+    public boolean isStopped() {
+        return current == null || current.isStopped();
+    }
 
     /** 获取当前运行时只用于提交新输入；未选定会话时不会隐式创建或调用模型。 */
     public SessionRuntime current() {
         SessionRuntime runtime = current;
-        if (runtime == null || closed.get()) throw new IllegalStateException("No session is open, or it has exited");
+        if (runtime == null || closed.get())
+            throw new IllegalStateException("No session is open, or it has exited");
         return runtime;
     }
 
@@ -67,25 +80,32 @@ public final class SessionHost implements AutoCloseable {
         if (query != null && query.matches("(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")) {
             // 同名标题不能覆盖真实 ID；只有不存在这个 ID 时才退回标题语义。
             var exactId = store.list().stream().filter(item -> item.id().equalsIgnoreCase(query)).toList();
-            if (!exactId.isEmpty()) return exactId;
+            if (!exactId.isEmpty())
+                return exactId;
         }
         return store.find(query);
     }
 
     /** 本地元数据操作仍落在当前运行时；与切换互斥，不把改名写入稍后打开的别的会话。 */
     public synchronized void rename(String expectedId, String title) throws IOException {
-        if (changing || !current().sessionId().equals(expectedId)) throw new IOException("The session switched; another session's name was not changed");
+        if (changing || !current().sessionId().equals(expectedId))
+            throw new IOException("The session switched; another session's name was not changed");
         current().rename(title);
     }
 
     /** CLI 在工作线程调用，当前网络响应不受影响，下一次请求采用新值。 */
     public synchronized void thinking(String expectedId, com.jadecode.llm.ThinkingSettings value) throws IOException {
-        if (changing || !current().sessionId().equals(expectedId)) throw new IOException("The session switched; another session's settings were not changed");
+        if (changing || !current().sessionId().equals(expectedId))
+            throw new IOException("The session switched; another session's settings were not changed");
         current().changeThinking(value);
     }
 
     /** 退出后仍可读取已保存身份，不调用已关闭运行时的执行方法。 */
-    public SessionRuntime.Display display() { SessionRuntime runtime = current; return runtime == null ? null : runtime.display(); }
+    public SessionRuntime.Display display() {
+        SessionRuntime runtime = current;
+        return runtime == null ? null : runtime.display();
+    }
+
     /** @return 当前会话的 MCP 只读服务快照；未打开会话时为空，不连接服务。 */
     public java.util.List<com.jadecode.mcp.McpManager.ServerSnapshot> mcpServers() {
         SessionRuntime runtime = current;
@@ -94,7 +114,8 @@ public final class SessionHost implements AutoCloseable {
 
     /** 只读权限快照在关闭期间仍可显示；不能用要求“会话可操作”的 current() 来刷新页脚。 */
     public com.jadecode.safety.PermissionState.Snapshot permissionSnapshot() {
-        SessionRuntime runtime = current; return runtime == null ? null : runtime.permissionState().snapshot();
+        SessionRuntime runtime = current;
+        return runtime == null ? null : runtime.permissionState().snapshot();
     }
 
     /**
@@ -106,30 +127,42 @@ public final class SessionHost implements AutoCloseable {
         SessionRuntime old;
         long next;
         synchronized (this) {
-            if (closed.get() || changing) throw new IOException("The session is switching or the CLI has exited");
-            if (id != null && current != null && id.equals(current.sessionId())) throw new IOException("That session is already open");
-            changing = true; old = current; next = ++generation;
+            if (closed.get() || changing)
+                throw new IOException("The session is switching or the CLI has exited");
+            if (id != null && current != null && id.equals(current.sessionId()))
+                throw new IOException("That session is already open");
+            changing = true;
+            old = current;
+            next = ++generation;
         }
         SessionStore.Opened prepared = null;
         SessionRuntime candidate = null;
         boolean frozen = false, committed = false;
         try {
             // 先验证已有目标，失败不冻结原会话，也不让工厂重新读取认证/模型配置。
-            if (id != null) prepared = store.open(id);
+            if (id != null)
+                prepared = store.open(id);
             if (old != null) {
                 frozen = old.freezeForSwitch();
-                if (!frozen) throw new IOException("Tasks, queued messages, background results or live teammates remain; finish them before /resume");
+                if (!frozen)
+                    throw new IOException(
+                            "Tasks, queued messages, background results or live teammates remain; finish them before /resume");
             }
             candidate = factory.create(next);
-            if (prepared == null) prepared = store.create(candidate.model(), candidate.backendIdentity());
+            if (prepared == null)
+                prepared = store.create(candidate.model(), candidate.backendIdentity());
             candidate.restore(prepared.journal(), prepared.restored());
             synchronized (this) {
-                if (closed.get()) throw new IOException("CLI exited; session switch cancelled");
+                if (closed.get())
+                    throw new IOException("CLI exited; session switch cancelled");
                 if (old != null) {
                     old.close();
-                    if (!old.isStopped()) throw new IOException("The old session thread has not stopped; the target session was not enabled. Exit the CLI and resume");
+                    if (!old.isStopped())
+                        throw new IOException(
+                                "The old session thread has not stopped; the target session was not enabled. Exit the CLI and resume");
                 }
-                current = candidate; committed = true;
+                current = candidate;
+                committed = true;
             }
             return new Opened(next, prepared.restored(), candidate.model());
         } catch (IOException | RuntimeException failure) {
@@ -137,20 +170,28 @@ public final class SessionHost implements AutoCloseable {
         } finally {
             if (!committed) {
                 try {
-                    if (candidate != null) candidate.close();
-                    if (prepared != null) prepared.close();
+                    if (candidate != null)
+                        candidate.close();
+                    if (prepared != null)
+                        prepared.close();
                 } finally {
-                    if (frozen) old.unfreeze();
-                    synchronized (this) { changing = false; }
+                    if (frozen)
+                        old.unfreeze();
+                    synchronized (this) {
+                        changing = false;
+                    }
                 }
             }
-            synchronized (this) { changing = false; }
+            synchronized (this) {
+                changing = false;
+            }
         }
     }
 
     /** 在 UI 已采用相同代次的历史之后调用，避免新事件抢在历史清屏之前出现。 */
     public synchronized void start(long expectedGeneration) {
-        if (!closed.get() && current != null && generation == expectedGeneration) current.start();
+        if (!closed.get() && current != null && generation == expectedGeneration)
+            current.start();
     }
 
     /**
@@ -180,8 +221,12 @@ public final class SessionHost implements AutoCloseable {
     }
 
     /** 退出可与后台加载并发：先置关闭标志，尚未提交的候选会话会在 open 中自行清理。 */
-    @Override public void close() {
+    @Override
+    public void close() {
         closed.set(true);
-        synchronized (this) { if (current != null) current.close(); }
+        synchronized (this) {
+            if (current != null)
+                current.close();
+        }
     }
 }

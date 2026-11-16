@@ -69,8 +69,10 @@ public class EditFileTool implements Tool {
     public String execute(ObjectNode input) {
         return executeOutcome(input, null).content();
     }
+
     /** 查找失败和 IO 失败单独标记，已发生的写入不伪称回滚。 */
-    @Override public ToolOutcome executeOutcome(ObjectNode input, com.jadecode.execution.ExecutionContext context) {
+    @Override
+    public ToolOutcome executeOutcome(ObjectNode input, com.jadecode.execution.ExecutionContext context) {
         for (String key : required()) {
             if (input.get(key) == null) {
                 return new ToolOutcome("Error: Missing required parameter: " + key, true);

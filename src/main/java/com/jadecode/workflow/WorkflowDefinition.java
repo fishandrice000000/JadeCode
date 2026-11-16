@@ -33,7 +33,10 @@ public record WorkflowDefinition(String name, String description, String version
     }
 
     /** 返回副本，外部代码不能改变已登记的输入契约。 */
-    @Override public ObjectNode argsSchema() { return argsSchema.deepCopy(); }
+    @Override
+    public ObjectNode argsSchema() {
+        return argsSchema.deepCopy();
+    }
 
     /**
      * 建立只读 registry，拒绝同名覆盖。只接受已经构造好的可信定义，不扫描或执行用户目录代码。

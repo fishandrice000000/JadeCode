@@ -12,10 +12,12 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /** 权限依据宿主身份，模型自填只读字段或服务名字都不能替代授权。 */
 class McpPermissionCheckTest {
-    @TempDir Path workspace;
+    @TempDir
+    Path workspace;
 
     /** 已登记公网读取可用，未知服务/危险 URL/超大分页仍被拒绝；没有人工通道时不假批准。 */
-    @Test void trustedIdentityControlsReadPermission() {
+    @Test
+    void trustedIdentityControlsReadPermission() {
         var state = new PermissionState(PermissionProfile.READ_ONLY, List.of(), Set.of(), null);
         var gate = new PermissionGate(new PathResolver(workspace), state, (com.jadecode.safety.approval.Approval) null);
         var input = Json.mapper().createObjectNode().put("url", "https://example.com").put("readOnly", true);

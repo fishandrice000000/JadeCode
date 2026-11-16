@@ -9,7 +9,12 @@ import java.util.Objects;
  */
 public record McpCallResult(String text, boolean isError) {
     /** 校验正文，不猜测 Error 前缀，不产生 IO。 */
-    public McpCallResult { Objects.requireNonNull(text, "text"); }
+    public McpCallResult {
+        Objects.requireNonNull(text, "text");
+    }
+
     /** 生成明确失败；调用者仍需用原 tool_use_id 回填。 */
-    public static McpCallResult failure(String reason) { return new McpCallResult("Error: MCP " + reason, true); }
+    public static McpCallResult failure(String reason) {
+        return new McpCallResult("Error: MCP " + reason, true);
+    }
 }

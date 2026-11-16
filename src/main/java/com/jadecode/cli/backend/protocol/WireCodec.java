@@ -36,22 +36,27 @@ public final class WireCodec {
 
     /** Node → Java 命令类型白名单。 */
     public static final Set<String> COMMANDS = Set.of(
-            "service.workspace", "service.cancel", "service.open", "service.list", "service.stop", "service.close", "client.hello", "session.ready", "session.submit", "session.promoteBuffer", "session.new",
-            "session.list", "session.find", "session.resume", "session.rename", "session.thinking", "workspace.complete", "team.report",
+            "service.workspace", "service.cancel", "service.open", "service.list", "service.stop", "service.close",
+            "client.hello", "session.ready", "session.submit", "session.promoteBuffer", "session.new",
+            "session.list", "session.find", "session.resume", "session.rename", "session.thinking",
+            "workspace.complete", "team.report",
             "settings.patch", "permission.select", "permission.prepareFullAccess", "permission.presented",
             "permission.cancelFullAccess", "permission.default", "approval.presented", "approval.answer",
-            "terminal.suspend", "terminal.resume", "terminal.invalidate", "state.refresh", "session.stop", "session.close", "client.shutdown");
+            "terminal.suspend", "terminal.resume", "terminal.invalidate", "state.refresh", "session.stop",
+            "session.close", "client.shutdown");
 
     /** Java → Node 事件类型白名单。 */
     public static final Set<String> EVENTS = Set.of(
-            "service.opened", "service.result", "client.detached", "server.hello", "server.bootstrap", "session.snapshot.begin", "session.snapshot.chunk",
+            "service.opened", "service.result", "client.detached", "server.hello", "server.bootstrap",
+            "session.snapshot.begin", "session.snapshot.chunk",
             "session.snapshot.end", "command.result", "command.error", "stream.started", "stream.delta",
             "stream.preview.started", "stream.preview.delta", "stream.preview.closed", "stream.ended",
             "execution.notice", "display.clock", "state.snapshot", "message", "task.submitted", "task.result",
             "task.failed", "approval.requested", "approval.removed", "settings.saved", "settings.failed",
             "diagnostic", "server.stopped", "payload.begin", "payload.chunk", "payload.end");
 
-    private WireCodec() { }
+    private WireCodec() {
+    }
 
     /**
      * 把一条消息编码成“JSON + LF”的 UTF-8 字节。
@@ -65,12 +70,18 @@ public final class WireCodec {
         envelope.put("connectionId", message.connectionId() == null ? "" : message.connectionId());
         envelope.put("seq", Long.toString(message.seq()));
         envelope.put("type", message.type());
-        if (message.commandId() == null) envelope.putNull("commandId");
-        else envelope.put("commandId", message.commandId());
-        if (message.sessionId() == null) envelope.putNull("sessionId");
-        else envelope.put("sessionId", message.sessionId());
-        if (message.generation() == null) envelope.putNull("generation");
-        else envelope.put("generation", Long.toString(message.generation()));
+        if (message.commandId() == null)
+            envelope.putNull("commandId");
+        else
+            envelope.put("commandId", message.commandId());
+        if (message.sessionId() == null)
+            envelope.putNull("sessionId");
+        else
+            envelope.put("sessionId", message.sessionId());
+        if (message.generation() == null)
+            envelope.putNull("generation");
+        else
+            envelope.put("generation", Long.toString(message.generation()));
         envelope.set("payload", message.payload() == null ? Json.mapper().createObjectNode() : message.payload());
         String text = Json.mapper().writeValueAsString(envelope);
         byte[] body = text.getBytes(StandardCharsets.UTF_8);
@@ -95,14 +106,17 @@ public final class WireCodec {
         boolean any = false;
         while ((next = input.read()) != -1) {
             any = true;
-            if (next == '\n') return parse(decodeUtf8(buffer.toByteArray()));
+            if (next == '\n')
+                return parse(decodeUtf8(buffer.toByteArray()));
             if (buffer.size() >= MAX_FRAME_BYTES)
                 throw new ProtocolException(ProtocolError.PAYLOAD_TOO_LARGE,
                         "Incoming frame exceeded " + MAX_FRAME_BYTES + " bytes");
             buffer.write(next);
         }
-        if (!any) return null;
-        if (buffer.size() == 0) return null;
+        if (!any)
+            return null;
+        if (buffer.size() == 0)
+            return null;
         throw new EOFException("Connection ended in the middle of a frame");
     }
 
@@ -133,7 +147,8 @@ public final class WireCodec {
         String commandId = text(root, "commandId", true);
         String sessionId = text(root, "sessionId", true);
         Long generation = root.path("generation").isNull() || !root.has("generation")
-                ? null : longText(root, "generation", false);
+                ? null
+                : longText(root, "generation", false);
         JsonNode payload = root.path("payload");
         if (!payload.isObject() && !payload.isMissingNode())
             throw new ProtocolException(ProtocolError.INVALID_MESSAGE, "payload must be a JSON object");
@@ -145,7 +160,8 @@ public final class WireCodec {
     private static String text(JsonNode root, String field, boolean nullable) throws ProtocolException {
         JsonNode node = root.path(field);
         if (node.isMissingNode() || node.isNull()) {
-            if (nullable) return null;
+            if (nullable)
+                return null;
             throw new ProtocolException(ProtocolError.INVALID_MESSAGE, field + " is required");
         }
         if (!node.isTextual())
@@ -156,11 +172,13 @@ public final class WireCodec {
     /** 十进制字符串形式的 Java long；JS 不会因此丢失精度。 */
     private static long longText(JsonNode root, String field, boolean nullable) throws ProtocolException {
         String value = text(root, field, nullable);
-        if (value == null) throw new ProtocolException(ProtocolError.INVALID_MESSAGE, field + " is required");
+        if (value == null)
+            throw new ProtocolException(ProtocolError.INVALID_MESSAGE, field + " is required");
         try {
             return Long.parseLong(value);
         } catch (NumberFormatException invalid) {
-            throw new ProtocolException(ProtocolError.INVALID_MESSAGE, field + " must be a decimal integer string", invalid);
+            throw new ProtocolException(ProtocolError.INVALID_MESSAGE, field + " must be a decimal integer string",
+                    invalid);
         }
     }
 

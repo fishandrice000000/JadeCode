@@ -22,16 +22,24 @@ public final class WireContext {
     }
 
     /** 协议出口；所有业务事件都经它的 outbox 发出。 */
-    public EventEndpoint session() { return session; }
+    public EventEndpoint session() {
+        return session;
+    }
 
     /** 大资料分块器。 */
-    public PayloadTransfer payloads() { return payloads; }
+    public PayloadTransfer payloads() {
+        return payloads;
+    }
 
     /** @return 当前会话 UUID；尚未打开会话时为空串。 */
-    public String sessionId() { return sessionId; }
+    public String sessionId() {
+        return sessionId;
+    }
 
     /** @return 当前会话代次；尚未打开会话时为 0。 */
-    public long generation() { return generation; }
+    public long generation() {
+        return generation;
+    }
 
     /** 会话打开/切换成功后由串行服务更新；之后的事件与命令都引用这一代。 */
     public void update(String id, long value) {

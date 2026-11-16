@@ -5,7 +5,6 @@ import java.util.UUID;
 import java.util.function.BooleanSupplier;
 import com.jadecode.safety.approval.Approval;
 
-
 /**
  * 记录这项任务由谁发起，以及程序如何处理它的权限和退出。
  *
@@ -32,19 +31,23 @@ public record ExecutionContext(String id, Source source, Approval approval, Bool
             AssignmentContext assignment) {
         this(id, source, approval, sessionClosed, goal, assignment, null, "");
     }
+
     /** 仅在权限检查后派生本次工具上下文，原任务和其它工具不取得这份许可。 */
     public ExecutionContext withSandboxPlan(com.jadecode.sandbox.ExecutionPlan value) {
         return new ExecutionContext(id, source, approval, sessionClosed, goal, assignment, value, actorScope);
     }
+
     /**
      * Shell 实例关闭也要取消其 Docker 执行；合并检查函数，不覆盖会话原本的取消条件。
      * 仅派生本次执行的快照，保留来源、参数许可和身份，不修改父任务或其它后台命令。
      */
     public ExecutionContext withAdditionalCancellation(BooleanSupplier cancelled) {
         Objects.requireNonNull(cancelled, "cancelled");
-        return new ExecutionContext(id, source, approval, () -> sessionClosed.getAsBoolean() || cancelled.getAsBoolean(),
+        return new ExecutionContext(id, source, approval,
+                () -> sessionClosed.getAsBoolean() || cancelled.getAsBoolean(),
                 goal, assignment, sandboxPlan, actorScope);
     }
+
     /**
      * 已接纳的后台调用派生独立取消生命周期；仅可信执行端调用，不从模型参数取得。
      * 身份、审批来源、派工与调用级许可保持不变，原轮次结束不扩大已有授权。
@@ -53,22 +56,33 @@ public record ExecutionContext(String id, Source source, Approval approval, Bool
         return new ExecutionContext(id, source, approval, Objects.requireNonNull(cancelled), goal,
                 assignment, sandboxPlan, actorScope);
     }
+
     /** 子代理一次委派的隔离编号由 Harness 生成，保留父 run/source，丢弃父工具的调用级许可。 */
     public ExecutionContext withActorScope(String scope) {
         return new ExecutionContext(id, source, approval, sessionClosed, goal, assignment, null, scope);
     }
+
     /** 保留非 Team 调用方的构造契约；普通任务没有派工范围。 */
     public ExecutionContext(String id, Source source, Approval approval, BooleanSupplier sessionClosed, String goal) {
         this(id, source, approval, sessionClosed, goal, null);
     }
+
     /** 旧调用未提供目标时保留原签名；目标由会话在运行时补入，不改变来源。 */
-    public ExecutionContext(String id, Source source, Approval approval, BooleanSupplier sessionClosed) { this(id, source, approval, sessionClosed, ""); }
+    public ExecutionContext(String id, Source source, Approval approval, BooleanSupplier sessionClosed) {
+        this(id, source, approval, sessionClosed, "");
+    }
+
     /** 给辅助审批携带当前真实任务说明，不把整个可变历史交给审批组件。 */
-    public ExecutionContext withGoal(String value) { return new ExecutionContext(id, source, approval, sessionClosed, value == null ? "" : value, assignment, sandboxPlan, actorScope); }
+    public ExecutionContext withGoal(String value) {
+        return new ExecutionContext(id, source, approval, sessionClosed, value == null ? "" : value, assignment,
+                sandboxPlan, actorScope);
+    }
+
     /** 工厂/派工路由绑定真实身份；不可变重建保留原权限来源，不扩大授权。 */
     public ExecutionContext withAssignment(AssignmentContext value) {
         return new ExecutionContext(id, source, approval, sessionClosed, goal, value, sandboxPlan, actorScope);
     }
+
     /**
      * 区分用户直接发起和定时触发。后台结果和 Stop 要求继续，都沿用原任务来源。
      */
@@ -89,7 +103,8 @@ public record ExecutionContext(String id, Source source, Approval approval, Bool
      * @throws NullPointerException source 或 sessionClosed 为 null
      */
     public ExecutionContext {
-        if (id == null || id.isBlank()) throw new IllegalArgumentException("Execution ID is required");
+        if (id == null || id.isBlank())
+            throw new IllegalArgumentException("Execution ID is required");
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(sessionClosed, "sessionClosed");
         goal = goal == null ? "" : goal;
@@ -142,5 +157,7 @@ public record ExecutionContext(String id, Source source, Approval approval, Bool
      * @return 已退出为 true；false 只表示此刻没退出，不保证下一刻仍然如此。
      *         true 也不会还原已经写入的文件或自动停止所有正在进行的操作
      */
-    public boolean isCancelled() { return sessionClosed.getAsBoolean(); }
+    public boolean isCancelled() {
+        return sessionClosed.getAsBoolean();
+    }
 }

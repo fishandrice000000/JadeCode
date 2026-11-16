@@ -38,11 +38,13 @@ public final class EventOutbox implements AutoCloseable {
     /** 真正写出一帧的出口；序号分配与 socket 写入由 {@link ProtocolSession} 负责。 */
     @FunctionalInterface
     public interface FrameSink {
-        void write(String type, ObjectNode payload, String sessionId, Long generation, String commandId) throws IOException;
+        void write(String type, ObjectNode payload, String sessionId, Long generation, String commandId)
+                throws IOException;
     }
 
     private record Pending(String type, ObjectNode payload, String sessionId, Long generation,
-            String commandId, String mergeKey, int bytes) { }
+            String commandId, String mergeKey, int bytes) {
+    }
 
     private final FrameSink sink;
     private final Consumer<RuntimeException> onOverload;
@@ -86,7 +88,8 @@ public final class EventOutbox implements AutoCloseable {
 
     private void enqueue(Pending pending) {
         synchronized (this) {
-            if (closed || overloaded) return;
+            if (closed || overloaded)
+                return;
             if (queue.size() + 1 > MAX_EVENTS || queuedBytes + pending.bytes() > MAX_BYTES) {
                 overloaded = true;
                 queue.clear();
@@ -100,7 +103,8 @@ public final class EventOutbox implements AutoCloseable {
             }
             queue.addLast(pending);
             queuedBytes += pending.bytes();
-            if (queue.size() == 1) firstQueuedAt = System.nanoTime();
+            if (queue.size() == 1)
+                firstQueuedAt = System.nanoTime();
             notifyAll();
         }
     }
@@ -112,10 +116,14 @@ public final class EventOutbox implements AutoCloseable {
     }
 
     /** 队列中是否还有未送出的数据。 */
-    public synchronized boolean hasPending() { return !queue.isEmpty(); }
+    public synchronized boolean hasPending() {
+        return !queue.isEmpty();
+    }
 
     /** @return 传输层/写出口的致命失败；非 null 表示连接不可继续。 */
-    public synchronized RuntimeException failure() { return failure; }
+    public synchronized RuntimeException failure() {
+        return failure;
+    }
 
     private void drain() {
         try {
@@ -125,15 +133,18 @@ public final class EventOutbox implements AutoCloseable {
                     while (!overloaded) {
                         if (queue.isEmpty()) {
                             // 关闭后队列已空才退出；关闭前必须把 server.stopped/命令答复送出。
-                            if (closed) return;
+                            if (closed)
+                                return;
                             wait();
                             continue;
                         }
                         if (closed || flushRequested || queue.size() >= 256 || queuedBytes >= FLUSH_BYTES
-                                || elapsedMillis() >= COALESCE_MILLIS) break;
+                                || elapsedMillis() >= COALESCE_MILLIS)
+                            break;
                         wait(Math.max(1, COALESCE_MILLIS - elapsedMillis()));
                     }
-                    if (overloaded) return;
+                    if (overloaded)
+                        return;
                     batch = takeBatch();
                 }
                 writeBatch(batch);
@@ -142,8 +153,10 @@ public final class EventOutbox implements AutoCloseable {
             Thread.currentThread().interrupt();
         } catch (IOException | RuntimeException failed) {
             synchronized (this) {
-                if (failure == null) failure = failed instanceof RuntimeException runtime
-                        ? runtime : new IllegalStateException(failed.getMessage(), failed);
+                if (failure == null)
+                    failure = failed instanceof RuntimeException runtime
+                            ? runtime
+                            : new IllegalStateException(failed.getMessage(), failed);
                 overloaded = true;
             }
             onOverload.accept(failure);
@@ -153,10 +166,13 @@ public final class EventOutbox implements AutoCloseable {
     }
 
     private synchronized boolean readyToFlush() {
-        return flushRequested || queue.size() >= 256 || queuedBytes >= FLUSH_BYTES || elapsedMillis() >= COALESCE_MILLIS;
+        return flushRequested || queue.size() >= 256 || queuedBytes >= FLUSH_BYTES
+                || elapsedMillis() >= COALESCE_MILLIS;
     }
 
-    private long elapsedMillis() { return (System.nanoTime() - firstQueuedAt) / 1_000_000L; }
+    private long elapsedMillis() {
+        return (System.nanoTime() - firstQueuedAt) / 1_000_000L;
+    }
 
     private List<Pending> takeBatch() {
         List<Pending> batch = new ArrayList<>();
@@ -178,7 +194,8 @@ public final class EventOutbox implements AutoCloseable {
             batch.add(next);
             bytes += next.bytes();
         }
-        if (!queue.isEmpty()) firstQueuedAt = System.nanoTime();
+        if (!queue.isEmpty())
+            firstQueuedAt = System.nanoTime();
         flushRequested = false;
         return batch;
     }
@@ -203,7 +220,8 @@ public final class EventOutbox implements AutoCloseable {
 
     private void writeBatch(List<Pending> batch) throws IOException {
         for (Pending pending : batch)
-            sink.write(pending.type(), pending.payload(), pending.sessionId(), pending.generation(), pending.commandId());
+            sink.write(pending.type(), pending.payload(), pending.sessionId(), pending.generation(),
+                    pending.commandId());
     }
 
     private static int sizeOf(ObjectNode payload) {

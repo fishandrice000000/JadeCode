@@ -23,12 +23,14 @@ public record CronJob(String id, String cron, String prompt, boolean recurring, 
      * 非法记录明确失败，不能反序列化出绕过规则的状态。
      */
     public CronJob {
-        if (id == null || !id.matches(ID_PATTERN)) throw new IllegalArgumentException("Invalid cron job ID");
+        if (id == null || !id.matches(ID_PATTERN))
+            throw new IllegalArgumentException("Invalid cron job ID");
         CronExpression.parse(cron);
         if (prompt == null || prompt.isBlank() || prompt.length() > 16000) {
             throw new IllegalArgumentException("prompt must contain 1-16000 characters");
         }
-        if (lastFired != null) OffsetDateTime.parse(lastFired);
+        if (lastFired != null)
+            OffsetDateTime.parse(lastFired);
         if (pendingDelivery && lastFired == null) {
             throw new IllegalArgumentException("Pending cron requires a last-fired minute");
         }

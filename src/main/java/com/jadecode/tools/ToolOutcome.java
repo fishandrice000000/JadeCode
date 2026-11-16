@@ -12,5 +12,7 @@ import java.util.Objects;
  */
 public record ToolOutcome(String content, boolean isError) {
     /** 校验正文；构造没有 IO，不根据正文猜测成功与否。 */
-    public ToolOutcome { Objects.requireNonNull(content, "content"); }
+    public ToolOutcome {
+        Objects.requireNonNull(content, "content");
+    }
 }

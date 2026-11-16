@@ -5,7 +5,8 @@ package com.jadecode.context;
  * summaryMaxInputTokens=null 表示按当前模型窗口自动求值，不代表无限输入；本对象无 IO 或会话状态。
  */
 public record ProductionCompactionSettings(boolean autoSummaryEnabled, int reserveTokens, int keepRecentTokens,
-        int summaryMaxOutputTokens, Integer summaryMaxInputTokens, int largeResultCharLimit, int largeResultPreviewChars) {
+        int summaryMaxOutputTokens, Integer summaryMaxInputTokens, int largeResultCharLimit,
+        int largeResultPreviewChars) {
     /** 拒绝无法解释的负预算，零预留/零近期预算仍由协议边界保护约束。 */
     public ProductionCompactionSettings {
         if (reserveTokens < 0 || keepRecentTokens < 0 || summaryMaxOutputTokens < 1

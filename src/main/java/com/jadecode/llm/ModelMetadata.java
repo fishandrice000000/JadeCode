@@ -10,6 +10,7 @@ package com.jadecode.llm;
 public record ModelMetadata(Limits limits, String source) {
     /** 模型未报告最大输出时，auto 正式请求沿用原来的 8000；不是猜测的模型能力值。 */
     public static final int UNKNOWN_FORMAL_OUTPUT_TOKENS = 8000;
+
     /**
      * 限额单位均为 token。Anthropic 的 maxInputTokens 不冒充总窗口；DeepSeek 的
      * contextWindowTokens 包括输入和输出，也不能直接当成最大输入。
@@ -18,10 +19,17 @@ public record ModelMetadata(Limits limits, String source) {
     public record Limits(Integer contextWindowTokens, Integer maxInputTokens, Integer maxOutputTokens) {
         public Limits {
             for (Integer value : new Integer[] { contextWindowTokens, maxInputTokens, maxOutputTokens })
-                if (value != null && value < 1) throw new IllegalArgumentException("Model limits must be positive integers or left blank");
+                if (value != null && value < 1)
+                    throw new IllegalArgumentException("Model limits must be positive integers or left blank");
         }
-        public static Limits unknown() { return new Limits(null, null, null); }
-        public boolean known() { return contextWindowTokens != null || maxInputTokens != null || maxOutputTokens != null; }
+
+        public static Limits unknown() {
+            return new Limits(null, null, null);
+        }
+
+        public boolean known() {
+            return contextWindowTokens != null || maxInputTokens != null || maxOutputTokens != null;
+        }
     }
 
     /**
@@ -31,7 +39,8 @@ public record ModelMetadata(Limits limits, String source) {
      * @throws IllegalArgumentException 配置为负数
      */
     public int formalOutputBudget(int configured) {
-        if (configured < 0) throw new IllegalArgumentException("Configured output budget cannot be negative");
+        if (configured < 0)
+            throw new IllegalArgumentException("Configured output budget cannot be negative");
         // 只在正式请求装配入口解释 auto；摘要、Memory、审批不经过这里，不能被一起放大。
         if (configured == 0)
             return limits.maxOutputTokens() == null ? UNKNOWN_FORMAL_OUTPUT_TOKENS : limits.maxOutputTokens();
@@ -40,16 +49,20 @@ public record ModelMetadata(Limits limits, String source) {
 
     /** 所有实际请求共用的输出封顶，只降低正数额度；配置层 auto 必须先在装配时解析。 */
     public int capOutput(int requested) {
-        if (requested < 1) throw new IllegalArgumentException("Request output budget must be positive; resolve auto before sending");
+        if (requested < 1)
+            throw new IllegalArgumentException("Request output budget must be positive; resolve auto before sending");
         return limits.maxOutputTokens() == null ? requested : Math.min(requested, limits.maxOutputTokens());
     }
 
     /** 只展示已知值；来源仍留在元数据供诊断，不把未知占位与预算说明反复塞进 /model。 */
     public String describe() {
         var lines = new java.util.ArrayList<String>();
-        if (limits.contextWindowTokens() != null) lines.add("Total context window: " + limits.contextWindowTokens() + " token");
-        if (limits.maxInputTokens() != null) lines.add("Max input: " + limits.maxInputTokens() + " token");
-        if (limits.maxOutputTokens() != null) lines.add("Max output: " + limits.maxOutputTokens() + " token");
+        if (limits.contextWindowTokens() != null)
+            lines.add("Total context window: " + limits.contextWindowTokens() + " token");
+        if (limits.maxInputTokens() != null)
+            lines.add("Max input: " + limits.maxInputTokens() + " token");
+        if (limits.maxOutputTokens() != null)
+            lines.add("Max output: " + limits.maxOutputTokens() + " token");
         return String.join("\n", lines);
     }
 }

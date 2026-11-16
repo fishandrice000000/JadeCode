@@ -40,7 +40,8 @@ public record Task(String id, String subject, String description, Status status,
         }
         var unique = new HashSet<String>();
         for (String dependency : blockedBy) {
-            if (dependency == null || !dependency.matches(ID_PATTERN) || dependency.equals(id) || !unique.add(dependency)) {
+            if (dependency == null || !dependency.matches(ID_PATTERN) || dependency.equals(id)
+                    || !unique.add(dependency)) {
                 throw new IllegalArgumentException("Dependency id is invalid, self-referential or duplicated");
             }
         }
@@ -51,11 +52,12 @@ public record Task(String id, String subject, String description, Status status,
 
     /** Java 用枚举防止拼错状态；JsonProperty 保持课程要求的小写 wire 格式。 */
     public enum Status {
-        @JsonProperty("pending") PENDING,
-        @JsonProperty("in_progress") IN_PROGRESS,
-        @JsonProperty("submitted") SUBMITTED,
-        @JsonProperty("completed") COMPLETED,
-        @JsonProperty("failed") FAILED,
-        @JsonProperty("blocked") BLOCKED
+        @JsonProperty("pending")
+        PENDING, @JsonProperty("in_progress")
+        IN_PROGRESS, @JsonProperty("submitted")
+        SUBMITTED, @JsonProperty("completed")
+        COMPLETED, @JsonProperty("failed")
+        FAILED, @JsonProperty("blocked")
+        BLOCKED
     }
 }

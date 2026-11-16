@@ -20,7 +20,8 @@ class JadeConfigTuiTest {
     @Test
     void defaultsToSystemThemeAndKeepsUnknownFieldsAndThemeIds(@TempDir Path dir) throws Exception {
         Path file = dir.resolve("config.json");
-        Files.writeString(file, "{\"version\":1,\"tui\":{\"theme\":\"dark\",\"futureField\":true},\"custom\":{\"x\":1}}");
+        Files.writeString(file,
+                "{\"version\":1,\"tui\":{\"theme\":\"dark\",\"futureField\":true},\"custom\":{\"x\":1}}");
         JadeConfigFile config = new JadeConfigFile(file);
         assertEquals("dark", config.load().tui().theme());
         config.saveTui(Map.of("mode", "regular", "thinkingVisible", false));

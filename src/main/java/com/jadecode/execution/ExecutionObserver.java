@@ -6,12 +6,19 @@ package com.jadecode.execution;
  */
 @FunctionalInterface
 public interface ExecutionObserver {
-    ExecutionObserver NONE = notice -> { };
+    ExecutionObserver NONE = notice -> {
+    };
+
     void accept(ExecutionNotice notice);
+
     /** 通知隔离：观察器的普通异常不能把已执行的工具改成批次失败。 */
     default void publish(ExecutionNotice notice) {
-        try { accept(notice); } catch (RuntimeException ignored) { /* 执行结果不归显示端裁决。 */ }
+        try {
+            accept(notice);
+        } catch (RuntimeException ignored) {
+            /* 执行结果不归显示端裁决。 */ }
     }
+
     /** 将所有事件绑定到工厂已知的 Agent；嵌套子代理可再增加显示编号。 */
     default ExecutionObserver scoped(String actor) {
         return notice -> publish(notice.actor(notice.actor().isEmpty() ? actor : actor + "/" + notice.actor()));

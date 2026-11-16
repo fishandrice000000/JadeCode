@@ -27,7 +27,9 @@ public final class TurnTimer {
     private int waiting;
 
     /** 生产使用同一 JVM 的 nanoTime；构造只记录开始时刻，不发通知或启动线程。 */
-    public TurnTimer(String runId, Consumer<ExecutionNotice> notices) { this(runId, notices, System::nanoTime); }
+    public TurnTimer(String runId, Consumer<ExecutionNotice> notices) {
+        this(runId, notices, System::nanoTime);
+    }
 
     /** 注入单调时钟以便离线检查重叠等待，不需要真实 sleep；三个依赖都不可为空。 */
     public TurnTimer(String runId, Consumer<ExecutionNotice> notices, LongSupplier clock) {
@@ -38,7 +40,9 @@ public final class TurnTimer {
         sampledAt = started;
     }
 
-    public long startedNanos() { return started; }
+    public long startedNanos() {
+        return started;
+    }
 
     /** 返回截至此刻的工作时长；暂停中使用暂停起点，不让界面数字继续增长。 */
     public synchronized long elapsedNanos() {
@@ -51,7 +55,10 @@ public final class TurnTimer {
     }
 
     /** 在改变暂停原因前结算上一段时间，避免用单一 paused 标志互相覆盖。 */
-    private void advance(long now) { work = workAt(now); sampledAt = now; }
+    private void advance(long now) {
+        work = workAt(now);
+        sampledAt = now;
+    }
 
     /**
      * 记录无工具回答输出完成的候选边界；只停止显示，不完成业务任务。
@@ -73,7 +80,8 @@ public final class TurnTimer {
      * 只能在已有回答候选时调用，不改变 runtime 状态、future 或 Memory 执行策略。
      */
     public synchronized void beginMaintenance() {
-        if (answerElapsed == null) return;
+        if (answerElapsed == null)
+            return;
         advance(clock.getAsLong());
         work = answerElapsed;
         maintenance = true;
@@ -84,7 +92,8 @@ public final class TurnTimer {
      * 普通候选被 Stop/后台撤回时没有进入 maintenance，判断/等待时间仍在工作账中。
      */
     public synchronized void resumeDisplay() {
-        if (answerElapsed == null) return;
+        if (answerElapsed == null)
+            return;
         long now = clock.getAsLong();
         advance(now);
         maintenance = false;
@@ -100,7 +109,8 @@ public final class TurnTimer {
      * 一次性子代理不创建 Session，沿用父轮次的包装即可。
      */
     public Approval track(Approval approval) {
-        while (approval instanceof TimedApproval timed) approval = timed.delegate;
+        while (approval instanceof TimedApproval timed)
+            approval = timed.delegate;
         return approval == null ? null : new TimedApproval(approval);
     }
 
@@ -126,13 +136,29 @@ public final class TurnTimer {
     /** 所有退出路径都在 finally 恢复计时；reconsider 仍直接唤醒底层审批等待。 */
     private final class TimedApproval implements Approval {
         private final Approval delegate;
-        TimedApproval(Approval delegate) { this.delegate = delegate; }
-        @Override public ApprovalAnswer ask(ApprovalRequest request) {
-            pause();
-            try { return delegate.ask(request); }
-            finally { resume(); }
+
+        TimedApproval(Approval delegate) {
+            this.delegate = delegate;
         }
-        @Override public Approval forActor(String actor) { return new TimedApproval(delegate.forActor(actor)); }
-        @Override public void reconsider(long revision) { delegate.reconsider(revision); }
+
+        @Override
+        public ApprovalAnswer ask(ApprovalRequest request) {
+            pause();
+            try {
+                return delegate.ask(request);
+            } finally {
+                resume();
+            }
+        }
+
+        @Override
+        public Approval forActor(String actor) {
+            return new TimedApproval(delegate.forActor(actor));
+        }
+
+        @Override
+        public void reconsider(long revision) {
+            delegate.reconsider(revision);
+        }
     }
 }

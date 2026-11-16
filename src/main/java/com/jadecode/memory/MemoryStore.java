@@ -36,10 +36,21 @@ final class MemoryStore {
         this.warnings = warnings;
     }
 
-    com.jadecode.config.WorkspacePaths paths() { return paths; }
-    Path root() { return root; }
-    String scope() { return scope; }
-    Path workspace() { return workspace; }
+    com.jadecode.config.WorkspacePaths paths() {
+        return paths;
+    }
+
+    Path root() {
+        return root;
+    }
+
+    String scope() {
+        return scope;
+    }
+
+    Path workspace() {
+        return workspace;
+    }
 
     /**
      * 首次实际使用才建立目录与空基线；每一级都拒绝符号链接。
@@ -62,7 +73,7 @@ final class MemoryStore {
                 create(manifest, "{\"revision\":0,\"sections\":{}}");
             } else if (json(manifest).path("revision").asLong() > 0
                     && (!Files.exists(root.resolve("MEMORY.md"), LinkOption.NOFOLLOW_LINKS)
-                    || !Files.exists(root.resolve("memory_summary.md"), LinkOption.NOFOLLOW_LINKS))) {
+                            || !Files.exists(root.resolve("memory_summary.md"), LinkOption.NOFOLLOW_LINKS))) {
                 throw new IOException("Published memory artifact is missing; review required");
             }
             create(root.resolve("MEMORY.md"), EMPTY_HANDBOOK);
@@ -80,30 +91,38 @@ final class MemoryStore {
                 throw new IOException("Invalid memory manifest");
             JsonNode local = manifest.path("sections").path(scope), global = manifest.path("sections").path("global");
             return new Snapshot(manifest.path("revision").asLong(), text(root.resolve("memory_summary.md")),
-                    text(root.resolve("MEMORY.md")), local.path("baseline").asText(), local.path("updated_at").asText("1970-01-01T00:00:00Z"),
+                    text(root.resolve("MEMORY.md")), local.path("baseline").asText(),
+                    local.path("updated_at").asText("1970-01-01T00:00:00Z"),
                     local.path("summary").asText(EMPTY_SUMMARY), local.path("handbook").asText(EMPTY_HANDBOOK),
                     global.path("summary").asText(""), global.path("handbook").asText(""),
-                    java.util.stream.StreamSupport.stream(local.path("processed_notes").spliterator(), false).map(JsonNode::asText).toList(),
-                    java.util.stream.StreamSupport.stream(local.path("processed_materials").spliterator(), false).map(JsonNode::asText).toList(),
+                    java.util.stream.StreamSupport.stream(local.path("processed_notes").spliterator(), false)
+                            .map(JsonNode::asText).toList(),
+                    java.util.stream.StreamSupport.stream(local.path("processed_materials").spliterator(), false)
+                            .map(JsonNode::asText).toList(),
                     hash(text(root.resolve("memory_manifest.json"))));
         });
     }
 
     record Snapshot(long revision, String summary, String handbook, String baseline, String updatedAt,
             String workspaceSummary, String workspaceHandbook, String globalSummary, String globalHandbook,
-            List<String> processedNotes, List<String> processedMaterials, String manifestHash) { }
-    record Artifacts(String summary, String handbook) { }
+            List<String> processedNotes, List<String> processedMaterials, String manifestHash) {
+    }
+
+    record Artifacts(String summary, String handbook) {
+    }
 
     /**
      * 只发布已校验候选。模型等待期间清单或正文有变化就拒绝，不能以旧快照盖掉新修正。
      * 先准备可恢复备份，再替换摘要/清单/手册，最后提交；恢复材料保留用于诊断。
      */
-    boolean publish(Snapshot expected, Map<String, Artifacts> changes, String baseline, List<String> sources) throws IOException {
+    boolean publish(Snapshot expected, Map<String, Artifacts> changes, String baseline, List<String> sources)
+            throws IOException {
         return publish(expected, changes, baseline, sources, expected.processedNotes());
     }
 
     /** 成功发布同时登记已处理笔记；失败时不提前把纠正标成已应用。 */
-    boolean publish(Snapshot expected, Map<String, Artifacts> changes, String baseline, List<String> sources, List<String> processedNotes) throws IOException {
+    boolean publish(Snapshot expected, Map<String, Artifacts> changes, String baseline, List<String> sources,
+            List<String> processedNotes) throws IOException {
         return publish(expected, changes, baseline, sources, processedNotes, expected.processedMaterials());
     }
 
@@ -120,7 +139,8 @@ final class MemoryStore {
             JsonNode current = json(manifest);
             if (current.path("revision").asLong() != expected.revision()
                     || !hash(text(manifest)).equals(expected.manifestHash())
-                    || !text(shortFile).equals(expected.summary()) || !text(root.resolve("MEMORY.md")).equals(expected.handbook()))
+                    || !text(shortFile).equals(expected.summary())
+                    || !text(root.resolve("MEMORY.md")).equals(expected.handbook()))
                 throw new IOException("Memory changed while consolidation was running");
             var next = (ObjectNode) current.deepCopy();
             next.put("revision", expected.revision() + 1);
@@ -128,11 +148,13 @@ final class MemoryStore {
             boolean contentChanged = false;
             // 仅允许本工作区及明确的全局用户知识变化，其它项目的块由程序原样保留。
             for (var change : changes.entrySet()) {
-                if (!change.getKey().equals(scope) && !change.getKey().equals("global")) throw new IOException("Cannot edit another workspace's memory");
+                if (!change.getKey().equals(scope) && !change.getKey().equals("global"))
+                    throw new IOException("Cannot edit another workspace's memory");
                 JsonNode previous = sections.path(change.getKey());
                 // 模型可能原样重发一个完整分区；这不构成新的正文，不应触发文件重写。
                 if (previous.path("summary").asText().equals(change.getValue().summary())
-                        && previous.path("handbook").asText().equals(change.getValue().handbook())) continue;
+                        && previous.path("handbook").asText().equals(change.getValue().handbook()))
+                    continue;
                 contentChanged = true;
                 ObjectNode section = sections.putObject(change.getKey());
                 section.put("summary", change.getValue().summary()).put("handbook", change.getValue().handbook())
@@ -142,7 +164,8 @@ final class MemoryStore {
             }
             // 即使没有正文改动也保存本工作区的处理基线，避免同一份材料反复调用模型。
             ObjectNode local = sections.path(scope) instanceof ObjectNode object ? object : sections.putObject(scope);
-            local.put("baseline", baseline).put("workspace", workspace.toString()).put("updated_at", Instant.now().toString());
+            local.put("baseline", baseline).put("workspace", workspace.toString()).put("updated_at",
+                    Instant.now().toString());
             local.set("processed_notes", Json.mapper().valueToTree(processedNotes));
             local.set("processed_materials", Json.mapper().valueToTree(processedMaterials));
             if (!contentChanged) {
@@ -152,24 +175,34 @@ final class MemoryStore {
             }
             StringBuilder summary = new StringBuilder("# Memory routes\n");
             StringBuilder handbook = new StringBuilder("# Memory handbook\n");
-            var names = new ArrayList<String>(); sections.fieldNames().forEachRemaining(names::add); Collections.sort(names);
+            var names = new ArrayList<String>();
+            sections.fieldNames().forEachRemaining(names::add);
+            Collections.sort(names);
             for (String name : names) {
                 JsonNode section = sections.get(name);
                 // 处理基线可能存在而正式知识为空，不能把任务处理元数据渲染成记忆。
-                if (section.path("summary").asText().isBlank() && section.path("handbook").asText().isBlank()) continue;
+                if (section.path("summary").asText().isBlank() && section.path("handbook").asText().isBlank())
+                    continue;
                 String heading = "\n## Scope: " + name + "\nWorkspace: " + section.path("workspace").asText() + "\n\n";
                 summary.append(heading).append(section.path("summary").asText());
                 handbook.append(heading).append(section.path("handbook").asText());
             }
-            Map<String, String> originals = Map.of("memory_summary.md", expected.summary(), "memory_manifest.json", text(manifest));
-            Map<String, String> replacements = Map.of("memory_summary.md", summary.toString(), "memory_manifest.json", next.toString());
+            Map<String, String> originals = Map.of("memory_summary.md", expected.summary(), "memory_manifest.json",
+                    text(manifest));
+            Map<String, String> replacements = Map.of("memory_summary.md", summary.toString(), "memory_manifest.json",
+                    next.toString());
             var transaction = MemoryTransaction.prepare(root, originals, replacements, handbook.toString());
             try {
-                for (var item : replacements.entrySet()) MemoryTransaction.atomicReplace(root.resolve(item.getKey()), item.getValue());
+                for (var item : replacements.entrySet())
+                    MemoryTransaction.atomicReplace(root.resolve(item.getKey()), item.getValue());
                 MemoryTransaction.atomicReplace(root.resolve("MEMORY.md"), handbook.toString());
                 transaction.commit();
             } catch (IOException | RuntimeException failure) {
-                try { transaction.rollback(); } catch (IOException recovery) { failure.addSuppressed(recovery); }
+                try {
+                    transaction.rollback();
+                } catch (IOException recovery) {
+                    failure.addSuppressed(recovery);
+                }
                 throw failure;
             }
             return true;
@@ -215,26 +248,32 @@ final class MemoryStore {
     /** 当前工作区及全局材料可见，其它项目材料不会进入本次整理工作集。 */
     List<ObjectNode> materials() throws IOException {
         return MemoryLibraryLock.run(root, () -> nodes(root.resolve("state/materials")).stream()
-                .filter(n -> n.path("scope").asText().equals(scope) || n.path("scope").asText().equals("global")).toList());
+                .filter(n -> n.path("scope").asText().equals(scope) || n.path("scope").asText().equals("global"))
+                .toList());
     }
 
     /**
      * 用户纠正单独入箱，源请求与内容分开保存；这里只承认候选，不假装正式记忆已更新。
      * 重复工具调用使用同一个笔记 ID 时只保存一份，正文改变则报错。
      */
-    String note(String noteId, String kind, String body, String userRequest, String session, String turn) throws IOException {
+    String note(String noteId, String kind, String body, String userRequest, String session, String turn)
+            throws IOException {
         String name = id(noteId);
         ObjectNode note = Json.mapper().createObjectNode();
         note.put("id", name).put("scope", scope).put("kind", kind).put("body", body).put("user_request", userRequest)
                 .put("session_id", session).put("turn_id", turn);
-        MemoryLibraryLock.run(root, () -> { immutable(root.resolve("pending/" + name + ".json"), note.toString()); return null; });
+        MemoryLibraryLock.run(root, () -> {
+            immutable(root.resolve("pending/" + name + ".json"), note.toString());
+            return null;
+        });
         return name;
     }
 
     /** 保留原始纠正材料，是否已处理由成功发布的 baseline 表达，不能先删除再整理。 */
     List<ObjectNode> notes() throws IOException {
         return MemoryLibraryLock.run(root, () -> nodes(root.resolve("pending")).stream()
-                .filter(n -> n.path("scope").asText().equals(scope) || n.path("scope").asText().equals("global")).toList());
+                .filter(n -> n.path("scope").asText().equals(scope) || n.path("scope").asText().equals("global"))
+                .toList());
     }
 
     /**
@@ -245,9 +284,11 @@ final class MemoryStore {
         MemoryLibraryLock.run(root, () -> {
             Path path = root.resolve("events/feedback.jsonl");
             plainIfExists(path);
-            try (var channel = FileChannel.open(path, StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.APPEND)) {
+            try (var channel = FileChannel.open(path, StandardOpenOption.CREATE, StandardOpenOption.WRITE,
+                    StandardOpenOption.APPEND)) {
                 var bytes = StandardCharsets.UTF_8.encode(event.toString() + "\n");
-                while (bytes.hasRemaining()) channel.write(bytes);
+                while (bytes.hasRemaining())
+                    channel.write(bytes);
                 channel.force(true);
             }
             return null;
@@ -258,14 +299,17 @@ final class MemoryStore {
     List<ObjectNode> feedback() throws IOException {
         return MemoryLibraryLock.run(root, () -> {
             Path path = root.resolve("events/feedback.jsonl");
-            if (!Files.exists(path, LinkOption.NOFOLLOW_LINKS)) return List.of();
+            if (!Files.exists(path, LinkOption.NOFOLLOW_LINKS))
+                return List.of();
             var unique = new LinkedHashMap<String, ObjectNode>();
             for (String line : text(path).lines().toList()) {
                 try {
                     JsonNode node = Json.mapper().readTree(line);
                     if (node instanceof ObjectNode object && object.path("event_id").isTextual())
                         unique.putIfAbsent(object.path("event_id").asText(), object);
-                } catch (IOException malformed) { warnings.accept("[Warning] [Memory] Ignored a malformed feedback event"); }
+                } catch (IOException malformed) {
+                    warnings.accept("[Warning] [Memory] Ignored a malformed feedback event");
+                }
             }
             return List.copyOf(unique.values());
         });
@@ -274,12 +318,19 @@ final class MemoryStore {
     /** 只读入口仅允许正式 Markdown 与回顾；配置、状态和备份不因记忆权限而暴露。 */
     boolean readable(Path path) {
         Path p = path.toAbsolutePath().normalize();
-        if (!p.startsWith(root)) return false;
+        if (!p.startsWith(root))
+            return false;
         String relative = root.relativize(p).toString().replace('\\', '/');
         if (!relative.equals("MEMORY.md") && !relative.equals("memory_summary.md")
-                && !relative.matches("rollout_summaries/[a-f0-9]{64}\\.md")) return false;
-        try { directory(p.getParent(), false); plainIfExists(p); return Files.isRegularFile(p, LinkOption.NOFOLLOW_LINKS); }
-        catch (IOException invalid) { return false; }
+                && !relative.matches("rollout_summaries/[a-f0-9]{64}\\.md"))
+            return false;
+        try {
+            directory(p.getParent(), false);
+            plainIfExists(p);
+            return Files.isRegularFile(p, LinkOption.NOFOLLOW_LINKS);
+        } catch (IOException invalid) {
+            return false;
+        }
     }
 
     /**
@@ -309,9 +360,11 @@ final class MemoryStore {
     ObjectNode maintenanceState() throws IOException {
         return MemoryLibraryLock.run(root, () -> {
             Path path = root.resolve("state/maintenance-" + scope + ".json");
-            if (!Files.exists(path, LinkOption.NOFOLLOW_LINKS)) return Json.mapper().createObjectNode();
+            if (!Files.exists(path, LinkOption.NOFOLLOW_LINKS))
+                return Json.mapper().createObjectNode();
             JsonNode node = json(path);
-            if (!(node instanceof ObjectNode object)) throw new IOException("Invalid maintenance retry state");
+            if (!(node instanceof ObjectNode object))
+                throw new IOException("Invalid maintenance retry state");
             return object;
         });
     }
@@ -320,7 +373,9 @@ final class MemoryStore {
     void maintenanceState(ObjectNode state) throws IOException {
         MemoryLibraryLock.run(root, () -> {
             Path path = root.resolve("state/maintenance-" + scope + ".json");
-            plainIfExists(path); replace(path, state.toString()); return null;
+            plainIfExists(path);
+            replace(path, state.toString());
+            return null;
         });
     }
 
@@ -331,7 +386,8 @@ final class MemoryStore {
         try (var files = Files.list(dir)) {
             for (Path path : files.filter(p -> p.getFileName().toString().endsWith(".json")).sorted().toList()) {
                 JsonNode value = json(path);
-                if (!(value instanceof ObjectNode object)) throw new IOException("Invalid memory state object");
+                if (!(value instanceof ObjectNode object))
+                    throw new IOException("Invalid memory state object");
                 result.add(object);
             }
         }
@@ -344,56 +400,82 @@ final class MemoryStore {
         for (Path part : absolute) {
             cursor = cursor.resolve(part);
             if (Files.exists(cursor, LinkOption.NOFOLLOW_LINKS)) {
-                if (!Files.isDirectory(cursor, LinkOption.NOFOLLOW_LINKS)) throw new IOException("Memory path contains a non-directory or symlink");
+                if (!Files.isDirectory(cursor, LinkOption.NOFOLLOW_LINKS))
+                    throw new IOException("Memory path contains a non-directory or symlink");
             } else if (create) {
                 try {
-                    try { Files.createDirectory(cursor, java.nio.file.attribute.PosixFilePermissions.asFileAttribute(
-                            java.nio.file.attribute.PosixFilePermissions.fromString("rwx------"))); }
-                    catch (UnsupportedOperationException unsupported) { Files.createDirectory(cursor); }
+                    try {
+                        Files.createDirectory(cursor, java.nio.file.attribute.PosixFilePermissions.asFileAttribute(
+                                java.nio.file.attribute.PosixFilePermissions.fromString("rwx------")));
+                    } catch (UnsupportedOperationException unsupported) {
+                        Files.createDirectory(cursor);
+                    }
+                } catch (FileAlreadyExistsException raced) {
+                    if (!Files.isDirectory(cursor, LinkOption.NOFOLLOW_LINKS))
+                        throw raced;
                 }
-                catch (FileAlreadyExistsException raced) { if (!Files.isDirectory(cursor, LinkOption.NOFOLLOW_LINKS)) throw raced; }
-            } else throw new NoSuchFileException(cursor.toString());
+            } else
+                throw new NoSuchFileException(cursor.toString());
         }
     }
 
     /** 只读有限大小的普通 UTF-8 文件；不跟随最终符号链接。 */
     static String text(Path path) throws IOException {
         plainIfExists(path);
-        if (Files.size(path) > 8_000_000) throw new IOException("Memory file exceeds the input limit");
+        if (Files.size(path) > 8_000_000)
+            throw new IOException("Memory file exceeds the input limit");
         return Files.readString(path, StandardCharsets.UTF_8);
     }
+
     static JsonNode json(Path path) throws IOException {
         JsonNode value = Json.mapper().readTree(text(path));
-        if (value == null) throw new IOException("Empty memory state");
+        if (value == null)
+            throw new IOException("Empty memory state");
         return value;
     }
+
     private static void plainIfExists(Path path) throws IOException {
         if (Files.exists(path, LinkOption.NOFOLLOW_LINKS) && !Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS))
             throw new IOException("Memory path is not a regular file");
     }
+
     private static void create(Path path, String content) throws IOException {
         plainIfExists(path);
-        if (Files.exists(path, LinkOption.NOFOLLOW_LINKS)) return;
+        if (Files.exists(path, LinkOption.NOFOLLOW_LINKS))
+            return;
         // 调用者持库锁；先写临时完整文件再原子发布，崩溃不能留下半份作业 JSON。
         replace(path, content);
     }
+
     /** 原子替换并刷新目录项，用于持久作业状态；正式三文件发布仍必须走恢复事务。 */
     private static void replace(Path path, String content) throws IOException {
         MemoryTransaction.atomicReplace(path, content);
-        try (var directory = FileChannel.open(path.getParent(), StandardOpenOption.READ)) { directory.force(true); }
+        try (var directory = FileChannel.open(path.getParent(), StandardOpenOption.READ)) {
+            directory.force(true);
+        }
     }
+
     private static void immutable(Path path, String content) throws IOException {
         if (Files.exists(path, LinkOption.NOFOLLOW_LINKS)) {
-            if (!text(path).equals(content)) throw new IOException("Immutable memory evidence changed");
-        } else create(path, content);
+            if (!text(path).equals(content))
+                throw new IOException("Immutable memory evidence changed");
+        } else
+            create(path, content);
     }
+
     private static String id(String id) throws IOException {
-        if (!id.matches("[a-f0-9]{64}")) throw new IOException("Invalid memory identity");
+        if (!id.matches("[a-f0-9]{64}"))
+            throw new IOException("Invalid memory identity");
         return id;
     }
+
     /** UTF-8 SHA-256 仅用于身份、版本与去重，不代表内容可信，也不用于隐匿秘密。 */
     static String hash(String text) {
-        try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(text.getBytes(StandardCharsets.UTF_8))); }
-        catch (java.security.NoSuchAlgorithmException impossible) { throw new IllegalStateException(impossible); }
+        try {
+            return HexFormat.of()
+                    .formatHex(MessageDigest.getInstance("SHA-256").digest(text.getBytes(StandardCharsets.UTF_8)));
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException(impossible);
+        }
     }
 }

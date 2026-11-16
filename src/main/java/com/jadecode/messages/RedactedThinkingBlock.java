@@ -10,5 +10,7 @@ import com.fasterxml.jackson.annotation.JsonTypeName;
 @JsonTypeName("redacted_thinking")
 public record RedactedThinkingBlock(String data) implements ContentBlock {
     /** 在消息构造时保证必要字段存在，不产生 IO 或复制到普通 TextBlock。 */
-    public RedactedThinkingBlock { Objects.requireNonNull(data, "data"); }
+    public RedactedThinkingBlock {
+        Objects.requireNonNull(data, "data");
+    }
 }

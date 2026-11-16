@@ -36,7 +36,8 @@ public final class TeamMailbox {
             String summary, String body, boolean insertion) throws IOException {
         if (summary == null || summary.isBlank() || summary.length() > 2000
                 || body == null || body.isBlank() || body.length() > 200_000) {
-            throw new IllegalArgumentException("Summary must be 1–2000 characters and body must be 1–200000 characters");
+            throw new IllegalArgumentException(
+                    "Summary must be 1–2000 characters and body must be 1–200000 characters");
         }
         // teams 的祖先也检查，避免全局目录祖先被换成链接后写入其它位置。
         paths.directory(root.resolve("messages"), true);
@@ -51,16 +52,21 @@ public final class TeamMailbox {
     }
 
     /** 成功交给 Inbox 后清除运输记录，正文必须继续存在；清理失败可再次调用。 */
-    public void delivered(Incoming incoming) throws IOException { Files.deleteIfExists(pending(incoming.id())); }
+    public void delivered(Incoming incoming) throws IOException {
+        Files.deleteIfExists(pending(incoming.id()));
+    }
 
     /** 名册与派工也共用本 Team 的受检目录，不能绕过全局目录祖先检查。 */
     void directory(Path directory) throws IOException {
-        if (!directory.normalize().startsWith(root)) throw new IOException("Team data escapes its partition");
+        if (!directory.normalize().startsWith(root))
+            throw new IOException("Team data escapes its partition");
         paths.directory(directory, true);
     }
 
     /** 返回本次 Team 目录，供名册与派工记录使用，不把旧 Team 当作当前运行中的会话。 */
-    public Path root() { return root; }
+    public Path root() {
+        return root;
+    }
 
     /**
      * 详情页只读取本邮箱已登记的正文，拒绝替换成链接或异常膨胀的文件。
@@ -68,18 +74,21 @@ public final class TeamMailbox {
      */
     String readBody(Incoming incoming) throws IOException {
         Path file = root.resolve("messages").resolve(incoming.id() + ".md");
-        if (!file.toString().equals(incoming.bodyPath())) throw new IOException("Report path does not match the mailbox record");
+        if (!file.toString().equals(incoming.bodyPath()))
+            throw new IOException("Report path does not match the mailbox record");
         paths.directory(root.resolve("messages"), false);
         if (!Files.isRegularFile(file, java.nio.file.LinkOption.NOFOLLOW_LINKS) || Files.size(file) > 800_000)
             throw new IOException("Report body is missing, linked, or exceeds its size limit");
         String body = Files.readString(file);
-        if (body.length() > 200_000) throw new IOException("Report body exceeds its character limit");
+        if (body.length() > 200_000)
+            throw new IOException("Report body exceeds its character limit");
         return body;
     }
 
     /** 只接受程序格式 ID，不把模型字符串直接拼成任意文件路径。 */
     private Path pending(String id) {
-        if (!id.matches("mail_[0-9a-f-]{36}")) throw new IllegalArgumentException("Invalid message ID");
+        if (!id.matches("mail_[0-9a-f-]{36}"))
+            throw new IllegalArgumentException("Invalid message ID");
         return root.resolve("pending").resolve(id + ".json");
     }
 }

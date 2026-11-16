@@ -31,7 +31,8 @@ public final class BackendStream implements ResponseStream {
         this.actor = actor == null ? "leader" : actor;
     }
 
-    @Override public synchronized void requestStarted(String requestId) {
+    @Override
+    public synchronized void requestStarted(String requestId) {
         request = requestId == null || requestId.isBlank() ? "rq-" + System.nanoTime() : requestId;
         replyOffset = 0;
         thinkingOffset = 0;
@@ -42,31 +43,41 @@ public final class BackendStream implements ResponseStream {
         wire.session().sendEvent("stream.started", payload, wire.sessionId(), wire.generation());
     }
 
-    @Override public synchronized void text(String text) {
+    @Override
+    public synchronized void text(String text) {
         delta("REPLY", text);
     }
 
-    @Override public synchronized void thinking(String text) {
+    @Override
+    public synchronized void thinking(String text) {
         delta("THINKING", text);
     }
 
     private void delta(String channel, String text) {
-        if (ended || text == null || text.isEmpty()) return;
-        if (request.isEmpty()) requestStarted(null);
+        if (ended || text == null || text.isEmpty())
+            return;
+        if (request.isEmpty())
+            requestStarted(null);
         int offset = "REPLY".equals(channel) ? replyOffset : thinkingOffset;
         ObjectNode payload = Json.mapper().createObjectNode();
         payload.put("requestId", request);
         payload.put("channel", channel);
         payload.put("offset", offset);
         payload.put("text", text);
-        if ("REPLY".equals(channel)) replyOffset += text.length(); else thinkingOffset += text.length();
+        if ("REPLY".equals(channel))
+            replyOffset += text.length();
+        else
+            thinkingOffset += text.length();
         wire.session().sendStreamEvent("stream.delta", payload, wire.sessionId(), wire.generation(),
                 "delta:" + wire.generation() + ":" + request + ":" + channel);
     }
 
-    @Override public synchronized void toolBlockStarted(int blockIndex, String callId, String name, String initialInputJson) {
-        if (ended) return;
-        if (request.isEmpty()) requestStarted(null);
+    @Override
+    public synchronized void toolBlockStarted(int blockIndex, String callId, String name, String initialInputJson) {
+        if (ended)
+            return;
+        if (request.isEmpty())
+            requestStarted(null);
         ObjectNode payload = Json.mapper().createObjectNode();
         payload.put("requestId", request);
         payload.put("blockIndex", blockIndex);
@@ -76,8 +87,10 @@ public final class BackendStream implements ResponseStream {
         wire.session().sendEvent("stream.preview.started", payload, wire.sessionId(), wire.generation());
     }
 
-    @Override public synchronized void toolInputDelta(int blockIndex, String fragment) {
-        if (ended || fragment == null || fragment.isEmpty()) return;
+    @Override
+    public synchronized void toolInputDelta(int blockIndex, String fragment) {
+        if (ended || fragment == null || fragment.isEmpty())
+            return;
         ObjectNode payload = Json.mapper().createObjectNode();
         payload.put("requestId", request);
         payload.put("blockIndex", blockIndex);
@@ -86,28 +99,41 @@ public final class BackendStream implements ResponseStream {
                 "preview:" + wire.generation() + ":" + request + ":" + blockIndex);
     }
 
-    @Override public synchronized void toolBlockClosed(int blockIndex) {
-        if (ended) return;
+    @Override
+    public synchronized void toolBlockClosed(int blockIndex) {
+        if (ended)
+            return;
         ObjectNode payload = Json.mapper().createObjectNode();
         payload.put("requestId", request);
         payload.put("blockIndex", blockIndex);
         wire.session().sendEvent("stream.preview.closed", payload, wire.sessionId(), wire.generation());
     }
 
-    @Override public synchronized void complete(String stopReason) {
+    @Override
+    public synchronized void complete(String stopReason) {
         end(false, stopReason);
     }
 
-    @Override public synchronized void complete() { end(false, ""); }
+    @Override
+    public synchronized void complete() {
+        end(false, "");
+    }
 
-    @Override public synchronized void failed() { end(true, ""); }
+    @Override
+    public synchronized void failed() {
+        end(true, "");
+    }
 
     /** 行动回复失败仍可有真实停止原因；max_tokens 继续触发前端原有的未完成提示。 */
-    @Override public synchronized void failed(String stopReason) { end(true, stopReason); }
+    @Override
+    public synchronized void failed(String stopReason) {
+        end(true, stopReason);
+    }
 
     /** 结束事件不会越过已入队正文：它走同一 outbox，且不参与合并。 */
     private void end(boolean failed, String stopReason) {
-        if (ended) return;
+        if (ended)
+            return;
         ended = true;
         ObjectNode payload = Json.mapper().createObjectNode();
         payload.put("requestId", request);

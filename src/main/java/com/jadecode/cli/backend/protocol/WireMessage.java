@@ -28,12 +28,14 @@ public record WireMessage(int version, String connectionId, long seq, String typ
     /** 创建一个事件；事件不回答任何命令，因此 {@code commandId} 为 null。 */
     public static WireMessage event(long seq, String connectionId, String type, String sessionId,
             Long generation, ObjectNode payload) {
-        return new WireMessage(WireCodec.PROTOCOL_VERSION, connectionId, seq, type, null, sessionId, generation, payload);
+        return new WireMessage(WireCodec.PROTOCOL_VERSION, connectionId, seq, type, null, sessionId, generation,
+                payload);
     }
 
     /** 创建一个命令答复；{@code commandId} 让 Node 找回对应的请求。 */
     public static WireMessage result(long seq, String connectionId, String type, String commandId,
             String sessionId, Long generation, ObjectNode payload) {
-        return new WireMessage(WireCodec.PROTOCOL_VERSION, connectionId, seq, type, commandId, sessionId, generation, payload);
+        return new WireMessage(WireCodec.PROTOCOL_VERSION, connectionId, seq, type, commandId, sessionId, generation,
+                payload);
     }
 }

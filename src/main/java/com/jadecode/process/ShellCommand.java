@@ -25,10 +25,13 @@ public final class ShellCommand implements AutoCloseable {
     private final long timeoutSeconds;
     /** 注入的执行后端；null 仅供明确的宿主/离线入口使用。 */
     private final Runner runner;
+
     /** 同步/后台共用的执行契约，必须保留超时、取消和失败状态。 */
-    @FunctionalInterface public interface Runner {
+    @FunctionalInterface
+    public interface Runner {
         Result run(String command, Path cwd, long timeoutSeconds, com.jadecode.execution.ExecutionContext context);
     }
+
     /** 同一锁保护启动登记与关闭，避免 close 扫描结束后又启动新进程。 */
     private final Set<Running> processes = new HashSet<>();
     private final Thread shutdownHook = new Thread(this::close, "jade-shell-cleanup");
@@ -60,7 +63,8 @@ public final class ShellCommand implements AutoCloseable {
         public String text() {
             String body = output.isEmpty() ? "(no output)" : output;
             return exitCode != null && exitCode != 0
-                    ? "Error: command exited with status " + exitCode + "\n" + body : body;
+                    ? "Error: command exited with status " + exitCode + "\n" + body
+                    : body;
         }
     }
 
@@ -72,7 +76,9 @@ public final class ShellCommand implements AutoCloseable {
      * @param command 已校验的 shell 文本
      * @return 只有 exitCode=0 才算成功，失败保留原因
      */
-    public Result run(String command) { return run(command, null); }
+    public Result run(String command) {
+        return run(command, null);
+    }
 
     /**
      * 工具/后台入口传入可信快照。已注入后端时由后端核验调用级许可并进入容器；
@@ -82,8 +88,10 @@ public final class ShellCommand implements AutoCloseable {
         if (runner != null) {
             // 关闭注入后端的 Shell 也必须停止实际容器操作，不能只清空本地进程表。
             // 即使已经关闭仍向受限后端传入取消条件，让它撤销尚未领取的后台许可。
-            if (context == null && closed) return new Result("Error: Shell is closed", null, false);
-            return runner.run(command, cwd, timeoutSeconds, context == null ? null : context.withAdditionalCancellation(() -> closed));
+            if (context == null && closed)
+                return new Result("Error: Shell is closed", null, false);
+            return runner.run(command, cwd, timeoutSeconds,
+                    context == null ? null : context.withAdditionalCancellation(() -> closed));
         }
         Running running;
         try {
@@ -96,13 +104,17 @@ public final class ShellCommand implements AutoCloseable {
                     Runtime.getRuntime().addShutdownHook(shutdownHook);
                     hookRegistered = true;
                 }
-                if (context != null && context.isCancelled()) return new Result("Error: Execution source has exited", null, false);
+                if (context != null && context.isCancelled())
+                    return new Result("Error: Execution source has exited", null, false);
                 ProcessBuilder builder = new ProcessBuilder("/usr/bin/setsid", "/bin/sh", "-c", command)
                         .directory(cwd.toFile()).redirectErrorStream(true);
                 // 普通命令无需模型认证；宿主与容器执行均只继承工具链/locale 等基础设置。
-                var parent = new java.util.HashMap<>(builder.environment()); builder.environment().clear();
-                for (String key : List.of("PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR", "JAVA_HOME"))
-                    if (parent.containsKey(key)) builder.environment().put(key, parent.get(key));
+                var parent = new java.util.HashMap<>(builder.environment());
+                builder.environment().clear();
+                for (String key : List.of("PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE", "TZ",
+                        "TMPDIR", "JAVA_HOME"))
+                    if (parent.containsKey(key))
+                        builder.environment().put(key, parent.get(key));
                 Process process = builder.start();
                 running = new Running(process);
                 processes.add(running);
@@ -122,9 +134,11 @@ public final class ShellCommand implements AutoCloseable {
             // 传入，因此等待期间也检查取消，不能只在启动前检查一次。后台使用独立取消条件。
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSeconds);
             while (process.isAlive()) {
-                if (context != null && context.isCancelled()) return new Result("Error: Execution cancelled", null, false);
+                if (context != null && context.isCancelled())
+                    return new Result("Error: Execution cancelled", null, false);
                 long remaining = deadline - System.nanoTime();
-                if (remaining <= 0) return new Result("Error: Timeout (" + timeoutSeconds + "s)", null, false);
+                if (remaining <= 0)
+                    return new Result("Error: Timeout (" + timeoutSeconds + "s)", null, false);
                 process.waitFor(Math.min(remaining, TimeUnit.MILLISECONDS.toNanos(100)), TimeUnit.NANOSECONDS);
             }
             int exitCode = process.exitValue();
@@ -164,7 +178,8 @@ public final class ShellCommand implements AutoCloseable {
     }
 
     /** 读线程自己的不可变结果，不向其他线程暴露可变 buffer。 */
-    private record Captured(String text, boolean truncated) { }
+    private record Captured(String text, boolean truncated) {
+    }
 
     /**
      * 一条正在运行的命令。正常收尾、finally 和关闭流程都可能调用 stop，
@@ -207,7 +222,8 @@ public final class ShellCommand implements AutoCloseable {
             Thread.currentThread().interrupt();
         } finally {
             // 已退出的父进程仍有待读取的管道缓冲；再次 destroy 会关流并丢失输出。
-            if (process.isAlive()) process.destroyForcibly();
+            if (process.isAlive())
+                process.destroyForcibly();
         }
     }
 

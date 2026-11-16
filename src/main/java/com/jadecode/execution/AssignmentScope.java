@@ -18,15 +18,18 @@ public record AssignmentScope(List<String> readPaths, List<String> writePaths) {
     public AssignmentScope {
         readPaths = paths(readPaths);
         writePaths = paths(writePaths);
-        if (java.util.stream.Stream.concat(readPaths.stream(), writePaths.stream()).mapToInt(String::length).sum() > 4096)
+        if (java.util.stream.Stream.concat(readPaths.stream(), writePaths.stream()).mapToInt(String::length)
+                .sum() > 4096)
             throw new IllegalArgumentException("Assignment scope paths exceed the 4096-character budget");
     }
 
     /** 路径只接受有界的工作区相对表示；实际符号链接和读写授权仍在执行时检查。 */
     private static List<String> paths(List<String> values) {
-        if (values == null || values.size() > 64) throw new IllegalArgumentException("Scope must contain at most 64 paths per list");
+        if (values == null || values.size() > 64)
+            throw new IllegalArgumentException("Scope must contain at most 64 paths per list");
         return values.stream().map(value -> {
-            if (value == null || value.isBlank() || value.length() > 2048 || value.chars().anyMatch(Character::isISOControl))
+            if (value == null || value.isBlank() || value.length() > 2048
+                    || value.chars().anyMatch(Character::isISOControl))
                 throw new IllegalArgumentException("Scope paths must be non-empty relative paths");
             Path path = Path.of(value);
             if (path.isAbsolute() || path.normalize().startsWith(".."))

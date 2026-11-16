@@ -39,7 +39,8 @@ public record BackendSnapshot(String sessionId, String title, long generation, S
     public record Usage(Long inputTokens, Long outputTokens, Long cacheReadTokens, Long cacheWriteTokens,
             Long reportedRequests, Long missingRequests, Map<String, SessionUsage.Totals> byActor,
             Map<String, SessionUsage.Totals> byPurpose, Map<String, SessionUsage.Totals> byModel,
-            Integer recentCacheHitPercent) { }
+            Integer recentCacheHitPercent) {
+    }
 
     /** 当前投影的占用及估算来源；window 未知时整体为 null。 */
     public record Context(Long occupiedTokens, Integer windowTokens, Integer remainingPercent, Boolean estimated) {
@@ -51,17 +52,21 @@ public record BackendSnapshot(String sessionId, String title, long generation, S
 
     /** 权限资料：档位、revision、默认档位与规则概要（不传完整规则/凭据）。 */
     public record Permission(String profile, String label, long revision, String defaultProfile,
-            List<String> ruleDescriptions, int disabledDefaultCount) { }
+            List<String> ruleDescriptions, int disabledDefaultCount) {
+    }
 
     /** 一个真实 Agent/队友的状态；单人会话的 leader 不会被渲染成 Team 身份。 */
-    public record Actor(String id, String state) { }
+    public record Actor(String id, String state) {
+    }
 
     /** MCP 只读服务资料；不连接、不认证、不改配置。 */
-    public record Mcp(String name, boolean enabled, boolean connected, List<String> tools) { }
+    public record Mcp(String name, boolean enabled, boolean connected, List<String> tools) {
+    }
 
     /** 能力开关：Node 用它隐藏后端不存在的能力，而不是显示假入口。 */
     public record Capabilities(boolean thinking, boolean permission, boolean resume, boolean mcp,
-            boolean externalEditor, boolean browserImages) { }
+            boolean externalEditor, boolean browserImages) {
+    }
 
     /** 已批准的 TUI 设置快照（18 个有效菜单字段 + 非菜单项）。 */
     public record Tui(String theme, String lightTheme, String darkTheme, String mode, String fullscreenExitOutput,
@@ -70,7 +75,8 @@ public record BackendSnapshot(String sessionId, String title, long generation, S
             boolean thinkingVisible, boolean toolsExpanded, boolean commandSuggestions, boolean clearOnShrink,
             boolean showTerminalProgress, boolean quietStartup, String codeBlockIndent, String externalEditor,
             int escapeTimeoutMillis, Map<String, List<String>> keybindings,
-            boolean showImages, int imageWidthCells, String mermaidRendering) { }
+            boolean showImages, int imageWidthCells, String mermaidRendering) {
+    }
 
     /**
      * 组合一份快照。
@@ -80,7 +86,8 @@ public record BackendSnapshot(String sessionId, String title, long generation, S
      * @param settings    本次启动采用的设置
      * @param configRevision 已持久化的配置版本，Node 用它拒绝陈旧 patch
      */
-    public static BackendSnapshot capture(long generation, SessionRuntime.Display display, PermissionState.Snapshot permission,
+    public static BackendSnapshot capture(long generation, SessionRuntime.Display display,
+            PermissionState.Snapshot permission,
             JadeSettings settings, long configRevision, List<McpManager.ServerSnapshot> mcp,
             Map<String, String> actors, String bufferSummary, String bufferState,
             Map<String, String> background, Map<String, DisplayClock.Tick> clocks) {
@@ -95,8 +102,10 @@ public record BackendSnapshot(String sessionId, String title, long generation, S
         List<Actor> actorList = actors.entrySet().stream().map(e -> new Actor(e.getKey(), e.getValue())).toList();
         boolean teamActive = actors.keySet().stream().anyMatch(id -> id.startsWith("agent_")
                 && !id.contains("/") && !"CLOSED".equals(actors.get(id)));
-        List<Mcp> servers = mcp == null ? List.of() : mcp.stream()
-                .map(server -> new Mcp(server.name(), server.enabled(), server.connected(), server.tools())).toList();
+        List<Mcp> servers = mcp == null ? List.of()
+                : mcp.stream()
+                        .map(server -> new Mcp(server.name(), server.enabled(), server.connected(), server.tools()))
+                        .toList();
         ModelMetadata metadata = display == null ? null : display.metadata();
         return new BackendSnapshot(
                 display == null ? "" : display.id(),
@@ -124,11 +133,13 @@ public record BackendSnapshot(String sessionId, String title, long generation, S
                 configRevision,
                 new Capabilities(display != null && !display.thinkingChoices().isEmpty(), true, true,
                         !servers.isEmpty(), !tui.externalEditor().isBlank(), false),
-                Map.copyOf(clocks == null ? Map.of() : clocks), display == null ? Map.of() : display.resources(), display == null ? List.of() : display.team());
+                Map.copyOf(clocks == null ? Map.of() : clocks), display == null ? Map.of() : display.resources(),
+                display == null ? List.of() : display.team());
     }
 
     private static Usage usage(SessionUsage.Snapshot snapshot) {
-        if (snapshot == null) return new Usage(null, null, null, null, null, null, Map.of(), Map.of(), Map.of(), null);
+        if (snapshot == null)
+            return new Usage(null, null, null, null, null, null, Map.of(), Map.of(), Map.of(), null);
         SessionUsage.Totals total = snapshot.total();
         var recent = snapshot.recentLeaderUsage();
         // Anthropic 普通 input 不含缓存读写，分母必须是同一次请求的完整输入；0/缺报都隐藏。
@@ -140,7 +151,9 @@ public record BackendSnapshot(String sessionId, String title, long generation, S
     }
 
     private static Context context(ContextUsage value) {
-        return value == null ? null : new Context(value.occupiedTokens(), value.windowTokens(), value.remainingPercent(), value.estimated());
+        return value == null ? null
+                : new Context(value.occupiedTokens(), value.windowTokens(), value.remainingPercent(),
+                        value.estimated());
     }
 
     /** 组装 wire 载荷；字段名是版本化契约，重命名必须同步 schema 与 Node 校验。 */
@@ -173,7 +186,8 @@ public record BackendSnapshot(String sessionId, String title, long generation, S
         usageNode.set("byActor", Json.mapper().valueToTree(usage.byActor()));
         usageNode.set("byPurpose", Json.mapper().valueToTree(usage.byPurpose()));
         usageNode.set("byModel", Json.mapper().valueToTree(usage.byModel()));
-        if (context == null) node.putNull("context");
+        if (context == null)
+            node.putNull("context");
         else {
             ObjectNode contextNode = node.putObject("context");
             putNullable(contextNode, "occupiedTokens", context.occupiedTokens());
@@ -181,7 +195,8 @@ public record BackendSnapshot(String sessionId, String title, long generation, S
             putNullable(contextNode, "remainingPercent", context.remainingPercent());
             contextNode.put("estimated", Boolean.TRUE.equals(context.estimated()));
         }
-        if (permission == null) node.putNull("permission");
+        if (permission == null)
+            node.putNull("permission");
         else {
             ObjectNode permissionNode = node.putObject("permission");
             permissionNode.put("profile", permission.profile());
@@ -265,18 +280,23 @@ public record BackendSnapshot(String sessionId, String title, long generation, S
     }
 
     private static void putNullable(ObjectNode node, String field, Long value) {
-        if (value == null) node.putNull(field);
-        else node.put(field, value);
+        if (value == null)
+            node.putNull(field);
+        else
+            node.put(field, value);
     }
 
     private static void putNullable(ObjectNode node, String field, Integer value) {
-        if (value == null) node.putNull(field);
-        else node.put(field, value);
+        if (value == null)
+            node.putNull(field);
+        else
+            node.put(field, value);
     }
 
     /** 工作目录与 git 分支的只读读取；不执行 git 命令、不修改仓库。 */
     static final class Paths {
-        private Paths() { }
+        private Paths() {
+        }
 
         static String workspace() {
             return java.nio.file.Path.of("").toAbsolutePath().normalize().toString();
@@ -286,7 +306,8 @@ public record BackendSnapshot(String sessionId, String title, long generation, S
         static String gitBranch() {
             try {
                 java.nio.file.Path head = java.nio.file.Path.of(".git", "HEAD");
-                if (!java.nio.file.Files.isRegularFile(head)) return "";
+                if (!java.nio.file.Files.isRegularFile(head))
+                    return "";
                 String text = java.nio.file.Files.readString(head).strip();
                 return text.startsWith("ref: refs/heads/") ? text.substring("ref: refs/heads/".length()) : "";
             } catch (java.io.IOException | RuntimeException ignored) {
@@ -296,5 +317,7 @@ public record BackendSnapshot(String sessionId, String title, long generation, S
     }
 
     /** 供 §显示层使用：权限档位的英文值。 */
-    public static String profileValue(PermissionProfile profile) { return profile == null ? "" : profile.value(); }
+    public static String profileValue(PermissionProfile profile) {
+        return profile == null ? "" : profile.value();
+    }
 }

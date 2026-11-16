@@ -20,7 +20,8 @@ import com.jadecode.session.SessionRuntime;
 
 /** 首轮只登记一次；磁盘中的已到期 cron 不再接入运行时，不调用外部模型。 */
 class SessionHostStartupTest {
-    @Test void initialPromptRunsOnceWithoutDeliveringStoredCron(@TempDir Path workspace) throws Exception {
+    @Test
+    void initialPromptRunsOnceWithoutDeliveringStoredCron(@TempDir Path workspace) throws Exception {
         var scheduler = new CronScheduler(com.jadecode.support.TestPaths.workspace(workspace));
         scheduler.schedule("* * * * *", "DUE_CRON", false, true);
         scheduler.pollDue(); // 先将任务持久化为待交付，模拟启动前已经到期。
@@ -32,11 +33,13 @@ class SessionHostStartupTest {
                 // 保存每次模型实际看见的历史；保存的 cron 不应在新会话自动执行。
                 String history = request.messages().toString();
                 requests.add(history);
-                if (history.contains("DUE_CRON")) cronSeen.countDown();
+                if (history.contains("DUE_CRON"))
+                    cronSeen.countDown();
                 return new ModelResponse(Message.assistant(List.of(new TextBlock("done"))),
                         new ModelResponse.Usage(1, 1), "end_turn");
             }, Map.of(), "test", 1000, new Hooks());
-            return new SessionRuntime(engine, ignored -> { }, errors::add);
+            return new SessionRuntime(engine, ignored -> {
+            }, errors::add);
         }, errors::add)) {
             var opened = host.open(null);
             var result = host.startWithInitial(opened.generation(), "INITIAL_USER", null);

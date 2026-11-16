@@ -13,9 +13,12 @@ import com.jadecode.llm.UsageRecord;
  * runId 表示本次变更被哪个大轮次采用，旧记录可为空；通知的原始来源保留在正文中。
  */
 public record JournalEntry(int version, String sessionId, long sequence, String time, Kind kind,
-        List<Message> messages, ArrayNode todos, String reason, UsageRecord usage, String title, ThinkingSettings thinking,
+        List<Message> messages, ArrayNode todos, String reason, UsageRecord usage, String title,
+        ThinkingSettings thinking,
         com.jadecode.goal.GoalState goal, String runId) {
-    public enum Kind { APPEND, REPLACE_LAST, REPLACE_HISTORY, TURN_STARTED, TURN_FINISHED, TURN_FAILED, USAGE, RENAMED, THINKING, GOAL }
+    public enum Kind {
+        APPEND, REPLACE_LAST, REPLACE_HISTORY, TURN_STARTED, TURN_FINISHED, TURN_FAILED, USAGE, RENAMED, THINKING, GOAL
+    }
 
     /**
      * 旧日志没有 runId，按 null 恢复；该可选关联信息不参与历史重放、权限或线程恢复。
@@ -29,7 +32,8 @@ public record JournalEntry(int version, String sessionId, long sequence, String 
 
     /** 版本 1/2 的调用者没有目标字段；保留旧构造，恢复旧记录时新增字段为 null。 */
     public JournalEntry(int version, String sessionId, long sequence, String time, Kind kind,
-            List<Message> messages, ArrayNode todos, String reason, UsageRecord usage, String title, ThinkingSettings thinking) {
+            List<Message> messages, ArrayNode todos, String reason, UsageRecord usage, String title,
+            ThinkingSettings thinking) {
         this(version, sessionId, sequence, time, kind, messages, todos, reason, usage, title, thinking, null);
     }
 
@@ -40,27 +44,35 @@ public record JournalEntry(int version, String sessionId, long sequence, String 
     }
 
     /** 元数据事件不会覆盖模型历史和 Todo，更不会在恢复时成为 USER 消息。 */
-    public boolean metadataOnly() { return kind == Kind.USAGE || kind == Kind.RENAMED || kind == Kind.THINKING || kind == Kind.GOAL; }
+    public boolean metadataOnly() {
+        return kind == Kind.USAGE || kind == Kind.RENAMED || kind == Kind.THINKING || kind == Kind.GOAL;
+    }
 
     /** 检查日志操作本身的形状；历史中的工具配对在全部重放后检查。 */
     public JournalEntry {
         SessionMetadata.requireId(sessionId);
-        if (runId != null && runId.isBlank()) throw new IllegalArgumentException("Run identity cannot be blank");
+        if (runId != null && runId.isBlank())
+            throw new IllegalArgumentException("Run identity cannot be blank");
         if (version < 1 || version > SessionMetadata.VERSION || sequence < 1 || kind == null || reason == null)
             throw new IllegalArgumentException("Invalid session journal fields");
         boolean metadataOnly = kind == Kind.USAGE || kind == Kind.RENAMED || kind == Kind.THINKING || kind == Kind.GOAL;
-        if (metadataOnly && version < 2) throw new IllegalArgumentException("Version 1 does not contain metadata events");
-        if (kind == Kind.GOAL && version < 3) throw new IllegalArgumentException("Goal events require journal version 3");
+        if (metadataOnly && version < 2)
+            throw new IllegalArgumentException("Version 1 does not contain metadata events");
+        if (kind == Kind.GOAL && version < 3)
+            throw new IllegalArgumentException("Goal events require journal version 3");
         if (!metadataOnly && todos == null || metadataOnly && todos != null)
             throw new IllegalArgumentException("History events require Todo; metadata events cannot carry Todo");
         if ((kind == Kind.USAGE) != (usage != null) || (kind == Kind.RENAMED) != (title != null)
                 || (kind == Kind.THINKING) != (thinking != null) || (kind == Kind.GOAL) != (goal != null))
             throw new IllegalArgumentException("Metadata event body does not match");
-        if (title != null) title = SessionMetadata.validTitle(title);
+        if (title != null)
+            title = SessionMetadata.validTitle(title);
         java.time.Instant.parse(time);
         messages = List.copyOf(messages);
-        if (todos != null) todos = todos.deepCopy();
-        if (metadataOnly && !messages.isEmpty()) throw new IllegalArgumentException("Metadata events cannot carry model messages");
+        if (todos != null)
+            todos = todos.deepCopy();
+        if (metadataOnly && !messages.isEmpty())
+            throw new IllegalArgumentException("Metadata events cannot carry model messages");
         if ((kind == Kind.APPEND || kind == Kind.REPLACE_LAST) && messages.size() != 1)
             throw new IllegalArgumentException("A single history operation must contain exactly one message");
         if (kind.name().startsWith("TURN_") && !messages.isEmpty())
@@ -68,17 +80,22 @@ public record JournalEntry(int version, String sessionId, long sequence, String 
         for (Message message : messages) {
             if (message.source() != null && version < 4)
                 throw new IllegalArgumentException("Message source metadata requires journal version 4");
-            if (message.role() == null || message.content() == null || message.content().stream().anyMatch(java.util.Objects::isNull))
+            if (message.role() == null || message.content() == null
+                    || message.content().stream().anyMatch(java.util.Objects::isNull))
                 throw new IllegalArgumentException("Invalid history message content");
             for (var block : message.content()) {
                 if (block instanceof com.jadecode.messages.TextBlock text && text.text() == null
                         || block instanceof com.jadecode.messages.ToolResultBlock result && result.content() == null
-                        || block instanceof com.jadecode.messages.ToolUseBlock use && (use.input() == null || use.name() == null || use.name().isBlank()))
+                        || block instanceof com.jadecode.messages.ToolUseBlock use
+                                && (use.input() == null || use.name() == null || use.name().isBlank()))
                     throw new IllegalArgumentException("History content block is missing text or tool arguments");
             }
         }
     }
 
     /** 不把可修改的计划数组交给调用者，避免 UI 或恢复代码改动原始记录。 */
-    @Override public ArrayNode todos() { return todos == null ? null : todos.deepCopy(); }
+    @Override
+    public ArrayNode todos() {
+        return todos == null ? null : todos.deepCopy();
+    }
 }

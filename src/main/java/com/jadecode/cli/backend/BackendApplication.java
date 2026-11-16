@@ -49,7 +49,8 @@ import com.jadecode.util.Json;
 public final class BackendApplication implements AutoCloseable {
     /** 一次交互启动的输入。 */
     public record Options(Path configPath, PermissionProfile permissionOverride,
-            BackendSessionService.Startup startup, Path modelConfig) { }
+            BackendSessionService.Startup startup, Path modelConfig) {
+    }
 
     private static final long ACCEPT_TIMEOUT_MILLIS = 30_000;
 
@@ -71,7 +72,8 @@ public final class BackendApplication implements AutoCloseable {
 
     /** 握手前就需要读取的配置/设置快照；避免 hello 期间再读盘失败。 */
     private record PreLicense(PreferenceService preferences, JadeSettings settings, PermissionState permissions,
-            RuntimeFactory factory, String themeDirectory, String projectVersion) { }
+            RuntimeFactory factory, String themeDirectory, String projectVersion) {
+    }
 
     /**
      * @param server     已绑定、尚未接受连接的私有端点
@@ -87,7 +89,8 @@ public final class BackendApplication implements AutoCloseable {
         PreferenceService preferences = new PreferenceService(options.configPath());
         JadeSettings settings = preferences.state().settings();
         PermissionState permissions = settings.permissions().state(new JadeConfigFile(options.configPath()));
-        if (options.permissionOverride() != null) permissions.select(options.permissionOverride());
+        if (options.permissionOverride() != null)
+            permissions.select(options.permissionOverride());
         Path themeDirectory = options.configPath().toAbsolutePath().getParent().resolve("themes");
         this.preLicense = new PreLicense(preferences, settings, permissions,
                 new RuntimeFactory(settings, permissions, options.modelConfig()), themeDirectory.toString(),
@@ -97,7 +100,8 @@ public final class BackendApplication implements AutoCloseable {
     /** @return 由构建过滤资源提供的真实项目版本；缺失时使用当前发行基线版本号。 */
     static String projectVersion() {
         try (InputStream stream = BackendApplication.class.getResourceAsStream("/META-INF/jade-build.properties")) {
-            if (stream == null) return "1.1.0";
+            if (stream == null)
+                return "1.1.0";
             java.util.Properties properties = new java.util.Properties();
             properties.load(stream);
             return properties.getProperty("version", "1.1.0");
@@ -141,7 +145,8 @@ public final class BackendApplication implements AutoCloseable {
             WireContext wire = new WireContext(created, payloads);
             wireRef.set(wire);
             BackendSessionService service = new BackendSessionService(wire, preLicense.preferences(),
-                    preLicense.factory(), snapshotSink(wire), message -> { }, options.startup());
+                    preLicense.factory(), snapshotSink(wire), message -> {
+                    }, options.startup());
             diagnostics = BackendDiagnostics.install(wire);
             this.service = service;
             serviceRef.set(service);
@@ -161,15 +166,21 @@ public final class BackendApplication implements AutoCloseable {
             Thread.currentThread().interrupt();
             return 1;
         } finally {
-            if (session != null) session.close();
+            if (session != null)
+                session.close();
             BackendSessionService current = service;
-            if (current != null) current.close();
-            if (diagnostics != null) diagnostics.close();
+            if (current != null)
+                current.close();
+            if (diagnostics != null)
+                diagnostics.close();
             preLicense.preferences().close();
             server.close();
             SocketChannel open = channel;
             if (open != null) {
-                try { open.close(); } catch (IOException ignored) { /* 已关闭。 */ }
+                try {
+                    open.close();
+                } catch (IOException ignored) {
+                    /* 已关闭。 */ }
             }
         }
     }
@@ -186,7 +197,8 @@ public final class BackendApplication implements AutoCloseable {
             this.serviceRef = serviceRef;
         }
 
-        @Override public void run() {
+        @Override
+        public void run() {
             try {
                 WireMessage message;
                 while ((message = WireCodec.readFrame(in)) != null) {
@@ -220,7 +232,8 @@ public final class BackendApplication implements AutoCloseable {
      */
     private void openInitial(AtomicReference<BackendSessionService> serviceRef) {
         BackendSessionService service = serviceRef.get();
-        if (service == null) return;
+        if (service == null)
+            return;
         try {
             service.openInitial();
         } catch (IOException | RuntimeException failure) {
@@ -231,7 +244,8 @@ public final class BackendApplication implements AutoCloseable {
 
     private void ready(AtomicReference<BackendSessionService> serviceRef) {
         BackendSessionService service = serviceRef.get();
-        if (service != null) service.ready();
+        if (service != null)
+            service.ready();
     }
 
     private void dispatchInbound(WireMessage command, PayloadTransfer.Assembler assembler,
@@ -249,7 +263,8 @@ public final class BackendApplication implements AutoCloseable {
                     String text = assembler.end(id, command.payload().path("count").asInt(-1),
                             command.payload().path("sha256").asText(""));
                     BackendSessionService service = serviceRef.get();
-                    if (service != null) service.registerBlob(id, text);
+                    if (service != null)
+                        service.registerBlob(id, text);
                 }
                 default -> {
                     BackendSessionService service = serviceRef.get();
@@ -268,7 +283,8 @@ public final class BackendApplication implements AutoCloseable {
     }
 
     /** 构造 bootstrap：真实版本/设置/主题目录/启动意图；不含认证或完整业务配置。 */
-    private ProtocolSession.Greeting greeting(WireMessage hello, AtomicReference<WireContext> wireRef) throws ProtocolException {
+    private ProtocolSession.Greeting greeting(WireMessage hello, AtomicReference<WireContext> wireRef)
+            throws ProtocolException {
         if (wireRef.get() == null)
             throw new ProtocolException(ProtocolError.NOT_READY, "The connection is not initialized");
         ObjectNode helloPayload = Json.mapper().createObjectNode();
@@ -309,12 +325,16 @@ public final class BackendApplication implements AutoCloseable {
             private void putSnapshot(ObjectNode payload, BackendSnapshot snapshot) {
                 ObjectNode value = snapshot.toJson();
                 String text = value.toString();
-                if (text.length() > 32_000) payload.put("snapshotBlobRef",
-                        wire.payloads().sendText("state-snapshot", text, wire.sessionId(), wire.generation(), "state"));
-                else payload.set("snapshot", value);
+                if (text.length() > 32_000)
+                    payload.put("snapshotBlobRef",
+                            wire.payloads().sendText("state-snapshot", text, wire.sessionId(), wire.generation(),
+                                    "state"));
+                else
+                    payload.set("snapshot", value);
             }
 
-            @Override public void full(String snapshotId, long generation, long sourceSeq,
+            @Override
+            public void full(String snapshotId, long generation, long sourceSeq,
                     List<BackendHistoryProjector.Entry> entries, BackendSnapshot snapshot) {
                 ObjectNode begin = Json.mapper().createObjectNode();
                 begin.put("snapshotId", snapshotId);
@@ -336,7 +356,8 @@ public final class BackendApplication implements AutoCloseable {
                         array.add(node);
                         end++;
                         // 单块目标 128KiB：既控制帧大小，也保证长历史不会一次性进内存两份。
-                        if (array.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8).length >= 128 * 1024) break;
+                        if (array.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8).length >= 128 * 1024)
+                            break;
                     }
                     String encoded = array.toString();
                     digest.update(encoded.getBytes(java.nio.charset.StandardCharsets.UTF_8));
@@ -356,7 +377,8 @@ public final class BackendApplication implements AutoCloseable {
                 wire.session().sendEvent("session.snapshot.end", end, wire.sessionId(), generation);
             }
 
-            @Override public void state(BackendSnapshot snapshot) {
+            @Override
+            public void state(BackendSnapshot snapshot) {
                 ObjectNode payload = Json.mapper().createObjectNode();
                 putSnapshot(payload, snapshot);
                 wire.session().sendEvent("state.snapshot", payload, wire.sessionId(), wire.generation());
@@ -365,15 +387,17 @@ public final class BackendApplication implements AutoCloseable {
     }
 
     private static MessageDigest sha256() {
-        try { return MessageDigest.getInstance("SHA-256"); }
-        catch (java.security.NoSuchAlgorithmException impossible) {
+        try {
+            return MessageDigest.getInstance("SHA-256");
+        } catch (java.security.NoSuchAlgorithmException impossible) {
             throw new IllegalStateException("SHA-256 is required by the JVM", impossible);
         }
     }
 
     /** Node 断开/关闭：拒绝审批、关闭会话与依赖、恢复诊断流，然后结束等待。 */
     private void finish(AtomicReference<BackendSessionService> serviceRef, String reason) {
-        if (!closed.compareAndSet(false, true)) return;
+        if (!closed.compareAndSet(false, true))
+            return;
         BackendSessionService service = serviceRef.get();
         if (service != null) {
             try {
@@ -392,19 +416,27 @@ public final class BackendApplication implements AutoCloseable {
         }
         SocketChannel open = channel;
         if (open != null) {
-            try { open.close(); } catch (IOException ignored) { /* 唤醒 reader 后关闭即可。 */ }
+            try {
+                open.close();
+            } catch (IOException ignored) {
+                /* 唤醒 reader 后关闭即可。 */ }
         }
         finished.countDown();
     }
 
     /** @return 后端收口的真实失败原因；null 表示正常。 */
-    public String failureMessage() { return failure.get(); }
+    public String failureMessage() {
+        return failure.get();
+    }
 
-    @Override public void close() {
+    @Override
+    public void close() {
         finish(new AtomicReference<>(), "application-close");
         server.close();
     }
 
     /** 供测试：连接完成后等待的剩余时间。 */
-    boolean awaitFinished(long millis) throws InterruptedException { return finished.await(millis, TimeUnit.MILLISECONDS); }
+    boolean awaitFinished(long millis) throws InterruptedException {
+        return finished.await(millis, TimeUnit.MILLISECONDS);
+    }
 }

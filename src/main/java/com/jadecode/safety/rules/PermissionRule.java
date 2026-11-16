@@ -9,8 +9,14 @@ import java.util.List;
  */
 public record PermissionRule(String id, Effect effect, Kind kind, String tool, String workspace,
         String operation, String path, boolean recursive, List<String> argvPrefix) {
-    public enum Effect { ALLOW, ASK, DENY }
-    public enum Kind { TOOL, PATH, COMMAND }
+    public enum Effect {
+        ALLOW, ASK, DENY
+    }
+
+    public enum Kind {
+        TOOL, PATH, COMMAND
+    }
+
     public PermissionRule {
         if (id == null || id.isBlank() || effect == null || kind == null || tool == null || tool.isBlank())
             throw new IllegalArgumentException("Permission rule is missing id/effect/kind/tool");
@@ -18,7 +24,8 @@ public record PermissionRule(String id, Effect effect, Kind kind, String tool, S
         operation = operation == null ? "" : operation;
         path = path == null ? "" : path;
         argvPrefix = argvPrefix == null ? List.of() : List.copyOf(argvPrefix);
-        if (!workspace.isEmpty() && !Path.of(workspace).isAbsolute()) throw new IllegalArgumentException("workspace must be an absolute path");
+        if (!workspace.isEmpty() && !Path.of(workspace).isAbsolute())
+            throw new IllegalArgumentException("workspace must be an absolute path");
         if (kind == Kind.COMMAND && (argvPrefix.isEmpty() || !tool.equals("bash") || argvPrefix.getFirst().isBlank()))
             throw new IllegalArgumentException("Command rules must specify bash and a non-empty argvPrefix");
         if (kind == Kind.PATH && (path.isBlank() || !Path.of(path).isAbsolute()
@@ -28,10 +35,12 @@ public record PermissionRule(String id, Effect effect, Kind kind, String tool, S
                 || kind != Kind.COMMAND && !argvPrefix.isEmpty())
             throw new IllegalArgumentException("A rule cannot mix matching fields from different kinds");
     }
+
     /** 给审批界面展示准确范围，不把“此类”隐藏成整把工具授权。 */
     public String description() {
         return switch (kind) {
-            case COMMAND -> "cwd=" + workspace + "; argv prefix=" + com.jadecode.util.Json.mapper().valueToTree(argvPrefix);
+            case COMMAND ->
+                "cwd=" + workspace + "; argv prefix=" + com.jadecode.util.Json.mapper().valueToTree(argvPrefix);
             case PATH -> operation + " " + path + (recursive ? "/**" : "") + "; workspace=" + workspace;
             case TOOL -> "tool=" + tool + "; workspace=" + workspace;
         };

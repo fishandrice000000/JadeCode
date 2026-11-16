@@ -20,7 +20,8 @@ class FilePermissionCheckTest {
     private PermissionGate guard;
 
     private String check(String path, boolean write) {
-        return guard.check(write ? "write_file" : "read_file", com.jadecode.util.Json.mapper().createObjectNode().put("path", path));
+        return guard.check(write ? "write_file" : "read_file",
+                com.jadecode.util.Json.mapper().createObjectNode().put("path", path));
     }
 
     @BeforeEach

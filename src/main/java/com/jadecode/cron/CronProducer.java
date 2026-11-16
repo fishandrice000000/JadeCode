@@ -59,7 +59,8 @@ public final class CronProducer implements AutoCloseable {
      * 不会请求模型；单次 run 不调用它，所以即使能创建定时任务，也不代表会一直等待任务到期。</p>
      */
     public synchronized void start() {
-        if (scheduler == null || timer != null || closed) return;
+        if (scheduler == null || timer != null || closed)
+            return;
         timer = Executors.newSingleThreadScheduledExecutor(runnable -> {
             Thread thread = new Thread(runnable, "jade-cron-producer");
             thread.setDaemon(true);
@@ -79,11 +80,13 @@ public final class CronProducer implements AutoCloseable {
      * 此处不修改 history、不调用模型，也不会把仅仅排好队的任务记成已经送到模型。</p>
      */
     private void poll() {
-        if (closed) return;
+        if (closed)
+            return;
         try {
             scheduler.pollDue();
             lastPollError = null;
-            if (!canDeliver()) return;
+            if (!canDeliver())
+                return;
             CronJob job;
             while (!closed && (job = scheduler.takeDue()) != null) {
                 if (!publish.test(job)) {
@@ -93,7 +96,8 @@ public final class CronProducer implements AutoCloseable {
             }
         } catch (IOException | RuntimeException failure) {
             String reason = failure.getMessage() == null ? failure.getClass().getSimpleName() : failure.getMessage();
-            if (!java.util.Objects.equals(reason, lastPollError)) errors.accept("[Cron] Cannot poll: " + reason);
+            if (!java.util.Objects.equals(reason, lastPollError))
+                errors.accept("[Cron] Cannot poll: " + reason);
             lastPollError = reason;
         }
     }
@@ -150,7 +154,9 @@ public final class CronProducer implements AutoCloseable {
         release(id);
         failures++;
         nextAttempt = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-        if (failures >= 3) errors.accept("[Cron] Automatic delivery paused after 3 failures; durable pending jobs remain for restart.");
+        if (failures >= 3)
+            errors.accept(
+                    "[Cron] Automatic delivery paused after 3 failures; durable pending jobs remain for restart.");
     }
 
     /**
@@ -158,7 +164,10 @@ public final class CronProducer implements AutoCloseable {
      * 不删待发送记录、不增加失败次数，也不会重新创建已取消的任务。
      * @param id 因队列满、会话退出或暂缓执行而没能继续的定时定义 ID
      */
-    public void release(String id) { if (scheduler != null) scheduler.restore(id); }
+    public void release(String id) {
+        if (scheduler != null)
+            scheduler.restore(id);
+    }
 
     /**
      * 停止定时检查，重复调用也可以，并尝试中断当前检查。
@@ -169,6 +178,7 @@ public final class CronProducer implements AutoCloseable {
     @Override
     public synchronized void close() {
         closed = true;
-        if (timer != null) timer.shutdownNow();
+        if (timer != null)
+            timer.shutdownNow();
     }
 }

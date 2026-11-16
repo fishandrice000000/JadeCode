@@ -17,12 +17,18 @@ public record McpToolDescriptor(String serverName, String connectionId, String n
     /** 校验必要身份与根 schema，不运行工具；非法定义不能进入已发布目录。 */
     public McpToolDescriptor {
         if (serverName == null || serverName.isBlank() || connectionId == null || connectionId.isBlank()
-                || name == null || name.isBlank()) throw new IllegalArgumentException("MCP tool identity cannot be empty");
+                || name == null || name.isBlank())
+            throw new IllegalArgumentException("MCP tool identity cannot be empty");
         Objects.requireNonNull(inputSchema, "inputSchema");
-        if (!inputSchema.path("type").asText().equals("object")) throw new IllegalArgumentException("MCP inputSchema must be an object");
+        if (!inputSchema.path("type").asText().equals("object"))
+            throw new IllegalArgumentException("MCP inputSchema must be an object");
         description = description == null ? "" : description;
         inputSchema = inputSchema.deepCopy();
     }
+
     /** 返回独立 schema，防止消费者改变已发布快照。 */
-    @Override public ObjectNode inputSchema() { return inputSchema.deepCopy(); }
+    @Override
+    public ObjectNode inputSchema() {
+        return inputSchema.deepCopy();
+    }
 }

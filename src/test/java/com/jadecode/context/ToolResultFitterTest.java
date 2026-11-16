@@ -531,8 +531,8 @@ class ToolResultFitterTest {
 
         if (k >= 5) {
             assertNotSame(input, actual, "正文与 JSON 都变短时必须采纳(k=" + k + ")");
-            assertTrue(ContextSerialization.estimateChars(actual)
-                    < ContextSerialization.estimateChars(input), "被采纳的替换必须让 JSON 变小");
+            assertTrue(ContextSerialization.estimateChars(actual) < ContextSerialization.estimateChars(input),
+                    "被采纳的替换必须让 JSON 变小");
         } else {
             assertSame(input, actual, "正文更短但 JSON 不变小必须拒绝(k=" + k + ")");
             assertEquals(before, ContextSerialization.toJson(input), "被拒绝时原输入必须完整(k=" + k + ")");

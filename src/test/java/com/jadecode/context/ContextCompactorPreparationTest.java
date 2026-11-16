@@ -69,8 +69,8 @@ class ContextCompactorPreparationTest {
         assertFalse(Files.exists(transcriptDir));
         assertFalse(Files.exists(outputDir));
 
-        RecordingLlmClient client = new RecordingLlmClient(request ->
-                new ModelResponse(Message.assistant(List.of(new TextBlock("固定摘要"))), new ModelResponse.Usage(0, 0)));
+        RecordingLlmClient client = new RecordingLlmClient(request -> new ModelResponse(
+                Message.assistant(List.of(new TextBlock("固定摘要"))), new ModelResponse.Usage(0, 0)));
         ContextCompactor over = new ContextCompactor(client, transcriptDir, outputDir,
                 limits(exact - 1, 20000, 3, 50));
         List<Message> actual = over.prepare(input, "当前任务");

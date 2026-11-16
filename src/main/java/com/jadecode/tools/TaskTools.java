@@ -48,12 +48,18 @@ public final class TaskTools {
 
     /** 工具名与说明是固定协议，不接受运行期任意方法名或反射调用。 */
     private enum Action {
-        CREATE("create_task", "Create a persistent pending task and return its generated ID. Add dependencies only after receiving real IDs."),
-        UPDATE("update_task", "Add prerequisite IDs to a pending unowned task. All prerequisites must exist; cycles are rejected."),
-        GET("get_task", "Read a persistent task including its full description, status, owner and dependencies."),
-        LIST("list_tasks", "List all persistent tasks with IDs, subjects, status, owner and dependencies; does not start work."),
-        CLAIM("claim_task", "Mark a pending task as in_progress for this agent, only when all prerequisites are completed. Does not execute it."),
-        COMPLETE("complete_task", "Mark this agent's in_progress task completed after verifying its work; return newly unblocked tasks without starting them.");
+        CREATE("create_task",
+                "Create a persistent pending task and return its generated ID. Add dependencies only after receiving real IDs."), UPDATE(
+                        "update_task",
+                        "Add prerequisite IDs to a pending unowned task. All prerequisites must exist; cycles are rejected."), GET(
+                                "get_task",
+                                "Read a persistent task including its full description, status, owner and dependencies."), LIST(
+                                        "list_tasks",
+                                        "List all persistent tasks with IDs, subjects, status, owner and dependencies; does not start work."), CLAIM(
+                                                "claim_task",
+                                                "Mark a pending task as in_progress for this agent, only when all prerequisites are completed. Does not execute it."), COMPLETE(
+                                                        "complete_task",
+                                                        "Mark this agent's in_progress task completed after verifying its work; return newly unblocked tasks without starting them.");
 
         private final String name;
         private final String description;
@@ -150,7 +156,8 @@ public final class TaskTools {
                 validate(input);
                 Object result = switch (action) {
                     case CREATE -> store.create(input.get("subject").textValue(), input.has("description")
-                            ? input.get("description").textValue() : "");
+                            ? input.get("description").textValue()
+                            : "");
                     case UPDATE -> {
                         List<String> ids = new ArrayList<>();
                         for (JsonNode id : input.get("addBlockedBy")) {

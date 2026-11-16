@@ -71,7 +71,8 @@ public class ReadFileTool implements Tool {
     }
 
     /** 文件正文可能以 Error 开头，状态必须来自实际 IO 结果而不是内容关键词。 */
-    @Override public ToolOutcome executeOutcome(ObjectNode input, com.jadecode.execution.ExecutionContext context) {
+    @Override
+    public ToolOutcome executeOutcome(ObjectNode input, com.jadecode.execution.ExecutionContext context) {
         for (String key : required()) {
             if (input.get(key) == null) {
                 return new ToolOutcome("Error: Missing required parameter: " + key, true);

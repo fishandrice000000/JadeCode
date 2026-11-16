@@ -33,8 +33,12 @@ public enum ProtocolError {
 
     private final boolean recoverable;
 
-    ProtocolError(boolean recoverable) { this.recoverable = recoverable; }
+    ProtocolError(boolean recoverable) {
+        this.recoverable = recoverable;
+    }
 
     /** @return true 表示 Node 可以继续使用同一连接并展示可重试错误。 */
-    public boolean recoverable() { return recoverable; }
+    public boolean recoverable() {
+        return recoverable;
+    }
 }

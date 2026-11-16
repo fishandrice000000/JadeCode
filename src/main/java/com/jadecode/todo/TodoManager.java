@@ -32,8 +32,9 @@ public class TodoManager {
      */
     public ArrayNode snapshot() {
         ArrayNode result = com.jadecode.util.Json.mapper().createArrayNode();
-        for (Todo todo : items) result.addObject().put("content", todo.content())
-                .put("status", todo.status().name().toLowerCase(java.util.Locale.ROOT));
+        for (Todo todo : items)
+            result.addObject().put("content", todo.content())
+                    .put("status", todo.status().name().toLowerCase(java.util.Locale.ROOT));
         return result;
     }
 
@@ -43,13 +44,16 @@ public class TodoManager {
      * @throws IllegalArgumentException 快照字段或计划约束非法
      */
     public void restore(ArrayNode snapshot) {
-        if (snapshot == null) throw new IllegalArgumentException("Todo snapshot is missing");
+        if (snapshot == null)
+            throw new IllegalArgumentException("Todo snapshot is missing");
         for (JsonNode item : snapshot) {
-            if (!item.isObject() || item.size() != 2 || !item.path("content").isTextual() || !item.path("status").isTextual())
+            if (!item.isObject() || item.size() != 2 || !item.path("content").isTextual()
+                    || !item.path("status").isTextual())
                 throw new IllegalArgumentException("Todo snapshot fields are invalid");
         }
         String result = update(snapshot.deepCopy());
-        if (result.startsWith("Error:")) throw new IllegalArgumentException(result);
+        if (result.startsWith("Error:"))
+            throw new IllegalArgumentException(result);
     }
 
     /**
@@ -141,9 +145,7 @@ public class TodoManager {
 
     /** 任务状态:入库后只允许这三种(见 {@link #fromString(String)}) */
     private enum Status {
-        PENDING,
-        IN_PROGRESS,
-        COMPLETED;
+        PENDING, IN_PROGRESS, COMPLETED;
 
         /**
          * 从字符串解析状态。

@@ -33,7 +33,8 @@ class ProtocolSessionTest {
         ProtocolSession session = new ProtocolSession(out, CREDENTIAL, "conn-1",
                 hello -> greeting(),
                 command -> commands.add(command.type()),
-                () -> { },
+                () -> {
+                },
                 () -> ready.set(true),
                 () -> {
                     helloOpenedSession.set(true);
@@ -60,9 +61,13 @@ class ProtocolSessionTest {
     private List<String> typesWritten() {
         List<String> types = new ArrayList<>();
         for (String line : out.toString(StandardCharsets.UTF_8).split("\n")) {
-            if (line.isBlank()) continue;
-            try { types.add(WireCodec.parse(line).type()); }
-            catch (ProtocolException failure) { throw new AssertionError(failure); }
+            if (line.isBlank())
+                continue;
+            try {
+                types.add(WireCodec.parse(line).type());
+            } catch (ProtocolException failure) {
+                throw new AssertionError(failure);
+            }
         }
         return types;
     }

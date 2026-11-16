@@ -10,7 +10,8 @@ class ShellPermissionCheckTest {
         var resolver = new com.jadecode.util.PathResolver(java.nio.file.Path.of("").toAbsolutePath());
         var action = new com.jadecode.safety.checks.ShellPermissionCheck(resolver).analyze("bash",
                 com.jadecode.util.Json.mapper().createObjectNode().put("command", command));
-        return new PermissionGate(resolver, PermissionState.defaults(), null).evaluate(action, PermissionState.defaults().snapshot());
+        return new PermissionGate(resolver, PermissionState.defaults(), null).evaluate(action,
+                PermissionState.defaults().snapshot());
     }
 
     /** 实际可执行名才触发系统保护；文件名中的 sudo 不触发。 */

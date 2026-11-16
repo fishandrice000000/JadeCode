@@ -27,16 +27,21 @@ import com.jadecode.util.Json;
  */
 public final class FrontendDistribution {
     /** 服务只读取非秘密构建身份；headless 不定位 Node 资产。 */
-    public static String backendBuildId() { return BuildInfo.load().buildId(); }
+    public static String backendBuildId() {
+        return BuildInfo.load().buildId();
+    }
 
     /** 缺 Node/缺前端/身份不匹配；调用方返回退出码 2 并打印清楚原因。 */
     public static final class Missing extends Exception {
-        public Missing(String message) { super(message); }
+        public Missing(String message) {
+            super(message);
+        }
     }
 
     /** 前端清单（由 build-release 生成）中的启动必需字段。 */
     public record Manifest(String buildId, int protocolVersion, String entry, String compiler,
-            String nodeEngine, String builtAt) { }
+            String nodeEngine, String builtAt) {
+    }
 
     private static final String RESOURCE = "/META-INF/jade-build.properties";
     private final Path frontendDirectory;
@@ -55,19 +60,29 @@ public final class FrontendDistribution {
     }
 
     /** @return 前端根目录（含 dist/assets/node_modules）。 */
-    public Path frontendDirectory() { return frontendDirectory; }
+    public Path frontendDirectory() {
+        return frontendDirectory;
+    }
 
     /** @return Node 入口脚本的绝对路径。 */
-    public Path entry() { return frontendDirectory.resolve(manifest.entry()).normalize(); }
+    public Path entry() {
+        return frontendDirectory.resolve(manifest.entry()).normalize();
+    }
 
     /** @return 关系配对后的构建身份。 */
-    public String buildId() { return manifest.buildId(); }
+    public String buildId() {
+        return manifest.buildId();
+    }
 
     /** @return 协议版本。 */
-    public int protocolVersion() { return manifest.protocolVersion(); }
+    public int protocolVersion() {
+        return manifest.protocolVersion();
+    }
 
     /** @return 项目版本（来自 JAR 内过滤资源）。 */
-    public String projectVersion() { return projectVersion; }
+    public String projectVersion() {
+        return projectVersion;
+    }
 
     /**
      * 根据 JAR/class 目录位置定位前端并核对身份。
@@ -136,10 +151,12 @@ public final class FrontendDistribution {
      */
     public String nodeExecutable() throws Missing {
         String candidate = System.getenv("JADE_NODE");
-        if (candidate == null || candidate.isBlank()) candidate = "node";
+        if (candidate == null || candidate.isBlank())
+            candidate = "node";
         try {
             Process process = new ProcessBuilder(candidate, "--version").redirectErrorStream(true).start();
-            String output = new String(process.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8).strip();
+            String output = new String(process.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8)
+                    .strip();
             if (!process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)) {
                 process.destroyForcibly();
                 throw new Missing("Timed out while checking the Node runtime: " + candidate);
@@ -174,7 +191,8 @@ public final class FrontendDistribution {
     record BuildInfo(String version, String buildId, int protocolVersion, boolean paired) {
         static BuildInfo load() {
             try (InputStream stream = FrontendDistribution.class.getResourceAsStream(RESOURCE)) {
-                if (stream == null) return new BuildInfo("1.1.0", "unpaired", 1, false);
+                if (stream == null)
+                    return new BuildInfo("1.1.0", "unpaired", 1, false);
                 Properties properties = new Properties();
                 properties.load(stream);
                 return new BuildInfo(properties.getProperty("version", "1.1.0"),
@@ -200,12 +218,15 @@ public final class FrontendDistribution {
                 "DISPLAY", "WAYLAND_DISPLAY", "EDITOR", "VISUAL", "PAGER", "TZ", "SystemRoot", "SYSTEMROOT",
                 "COMSPEC", "PATHEXT", "WINDIR", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP",
                 "JADE_NODE", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "VSCODE_INJECTION");
-        for (String name : exact) if (parent.containsKey(name)) names.add(name);
+        for (String name : exact)
+            if (parent.containsKey(name))
+                names.add(name);
         for (String name : parent.keySet()) {
             if (name.startsWith("LC_") || name.startsWith("TERM") || name.startsWith("SSH_")
                     || name.startsWith("TMUX") || name.startsWith("XDG_") || name.startsWith("WT_")
                     || name.startsWith("WSL") || name.startsWith("LANG")) {
-                if (!names.contains(name)) names.add(name);
+                if (!names.contains(name))
+                    names.add(name);
             }
         }
         return names;

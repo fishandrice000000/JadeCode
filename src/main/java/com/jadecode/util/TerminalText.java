@@ -11,22 +11,34 @@ package com.jadecode.util;
  * 换行与制表符，正文本身不被改写。</p>
  */
 public final class TerminalText {
-    private TerminalText() { }
+    private TerminalText() {
+    }
 
     /** 删除 CSI/OSC/DCS/APC 等控制序列、C0/C1 控制字符与 DEL，保留换行/制表符。 */
     public static String display(String value) {
-        if (value == null) return "";
+        if (value == null)
+            return "";
         StringBuilder out = new StringBuilder(value.length());
         int i = 0;
         while (i < value.length()) {
             char c = value.charAt(i);
-            if (c == 0x1b) { i = skipEscape(value, i); continue; }
-            if (c == '\n' || c == '\t') { out.append(c); i++; continue; }
+            if (c == 0x1b) {
+                i = skipEscape(value, i);
+                continue;
+            }
+            if (c == '\n' || c == '\t') {
+                out.append(c);
+                i++;
+                continue;
+            }
             if (c == 0x9b || c == 0x9d || c == 0x90 || c == 0x9f || c == 0x98 || c == 0x9e) {
                 i = skipC1(value, i, c);
                 continue;
             }
-            if (c < 0x20 || c == 0x7f || (c >= 0x80 && c <= 0x9f)) { i++; continue; }
+            if (c < 0x20 || c == 0x7f || (c >= 0x80 && c <= 0x9f)) {
+                i++;
+                continue;
+            }
             if (Character.isHighSurrogate(c)) {
                 if (i + 1 < value.length() && Character.isLowSurrogate(value.charAt(i + 1))) {
                     out.append(c).append(value.charAt(i + 1));
@@ -37,7 +49,11 @@ public final class TerminalText {
                 }
                 continue;
             }
-            if (Character.isLowSurrogate(c)) { out.append('\uFFFD'); i++; continue; }
+            if (Character.isLowSurrogate(c)) {
+                out.append('\uFFFD');
+                i++;
+                continue;
+            }
             out.append(c);
             i++;
         }
@@ -49,15 +65,18 @@ public final class TerminalText {
         if (kind == 0x9b) {
             while (i < value.length()) {
                 char c = value.charAt(i++);
-                if (c >= 0x40 && c <= 0x7e) return i;
+                if (c >= 0x40 && c <= 0x7e)
+                    return i;
             }
             return i;
         }
         if (kind == 0x9d || kind == 0x90 || kind == 0x9f || kind == 0x98 || kind == 0x9e) {
             while (i < value.length()) {
                 char c = value.charAt(i);
-                if (c == 0x07) return i + 1;
-                if (c == 0x1b && i + 1 < value.length() && value.charAt(i + 1) == '\\') return i + 2;
+                if (c == 0x07)
+                    return i + 1;
+                if (c == 0x1b && i + 1 < value.length() && value.charAt(i + 1) == '\\')
+                    return i + 2;
                 i++;
             }
             return i;
@@ -67,13 +86,15 @@ public final class TerminalText {
 
     private static int skipEscape(String value, int start) {
         int i = start + 1;
-        if (i >= value.length()) return i;
+        if (i >= value.length())
+            return i;
         char kind = value.charAt(i);
         if (kind == '[') {
             i++;
             while (i < value.length()) {
                 char c = value.charAt(i++);
-                if (c >= 0x40 && c <= 0x7e) return i;
+                if (c >= 0x40 && c <= 0x7e)
+                    return i;
             }
             return i;
         }
@@ -81,8 +102,10 @@ public final class TerminalText {
             i++;
             while (i < value.length()) {
                 char c = value.charAt(i);
-                if (c == 0x07) return i + 1;
-                if (c == 0x1b && i + 1 < value.length() && value.charAt(i + 1) == '\\') return i + 2;
+                if (c == 0x07)
+                    return i + 1;
+                if (c == 0x1b && i + 1 < value.length() && value.charAt(i + 1) == '\\')
+                    return i + 2;
                 i++;
             }
             return i;

@@ -12,18 +12,25 @@ public final class Env {
     private final Map<String, String> values;
 
     /** 复制输入 Map，避免调用方后续修改改变本次启动配置；没有 IO 副作用。 */
-    private Env(Map<String, String> values) { this.values = Map.copyOf(values); }
+    private Env(Map<String, String> values) {
+        this.values = Map.copyOf(values);
+    }
 
     /** 配置层与同包测试传入已选定键值；不会加载机器环境或工作目录中的任何文件。 */
-    static Env of(Map<String, String> values) { return new Env(values); }
+    static Env of(Map<String, String> values) {
+        return new Env(values);
+    }
 
     /** 查询可选项；缺项返回 null，原样保留显式字符串供后续类型校验。 */
-    public String get(String key) { return values.get(key); }
+    public String get(String key) {
+        return values.get(key);
+    }
 
     /** 查询必填项；缺项只报告键名，不打印已有值，也不尝试从其它来源补齐。 */
     public String required(String key) {
         String value = get(key);
-        if (value == null) throw new IllegalStateException("Required configuration is missing: " + key);
+        if (value == null)
+            throw new IllegalStateException("Required configuration is missing: " + key);
         return value;
     }
 }

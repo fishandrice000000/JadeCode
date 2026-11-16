@@ -26,7 +26,8 @@ public sealed interface SessionEvent {
      * @param prompt 用户原文或带派工来源的指令，创建后不再修改
      * @param context Harness 绑定的执行身份、取消和审批能力，不能由模型正文提供
      */
-    record Request(String prompt, ExecutionContext context) implements SessionEvent { }
+    record Request(String prompt, ExecutionContext context) implements SessionEvent {
+    }
 
     /**
      * 从会话外送来的消息。身份与路径由 Harness 填写，模型只提供摘要和正文。
@@ -48,7 +49,8 @@ public sealed interface SessionEvent {
         /** 必需的身份和正文不得为空；路径可为空，用户缓冲没有正文文件。 */
         public Incoming {
             if (id == null || fromAgentId == null || toAgentId == null || kind == null
-                    || summary == null || summary.isBlank()) throw new IllegalArgumentException("Message fields are incomplete");
+                    || summary == null || summary.isBlank())
+                throw new IllegalArgumentException("Message fields are incomplete");
         }
 
         /** 给模型看的来源说明，不把外部内容伪造成工具结果或系统指令。 */
@@ -70,7 +72,9 @@ public sealed interface SessionEvent {
          * @param messages 不可为 null，不能含 null 元素
          * @throws NullPointerException 列表或其中元素为 null
          */
-        public HistoryPrepared { messages = List.copyOf(messages); }
+        public HistoryPrepared {
+            messages = List.copyOf(messages);
+        }
     }
 
     /**
@@ -85,6 +89,8 @@ public sealed interface SessionEvent {
          * @param texts 非 null、无 null 元素的通知文字列表
          * @throws NullPointerException 列表或其中元素为 null
          */
-        public Notifications { texts = List.copyOf(texts); }
+        public Notifications {
+            texts = List.copyOf(texts);
+        }
     }
 }

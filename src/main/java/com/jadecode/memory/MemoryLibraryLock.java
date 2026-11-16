@@ -16,7 +16,11 @@ import java.util.concurrent.locks.ReentrantLock;
  */
 final class MemoryLibraryLock {
     private static final ConcurrentHashMap<Path, ReentrantLock> LOCAL = new ConcurrentHashMap<>();
-    @FunctionalInterface interface Operation<T> { T run() throws IOException; }
+
+    @FunctionalInterface
+    interface Operation<T> {
+        T run() throws IOException;
+    }
 
     /**
      * 在已经核验的真实库目录内执行一次操作，异常原样传播，锁始终释放。
@@ -25,14 +29,20 @@ final class MemoryLibraryLock {
      */
     static <T> T run(Path root, Operation<T> operation) throws IOException {
         ReentrantLock local = LOCAL.computeIfAbsent(root, ignored -> new ReentrantLock());
-        try { local.lockInterruptibly(); }
-        catch (InterruptedException interrupted) {
-            Thread.currentThread().interrupt(); throw new java.io.InterruptedIOException("Interrupted while waiting for the memory library operation");
+        try {
+            local.lockInterruptibly();
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new java.io.InterruptedIOException("Interrupted while waiting for the memory library operation");
         }
         try (var channel = FileChannel.open(root.resolve(".store.lock"), StandardOpenOption.CREATE,
                 StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS); var lock = channel.lock()) {
             return operation.run();
-        } finally { local.unlock(); }
+        } finally {
+            local.unlock();
+        }
     }
-    private MemoryLibraryLock() { }
+
+    private MemoryLibraryLock() {
+    }
 }

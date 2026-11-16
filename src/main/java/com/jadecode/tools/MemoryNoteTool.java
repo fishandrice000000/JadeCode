@@ -11,15 +11,34 @@ import java.util.*;
  */
 public final class MemoryNoteTool implements Tool {
     private final MemoryManager memory;
+
     /** 只保存已装配的维护者，不执行 IO。 */
-    public MemoryNoteTool(MemoryManager memory) { this.memory = memory; }
-    public String name() { return "memory_note"; }
-    public String description() { return "Propose a user-backed remember/correct/forget note. Include the exact fact and scope. "
-            + "This queues a candidate; it does not change formal memory or establish user authorization."; }
-    public Map<String, String> properties() { return Map.of("kind", "string", "body", "string"); }
-    public List<String> required() { return List.of("kind", "body"); }
+    public MemoryNoteTool(MemoryManager memory) {
+        this.memory = memory;
+    }
+
+    public String name() {
+        return "memory_note";
+    }
+
+    public String description() {
+        return "Propose a user-backed remember/correct/forget note. Include the exact fact and scope. "
+                + "This queues a candidate; it does not change formal memory or establish user authorization.";
+    }
+
+    public Map<String, String> properties() {
+        return Map.of("kind", "string", "body", "string");
+    }
+
+    public List<String> required() {
+        return List.of("kind", "body");
+    }
+
     /** 没有可信任务上下文时拒绝，不能退回从 input 推测用户身份。 */
-    public String execute(ObjectNode input) { return "Error: Trusted user task context is required"; }
+    public String execute(ObjectNode input) {
+        return "Error: Trusted user task context is required";
+    }
+
     /** 类型、种类和长度在工具/维护者两层检查；错误返回给模型，不假装保存成功。 */
     public String execute(ObjectNode input, ExecutionContext context) {
         if (context == null || context.source() != ExecutionContext.Source.USER || context.isCancelled())

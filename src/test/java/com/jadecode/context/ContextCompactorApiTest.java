@@ -70,7 +70,8 @@ class ContextCompactorApiTest {
         assertFalse(Modifier.isPublic(declared("writeTranscript", List.class).getModifiers()));
         assertFalse(Modifier.isPublic(declared("saveOutput", String.class, String.class).getModifiers()));
         assertFalse(Modifier.isPublic(declared("persistedOutputPath", String.class).getModifiers()));
-        assertFalse(Modifier.isPublic(declared("persistedPreview", String.class, String.class, int.class).getModifiers()));
+        assertFalse(
+                Modifier.isPublic(declared("persistedPreview", String.class, String.class, int.class).getModifiers()));
         assertFalse(Modifier.isPublic(declared("isArchiveMarker", Message.class).getModifiers()));
         assertFalse(Modifier.isPublic(declared("estimateChars", List.class).getModifiers()));
         assertFalse(Modifier.isPublic(declared("hasToolUse", Message.class).getModifiers()));

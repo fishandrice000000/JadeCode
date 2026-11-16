@@ -34,27 +34,42 @@ public final class MemoryManager implements AutoCloseable {
      */
     public MemoryManager(LlmClient client, com.jadecode.config.WorkspacePaths paths, JadeSettings.Memory settings,
             Consumer<String> information, Consumer<String> warnings) {
-        enabled = settings.enabled(); this.warnings = java.util.Objects.requireNonNull(warnings);
-        maintenance = new MemoryMaintenance(new MemoryStore(paths, warnings), client, settings, information, warnings, true);
+        enabled = settings.enabled();
+        this.warnings = java.util.Objects.requireNonNull(warnings);
+        maintenance = new MemoryMaintenance(new MemoryStore(paths, warnings), client, settings, information, warnings,
+                true);
     }
 
-    public Path root() { return maintenance.root(); }
-    public boolean readable(Path path) { return enabled && maintenance.readable(path); }
+    public Path root() {
+        return maintenance.root();
+    }
+
+    public boolean readable(Path path) {
+        return enabled && maintenance.readable(path);
+    }
 
     /** 显式启动会话才恢复积压作业；启动错误告警，不阻止主会话。 */
     public void start() {
-        if (!enabled) return;
-        try { maintenance.start(); }
-        catch (IOException | RuntimeException failure) { report("startup", failure); }
+        if (!enabled)
+            return;
+        try {
+            maintenance.start();
+        } catch (IOException | RuntimeException failure) {
+            report("startup", failure);
+        }
     }
 
     /** 用户原话只能由 Session 绑定；后台和定时请求传空串，不能让模型自报来源。 */
     public void beginTask(String session, String turn, String humanRequest) {
-        if (enabled) maintenance.begin(session, turn, humanRequest);
+        if (enabled)
+            maintenance.begin(session, turn, humanRequest);
     }
 
     /** 忙时补充沿真实用户通道绑定，通知或队友报告不能代替人类原话。 */
-    public void addHumanInput(String request) { if (enabled) maintenance.addHuman(request); }
+    public void addHumanInput(String request) {
+        if (enabled)
+            maintenance.addHuman(request);
+    }
 
     /**
      * 正式轮次结束或中断后登记一次作业，不在工具/Stop 续跑边界请求维护模型。
@@ -63,30 +78,46 @@ public final class MemoryManager implements AutoCloseable {
      */
     public void finishTask(String session, String task, Path journal, long start, long end,
             List<Message> snapshot, List<String> humans, String outcome) {
-        if (!enabled) return;
-        try { maintenance.enqueue(session, task, journal, start, end, snapshot, humans, outcome); }
-        catch (IOException | RuntimeException failure) { report("job registration", failure); }
+        if (!enabled)
+            return;
+        try {
+            maintenance.enqueue(session, task, journal, start, end, snapshot, humans, outcome);
+        } catch (IOException | RuntimeException failure) {
+            report("job registration", failure);
+        }
     }
 
     /** 后端实际采用工具结果后记录读取；失败不改变原工具结果，不依赖 UI 事件。 */
     public void observeTools(List<ToolUseBlock> calls, Message results) {
-        if (!enabled) return;
-        try { maintenance.observe(calls, results); }
-        catch (IOException | RuntimeException failure) { report("read feedback", failure); }
+        if (!enabled)
+            return;
+        try {
+            maintenance.observe(calls, results);
+        } catch (IOException | RuntimeException failure) {
+            report("read feedback", failure);
+        }
     }
 
     /** 引用必须匹配本轮已读链接；只是使用声明，不证明语义正确。 */
     public void observeReply(Message reply) {
-        if (!enabled) return;
-        try { maintenance.cited(reply); }
-        catch (IOException | RuntimeException failure) { report("citation feedback", failure); }
+        if (!enabled)
+            return;
+        try {
+            maintenance.cited(reply);
+        } catch (IOException | RuntimeException failure) {
+            report("citation feedback", failure);
+        }
     }
 
     /** 工具只提交候选；独立整理器依据后端绑定原话核对，成功不代表正式库已改变。 */
     public String note(String kind, String body, String turn) {
-        if (!enabled) return "Error: Memory is disabled";
-        try { return maintenance.note(kind, body, turn); }
-        catch (IOException | RuntimeException failure) { return "Error: Pending memory note was not saved: " + failure.getClass().getSimpleName(); }
+        if (!enabled)
+            return "Error: Memory is disabled";
+        try {
+            return maintenance.note(kind, body, turn);
+        } catch (IOException | RuntimeException failure) {
+            return "Error: Pending memory note was not saved: " + failure.getClass().getSimpleName();
+        }
     }
 
     /** 追加稳定参考边界，不读库、不修改历史；正文变化不会改变 system 缓存前缀。 */
@@ -100,9 +131,14 @@ public final class MemoryManager implements AutoCloseable {
      * 返回参考资料而非指令；普通 IO 或运行错误降级为空串，不阻止用户任务。
      */
     public String reference() {
-        if (!enabled) return "";
-        try { return maintenance.reference(); }
-        catch (IOException | RuntimeException failure) { report("reference", failure); return ""; }
+        if (!enabled)
+            return "";
+        try {
+            return maintenance.reference();
+        } catch (IOException | RuntimeException failure) {
+            report("reference", failure);
+            return "";
+        }
     }
 
     /** 只报安全类别，不打印可能包含正文、凭据的异常消息或堆栈。 */
@@ -112,5 +148,8 @@ public final class MemoryManager implements AutoCloseable {
     }
 
     /** 封住迟到发布并停止后台；未完成作业留在磁盘。 */
-    @Override public void close() { maintenance.close(); }
+    @Override
+    public void close() {
+        maintenance.close();
+    }
 }

@@ -17,5 +17,7 @@ import com.fasterxml.jackson.annotation.JsonTypeName;
 public record ThinkingBlock(String thinking, @JsonInclude(JsonInclude.Include.NON_NULL) String signature)
         implements ContentBlock {
     /** 允许空思考块（例如接口只提供签名），不把空文字当作协议错误。 */
-    public ThinkingBlock { Objects.requireNonNull(thinking, "thinking"); }
+    public ThinkingBlock {
+        Objects.requireNonNull(thinking, "thinking");
+    }
 }

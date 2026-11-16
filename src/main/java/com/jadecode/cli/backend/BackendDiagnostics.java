@@ -27,9 +27,13 @@ public final class BackendDiagnostics implements AutoCloseable {
         private final boolean error;
         private final Map<Thread, ByteArrayOutputStream> buffers = new ConcurrentHashMap<>();
 
-        Lines(Consumer sink, boolean error) { this.sink = sink; this.error = error; }
+        Lines(Consumer sink, boolean error) {
+            this.sink = sink;
+            this.error = error;
+        }
 
-        @Override public void write(int value) {
+        @Override
+        public void write(int value) {
             ByteArrayOutputStream buffer = buffers.computeIfAbsent(Thread.currentThread(),
                     ignored -> new ByteArrayOutputStream());
             if (value == '\n') {
@@ -41,7 +45,8 @@ public final class BackendDiagnostics implements AutoCloseable {
         }
 
         private void emit(ByteArrayOutputStream buffer) {
-            if (buffer.size() > 0) sink.accept(new String(buffer.toByteArray(), StandardCharsets.UTF_8), error);
+            if (buffer.size() > 0)
+                sink.accept(new String(buffer.toByteArray(), StandardCharsets.UTF_8), error);
         }
 
         void finish() {
@@ -92,8 +97,10 @@ public final class BackendDiagnostics implements AutoCloseable {
     }
 
     /** 恢复原始流并提交尚未换行的尾巴。 */
-    @Override public synchronized void close() {
-        if (closed) return;
+    @Override
+    public synchronized void close() {
+        if (closed)
+            return;
         closed = true;
         normalLines.finish();
         errorLines.finish();
@@ -102,5 +109,7 @@ public final class BackendDiagnostics implements AutoCloseable {
     }
 
     /** @return 原始 stderr，用于 Node 退出后的最终故障输出。 */
-    public PrintStream originalErr() { return originalErr; }
+    public PrintStream originalErr() {
+        return originalErr;
+    }
 }

@@ -1,6 +1,5 @@
 package com.jadecode;
 
-
 /**
  * JadeCode 根入口：解析根语法并分派到交互界面或无界面任务。
  *
@@ -11,7 +10,8 @@ package com.jadecode;
  * SIGINT/SIGTERM 由 JVM 默认处理（130/143），本类不吞信号。</p>
  */
 public final class Main {
-    private Main() { }
+    private Main() {
+    }
 
     /** 进程入口。 */
     public static void main(String[] args) {

@@ -11,12 +11,18 @@ public enum ThinkingSettings {
     DEFAULT, OFF, LOW, MEDIUM, HIGH, XHIGH, MAX;
 
     /** 配置和命令统一用小写名称；不把显示名称反向解析成任意请求字段。 */
-    public String value() { return name().toLowerCase(Locale.ROOT); }
+    public String value() {
+        return name().toLowerCase(Locale.ROOT);
+    }
 
     /** 接受固定名称，拼错时明确失败，不静默当作默认强度。 */
     public static ThinkingSettings parse(String value) {
-        if (value == null) throw new IllegalArgumentException("Thinking effort cannot be empty");
-        try { return valueOf(value.strip().toUpperCase(Locale.ROOT)); }
-        catch (IllegalArgumentException invalid) { throw new IllegalArgumentException("Invalid thinking effort: " + value); }
+        if (value == null)
+            throw new IllegalArgumentException("Thinking effort cannot be empty");
+        try {
+            return valueOf(value.strip().toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException invalid) {
+            throw new IllegalArgumentException("Invalid thinking effort: " + value);
+        }
     }
 }

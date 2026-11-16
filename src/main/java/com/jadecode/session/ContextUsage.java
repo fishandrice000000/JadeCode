@@ -10,20 +10,26 @@ import com.jadecode.llm.ModelResponse;
  */
 public record ContextUsage(long occupiedTokens, int windowTokens, boolean estimated) {
     /** 旧快照来自服务端响应，不改变已有构造的含义。 */
-    public ContextUsage(long occupiedTokens, int windowTokens) { this(occupiedTokens, windowTokens, false); }
+    public ContextUsage(long occupiedTokens, int windowTokens) {
+        this(occupiedTokens, windowTokens, false);
+    }
+
     public ContextUsage {
-        if (occupiedTokens < 0 || windowTokens < 1) throw new IllegalArgumentException("Invalid context occupancy");
+        if (occupiedTokens < 0 || windowTokens < 1)
+            throw new IllegalArgumentException("Invalid context occupancy");
     }
 
     /** 只有总窗口和本次用量均已知才生成；最大输入限额不能冒充总窗口。 */
     public static ContextUsage measured(ModelResponse.Usage usage, ModelMetadata metadata) {
         Integer window = metadata.limits().contextWindowTokens();
-        return usage == null || window == null ? null : new ContextUsage(
-                Math.addExact(usage.totalInputTokens(), usage.outputTokens()), window);
+        return usage == null || window == null ? null
+                : new ContextUsage(
+                        Math.addExact(usage.totalInputTokens(), usage.outputTokens()), window);
     }
 
     /** 与执行器预算共用投影；窗口未知时不伪造百分比，估算来源随快照展示。 */
-    public static ContextUsage projected(com.jadecode.context.ContextTokenTracker.Estimate value, ModelMetadata metadata) {
+    public static ContextUsage projected(com.jadecode.context.ContextTokenTracker.Estimate value,
+            ModelMetadata metadata) {
         Integer window = metadata.limits().contextWindowTokens();
         return window == null ? null : new ContextUsage(value.tokens(), window, value.estimated());
     }

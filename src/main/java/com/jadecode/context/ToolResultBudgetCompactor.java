@@ -40,18 +40,23 @@ final class ToolResultBudgetCompactor {
      * 只有写盘成功才替换，没变化原样返回；不修改任何入参列表或 Message。
      */
     List<Message> persistLargeResults(List<Message> messages) {
-        if (messages.isEmpty() || messages.getLast().role() != Role.USER) return messages;
+        if (messages.isEmpty() || messages.getLast().role() != Role.USER)
+            return messages;
         Message latest = messages.getLast();
         List<ContentBlock> content = new ArrayList<>(latest.content());
         boolean changed = false;
         for (int i = 0; i < content.size(); i++) {
-            if (!(content.get(i) instanceof ToolResultBlock result)) continue;
+            if (!(content.get(i) instanceof ToolResultBlock result))
+                continue;
             String replacement = persistLargeOutput(result.toolUseId(), result.content());
-            if (replacement.equals(result.content())) continue;
+            if (replacement.equals(result.content()))
+                continue;
             // 新建 block 和外层消息，不对已有的不可变 content 调用 set。
-            content.set(i, result.withContent(replacement)); changed = true;
+            content.set(i, result.withContent(replacement));
+            changed = true;
         }
-        if (!changed) return messages;
+        if (!changed)
+            return messages;
         List<Message> result = new ArrayList<>(messages);
         result.set(result.size() - 1, new Message(latest.role(), List.copyOf(content)));
         return result;

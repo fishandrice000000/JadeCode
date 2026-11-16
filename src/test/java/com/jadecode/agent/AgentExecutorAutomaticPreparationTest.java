@@ -287,7 +287,8 @@ class AgentExecutorAutomaticPreparationTest {
         // 正是为了证明 prepare 会独立按消息条数调用第二层,这里把字符上限设得远大于实际字符数。
         CompactionLimits limits = limits(200_000, 200_000, 30_000, 2_000, 4, 80_000);
         FakeClient client = new FakeClient(events, assistant(new TextBlock("完成")));
-        ContextCompactor compactor = new ContextCompactor(client, transcriptDir, toolResultsDir, limits, CompactionPolicy.coursePipeline());
+        ContextCompactor compactor = new ContextCompactor(client, transcriptDir, toolResultsDir, limits,
+                CompactionPolicy.coursePipeline());
         AgentExecutor loop = new AgentExecutor(client, Map.of("bash", new FakeTool("bash", "x")), "test-system", 8000,
                 new Hooks(), compactor);
         List<Message> messages = new ArrayList<>();
@@ -354,7 +355,8 @@ class AgentExecutorAutomaticPreparationTest {
                 assistant(new TextBlock("完成")));
         FakeTool bash = new FakeTool("bash", huge);
         ContextCompactor compactor = new ContextCompactor(client, transcriptDir, toolResultsDir, limits);
-        AgentExecutor loop = new AgentExecutor(client, Map.of("bash", bash), "test-system", 8000, new Hooks(), compactor);
+        AgentExecutor loop = new AgentExecutor(client, Map.of("bash", bash), "test-system", 8000, new Hooks(),
+                compactor);
         List<Message> messages = new ArrayList<>(List.of(Message.userText("开始")));
 
         SessionRuntime.runExisting(loop, messages);
@@ -397,10 +399,10 @@ class AgentExecutorAutomaticPreparationTest {
         // "首次有整理、续跑后跳过整理"的错误实现,而不只是"已经存在的摘要消息还在"。
         String continuation = "续跑要求:请补完剩余用例。" + "细节".repeat(1_000);
         FakeClient client = new FakeClient(events,
-                assistant(new TextBlock("我先看看。")),   // 第一次正式回复:短,且没有工具调用
-                assistant(new TextBlock("完成")));        // 第二次正式回复:收尾
+                assistant(new TextBlock("我先看看。")), // 第一次正式回复:短,且没有工具调用
+                assistant(new TextBlock("完成"))); // 第二次正式回复:收尾
         Hooks hooks = new Hooks();
-        int[] stopCalls = {0};
+        int[] stopCalls = { 0 };
         hooks.register(Hooks.STOP, params -> {
             stopCalls[0]++;
             return stopCalls[0] == 1 ? continuation : null; // 第一次强制续跑,第二次放行结束
@@ -464,7 +466,8 @@ class AgentExecutorAutomaticPreparationTest {
         Message request = Message.userText("继续任务");
         List<Message> messages = new ArrayList<>(List.of(old, request));
 
-        IllegalStateException error = assertThrows(IllegalStateException.class, () -> SessionRuntime.runExisting(loop, messages));
+        IllegalStateException error = assertThrows(IllegalStateException.class,
+                () -> SessionRuntime.runExisting(loop, messages));
 
         assertNotNull(error.getCause(), "归档失败必须保留 cause");
         assertEquals(0, client.normalRequests.size(), "整理失败后不得发起正式请求");

@@ -19,14 +19,18 @@ import com.fasterxml.jackson.annotation.JsonTypeName;
  */
 @JsonTypeName("tool_result")
 public record ToolResultBlock(@JsonProperty("tool_use_id") String toolUseId, String content,
-        @JsonProperty("is_error") @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_DEFAULT)
-        boolean isError) implements ContentBlock {
+        @JsonProperty("is_error") @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_DEFAULT) boolean isError)
+        implements ContentBlock {
 
     /** 兼容旧工具和旧调用方；不扫描正文推测是否失败。 */
-    public ToolResultBlock(String toolUseId, String content) { this(toolUseId, content, false); }
+    public ToolResultBlock(String toolUseId, String content) {
+        this(toolUseId, content, false);
+    }
 
     /** 重建结果正文时保留身份与失败标志；不修改原结果，不产生 IO。 */
-    public ToolResultBlock withContent(String replacement) { return new ToolResultBlock(toolUseId, replacement, isError); }
+    public ToolResultBlock withContent(String replacement) {
+        return new ToolResultBlock(toolUseId, replacement, isError);
+    }
 
     /**
      * 工具调用 ID 不能为 null 或空白。校验代码放在 {@link ToolExchangeProtocol}。

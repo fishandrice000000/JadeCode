@@ -17,7 +17,10 @@ import com.jadecode.util.Json;
  */
 public final class ArtifactService {
     private final ManagedWorkspace workspace;
-    ArtifactService(ManagedWorkspace workspace) { this.workspace = workspace; }
+
+    ArtifactService(ManagedWorkspace workspace) {
+        this.workspace = workspace;
+    }
 
     /** 列出已登记文件的名称、大小和摘要；不返回私有副本路径或半成品。 */
     public synchronized ObjectNode list() throws IOException {
@@ -49,7 +52,8 @@ public final class ArtifactService {
     public synchronized Path file(String id) throws IOException {
         metadata(id);
         Path file = WorkspaceFiles.resolve(workspace.metadata(), "artifacts/" + id + "/file");
-        if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) throw new IOException("Published file is unavailable");
+        if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS))
+            throw new IOException("Published file is unavailable");
         return file;
     }
 
@@ -65,13 +69,15 @@ public final class ArtifactService {
             throw new IOException("Publish requires 1..64 relative file paths");
         var names = new LinkedHashSet<String>();
         for (var item : input.path("paths")) {
-            if (!item.isTextual()) throw new IOException("Artifact paths must be strings");
+            if (!item.isTextual())
+                throw new IOException("Artifact paths must be strings");
             String name = WorkspaceFiles.relative(item.asText()).toString();
             if (name.isEmpty() || name.equals(".") || !names.add(name))
                 throw new IOException("Select distinct files, not a directory or duplicate path");
         }
         String summary = input.path("summary").asText();
-        if (summary.length() > 8192) throw new IOException("Artifact summary limit exceeded");
+        if (summary.length() > 8192)
+            throw new IOException("Artifact summary limit exceeded");
         if (workspace.records("artifacts").size() + names.size() > 64)
             throw new IOException("Published file limit reached (64)");
 
@@ -87,10 +93,11 @@ public final class ArtifactService {
                 Path directory = WorkspaceFiles.directory(staging.resolve(id));
                 long size = copyFile(name, directory.resolve("file"), remaining, context, invalid, check);
                 remaining -= size;
-                prepared.put(id, Json.mapper().createObjectNode().put("artifactId", id).put("workspaceId", workspace.id())
-                        .put("filename", Path.of(name).getFileName().toString()).put("size", size)
-                        .put("sha256", WorkspaceFiles.sha256(directory.resolve("file")))
-                        .put("created", Instant.now().toString()).put("summary", summary));
+                prepared.put(id,
+                        Json.mapper().createObjectNode().put("artifactId", id).put("workspaceId", workspace.id())
+                                .put("filename", Path.of(name).getFileName().toString()).put("size", size)
+                                .put("sha256", WorkspaceFiles.sha256(directory.resolve("file")))
+                                .put("created", Instant.now().toString()).put("summary", summary));
             }
             // 每个文件关闭并算好摘要后才对外登记；下载只读取登记过的固定副本。
             for (var entry : prepared.entrySet()) {
@@ -110,7 +117,9 @@ public final class ArtifactService {
                 try {
                     Files.deleteIfExists(artifacts.resolve(id + ".json"));
                     WorkspaceFiles.delete(artifacts.resolve(id));
-                } catch (IOException cleanup) { failure.addSuppressed(cleanup); }
+                } catch (IOException cleanup) {
+                    failure.addSuppressed(cleanup);
+                }
             }
             throw failure;
         } finally {
@@ -134,33 +143,39 @@ public final class ArtifactService {
      */
     private long copyFile(String name, Path target, long remaining, ExecutionContext context, BooleanSupplier invalid,
             WorkspaceFiles.Check check) throws IOException {
-        if (WorkspaceFiles.excluded(Path.of(name))) throw new IOException("Protected or environment files cannot be published");
+        if (WorkspaceFiles.excluded(Path.of(name)))
+            throw new IOException("Protected or environment files cannot be published");
         Path source = WorkspaceFiles.resolve(workspace.path(), name);
         check.accept(source, name);
         ensureValid(context, invalid);
         source = WorkspaceFiles.resolve(workspace.path(), name);
         var attributes = Files.readAttributes(source, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
-        if (!attributes.isRegularFile() || ((Number) Files.getAttribute(source, "unix:nlink", LinkOption.NOFOLLOW_LINKS)).intValue() != 1)
+        if (!attributes.isRegularFile()
+                || ((Number) Files.getAttribute(source, "unix:nlink", LinkOption.NOFOLLOW_LINKS)).intValue() != 1)
             throw new IOException("Publish requires an ordinary, unlinked file: " + name);
-        if (attributes.size() > remaining) throw new IOException("Published files exceed the size limit");
+        if (attributes.size() > remaining)
+            throw new IOException("Published files exceed the size limit");
         long copied = 0;
         try (var in = Files.newInputStream(source, LinkOption.NOFOLLOW_LINKS);
-             var out = Files.newOutputStream(target, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)) {
+                var out = Files.newOutputStream(target, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)) {
             byte[] buffer = new byte[WorkspaceFiles.CHUNK];
             int count;
             while ((count = in.read(buffer)) >= 0) {
                 ensureValid(context, invalid);
                 copied += count;
-                if (copied > remaining) throw new IOException("Published files exceed the size limit");
+                if (copied > remaining)
+                    throw new IOException("Published files exceed the size limit");
                 out.write(buffer, 0, count);
             }
         }
-        if (copied != attributes.size()) throw new IOException("File size changed during publication; finish generation and retry");
+        if (copied != attributes.size())
+            throw new IOException("File size changed during publication; finish generation and retry");
         return copied;
     }
 
     /** 复制和登记之间仍可能取消；发现取消或权限失效时抛错，不发布不完整文件。 */
     private static void ensureValid(ExecutionContext context, BooleanSupplier invalid) throws IOException {
-        if (context.isCancelled() || invalid.getAsBoolean()) throw new IOException("Publication cancelled or authorization changed");
+        if (context.isCancelled() || invalid.getAsBoolean())
+            throw new IOException("Publication cancelled or authorization changed");
     }
 }

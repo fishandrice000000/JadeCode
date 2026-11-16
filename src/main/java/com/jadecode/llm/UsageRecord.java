@@ -11,10 +11,13 @@ package com.jadecode.llm;
  * @param usage 服务端实际报告的值，可能缺失
  */
 public record UsageRecord(String requestId, String model, String actor, Purpose purpose, ModelResponse.Usage usage) {
-    public enum Purpose { FORMAL, SUBAGENT, SUMMARY, MEMORY, APPROVAL, WORKFLOW, GOAL }
+    public enum Purpose {
+        FORMAL, SUBAGENT, SUMMARY, MEMORY, APPROVAL, WORKFLOW, GOAL
+    }
 
     public UsageRecord {
-        if (requestId == null || requestId.isBlank() || model == null || actor == null || actor.isBlank() || purpose == null)
+        if (requestId == null || requestId.isBlank() || model == null || actor == null || actor.isBlank()
+                || purpose == null)
             throw new IllegalArgumentException("Usage record is missing a call identity");
     }
 }

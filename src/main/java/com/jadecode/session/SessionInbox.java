@@ -30,29 +30,42 @@ final class SessionInbox {
             if (event instanceof SessionEvent.Request && result == null)
                 throw new IllegalArgumentException("A request needs a result future");
         }
+
         /** 只有 pollRequest 返回的独立工作才调用；通知不会走执行入口。 */
-        SessionEvent.Request request() { return (SessionEvent.Request) event; }
+        SessionEvent.Request request() {
+            return (SessionEvent.Request) event;
+        }
+
         /** 完成队列调用者，普通通知没有执行回执，不制造虚假的任务 Future。 */
-        void fail(Throwable failure) { if (result != null) result.completeExceptionally(failure); }
+        void fail(Throwable failure) {
+            if (result != null)
+                result.completeExceptionally(failure);
+        }
     }
 
     /** 查看业务缓冲；只构造显示快照，不消费或升级它。 */
     synchronized SessionEvent.Incoming bufferedView() {
-        if (buffered == null) return null;
-        if (buffered.event() instanceof SessionEvent.Incoming incoming) return incoming;
+        if (buffered == null)
+            return null;
+        if (buffered.event() instanceof SessionEvent.Incoming incoming)
+            return incoming;
         var request = buffered.request();
         return new SessionEvent.Incoming(request.context().id(), "user", "leader", null, null,
                 "user", request.prompt(), null, false);
     }
 
     /** 包含停放的通知；切换会话必须确认所有信息均已处理。 */
-    synchronized boolean isEmpty() { return requests.isEmpty(); }
+    synchronized boolean isEmpty() {
+        return requests.isEmpty();
+    }
 
     /** 按来源分配预留槽；这里只按可信 kind 分类容量，不限制消息的跨轮次采用。 */
     private static String slot(Entry entry) {
         if (entry.event() instanceof SessionEvent.Incoming incoming) {
-            if (incoming.kind().equals("background")) return "background";
-            if (incoming.kind().equals("result") || incoming.kind().equals("result_error")) return "team";
+            if (incoming.kind().equals("background"))
+                return "background";
+            if (incoming.kind().equals("result") || incoming.kind().equals("result_error"))
+                return "team";
         }
         return "ordinary";
     }
@@ -62,14 +75,17 @@ final class SessionInbox {
      * 相同锁内登记和发出变更信号，消费者不会在看到旧版本后遗漏一次已到达通知。
      */
     synchronized boolean offer(Entry entry) {
-        if (closed) return false;
+        if (closed)
+            return false;
         if (entry.event() instanceof SessionEvent.Incoming incoming
-                && requests.stream().anyMatch(e -> e.event() instanceof SessionEvent.Incoming other && other.id().equals(incoming.id())))
+                && requests.stream().anyMatch(
+                        e -> e.event() instanceof SessionEvent.Incoming other && other.id().equals(incoming.id())))
             return true;
         String category = slot(entry);
         // 终态通道不再叠加普通队列额度。取消旧轮次后仍可能有迟到报告，不能让这些
         // 事实挤掉新派工的终态解释；工作额度在 BackgroundManager/Runtime 登记时控制。
-        if (category.equals("ordinary") && requests.stream().filter(e -> slot(e).equals("ordinary")).count() >= CAPACITY)
+        if (category.equals("ordinary")
+                && requests.stream().filter(e -> slot(e).equals("ordinary")).count() >= CAPACITY)
             return false;
         requests.add(entry);
         wake();
@@ -81,9 +97,11 @@ final class SessionInbox {
         var iterator = requests.iterator();
         while (iterator.hasNext()) {
             Entry entry = iterator.next();
-            if (!(entry.event() instanceof SessionEvent.Request)) continue;
+            if (!(entry.event() instanceof SessionEvent.Request))
+                continue;
             iterator.remove();
-            if (entry == buffered) buffered = null;
+            if (entry == buffered)
+                buffered = null;
             return entry;
         }
         return null;
@@ -98,9 +116,11 @@ final class SessionInbox {
         var iterator = requests.iterator();
         while (iterator.hasNext()) {
             Entry entry = iterator.next();
-            if (!(entry.event() instanceof SessionEvent.Incoming incoming) || !incoming.allowInsertion()) continue;
+            if (!(entry.event() instanceof SessionEvent.Incoming incoming) || !incoming.allowInsertion())
+                continue;
             iterator.remove();
-            if (entry == buffered) buffered = null;
+            if (entry == buffered)
+                buffered = null;
             selected.add(entry);
         }
         return List.copyOf(selected);
@@ -108,7 +128,8 @@ final class SessionInbox {
 
     /** 最终完成与入队共用锁；已经到达的补充必须再交给模型，不能提前结束。 */
     synchronized boolean hasInsertions() {
-        return requests.stream().anyMatch(e -> e.event() instanceof SessionEvent.Incoming incoming && incoming.allowInsertion());
+        return requests.stream()
+                .anyMatch(e -> e.event() instanceof SessionEvent.Incoming incoming && incoming.allowInsertion());
     }
 
     /**
@@ -116,10 +137,12 @@ final class SessionInbox {
      * 保留最初 Future 和编号，不修改历史；容量不足或关闭返回 null。
      */
     synchronized CompletableFuture<String> buffer(String text, ExecutionContext context) {
-        if (closed) return null;
+        if (closed)
+            return null;
         if (buffered == null) {
             Entry entry = new Entry(new SessionEvent.Request(text, context), new CompletableFuture<>());
-            if (!offer(entry)) return null;
+            if (!offer(entry))
+                return null;
             buffered = entry;
         } else {
             SessionEvent event;
@@ -140,8 +163,10 @@ final class SessionInbox {
 
     /** 空回车将原缓冲升级成插入通知；不复制任务，采用后再升级返回 false。 */
     synchronized boolean promote() {
-        if (closed || buffered == null) return false;
-        if (buffered.event() instanceof SessionEvent.Incoming) return true;
+        if (closed || buffered == null)
+            return false;
+        if (buffered.event() instanceof SessionEvent.Incoming)
+            return true;
         var old = bufferedView();
         var incoming = new SessionEvent.Incoming(old.id(), old.fromAgentId(), old.toAgentId(), old.taskId(),
                 old.assignmentId(), old.kind(), old.summary(), old.bodyPath(), true);
@@ -153,22 +178,33 @@ final class SessionInbox {
     }
 
     /** 只读变更版本，用于检查后等待，避免通知恰好落在二者之间时丢失信号。 */
-    synchronized long revision() { return revision; }
+    synchronized long revision() {
+        return revision;
+    }
+
     /** 没有变更才等待；唤起仅表示重新检查，不意味着执行队首任务。 */
     synchronized void awaitChange(long observed) throws InterruptedException {
-        while (!closed && revision == observed) wait();
+        while (!closed && revision == observed)
+            wait();
     }
+
     /** 线程通知继续原消费流程，不具有空闲时新建业务轮次的语义。 */
-    synchronized void wake() { revision++; notifyAll(); }
+    synchronized void wake() {
+        revision++;
+        notifyAll();
+    }
 
     /** 关闭后拒绝新消息；先清队列再在锁外完成失败回执，避免用户回调占住队列锁。 */
     void close() {
         List<Entry> abandoned;
         synchronized (this) {
-            if (closed) return;
+            if (closed)
+                return;
             closed = true;
             abandoned = List.copyOf(requests);
-            requests.clear(); buffered = null; wake();
+            requests.clear();
+            buffered = null;
+            wake();
         }
         abandoned.forEach(entry -> entry.fail(new IllegalStateException("Session closed before task execution")));
     }

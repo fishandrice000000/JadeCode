@@ -27,11 +27,13 @@ public final class PreferenceService implements AutoCloseable {
     /** 保存结果回调：成功给出新设置与 revision，失败给出真实异常。 */
     public interface Callback {
         void saved(JadeSettings settings, long revision, Map<String, Object> patch);
+
         void failed(IOException failure, Map<String, Object> patch);
     }
 
     /** 一次设置的“已保存基线”：Node 用它校验 patch 是否基于当前版本。 */
-    public record State(JadeSettings settings, long revision) { }
+    public record State(JadeSettings settings, long revision) {
+    }
 
     private final JadeConfigFile file;
     private final ExecutorService writes = Executors.newSingleThreadExecutor(runnable -> {
@@ -51,7 +53,9 @@ public final class PreferenceService implements AutoCloseable {
     }
 
     /** @return 当前已保存快照；调用方不得修改返回对象。 */
-    public synchronized State state() { return new State(settings, revision); }
+    public synchronized State state() {
+        return new State(settings, revision);
+    }
 
     /**
      * 排队保存一个 TUI 白名单 patch。
@@ -78,7 +82,8 @@ public final class PreferenceService implements AutoCloseable {
                 }
                 callback.saved(reloaded, nextRevision, copy);
             } catch (IOException | RuntimeException failure) {
-                callback.failed(failure instanceof IOException io ? io : new IOException(failure.getMessage(), failure), copy);
+                callback.failed(failure instanceof IOException io ? io : new IOException(failure.getMessage(), failure),
+                        copy);
             }
         });
     }
@@ -102,7 +107,8 @@ public final class PreferenceService implements AutoCloseable {
                 }
                 callback.saved(reloaded, nextRevision, Map.of("defaultPermission", profile.value()));
             } catch (IOException | RuntimeException failure) {
-                callback.failed(failure instanceof IOException io ? io : new IOException(failure.getMessage(), failure), Map.of());
+                callback.failed(failure instanceof IOException io ? io : new IOException(failure.getMessage(), failure),
+                        Map.of());
             }
         });
     }
@@ -121,7 +127,8 @@ public final class PreferenceService implements AutoCloseable {
         }
     }
 
-    @Override public void close() {
+    @Override
+    public void close() {
         writes.shutdown();
         try {
             writes.awaitTermination(2, TimeUnit.SECONDS);

@@ -9,19 +9,23 @@ public record SandboxSettings(boolean enabled, String image, int memoryMiB, int 
         int tmpMiB, int idleSeconds, int maxIdle, int maxContainers) {
     /** 检查配置边界，错误不回显任意模型输入或认证信息。 */
     public SandboxSettings {
-        if (image == null || image.isBlank() || image.startsWith("-") || image.chars().anyMatch(Character::isWhitespace))
+        if (image == null || image.isBlank() || image.startsWith("-")
+                || image.chars().anyMatch(Character::isWhitespace))
             throw new IllegalArgumentException("sandbox.image must be an image name or digest");
         if (memoryMiB < 128 || cpus < 1 || pids < 32 || tmpMiB < 16 || idleSeconds < 1
                 || maxIdle < 0 || maxContainers < 1 || maxIdle > maxContainers)
             throw new IllegalArgumentException("Invalid sandbox resource or lifecycle limit");
     }
+
     /** 正式配置缺省启用，首次使用前需构建镜像；不会因此启动 Docker。 */
     public static SandboxSettings defaults() {
         return new SandboxSettings(true, "jadecode-sandbox:1", 2048, 2, 256, 256, 600, 2, 8);
     }
+
     /** 显式离线装配保留原测试契约，不偷偷访问本机 Docker。 */
     public static SandboxSettings offline() {
         var d = defaults();
-        return new SandboxSettings(false, d.image, d.memoryMiB, d.cpus, d.pids, d.tmpMiB, d.idleSeconds, d.maxIdle, d.maxContainers);
+        return new SandboxSettings(false, d.image, d.memoryMiB, d.cpus, d.pids, d.tmpMiB, d.idleSeconds, d.maxIdle,
+                d.maxContainers);
     }
 }

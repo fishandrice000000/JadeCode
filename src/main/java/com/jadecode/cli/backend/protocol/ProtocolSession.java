@@ -29,10 +29,13 @@ import com.jadecode.util.Json;
  */
 public final class ProtocolSession implements AutoCloseable, EventEndpoint {
     /** 连接状态；只有 READY 接受会话命令。 */
-    public enum State { ACCEPTED, HELLO, SYNC, READY, CLOSING, CLOSED }
+    public enum State {
+        ACCEPTED, HELLO, SYNC, READY, CLOSING, CLOSED
+    }
 
     /** 握手结果：服务端 hello 与首份 bootstrap 资料。 */
-    public record Greeting(ObjectNode helloPayload, ObjectNode bootstrapPayload) { }
+    public record Greeting(ObjectNode helloPayload, ObjectNode bootstrapPayload) {
+    }
 
     /** 握手校验器：由后端提供真实构建身份、协议版本与启动资料。 */
     @FunctionalInterface
@@ -80,7 +83,8 @@ public final class ProtocolSession implements AutoCloseable, EventEndpoint {
     /** 最近一次 ready 的客户端序号，仅用于诊断；ready 不做结果缓存。 */
     private long localStorageReadySeq;
 
-    private record CachedResult(String type, ObjectNode payload, String sessionId, Long generation) { }
+    private record CachedResult(String type, ObjectNode payload, String sessionId, Long generation) {
+    }
 
     /**
      * @param out          连接输出流；写线程与序号分配由本类串行化
@@ -89,7 +93,8 @@ public final class ProtocolSession implements AutoCloseable, EventEndpoint {
      */
     public ProtocolSession(OutputStream out, String credential, String connectionId,
             Greeter greeter, CommandSink commands, Runnable onClosed) {
-        this(out, credential, connectionId, greeter, commands, onClosed, () -> { });
+        this(out, credential, connectionId, greeter, commands, onClosed, () -> {
+        });
     }
 
     /**
@@ -98,7 +103,8 @@ public final class ProtocolSession implements AutoCloseable, EventEndpoint {
      */
     public ProtocolSession(OutputStream out, String credential, String connectionId,
             Greeter greeter, CommandSink commands, Runnable onClosed, Runnable onReady) {
-        this(out, credential, connectionId, greeter, commands, onClosed, onReady, () -> { });
+        this(out, credential, connectionId, greeter, commands, onClosed, onReady, () -> {
+        });
     }
 
     /**
@@ -117,8 +123,8 @@ public final class ProtocolSession implements AutoCloseable, EventEndpoint {
         this.onHello = onHello;
         // 过载通知可能来自领域投递线程，也可能来自 outbox 写线程。关闭会等待写线程排空，
         // 必须交给独立线程：否则领域线程会被慢 socket 拖住，写线程还会等待自己结束。
-        this.outbox = new EventOutbox(this::writeFrame, failure ->
-                Thread.ofVirtual().name("jade-wire-overload-close").start(this::closeQuietly));
+        this.outbox = new EventOutbox(this::writeFrame,
+                failure -> Thread.ofVirtual().name("jade-wire-overload-close").start(this::closeQuietly));
         // 握手期限按实际执行的 tick 累计。fixed-delay 不会在进程 fg 后补跑暂停期间
         // 积压的 fixed-rate tick，避免一次正常作业暂停被误判为握手超时。
         handshakeTimer.scheduleWithFixedDelay(this::handshakeTick, 1, 1, TimeUnit.SECONDS);
@@ -131,13 +137,19 @@ public final class ProtocolSession implements AutoCloseable, EventEndpoint {
     }
 
     /** @return 本连接的唯一事件出口；大资料分块器与观察器共用一个有界队列。 */
-    public EventOutbox outbox() { return outbox; }
+    public EventOutbox outbox() {
+        return outbox;
+    }
 
     /** @return 当前连接状态；测试与诊断使用。 */
-    public synchronized State state() { return state; }
+    public synchronized State state() {
+        return state;
+    }
 
     /** @return 握手后已发送事件/答复的数量（下一个 seq 减一）。 */
-    public synchronized long sentSeq() { return nextSeq - 1; }
+    public synchronized long sentSeq() {
+        return nextSeq - 1;
+    }
 
     /** 登记最近一次快照；Node 的 {@code session.ready} 必须引用同一 snapshotId。 */
     public synchronized void expectReady(String id, Long generation) {
@@ -150,7 +162,8 @@ public final class ProtocolSession implements AutoCloseable, EventEndpoint {
         snapshotGeneration = generation;
         snapshotSourceSeq = sourceSeq;
         awaitingReady = true;
-        if (state == State.HELLO || state == State.READY) state = State.SYNC;
+        if (state == State.HELLO || state == State.READY)
+            state = State.SYNC;
     }
 
     /** 发送一个事件（不合并）。 */
@@ -205,7 +218,8 @@ public final class ProtocolSession implements AutoCloseable, EventEndpoint {
             if (!connectionId.equals(message.connectionId()))
                 throw new ProtocolException(ProtocolError.UNAUTHORIZED, "This frame belongs to another connection");
         }
-        if (isDuplicate(message)) return;
+        if (isDuplicate(message))
+            return;
         switch (message.type()) {
             case "session.ready" -> ready(message);
             case "client.shutdown" -> {
@@ -227,9 +241,11 @@ public final class ProtocolSession implements AutoCloseable, EventEndpoint {
         JsonNode payload = message.payload();
         int version = payload.path("protocolVersion").asInt(-1);
         if (version != WireCodec.PROTOCOL_VERSION)
-            throw new ProtocolException(ProtocolError.VERSION_MISMATCH, "Frontend protocol version " + version + " is not supported");
+            throw new ProtocolException(ProtocolError.VERSION_MISMATCH,
+                    "Frontend protocol version " + version + " is not supported");
         String presented = payload.path("credential").asText("");
-        if (!MessageDigest.isEqual(presented.getBytes(StandardCharsets.UTF_8), credential.getBytes(StandardCharsets.UTF_8)))
+        if (!MessageDigest.isEqual(presented.getBytes(StandardCharsets.UTF_8),
+                credential.getBytes(StandardCharsets.UTF_8)))
             throw new ProtocolException(ProtocolError.UNAUTHORIZED, "The one-time connection credential is invalid");
         String buildId = payload.path("buildId").asText("");
         Greeting greeting = greeter.greet(message);
@@ -237,8 +253,11 @@ public final class ProtocolSession implements AutoCloseable, EventEndpoint {
         if (!buildId.equals(greeting.helloPayload().path("buildId").asText("")))
             throw new ProtocolException(ProtocolError.BUILD_MISMATCH, "Frontend and backend builds do not match");
         if (greeting.helloPayload().path("protocolVersion").asInt(-1) != WireCodec.PROTOCOL_VERSION)
-            throw new ProtocolException(ProtocolError.VERSION_MISMATCH, "The backend greeting has a different protocol version");
-        synchronized (this) { state = State.HELLO; }
+            throw new ProtocolException(ProtocolError.VERSION_MISMATCH,
+                    "The backend greeting has a different protocol version");
+        synchronized (this) {
+            state = State.HELLO;
+        }
         sendEvent("server.hello", greeting.helloPayload(), null, null);
         sendEvent("server.bootstrap", greeting.bootstrapPayload(), null, null);
         // 只有 hello/bootstrap 已入队后，后端才打开会话并发送快照。
@@ -265,18 +284,24 @@ public final class ProtocolSession implements AutoCloseable, EventEndpoint {
             throw new ProtocolException(ProtocolError.INVALID_MESSAGE, "session.ready needs lastSnapshotSeq");
         long generation = Long.parseLong(generationNode.asText());
         if (presentedSnapshot == null || !presentedSnapshot.equals(id))
-            throw new ProtocolException(ProtocolError.INVALID_MESSAGE, "session.ready must reference the current snapshot");
+            throw new ProtocolException(ProtocolError.INVALID_MESSAGE,
+                    "session.ready must reference the current snapshot");
         if (snapshotGeneration == null || generation != snapshotGeneration)
-            throw new ProtocolException(ProtocolError.STALE_GENERATION, "session.ready referenced a stale session generation");
+            throw new ProtocolException(ProtocolError.STALE_GENERATION,
+                    "session.ready referenced a stale session generation");
         // lastSnapshotSeq 是 Node 已安装快照的来源序号；帧仍在 outbox 中时 sentSeq 可能滞后，
         // 因此这里只做十进制/非负校验。真正的屏障由 snapshotId + generation 保证。
         long lastSeq = Long.parseLong(seqNode.asText());
         if (lastSeq < 0)
-            throw new ProtocolException(ProtocolError.INVALID_MESSAGE, "session.ready references an invalid snapshot sequence");
+            throw new ProtocolException(ProtocolError.INVALID_MESSAGE,
+                    "session.ready references an invalid snapshot sequence");
         if (snapshotSourceSeq != null && lastSeq != snapshotSourceSeq)
             throw new ProtocolException(ProtocolError.INVALID_MESSAGE,
                     "session.ready must echo the snapshot begin sourceSeq");
-        synchronized (this) { state = State.READY; awaitingReady = false; }
+        synchronized (this) {
+            state = State.READY;
+            awaitingReady = false;
+        }
         handshakeTimer.shutdownNow();
         onReady.run();
     }
@@ -286,7 +311,8 @@ public final class ProtocolSession implements AutoCloseable, EventEndpoint {
         synchronized (this) {
             // ready 是屏障命令，不是可缓存的业务命令；重复 ready 由 ready() 自身幂等处理。
             if (message.type().equals("session.ready")) {
-                if (message.seq() <= lastClientSeq) localStorageReadySeq = message.seq();
+                if (message.seq() <= lastClientSeq)
+                    localStorageReadySeq = message.seq();
                 lastClientSeq = Math.max(lastClientSeq, message.seq());
                 return false;
             }
@@ -296,13 +322,15 @@ public final class ProtocolSession implements AutoCloseable, EventEndpoint {
                 lastClientSeq = Math.max(lastClientSeq, message.seq());
                 if (message.commandId() != null) {
                     seenCommandIds.add(message.commandId());
-                    if (seenCommandIds.size() > 256) seenCommandIds.removeFirst();
+                    if (seenCommandIds.size() > 256)
+                        seenCommandIds.removeFirst();
                 }
                 return false;
             }
             CachedResult cached = message.commandId() == null ? null : cachedResults.get(message.commandId());
             if (cached != null) {
-                outbox.offerResult(cached.type(), cached.payload(), message.commandId(), cached.sessionId(), cached.generation());
+                outbox.offerResult(cached.type(), cached.payload(), message.commandId(), cached.sessionId(),
+                        cached.generation());
             } else {
                 sendError(message.commandId(), ProtocolError.DUPLICATE,
                         "This command was already processed; it was not executed again",
@@ -315,7 +343,8 @@ public final class ProtocolSession implements AutoCloseable, EventEndpoint {
     private void requireReady() throws ProtocolException {
         synchronized (this) {
             if (state != State.READY)
-                throw new ProtocolException(ProtocolError.NOT_READY, "The frontend has not completed its snapshot handshake");
+                throw new ProtocolException(ProtocolError.NOT_READY,
+                        "The frontend has not completed its snapshot handshake");
         }
     }
 
@@ -324,7 +353,8 @@ public final class ProtocolSession implements AutoCloseable, EventEndpoint {
             throws IOException {
         long seq;
         synchronized (this) {
-            if (closed) throw new IOException("The connection is closed");
+            if (closed)
+                throw new IOException("The connection is closed");
             seq = nextSeq++;
         }
         WireMessage message = commandId == null
@@ -345,9 +375,13 @@ public final class ProtocolSession implements AutoCloseable, EventEndpoint {
 
     private void handshakeTick() {
         synchronized (this) {
-            if (state == State.READY || state == State.SYNC || closed) { handshakeTimer.shutdownNow(); return; }
+            if (state == State.READY || state == State.SYNC || closed) {
+                handshakeTimer.shutdownNow();
+                return;
+            }
             handshakeTicks++;
-            if (handshakeTicks < 10) return;
+            if (handshakeTicks < 10)
+                return;
         }
         // 10 个活跃 tick 仍未完成握手：不创建模型任务，直接收口连接。
         closeQuietly();
@@ -363,21 +397,29 @@ public final class ProtocolSession implements AutoCloseable, EventEndpoint {
     @Override
     public void close() {
         synchronized (this) {
-            if (closed) return;
+            if (closed)
+                return;
             state = State.CLOSING;
         }
         handshakeTimer.shutdownNow();
         // outbox.close() 会先排空已入队事件（有界等待），再停止接收新事件。
         outbox.close();
         synchronized (this) {
-            if (closed) return;
+            if (closed)
+                return;
             closed = true;
             state = State.CLOSED;
         }
-        try { onClosed.run(); } catch (RuntimeException ignored) { /* 关闭回调失败不能掩盖原状态。 */ }
+        try {
+            onClosed.run();
+        } catch (RuntimeException ignored) {
+            /* 关闭回调失败不能掩盖原状态。 */ }
     }
 
     private void closeQuietly() {
-        try { close(); } catch (RuntimeException ignored) { /* 已关闭或底层流已断开。 */ }
+        try {
+            close();
+        } catch (RuntimeException ignored) {
+            /* 已关闭或底层流已断开。 */ }
     }
 }

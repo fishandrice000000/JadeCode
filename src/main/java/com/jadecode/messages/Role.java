@@ -10,8 +10,7 @@ import com.fasterxml.jackson.annotation.JsonValue;
  * {@link #wire()} / {@link #fromWire(String)} 负责两侧互转。</p>
  */
 public enum Role {
-    USER("user"),
-    ASSISTANT("assistant");
+    USER("user"), ASSISTANT("assistant");
 
     /** 线上 JSON 里的角色字符串 */
     private final String wire;

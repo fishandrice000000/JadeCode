@@ -41,11 +41,16 @@ public class SubagentRuntime {
     /** 每次委派单独的显示身份，绝不替换父任务的 ExecutionContext。 */
     private final ThreadLocal<String> displayId = new ThreadLocal<>();
     private com.jadecode.execution.ExecutionObserver observer = com.jadecode.execution.ExecutionObserver.NONE;
+
     /** 工厂启动前安装，不改变子代理工具和消息规则。 */
-    public void observe(com.jadecode.execution.ExecutionObserver value) { observer = value; }
+    public void observe(com.jadecode.execution.ExecutionObserver value) {
+        observer = value;
+    }
+
     private void display(com.jadecode.execution.ExecutionNotice notice) {
         observer.publish(notice.actor("Subagent " + displayId.get()));
     }
+
     /** 子代理最多消耗几轮"成功回复";循环正常走完即超限,回 stopped 文案 */
     private static final int MAX_TURNS = 30;
 
@@ -186,25 +191,34 @@ public class SubagentRuntime {
         java.util.Objects.requireNonNull(context, "executionContext");
         com.jadecode.llm.ThinkingSettings taskThinking = thinking.get();
         displayId.set(java.util.UUID.randomUUID().toString().substring(0, 8));
-        display(com.jadecode.execution.ExecutionNotice.event(com.jadecode.execution.ExecutionNotice.Kind.SESSION, "", "", "", "RUNNING"));
+        display(com.jadecode.execution.ExecutionNotice.event(com.jadecode.execution.ExecutionNotice.Kind.SESSION, "",
+                "", "", "RUNNING"));
         // 显示短编号不承担权限唯一性；隔离编号使用完整 UUID，且不改变父任务来源。
         ExecutionContext scoped = context.withActorScope(java.util.UUID.randomUUID().toString());
-        try { return runObserved(prompt, scoped, taskThinking); }
-        finally {
-            try { sandboxCleanup.accept(scoped); }
-            finally {
-                display(com.jadecode.execution.ExecutionNotice.event(com.jadecode.execution.ExecutionNotice.Kind.SESSION, "", "", "", "CLOSED"));
+        try {
+            return runObserved(prompt, scoped, taskThinking);
+        } finally {
+            try {
+                sandboxCleanup.accept(scoped);
+            } finally {
+                display(com.jadecode.execution.ExecutionNotice
+                        .event(com.jadecode.execution.ExecutionNotice.Kind.SESSION, "", "", "", "CLOSED"));
                 displayId.remove();
             }
         }
     }
 
-    private java.util.function.Consumer<ExecutionContext> sandboxCleanup = ignored -> { };
+    private java.util.function.Consumer<ExecutionContext> sandboxCleanup = ignored -> {
+    };
+
     /** 每次委派结束撤销它自己的目录授权，同一父任务的下一位子代理不能继承。 */
-    public void sandboxCleanup(java.util.function.Consumer<ExecutionContext> cleanup) { sandboxCleanup = java.util.Objects.requireNonNull(cleanup); }
+    public void sandboxCleanup(java.util.function.Consumer<ExecutionContext> cleanup) {
+        sandboxCleanup = java.util.Objects.requireNonNull(cleanup);
+    }
 
     /** 原子代理主流程；外层只负责显示身份与 finally 收尾，不干涉运行异常。 */
-    private String runObserved(String prompt, ExecutionContext context, com.jadecode.llm.ThinkingSettings taskThinking) throws LlmException {
+    private String runObserved(String prompt, ExecutionContext context, com.jadecode.llm.ThinkingSettings taskThinking)
+            throws LlmException {
         java.util.Objects.requireNonNull(context, "executionContext");
         // 每次 run 都新建子消息列表，不用父 history；父对话中只保留这次 task 的最终结果。
         List<Message> messages = new ArrayList<>();
@@ -216,13 +230,14 @@ public class SubagentRuntime {
         final String activeRequest = prompt;
         // 一次委派的正式 usage 锚点随 run 创建；多次委派和父 Agent 不互相覆盖。
         var contextTokens = new com.jadecode.context.ContextTokenTracker();
-        List<com.jadecode.llm.ToolDefinition> definitions = tools.values().stream().sorted(Comparator.comparing(Tool::name))
+        List<com.jadecode.llm.ToolDefinition> definitions = tools.values().stream()
+                .sorted(Comparator.comparing(Tool::name))
                 .map(Tool::definition).toList();
 
         // 触发事件 SUBAGENT_START(一次委派恰好一次)
         hooks.trigger(Hooks.SUBAGENT_START, Map.of());
 
-        int turns = 0;           // 已消耗的轮次:只有正式请求真正拿到回复才 +1
+        int turns = 0; // 已消耗的轮次:只有正式请求真正拿到回复才 +1
         int reactiveRetries = 0; // 本次委派的补救额度:正式请求成功即归零,不跨 run
 
         try {
@@ -234,7 +249,8 @@ public class SubagentRuntime {
                 if (compactor != null) {
                     List<Message> prepared;
                     try {
-                        prepared = compactor.prepare(new CompleteRequest(system, messages, maxTokens, definitions, taskThinking),
+                        prepared = compactor.prepare(
+                                new CompleteRequest(system, messages, maxTokens, definitions, taskThinking),
                                 activeRequest, contextTokens, "");
                     } catch (IllegalStateException io) {
                         // 归档 / 落盘失败:子代理没法继续了,按失败收尾一次再原样抛(不是可恢复的超限)。
@@ -256,13 +272,15 @@ public class SubagentRuntime {
                     // 子循环不经过父循环的 ToolCatalog，同样按名称固定定义顺序；执行仍使用原工具表。
                     var projection = new CompleteRequest(system, messages, maxTokens, definitions, taskThinking);
                     int output = compactor == null ? maxTokens : compactor.outputBudget(projection, contextTokens);
-                    response = client.complete(new CompleteRequest(system, messages, output, definitions, taskThinking));
+                    response = client
+                            .complete(new CompleteRequest(system, messages, output, definitions, taskThinking));
                 } catch (LlmException error) {
                     // 如果用户在等模型时退出，即使现在才返回超限错误，也不要再调用摘要模型。
                     checkSessionOpen(context);
                     // 2.1 恢复分流:配置允许、命中"上下文过长"且本次委派还有额度，才做有损补救。
                     //     不匹配(认证 / 限流 / 网络)或额度耗尽的异常原样抛出,交给外层统一 END(FAILED)。
-                    if (compactor == null || !compactor.policy().reactiveEnabled() || !ContextCompactor.isContextOverflow(error)
+                    if (compactor == null || !compactor.policy().reactiveEnabled()
+                            || !ContextCompactor.isContextOverflow(error)
                             || reactiveRetries >= ContextCompactor.MAX_REACTIVE_RETRIES) {
                         throw error;
                     }
@@ -294,7 +312,8 @@ public class SubagentRuntime {
                 // 子代理有独立循环，也必须在追加 assistant 与执行工具前挡住输出截断。
                 // 放在上下文超限补救的 catch 之外，避免把输出不足当成输入过长来重试。
                 if ("max_tokens".equals(response.stopReason())) {
-                    throw new LlmException("Model output reached max_tokens; the response is incomplete and its tool calls were not executed");
+                    throw new LlmException(
+                            "Model output reached max_tokens; the response is incomplete and its tool calls were not executed");
                 }
                 if (response.message().role() != com.jadecode.messages.Role.ASSISTANT)
                     throw new LlmException("Subagent model response must be an assistant message");
@@ -318,7 +337,8 @@ public class SubagentRuntime {
                 }
 
                 // 4. 追加 assistant 消息
-                contextTokens.accepted(new CompleteRequest(system, messages, maxTokens, definitions, taskThinking), response);
+                contextTokens.accepted(new CompleteRequest(system, messages, maxTokens, definitions, taskThinking),
+                        response);
                 messages.add(response.message());
 
                 // 5. 没有 tool_use:先问 Stop hook(它可能强制再跑一轮),否则这就是最终答复
@@ -346,7 +366,8 @@ public class SubagentRuntime {
 
                 for (ToolUseBlock u : toolCalls) {
                     String displayCall = java.util.UUID.randomUUID().toString();
-                    display(com.jadecode.execution.ExecutionNotice.event(com.jadecode.execution.ExecutionNotice.Kind.TOOL_START,
+                    display(com.jadecode.execution.ExecutionNotice.event(
+                            com.jadecode.execution.ExecutionNotice.Kind.TOOL_START,
                             displayCall, u.name(), u.input() == null ? "{}" : u.input().toString(), "QUEUED"));
                     checkSessionOpen(context);
                     // 先查本类自己的工具表:子表是父表的子集,父表查得到的 task / todo_write 在这里是未知工具。
@@ -354,7 +375,8 @@ public class SubagentRuntime {
                     Tool tool = tools.get(u.name());
                     if (tool == null) {
                         results.add(new ToolResultBlock(u.id(), UNKNOWN_TOOL + u.name(), true));
-                        display(com.jadecode.execution.ExecutionNotice.event(com.jadecode.execution.ExecutionNotice.Kind.TOOL_END,
+                        display(com.jadecode.execution.ExecutionNotice.event(
+                                com.jadecode.execution.ExecutionNotice.Kind.TOOL_END,
                                 displayCall, u.name(), UNKNOWN_TOOL + u.name(), "NOT_RUN"));
                         continue;
                     }
@@ -365,7 +387,8 @@ public class SubagentRuntime {
                                     com.jadecode.execution.ToolIdentity.builtin(u.name())));
                     if (blocked != null) {
                         results.add(new ToolResultBlock(u.id(), blocked, true));
-                        display(com.jadecode.execution.ExecutionNotice.event(com.jadecode.execution.ExecutionNotice.Kind.TOOL_END,
+                        display(com.jadecode.execution.ExecutionNotice.event(
+                                com.jadecode.execution.ExecutionNotice.Kind.TOOL_END,
                                 displayCall, u.name(), blocked, "BLOCKED"));
                         continue;
                     }
@@ -374,14 +397,17 @@ public class SubagentRuntime {
                     // 等用户批准期间也可能退出；执行工具前再检查，不能只在 while 开始时检查。
                     checkSessionOpen(context);
                     ObjectNode node = u.input() instanceof ObjectNode o ? o : Json.mapper().createObjectNode();
-                    display(com.jadecode.execution.ExecutionNotice.event(com.jadecode.execution.ExecutionNotice.Kind.TOOL_START,
+                    display(com.jadecode.execution.ExecutionNotice.event(
+                            com.jadecode.execution.ExecutionNotice.Kind.TOOL_START,
                             displayCall, u.name(), node.toString(), "RUNNING"));
                     // 与主 Agent 相同：审批及退出检查都已结束，只统计实际调用工具的时间。
                     long toolStarted = System.nanoTime();
                     com.jadecode.tools.ToolOutcome outcome = tool.executeOutcome(node, context);
                     String output = outcome.content();
-                    display(com.jadecode.execution.ExecutionNotice.event(com.jadecode.execution.ExecutionNotice.Kind.TOOL_END,
-                            displayCall, u.name(), output, outcome.isError() ? "ERROR" : "RETURNED").timed(System.nanoTime() - toolStarted));
+                    display(com.jadecode.execution.ExecutionNotice
+                            .event(com.jadecode.execution.ExecutionNotice.Kind.TOOL_END,
+                                    displayCall, u.name(), output, outcome.isError() ? "ERROR" : "RETURNED")
+                            .timed(System.nanoTime() - toolStarted));
 
                     // 只有"已知工具 + 未被拦截 + 真的执行完了 + 输出精确等于稳定文案"才算请求压缩。
                     // 判定放在执行之后:被拦的 compact 停在上面 continue,根本没有执行;别的工具返回同样
@@ -410,7 +436,8 @@ public class SubagentRuntime {
                     List<Message> compacted;
                     try {
                         compacted = compactor.compactAfterBatch(toolCalls,
-                                new CompleteRequest(system, messages, maxTokens, definitions, taskThinking), activeRequest, "");
+                                new CompleteRequest(system, messages, maxTokens, definitions, taskThinking),
+                                activeRequest, "");
                     } catch (IllegalStateException io) {
                         endFailed(io);
                         throw io;
@@ -442,7 +469,8 @@ public class SubagentRuntime {
      * @throws LlmException 父会话已退出；不因此再请求压缩摘要
      */
     private static void checkSessionOpen(ExecutionContext context) throws LlmException {
-        if (context.isCancelled()) throw new LlmException("Parent session is closed");
+        if (context.isCancelled())
+            throw new LlmException("Parent session is closed");
     }
 
     /**

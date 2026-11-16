@@ -59,7 +59,9 @@ public final class LocalControlServer implements AutoCloseable {
     }
 
     /** @return 实际 socket 路径；通过子进程环境传给 Node，不写日志。 */
-    public Path socketPath() { return socketPath; }
+    public Path socketPath() {
+        return socketPath;
+    }
 
     /**
      * 接受唯一的控制连接，随后关闭监听：之后到来的第二个连接会被操作系统直接拒绝。
@@ -68,7 +70,8 @@ public final class LocalControlServer implements AutoCloseable {
      * @return 已连接的 socket
      */
     public SocketChannel acceptOne(long timeoutMillis) throws IOException {
-        if (closed.get()) throw new IOException("The control endpoint is closed");
+        if (closed.get())
+            throw new IOException("The control endpoint is closed");
         server.configureBlocking(true);
         if (timeoutMillis > 0) {
             // 用非阻塞轮询实现有界等待：accept 本身没有超时参数。
@@ -77,14 +80,18 @@ public final class LocalControlServer implements AutoCloseable {
             try {
                 while (System.nanoTime() < deadline) {
                     SocketChannel accepted = server.accept();
-                    if (accepted != null) return finishAccept(accepted);
-                    try { Thread.sleep(10); } catch (InterruptedException interrupted) {
+                    if (accepted != null)
+                        return finishAccept(accepted);
+                    try {
+                        Thread.sleep(10);
+                    } catch (InterruptedException interrupted) {
                         Thread.currentThread().interrupt();
                         throw new IOException("Interrupted while waiting for the frontend connection", interrupted);
                     }
                 }
             } finally {
-                if (!closed.get()) server.configureBlocking(true);
+                if (!closed.get())
+                    server.configureBlocking(true);
             }
             throw new java.net.SocketTimeoutException("The frontend did not connect to the control endpoint");
         }
@@ -92,7 +99,8 @@ public final class LocalControlServer implements AutoCloseable {
     }
 
     private SocketChannel finishAccept(SocketChannel accepted) throws IOException {
-        if (accepted == null) throw new IOException("The control endpoint closed before a connection arrived");
+        if (accepted == null)
+            throw new IOException("The control endpoint closed before a connection arrived");
         // 只服务一个连接：立刻关闭监听通道，第二个连接不会排队。
         closeQuietly(server);
         closed.set(true);
@@ -110,22 +118,28 @@ public final class LocalControlServer implements AutoCloseable {
     }
 
     private static void closeQuietly(Channel channel) {
-        try { channel.close(); } catch (IOException ignored) { /* 关闭失败不影响后续清理。 */ }
+        try {
+            channel.close();
+        } catch (IOException ignored) {
+            /* 关闭失败不影响后续清理。 */ }
     }
 
     /** 只删除本对象创建的普通文件/空目录；路径被替换时不递归删除别人的内容。 */
     private static void deleteOwned(Path path) {
         try {
-            if (path == null || !Files.exists(path, LinkOption.NOFOLLOW_LINKS)) return;
+            if (path == null || !Files.exists(path, LinkOption.NOFOLLOW_LINKS))
+                return;
             if (Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) {
                 try (Stream<Path> entries = Files.list(path)) {
-                    if (entries.findAny().isPresent()) return;
+                    if (entries.findAny().isPresent())
+                        return;
                 }
                 Files.deleteIfExists(path);
             } else {
                 Files.deleteIfExists(path);
             }
-        } catch (IOException ignored) { /* 临时目录残留不会破坏会话正确性。 */ }
+        } catch (IOException ignored) {
+            /* 临时目录残留不会破坏会话正确性。 */ }
     }
 
     private static void setPermissions(Path path, String permissions) {
@@ -138,7 +152,8 @@ public final class LocalControlServer implements AutoCloseable {
 
     /** 供测试核验目录内容（退出后应为空或被删除）。 */
     static long ownedEntryCount(Path directory) throws IOException {
-        if (!Files.exists(directory)) return 0;
+        if (!Files.exists(directory))
+            return 0;
         try (Stream<Path> entries = Files.list(directory)) {
             return entries.sorted(Comparator.naturalOrder()).count();
         }

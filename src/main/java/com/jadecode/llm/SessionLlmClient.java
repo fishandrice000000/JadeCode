@@ -16,7 +16,9 @@ public final class SessionLlmClient implements LlmClient {
     private boolean requested;
 
     /** 构造只绑定传输，不读取配置、日志或网络；delegate 不应是另一个会话包装。 */
-    public SessionLlmClient(LlmClient delegate) { this.delegate = java.util.Objects.requireNonNull(delegate); }
+    public SessionLlmClient(LlmClient delegate) {
+        this.delegate = java.util.Objects.requireNonNull(delegate);
+    }
 
     /**
      * 恢复前采用标准 UUID；请求开始后禁止换身份，避免进行中的正文与辅助请求分属不同路由。
@@ -26,7 +28,8 @@ public final class SessionLlmClient implements LlmClient {
         // UUID.fromString 接受短写；额外比对标准形式，不能把任意字符串当作持久会话身份。
         if (id == null || !UUID.fromString(id).toString().equals(id))
             throw new IllegalArgumentException("Model session identity must be a complete UUID");
-        if (requested) throw new IllegalStateException("Cannot change model session identity after a request has started");
+        if (requested)
+            throw new IllegalStateException("Cannot change model session identity after a request has started");
         sessionId = id;
     }
 
@@ -36,13 +39,28 @@ public final class SessionLlmClient implements LlmClient {
         return request.withSessionId(sessionId);
     }
 
-    @Override public ModelMetadata metadata() { return delegate.metadata(); }
-    @Override public List<ThinkingSettings> thinkingChoices() { return delegate.thinkingChoices(); }
-    @Override public String thinkingLabel(ThinkingSettings value) { return delegate.thinkingLabel(value); }
-    @Override public ModelResponse complete(CompleteRequest request) throws LlmException {
+    @Override
+    public ModelMetadata metadata() {
+        return delegate.metadata();
+    }
+
+    @Override
+    public List<ThinkingSettings> thinkingChoices() {
+        return delegate.thinkingChoices();
+    }
+
+    @Override
+    public String thinkingLabel(ThinkingSettings value) {
+        return delegate.thinkingLabel(value);
+    }
+
+    @Override
+    public ModelResponse complete(CompleteRequest request) throws LlmException {
         return delegate.complete(bind(request));
     }
-    @Override public ModelResponse complete(CompleteRequest request, ResponseStream stream) throws LlmException {
+
+    @Override
+    public ModelResponse complete(CompleteRequest request, ResponseStream stream) throws LlmException {
         return delegate.complete(bind(request), stream);
     }
 }

@@ -8,7 +8,8 @@ import com.jadecode.safety.approval.ApprovalAnswer;
 
 /** 回答边界、继续工作与维护/人工等待的重叠，用可控时钟验证而不依赖真实 sleep。 */
 class TurnTimerTest {
-    @Test void finalAnswerStaysFrozenDuringMaintenanceAndResumesForLateInput() {
+    @Test
+    void finalAnswerStaysFrozenDuringMaintenanceAndResumesForLateInput() {
         var time = new AtomicLong(1);
         var notices = new ArrayList<ExecutionNotice>();
         var timer = new TurnTimer("run", notices::add, time::get);
@@ -26,9 +27,11 @@ class TurnTimerTest {
         assertEquals(6_000_000_000L, notices.getLast().elapsedNanos());
     }
 
-    @Test void nonFinalCandidateIncludesStopContinueWorkAndApprovalStillExcludesWaiting() {
+    @Test
+    void nonFinalCandidateIncludesStopContinueWorkAndApprovalStillExcludesWaiting() {
         var time = new AtomicLong(-10_000_000_000L); // nanoTime 的绝对值可以为负
-        var timer = new TurnTimer("run", ignored -> { }, time::get);
+        var timer = new TurnTimer("run", ignored -> {
+        }, time::get);
         time.addAndGet(5_000_000_000L);
         timer.answerCompleted(time.get());
         time.addAndGet(2_000_000_000L);
@@ -44,12 +47,18 @@ class TurnTimerTest {
         assertEquals(8_000_000_000L, timer.elapsedNanos());
     }
 
-    @Test void approvalCompletionCannotRestartFrozenMaintenanceClock() {
+    @Test
+    void approvalCompletionCannotRestartFrozenMaintenanceClock() {
         var time = new AtomicLong(1);
-        var timer = new TurnTimer("run", ignored -> { }, time::get);
+        var timer = new TurnTimer("run", ignored -> {
+        }, time::get);
         time.set(5_000_000_001L);
-        timer.answerCompleted(time.get()); timer.beginMaintenance();
-        timer.track(request -> { time.set(9_000_000_001L); return ApprovalAnswer.DENY; }).ask(null);
+        timer.answerCompleted(time.get());
+        timer.beginMaintenance();
+        timer.track(request -> {
+            time.set(9_000_000_001L);
+            return ApprovalAnswer.DENY;
+        }).ask(null);
         assertEquals(5_000_000_000L, timer.elapsedNanos());
         timer.resumeDisplay();
         time.set(10_000_000_001L);

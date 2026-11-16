@@ -15,7 +15,8 @@ class MessagesJsonTest {
     private static final ObjectMapper M = Json.mapper();
 
     /** 内部来源可随日志往返；普通用户文字即使像参考标签，也不会自动获得宿主来源。 */
-    @Test void recalledReferenceSourceRoundTripsWithoutChangingOrdinaryMessages() throws Exception {
+    @Test
+    void recalledReferenceSourceRoundTripsWithoutChangingOrdinaryMessages() throws Exception {
         Message reference = Message.memoryReference("reference data");
         assertEquals(reference, M.readValue(M.writeValueAsString(reference), Message.class));
         assertFalse(M.readTree(M.writeValueAsString(Message.userText("reference data"))).has("source"));

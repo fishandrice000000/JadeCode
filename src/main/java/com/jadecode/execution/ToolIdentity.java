@@ -11,14 +11,22 @@ import java.util.Objects;
  * @param hostReadOnly 宿主配置的只读声明；服务 annotations 不能填写它
  */
 public record ToolIdentity(Kind kind, String serverName, String originalName, boolean hostReadOnly) {
-    public enum Kind { BUILTIN, MCP }
+    public enum Kind {
+        BUILTIN, MCP
+    }
+
     /** 校验身份，不运行工具或赋予模型填写此对象的能力。 */
     public ToolIdentity {
-        Objects.requireNonNull(kind); Objects.requireNonNull(serverName);
+        Objects.requireNonNull(kind);
+        Objects.requireNonNull(serverName);
         if (originalName == null || originalName.isBlank() || kind == Kind.MCP && serverName.isBlank())
             throw new IllegalArgumentException("Invalid tool identity");
-        if (kind == Kind.BUILTIN && (!serverName.isEmpty() || hostReadOnly)) throw new IllegalArgumentException("Invalid builtin tool identity");
+        if (kind == Kind.BUILTIN && (!serverName.isEmpty() || hostReadOnly))
+            throw new IllegalArgumentException("Invalid builtin tool identity");
     }
+
     /** 内置工具沿用现有权限解释，不能借此自称 MCP 只读工具。 */
-    public static ToolIdentity builtin(String name) { return new ToolIdentity(Kind.BUILTIN, "", name, false); }
+    public static ToolIdentity builtin(String name) {
+        return new ToolIdentity(Kind.BUILTIN, "", name, false);
+    }
 }

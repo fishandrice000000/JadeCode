@@ -22,7 +22,8 @@ import com.jadecode.util.Json;
 
 /** 真实 UDS 的慢读/过载验证；没有用会立即成功的内存输出流代替内核背压。 */
 class SlowSocketTest {
-    @TempDir Path directory;
+    @TempDir
+    Path directory;
 
     @Test
     void pausedReaderDrainsEveryFrameInOrder() throws Exception {
@@ -36,7 +37,8 @@ class SlowSocketTest {
                     // 先不读：发送容量远大于 socket 缓冲但低于 outbox 预算的结构事件。
                     assertTimeoutPreemptively(Duration.ofSeconds(2), () -> {
                         for (int i = 0; i < 100; i++) {
-                            var payload = Json.mapper().createObjectNode().put("index", i).put("text", "x".repeat(8192));
+                            var payload = Json.mapper().createObjectNode().put("index", i).put("text",
+                                    "x".repeat(8192));
                             session.sendEvent("message", payload, "s", 1L);
                         }
                     });
@@ -52,9 +54,12 @@ class SlowSocketTest {
                                 indexes.add(frame.payload().path("index").asInt());
                             }
                             received.complete(indexes);
-                        } catch (Throwable failure) { received.completeExceptionally(failure); }
+                        } catch (Throwable failure) {
+                            received.completeExceptionally(failure);
+                        }
                     });
-                    assertEquals(java.util.stream.IntStream.range(0, 100).boxed().toList(), received.get(5, TimeUnit.SECONDS));
+                    assertEquals(java.util.stream.IntStream.range(0, 100).boxed().toList(),
+                            received.get(5, TimeUnit.SECONDS));
                     assertNull(session.failureReason());
                 }
             }
@@ -72,7 +77,8 @@ class SlowSocketTest {
                     // 不启动 reader。旧实现会在 offer 的过载回调里同步等待 close 五秒。
                     assertTimeoutPreemptively(Duration.ofSeconds(2), () -> {
                         for (int i = 0; i < 800; i++) {
-                            session.sendEvent("message", Json.mapper().createObjectNode().put("text", "x".repeat(16384)), "s", 1L);
+                            session.sendEvent("message",
+                                    Json.mapper().createObjectNode().put("text", "x".repeat(16384)), "s", 1L);
                         }
                     });
                     assertNotNull(session.failureReason(), "overload must remain a real failure, never a silent drop");
@@ -85,6 +91,8 @@ class SlowSocketTest {
     /** 构造真实写通道；这些测试只检查事件出口，不伪造已握手的业务命令。 */
     private ProtocolSession protocol(SocketChannel writer) {
         return new ProtocolSession(Channels.newOutputStream(writer), "fixture", "conn", hello -> null,
-                command -> {}, () -> {});
+                command -> {
+                }, () -> {
+                });
     }
 }

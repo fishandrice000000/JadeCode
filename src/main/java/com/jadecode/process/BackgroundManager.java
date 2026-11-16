@@ -23,31 +23,52 @@ public final class BackgroundManager implements AutoCloseable {
     private final ShellCommand.Runner runner;
     private final ShellCommand foreground;
     private final Map<String, Job> jobs = new LinkedHashMap<>();
-    private Consumer<Completion> resultListener = result -> { };
+    private Consumer<Completion> resultListener = result -> {
+    };
     private volatile ExecutionObserver observer = ExecutionObserver.NONE;
     private long counter;
     private volatile boolean closed;
 
     /** 保存工作目录和默认超时，不执行命令。 */
-    public BackgroundManager(Path cwd) { this(cwd, 120); }
+    public BackgroundManager(Path cwd) {
+        this(cwd, 120);
+    }
+
     /** 保存正数超时，宿主执行仅用于明确装配的宿主/离线路径。 */
-    public BackgroundManager(Path cwd, long timeoutSeconds) { this(cwd, timeoutSeconds, null); }
+    public BackgroundManager(Path cwd, long timeoutSeconds) {
+        this(cwd, timeoutSeconds, null);
+    }
+
     /** 每个后台命令有独立 Shell；共享可信 runner，许可来自每次调用的上下文快照。 */
     public BackgroundManager(Path cwd, long timeoutSeconds, ShellCommand.Runner runner) {
         this.cwd = Objects.requireNonNull(cwd);
-        if (timeoutSeconds <= 0) throw new IllegalArgumentException("timeoutSeconds must be positive");
-        this.timeoutSeconds = timeoutSeconds; this.runner = runner;
+        if (timeoutSeconds <= 0)
+            throw new IllegalArgumentException("timeoutSeconds must be positive");
+        this.timeoutSeconds = timeoutSeconds;
+        this.runner = runner;
         foreground = new ShellCommand(cwd, timeoutSeconds, runner);
     }
 
     /** 安装非阻塞显示端；不影响结果交付端。 */
-    public void observe(ExecutionObserver value) { observer = Objects.requireNonNull(value); }
+    public void observe(ExecutionObserver value) {
+        observer = Objects.requireNonNull(value);
+    }
+
     /** 安装只负责 Inbox 投递的函数；在启动任何命令之前由会话装配。 */
-    public synchronized void onResult(Consumer<Completion> listener) { resultListener = Objects.requireNonNull(listener); }
+    public synchronized void onResult(Consumer<Completion> listener) {
+        resultListener = Objects.requireNonNull(listener);
+    }
+
     /** 用于切换/回收检查；已完成但未采用的通知仍属于当前会话。 */
-    public synchronized boolean hasPending() { return !jobs.isEmpty(); }
+    public synchronized boolean hasPending() {
+        return !jobs.isEmpty();
+    }
+
     /** 压缩快照保留工作编号，不读取命令输出或声称命令成功。 */
-    public synchronized List<String> pendingIds() { return List.copyOf(jobs.keySet()); }
+    public synchronized List<String> pendingIds() {
+        return List.copyOf(jobs.keySet());
+    }
+
     /** 只判断本轮发出的命令，不把以前轮次遗留命令变成新轮次的等待义务。 */
     public synchronized boolean hasPending(String runId) {
         return jobs.values().stream().anyMatch(job -> job.context().id().equals(runId));
@@ -59,12 +80,15 @@ public final class BackgroundManager implements AutoCloseable {
      * 返回 bg_id 只表示启动成功，不代表命令完成。线程启动失败会撤销登记并关闭资源。
      */
     public String start(String command, ExecutionContext origin) {
-        if (command == null || command.isBlank()) throw new IllegalArgumentException("Bash command cannot be empty");
+        if (command == null || command.isBlank())
+            throw new IllegalArgumentException("Bash command cannot be empty");
         Objects.requireNonNull(origin, "context");
         Job job;
         synchronized (this) {
-            if (closed || origin.isCancelled()) throw new IllegalStateException("Background execution is cancelled");
-            if (jobs.size() >= MAX_PENDING) throw new IllegalStateException("Too many pending background tasks");
+            if (closed || origin.isCancelled())
+                throw new IllegalStateException("Background execution is cancelled");
+            if (jobs.size() >= MAX_PENDING)
+                throw new IllegalStateException("Too many pending background tasks");
             var context = origin.withCancellation(() -> closed);
             String id = "bg_%04d".formatted(++counter);
             job = new Job(id, command, new ShellCommand(cwd, timeoutSeconds, runner), context);
@@ -74,9 +98,10 @@ public final class BackgroundManager implements AutoCloseable {
         try {
             display(job.id(), "RUNNING", "Background command accepted; final result will follow");
             Thread.ofVirtual().name("jade-" + job.id()).start(() -> run(job));
-        }
-        catch (RuntimeException failure) {
-            synchronized (this) { jobs.remove(job.id()); }
+        } catch (RuntimeException failure) {
+            synchronized (this) {
+                jobs.remove(job.id());
+            }
             job.shell().close();
             throw failure;
         }
@@ -105,16 +130,22 @@ public final class BackgroundManager implements AutoCloseable {
         }
         Consumer<Completion> publish;
         synchronized (this) {
-            if (closed || !jobs.containsKey(job.id())) return;
+            if (closed || !jobs.containsKey(job.id()))
+                return;
             publish = resultListener;
         }
         // 展示端故障不能吞掉终态事实；Inbox 投递仍然必须执行。
-        try { display(result.id(), result.status(), "exit=" + result.exitCode()); }
-        finally { publish.accept(result); }
+        try {
+            display(result.id(), result.status(), "exit=" + result.exitCode());
+        } finally {
+            publish.accept(result);
+        }
     }
 
     /** 结果已正式写入历史后释放记录；按可信通知 ID 查找，不重跑命令，不限制采用轮次。 */
-    public synchronized void adopted(String id) { jobs.remove(id); }
+    public synchronized void adopted(String id) {
+        jobs.remove(id);
+    }
 
     /**
      * 显式停止一条命令。保持 Job 到执行线程返回终态，等待中的原轮次仍能收到通知。
@@ -122,15 +153,23 @@ public final class BackgroundManager implements AutoCloseable {
      */
     public void stop(String id) {
         Job job;
-        synchronized (this) { job = jobs.get(id); }
-        if (job != null) { job.shell().close(); display(id, "STOPPING", "Cancellation requested; final process result will follow"); }
+        synchronized (this) {
+            job = jobs.get(id);
+        }
+        if (job != null) {
+            job.shell().close();
+            display(id, "STOPPING", "Cancellation requested; final process result will follow");
+        }
     }
 
     /** Job 只持身份、命令和资源；不携带可选投递策略，也不重复保存一份结果队列。 */
-    private record Job(String id, String command, ShellCommand shell, ExecutionContext context) { }
+    private record Job(String id, String command, ShellCommand shell, ExecutionContext context) {
+    }
+
     /** 完成事实只保存来源编号与执行结果；无需把审批函数/执行上下文送进 Inbox。 */
     public record Completion(String id, String owner, String command, String status,
-            Integer exitCode, String output, boolean truncated) { }
+            Integer exitCode, String output, boolean truncated) {
+    }
 
     /** 后台状态只是展示事实，结果仍由独立 Inbox 路径交付。 */
     private void display(String id, String state, String detail) {
@@ -138,11 +177,15 @@ public final class BackgroundManager implements AutoCloseable {
     }
 
     /** 会话关闭时取出全部资源后锁外终止；重复关闭安全，禁止新工作与迟到结果发布。 */
-    @Override public void close() {
+    @Override
+    public void close() {
         List<Job> active;
         synchronized (this) {
-            if (closed) return;
-            closed = true; active = List.copyOf(jobs.values()); jobs.clear();
+            if (closed)
+                return;
+            closed = true;
+            active = List.copyOf(jobs.values());
+            jobs.clear();
         }
         foreground.close();
         active.forEach(job -> job.shell().close());

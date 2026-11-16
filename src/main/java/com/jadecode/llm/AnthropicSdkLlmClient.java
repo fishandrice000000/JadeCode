@@ -57,7 +57,8 @@ public class AnthropicSdkLlmClient implements LlmClient {
      * @param config 运行期配置(见 {@link AppConfig})
      */
     public AnthropicSdkLlmClient(AppConfig config) {
-        this(config, new ModelMetadata(ModelMetadata.Limits.unknown(), "No model parameters provided; using the original request budget"));
+        this(config, new ModelMetadata(ModelMetadata.Limits.unknown(),
+                "No model parameters provided; using the original request budget"));
     }
 
     /**
@@ -68,9 +69,11 @@ public class AnthropicSdkLlmClient implements LlmClient {
         openCodeGo = config.provider() == com.jadecode.config.ModelProvider.OPENCODE_GO;
         var builder = AnthropicOkHttpClient.builder().baseUrl(config.baseUrl());
         // Console 文档要求 Bearer；旧兼容服务仍用 x-api-key，不把两种认证同时发送。
-        if (openCodeGo) builder.authToken(config.apiKey()).replaceHeaders("User-Agent", "jadecode/1.1.0")
-                .putHeader("x-opencode-client", "jadecode");
-        else builder.apiKey(config.apiKey());
+        if (openCodeGo)
+            builder.authToken(config.apiKey()).replaceHeaders("User-Agent", "jadecode/1.1.0")
+                    .putHeader("x-opencode-client", "jadecode");
+        else
+            builder.apiKey(config.apiKey());
         this.client = builder.build();
         this.model = config.model();
         this.metadata = java.util.Objects.requireNonNull(metadata, "metadata");
@@ -78,20 +81,32 @@ public class AnthropicSdkLlmClient implements LlmClient {
         String host = "https".equalsIgnoreCase(endpoint.getScheme()) ? endpoint.getHost() : null;
         deepseek = !openCodeGo && "api.deepseek.com".equalsIgnoreCase(host);
         // 只开放当前档案适配的格式。Go 档位依据 Pi 资料；网关实际效果仍需真实服务验收。
-        if (openCodeGo) thinkingChoices = List.of(ThinkingSettings.DEFAULT, ThinkingSettings.LOW,
-                ThinkingSettings.HIGH, ThinkingSettings.MAX);
-        else if (deepseek) thinkingChoices = List.of(ThinkingSettings.DEFAULT, ThinkingSettings.OFF,
-                ThinkingSettings.LOW, ThinkingSettings.HIGH, ThinkingSettings.MAX);
+        if (openCodeGo)
+            thinkingChoices = List.of(ThinkingSettings.DEFAULT, ThinkingSettings.LOW,
+                    ThinkingSettings.HIGH, ThinkingSettings.MAX);
+        else if (deepseek)
+            thinkingChoices = List.of(ThinkingSettings.DEFAULT, ThinkingSettings.OFF,
+                    ThinkingSettings.LOW, ThinkingSettings.HIGH, ThinkingSettings.MAX);
         else if ("api.anthropic.com".equalsIgnoreCase(host)
                 && (model.startsWith("claude-opus-4-6") || model.startsWith("claude-sonnet-4-6")))
             thinkingChoices = List.of(ThinkingSettings.DEFAULT, ThinkingSettings.OFF, ThinkingSettings.LOW,
                     ThinkingSettings.MEDIUM, ThinkingSettings.HIGH, ThinkingSettings.MAX);
-        else thinkingChoices = List.of(ThinkingSettings.DEFAULT);
+        else
+            thinkingChoices = List.of(ThinkingSettings.DEFAULT);
     }
 
-    @Override public ModelMetadata metadata() { return metadata; }
-    @Override public List<ThinkingSettings> thinkingChoices() { return thinkingChoices; }
-    @Override public String thinkingLabel(ThinkingSettings value) {
+    @Override
+    public ModelMetadata metadata() {
+        return metadata;
+    }
+
+    @Override
+    public List<ThinkingSettings> thinkingChoices() {
+        return thinkingChoices;
+    }
+
+    @Override
+    public String thinkingLabel(ThinkingSettings value) {
         return value == ThinkingSettings.DEFAULT && deepseek ? "high" : LlmClient.super.thinkingLabel(value);
     }
 
@@ -112,7 +127,8 @@ public class AnthropicSdkLlmClient implements LlmClient {
             throw serviceFailure(e);
         } catch (AnthropicException e) {
             // 网络类异常:无状态码
-            throw openCodeGo ? new LlmException("OpenCode Go network request failed") : new LlmException(e.getMessage(), e);
+            throw openCodeGo ? new LlmException("OpenCode Go network request failed")
+                    : new LlmException(e.getMessage(), e);
         }
     }
 
@@ -151,7 +167,8 @@ public class AnthropicSdkLlmClient implements LlmClient {
                     }
                 } else if (event.isContentBlockDelta()) {
                     var update = event.asContentBlockDelta();
-                    if (!openBlocks.contains(update.index())) throw new LlmException("Received a delta for a content block that is not open");
+                    if (!openBlocks.contains(update.index()))
+                        throw new LlmException("Received a delta for a content block that is not open");
                     if (update.delta().isInputJson() && toolJson.containsKey(update.index())) {
                         String fragment = update.delta().asInputJson().partialJson();
                         toolJson.get(update.index()).append(fragment);
@@ -159,7 +176,9 @@ public class AnthropicSdkLlmClient implements LlmClient {
                     }
                 } else if (event.isContentBlockStop()) {
                     long index = event.asContentBlockStop().index();
-                    if (!openBlocks.remove(index)) throw new LlmException("Received a stop event for a content block that is not open or was already stopped");
+                    if (!openBlocks.remove(index))
+                        throw new LlmException(
+                                "Received a stop event for a content block that is not open or was already stopped");
                     StringBuilder json = toolJson.remove(index);
                     if (json != null) {
                         validateToolJson(json.toString());
@@ -174,16 +193,20 @@ public class AnthropicSdkLlmClient implements LlmClient {
                     var block = event.asContentBlockStart().contentBlock();
                     if (block.isText()) {
                         // extractText 会用换行连接多个 text block，流式展示也保持这个间隔。
-                        if (hadTextBlock) display.text("\n");
+                        if (hadTextBlock)
+                            display.text("\n");
                         hadTextBlock = true;
-                        if (!block.asText().text().isEmpty()) display.text(block.asText().text());
+                        if (!block.asText().text().isEmpty())
+                            display.text(block.asText().text());
                     } else if (block.isThinking() && !block.asThinking().thinking().isEmpty()) {
                         display.thinking(block.asThinking().thinking());
                     }
                 } else if (event.isContentBlockDelta()) {
                     var delta = event.asContentBlockDelta().delta();
-                    if (delta.isText()) display.text(delta.asText().text());
-                    else if (delta.isThinking()) display.thinking(delta.asThinking().thinking());
+                    if (delta.isText())
+                        display.text(delta.asText().text());
+                    else if (delta.isThinking())
+                        display.thinking(delta.asThinking().thinking());
                 }
             }
             // accumulator.message 在缺少结束事件时抛错，不能把已经预览的半份回复写入历史。
@@ -203,7 +226,8 @@ public class AnthropicSdkLlmClient implements LlmClient {
      * 认证/权限/套餐额度不伪装成上下文溢出，也不在这里切端点或重复整个 Agent 行动。
      */
     private LlmException serviceFailure(AnthropicServiceException failure) {
-        if (!openCodeGo) return new LlmException(failure.getMessage(), failure.statusCode(), failure);
+        if (!openCodeGo)
+            return new LlmException(failure.getMessage(), failure.statusCode(), failure);
         String message = switch (failure.statusCode()) {
             case 400 -> "OpenCode Go rejected the request; check parameters and configured model limits";
             case 401 -> "OpenCode Go authentication failed; check the selected API key";
@@ -222,12 +246,15 @@ public class AnthropicSdkLlmClient implements LlmClient {
      * @throws LlmException 非完整对象或带尾随内容；空白参数按无参工具的空对象处理
      */
     private static void validateToolJson(String json) throws LlmException {
-        if (json.isBlank()) return;
+        if (json.isBlank())
+            return;
         try {
             JsonNode value = Json.mapper().reader().with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS).readTree(json);
-            if (value == null || !value.isObject()) throw new LlmException("Model tool arguments are not a complete JSON object");
+            if (value == null || !value.isObject())
+                throw new LlmException("Model tool arguments are not a complete JSON object");
         } catch (com.fasterxml.jackson.core.JsonProcessingException invalid) {
-            throw new LlmException("The model stream contained incomplete or invalid tool JSON; the tool was not executed", invalid);
+            throw new LlmException(
+                    "The model stream contained incomplete or invalid tool JSON; the tool was not executed", invalid);
         }
     }
 
@@ -235,11 +262,11 @@ public class AnthropicSdkLlmClient implements LlmClient {
 
     /** 出方向:请求 → SDK 参数;system 与 tools 都按"有才注入"处理(空 tools 不占 schema 位) */
     private com.anthropic.models.messages.MessageCreateParams toParams(CompleteRequest request) {
-        com.anthropic.models.messages.MessageCreateParams.Builder builder =
-                com.anthropic.models.messages.MessageCreateParams.builder()
-                        .model(model)
-                        .maxTokens(metadata.capOutput(request.maxTokens())) // 只封顶，不自动扩大请求额度
-                        .messages(request.messages().stream().map(this::toMessageParam).toList());
+        com.anthropic.models.messages.MessageCreateParams.Builder builder = com.anthropic.models.messages.MessageCreateParams
+                .builder()
+                .model(model)
+                .maxTokens(metadata.capOutput(request.maxTokens())) // 只封顶，不自动扩大请求额度
+                .messages(request.messages().stream().map(this::toMessageParam).toList());
         if (openCodeGo) {
             // 身份随请求不可变地传入，不在并发共用的 SDK 客户端上切换全局 header。
             if (request.sessionId().isEmpty())
@@ -258,9 +285,11 @@ public class AnthropicSdkLlmClient implements LlmClient {
         // 这是实际请求字段，不是提示词，也与 Ctrl+T 是否显示思考无关。
         // DEFAULT 完全省略，辅助请求保持原行为；SDK 支持追加标准协议字段，无需升级依赖。
         ThinkingSettings thinking = request.thinking();
-        if (!thinkingChoices.contains(thinking)) throw new IllegalArgumentException("This endpoint or model is not adapted for that thinking effort");
+        if (!thinkingChoices.contains(thinking))
+            throw new IllegalArgumentException("This endpoint or model is not adapted for that thinking effort");
         if (thinking != ThinkingSettings.DEFAULT) {
-            String type = thinking == ThinkingSettings.OFF ? "disabled" : deepseek || openCodeGo ? "enabled" : "adaptive";
+            String type = thinking == ThinkingSettings.OFF ? "disabled"
+                    : deepseek || openCodeGo ? "enabled" : "adaptive";
             builder.putAdditionalBodyProperty("thinking", JsonValue.from(Map.of("type", type)));
             if (thinking != ThinkingSettings.OFF)
                 builder.putAdditionalBodyProperty("output_config", JsonValue.from(Map.of("effort", thinking.value())));
@@ -304,8 +333,8 @@ public class AnthropicSdkLlmClient implements LlmClient {
 
     /** SDK 的 Input 没有 of(JsonNode) 工厂:逐字段塞进 builder */
     private com.anthropic.models.messages.ToolUseBlockParam.Input toSdkInput(JsonNode input) {
-        com.anthropic.models.messages.ToolUseBlockParam.Input.Builder builder =
-                com.anthropic.models.messages.ToolUseBlockParam.Input.builder();
+        com.anthropic.models.messages.ToolUseBlockParam.Input.Builder builder = com.anthropic.models.messages.ToolUseBlockParam.Input
+                .builder();
         for (Map.Entry<String, JsonNode> e : input.properties()) {
             builder.putAdditionalProperty(e.getKey(), JsonValue.fromJsonNode(e.getValue()));
         }
@@ -320,7 +349,8 @@ public class AnthropicSdkLlmClient implements LlmClient {
         ObjectNode schema = tool.inputSchema();
         // 已知字段走 SDK 对应的入口，避免 type 等字段同时出现在普通字段和额外字段中。
         var inputBuilder = com.anthropic.models.messages.Tool.InputSchema.builder();
-        if (schema.has("type")) inputBuilder.type(JsonValue.fromJsonNode(schema.get("type")));
+        if (schema.has("type"))
+            inputBuilder.type(JsonValue.fromJsonNode(schema.get("type")));
         if (schema.path("properties").isObject()) {
             var properties = com.anthropic.models.messages.Tool.InputSchema.Properties.builder();
             for (var field : schema.get("properties").properties())
@@ -357,14 +387,16 @@ public class AnthropicSdkLlmClient implements LlmClient {
             } else if (b.isToolUse()) {
                 com.anthropic.models.messages.ToolUseBlock u = b.asToolUse();
                 JsonNode input = u._input().convert(JsonNode.class);
-                if (!input.isObject()) throw new LlmException("Model tool arguments are not a JSON object; the tool was not executed");
+                if (!input.isObject())
+                    throw new LlmException("Model tool arguments are not a JSON object; the tool was not executed");
                 blocks.add(new ToolUseBlock(u.id(), u.name(), input));
             } else if (b.isThinking()) {
                 var thinking = b.asThinking();
                 // 兼容后端可以省略签名，但实际提供的非空字段必须是合法字符串，不能静默丢掉坏签名。
                 var signature = thinking._signature();
                 blocks.add(new ThinkingBlock(thinking.thinking(), signature.isMissing() || signature.isNull()
-                        ? null : thinking.signature()));
+                        ? null
+                        : thinking.signature()));
             } else if (b.isRedactedThinking()) {
                 blocks.add(new RedactedThinkingBlock(b.asRedactedThinking().data()));
             } else {
@@ -373,13 +405,15 @@ public class AnthropicSdkLlmClient implements LlmClient {
         }
         // 普通输入与缓存读写是分开的协议字段；不得漏掉缓存，也不得把缓存写入明细再加一次。
         // 缺少整份 usage 仍为 null，状态栏会隐藏无报告值，账本保留缺失事实。
-        com.anthropic.models.messages.Usage usage = message._usage().isMissing() || message._usage().isNull() ? null : message.usage();
+        com.anthropic.models.messages.Usage usage = message._usage().isMissing() || message._usage().isNull() ? null
+                : message.usage();
         ModelResponse.Usage u = usage == null
                 ? null
                 : new ModelResponse.Usage(usage.inputTokens(), usage.outputTokens(),
                         usage.cacheReadInputTokens().orElse(0L), usage.cacheCreationInputTokens().orElse(0L));
         // 保留“为什么停止”，辅助 JSON 回复可能因额度耗尽而截断，不能只看到残缺文本。
         // 只保存协议字段，不把思考或原始响应放进诊断日志。
-        return new ModelResponse(Message.assistant(blocks), u, message.stopReason().map(reason -> reason.asString()).orElse(""));
+        return new ModelResponse(Message.assistant(blocks), u,
+                message.stopReason().map(reason -> reason.asString()).orElse(""));
     }
 }

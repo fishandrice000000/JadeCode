@@ -9,6 +9,11 @@ public final class TestPaths {
     public static WorkspacePaths workspace(Path workspace) {
         return new WorkspacePaths(workspace, jade(workspace));
     }
-    public static JadePaths jade(Path workspace) { return new JadePaths(workspace.resolve("fixture-home/.jadecode")); }
-    private TestPaths() { }
+
+    public static JadePaths jade(Path workspace) {
+        return new JadePaths(workspace.resolve("fixture-home/.jadecode"));
+    }
+
+    private TestPaths() {
+    }
 }

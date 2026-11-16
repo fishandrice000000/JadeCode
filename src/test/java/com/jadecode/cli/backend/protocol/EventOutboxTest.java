@@ -30,7 +30,8 @@ class EventOutboxTest {
                     throw new java.io.IOException("interrupted", interrupted);
                 }
             }
-        }, failure -> { });
+        }, failure -> {
+        });
         ObjectNode payload = Json.mapper().createObjectNode();
         outbox.offer("message", payload, "", 0L, null);
         outbox.flushNow();

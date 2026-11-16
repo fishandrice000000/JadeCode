@@ -9,11 +9,18 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
  */
 public interface EventEndpoint {
     void sendEvent(String type, ObjectNode payload, String sessionId, Long generation);
+
     void sendStreamEvent(String type, ObjectNode payload, String sessionId, Long generation, String mergeKey);
+
     void sendResult(String commandId, String type, ObjectNode payload, String sessionId, Long generation);
+
     void sendOk(String commandId, ObjectNode payload, String sessionId, Long generation);
+
     void sendError(String commandId, ProtocolError error, String message, String sessionId, Long generation);
+
     long sentSeq();
+
     void expectReady(String id, Long generation, Long sourceSeq);
+
     void flushAndClose();
 }

@@ -69,8 +69,10 @@ public class WriteFileTool implements Tool {
     public String execute(ObjectNode input) {
         return executeOutcome(input, null).content();
     }
+
     /** 保存实际 IO 状态，宿主与容器使用同一份实现。 */
-    @Override public ToolOutcome executeOutcome(ObjectNode input, com.jadecode.execution.ExecutionContext context) {
+    @Override
+    public ToolOutcome executeOutcome(ObjectNode input, com.jadecode.execution.ExecutionContext context) {
         for (String key : required()) {
             if (input.get(key) == null) {
                 return new ToolOutcome("Error: Missing required parameter: " + key, true);

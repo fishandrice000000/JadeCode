@@ -39,7 +39,8 @@ public record AppConfig(String apiKey, String baseUrl, String model, int maxToke
         // 官方 Go URL 已明确表达服务商意图；缺少选择器时不能沿用旧认证并漏掉会话头。
         // 这里只报出修正方法，不根据 URL 静默切换 provider，也不读取/发送任何凭据。
         if (provider != ModelProvider.OPENCODE_GO && isOpenCodeGoEndpoint(baseUrl))
-            throw new IllegalArgumentException("OpenCode Go endpoint requires provider: opencode-go in model.json (or MODEL_PROVIDER=opencode-go)");
+            throw new IllegalArgumentException(
+                    "OpenCode Go endpoint requires provider: opencode-go in model.json (or MODEL_PROVIDER=opencode-go)");
         if (provider == ModelProvider.OPENCODE_GO) {
             if (!provider.defaultModel().equals(model))
                 throw new IllegalArgumentException("OpenCode Go is adapted only for deepseek-v4.1-flash");
@@ -47,10 +48,12 @@ public record AppConfig(String apiKey, String baseUrl, String model, int maxToke
             java.net.URI endpoint = java.net.URI.create(baseUrl);
             if ("opencode.ai".equalsIgnoreCase(endpoint.getHost())
                     && (!"https".equalsIgnoreCase(endpoint.getScheme())
-                        || endpoint.getPort() != -1 && endpoint.getPort() != 443
-                        || !"/inference/go/anthropic".equals(endpoint.getRawPath().replaceAll("/+$", ""))
-                        || endpoint.getRawUserInfo() != null || endpoint.getRawQuery() != null || endpoint.getRawFragment() != null))
-                throw new IllegalArgumentException("OpenCode Go Messages baseUrl must be https://opencode.ai/inference/go/anthropic");
+                            || endpoint.getPort() != -1 && endpoint.getPort() != 443
+                            || !"/inference/go/anthropic".equals(endpoint.getRawPath().replaceAll("/+$", ""))
+                            || endpoint.getRawUserInfo() != null || endpoint.getRawQuery() != null
+                            || endpoint.getRawFragment() != null))
+                throw new IllegalArgumentException(
+                        "OpenCode Go Messages baseUrl must be https://opencode.ai/inference/go/anthropic");
         }
     }
 
@@ -60,13 +63,16 @@ public record AppConfig(String apiKey, String baseUrl, String model, int maxToke
      * 非法 URL 仍由原配置校验负责，本方法不回显 URL，也不改变旧手工构造的其它行为。
      */
     private static boolean isOpenCodeGoEndpoint(String baseUrl) {
-        if (baseUrl == null) return false;
+        if (baseUrl == null)
+            return false;
         try {
             java.net.URI endpoint = java.net.URI.create(baseUrl);
             String path = endpoint.getRawPath();
             return "opencode.ai".equalsIgnoreCase(endpoint.getHost()) && path != null
                     && (path.equals("/inference/go") || path.startsWith("/inference/go/"));
-        } catch (IllegalArgumentException invalid) { return false; }
+        } catch (IllegalArgumentException invalid) {
+            return false;
+        }
     }
 
     /**
@@ -78,7 +84,8 @@ public record AppConfig(String apiKey, String baseUrl, String model, int maxToke
      */
     public static AppConfig fromEnv(Env env) {
         ModelProvider provider = ModelProvider.parse(env.get("MODEL_PROVIDER"));
-        return new AppConfig(getApiKeyFrom(env), getBaseUrlFrom(env, provider), getModelFrom(env, provider), getMaxTokensFrom(env), provider);
+        return new AppConfig(getApiKeyFrom(env), getBaseUrlFrom(env, provider), getModelFrom(env, provider),
+                getMaxTokensFrom(env), provider);
     }
 
     /** 必填项缺失时补一句指引(用户最常见的初次运行失败),再原样抛出 */
@@ -114,7 +121,8 @@ public record AppConfig(String apiKey, String baseUrl, String model, int maxToke
         }
         try {
             int configured = Integer.parseInt(s.strip());
-            if (configured > 0) return configured;
+            if (configured > 0)
+                return configured;
         } catch (NumberFormatException e) {
             throw new IllegalStateException("MAX_TOKENS must be auto or a positive integer; current value:" + s, e);
         }

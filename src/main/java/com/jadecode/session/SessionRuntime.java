@@ -57,13 +57,19 @@ import com.jadecode.todo.TodoManager;
  */
 public final class SessionRuntime implements AutoCloseable {
     private com.jadecode.safety.PermissionState permissions = com.jadecode.safety.PermissionState.defaults();
+
     /** 工厂装配一次，共享的是权限配置，不是队友的历史或工具表。 */
     public void permissions(com.jadecode.safety.PermissionState value) {
-        if (consumer != null || journal != null || closed) throw new IllegalStateException("Session is already started or closed");
+        if (consumer != null || journal != null || closed)
+            throw new IllegalStateException("Session is already started or closed");
         permissions = java.util.Objects.requireNonNull(value);
     }
+
     /** 界面通过共享状态切换档位；不能在运行后换成与工具检查器不同的另一份状态。 */
-    public com.jadecode.safety.PermissionState permissionState() { return permissions; }
+    public com.jadecode.safety.PermissionState permissionState() {
+        return permissions;
+    }
+
     /**
      * 这次会话现在在做什么，不是 s10 任务文件里保存的任务状态。
      */
@@ -81,6 +87,7 @@ public final class SessionRuntime implements AutoCloseable {
         /** 用户已经退出，不再开始新操作，排队任务也不再执行。 */
         CLOSED
     }
+
     /** 实际请求模型、执行工具和压缩历史的对象；什么时候调用它，由本类决定。 */
     private final AgentExecutor engine;
     /** 长期记忆的算法留在 memory；本类决定任务入口与完成后的调用时机。 */
@@ -101,19 +108,38 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /** 只读报告端口只接受派工 ID；后台服务不接受模型或前端指定任意文件路径。 */
-    @FunctionalInterface public interface TeamReports { String read(String assignment) throws IOException; }
-    private TeamReports teamReports = id -> { throw new IllegalArgumentException("No Team is active"); };
+    @FunctionalInterface
+    public interface TeamReports {
+        String read(String assignment) throws IOException;
+    }
+
+    private TeamReports teamReports = id -> {
+        throw new IllegalArgumentException("No Team is active");
+    };
+
     /** 工厂安装当前 Team 的只读报告端口，不启动 IO。 */
-    public void teamReports(TeamReports reader) { teamReports = java.util.Objects.requireNonNull(reader); }
+    public void teamReports(TeamReports reader) {
+        teamReports = java.util.Objects.requireNonNull(reader);
+    }
+
     /** Leader 验收属于当前轮的决策工作；在 Inbox 锁外检查，避免与 Team 投递形成锁反转。 */
     private java.util.function.Function<String, String> teamCompletion = run -> "";
+
     public void teamCompletion(java.util.function.Function<String, String> check) {
         teamCompletion = java.util.Objects.requireNonNull(check);
     }
+
     /** 后端详情页显式请求时才读取正文，普通快照不读磁盘。 */
-    public String teamReport(String assignment) throws IOException { return teamReports.read(assignment); }
+    public String teamReport(String assignment) throws IOException {
+        return teamReports.read(assignment);
+    }
+
     /** 当前执行编号供只读 Team 统计使用，空闲时为空串。 */
-    public String currentExecutionId() { Active task = active; return task == null ? "" : task.context().id(); }
+    public String currentExecutionId() {
+        Active task = active;
+        return task == null ? "" : task.context().id();
+    }
+
     /** 运行中派工来自当前执行上下文；空闲时为空，不借用排队任务冒充当前工作。 */
     public String currentAssignmentId() {
         Active current = active;
@@ -124,18 +150,24 @@ public final class SessionRuntime implements AutoCloseable {
     public void expectTeamResult(String assignment, String owner) {
         synchronized (inbox) {
             ensureOpen();
-            if (pendingTeam.size() >= 32) throw new IllegalStateException("At most 32 pending required assignments");
+            if (pendingTeam.size() >= 32)
+                throw new IllegalStateException("At most 32 pending required assignments");
             pendingTeam.put(assignment, owner);
         }
     }
 
     /** 仅撤销尚未交付的派工或已退出轮次；不撤销已执行的业务副作用。 */
     public void forgetTeamResult(String assignment) {
-        synchronized (inbox) { pendingTeam.remove(assignment); inbox.wake(); }
+        synchronized (inbox) {
+            pendingTeam.remove(assignment);
+            inbox.wake();
+        }
     }
 
     /** 当前任务是否仍欠必要报告；不调用 TeamManager，避免队列锁与管理器锁互等。 */
-    private boolean hasPendingTeam(String owner) { return pendingTeam.containsValue(owner); }
+    private boolean hasPendingTeam(String owner) {
+        return pendingTeam.containsValue(owner);
+    }
 
     /** 显示回复、接收通知和本轮计数；回复结束不等于所有业务成功。 */
     private final Consumer<String> output;
@@ -156,8 +188,8 @@ public final class SessionRuntime implements AutoCloseable {
     private SessionUsage usage;
     private boolean ownsUsage = true;
     private LlmClient profile;
-    private java.util.concurrent.atomic.AtomicReference<ThinkingSettings> requestThinking =
-            new java.util.concurrent.atomic.AtomicReference<>(ThinkingSettings.DEFAULT);
+    private java.util.concurrent.atomic.AtomicReference<ThinkingSettings> requestThinking = new java.util.concurrent.atomic.AtomicReference<>(
+            ThinkingSettings.DEFAULT);
     private volatile ContextUsage contextUsage;
     /** 只读 MCP 服务快照；工厂在装配时绑定 McpManager.snapshot，UI 不直接依赖 mcp 包。 */
     private java.util.function.Supplier<List<com.jadecode.mcp.McpManager.ServerSnapshot>> mcpSnapshot = List::of;
@@ -170,25 +202,34 @@ public final class SessionRuntime implements AutoCloseable {
 
     /** 启动前安装独立判断端口；不发模型请求，已有 Stop hook 与后台职责不被替换。 */
     public void goals(GoalEvaluator evaluator, GoalController.Limits limits) {
-        if (consumer != null || journal != null || closed || goals != null) throw new IllegalStateException("Cannot install goal evaluator now");
+        if (consumer != null || journal != null || closed || goals != null)
+            throw new IllegalStateException("Cannot install goal evaluator now");
         goals = new GoalController(evaluator, this::saveGoal, limits);
     }
 
     /** UI/测试可读取不可变状态；没有 Goal 能力或从未设置时为 null，不启动判断。 */
-    public GoalState goalState() { return goals == null ? null : goals.state(); }
+    public GoalState goalState() {
+        return goals == null ? null : goals.state();
+    }
 
     /** 先可靠保存元数据再通知界面；由 Controller 发布内存状态，失败沿原持久化围栏停止执行。 */
     private void saveGoal(GoalState next) {
         ensureOpen();
-        try { if (journal != null) journal.goal(next); }
-        catch (IOException failure) { persistenceError(); throw new IllegalStateException("Could not save goal state", failure); }
+        try {
+            if (journal != null)
+                journal.goal(next);
+        } catch (IOException failure) {
+            persistenceError();
+            throw new IllegalStateException("Could not save goal state", failure);
+        }
         engine.notice(ExecutionNotice.event(ExecutionNotice.Kind.GOAL, next.id(), "Goal",
                 next.condition() + "\n" + next.reason(), next.status().name()));
     }
 
     /** 只识别用户入口的一条完整命令；其它来源不调用本方法，正文包含 /goal 不授予能力。 */
     private static boolean goalCommand(String prompt) {
-        if (prompt == null) return false;
+        if (prompt == null)
+            return false;
         String text = prompt.strip();
         return text.startsWith("/goal") && (text.length() == 5 || Character.isWhitespace(text.charAt(5)));
     }
@@ -198,34 +239,45 @@ public final class SessionRuntime implements AutoCloseable {
      * 返回 null 表示需要入队；非法条件返回失败 future，既不改历史也不发模型请求。
      */
     private CompletableFuture<String> localGoalCommand(String prompt) {
-        if (!goalCommand(prompt)) return null;
+        if (!goalCommand(prompt))
+            return null;
         synchronized (historyMonitor) {
             try {
                 ensureOpen();
-                if (goals == null) throw new IllegalStateException("Goal commands are not available in this session");
+                if (goals == null)
+                    throw new IllegalStateException("Goal commands are not available in this session");
                 String argument = prompt.strip().substring(5).strip();
-                if (!argument.isEmpty() && !java.util.Set.of("clear", "stop", "off", "reset", "none", "cancel").contains(argument)) {
-                    GoalState.validCondition(argument); return null;
+                if (!argument.isEmpty()
+                        && !java.util.Set.of("clear", "stop", "off", "reset", "none", "cancel").contains(argument)) {
+                    GoalState.validCondition(argument);
+                    return null;
                 }
-                if (!argument.isEmpty()) goals.clear();
+                if (!argument.isEmpty())
+                    goals.clear();
                 String answer = goals.describe();
                 GoalState current = goals.state();
                 if (current != null && current.active()) {
                     SessionUsage.Totals total = usage.snapshot().total();
                     answer += "\nReported session tokens since set/restore (all purposes/actors): "
-                            + (total.inputTokens() - goalUsageStart.inputTokens() + total.outputTokens() - goalUsageStart.outputTokens())
-                            + "\nMissing usage reports: " + (total.missingRequests() - goalUsageStart.missingRequests());
+                            + (total.inputTokens() - goalUsageStart.inputTokens() + total.outputTokens()
+                                    - goalUsageStart.outputTokens())
+                            + "\nMissing usage reports: "
+                            + (total.missingRequests() - goalUsageStart.missingRequests());
                 }
-                engine.notice(ExecutionNotice.event(ExecutionNotice.Kind.GOAL, current == null ? "" : current.id(), "Goal",
-                        answer, current == null ? "NONE" : current.status().name()));
+                engine.notice(
+                        ExecutionNotice.event(ExecutionNotice.Kind.GOAL, current == null ? "" : current.id(), "Goal",
+                                answer, current == null ? "NONE" : current.status().name()));
                 return CompletableFuture.completedFuture(answer);
-            } catch (RuntimeException failure) { return CompletableFuture.failedFuture(failure); }
+            } catch (RuntimeException failure) {
+                return CompletableFuture.failedFuture(failure);
+            }
         }
     }
 
     /** 会话启动前绑定只读目录，逐组复制，不能把完整指令正文作为展示资料传给前端。 */
     public void resources(Map<String, List<String>> value) {
-        if (consumer != null || journal != null) throw new IllegalStateException("Session is already started");
+        if (consumer != null || journal != null)
+            throw new IllegalStateException("Session is already started");
         var copy = new java.util.LinkedHashMap<String, List<String>>();
         value.forEach((group, names) -> copy.put(group, List.copyOf(names)));
         resources = Map.copyOf(copy);
@@ -233,14 +285,18 @@ public final class SessionRuntime implements AutoCloseable {
 
     /** 界面读取的纯资料，不包含可修改的消息列表、日志写者、线程或审批授权。 */
     public record Display(String id, String title, String model, ModelMetadata metadata, ThinkingSettings thinking,
-            String thinkingLabel, List<ThinkingSettings> thinkingChoices, SessionUsage.Snapshot usage, ContextUsage context,
+            String thinkingLabel, List<ThinkingSettings> thinkingChoices, SessionUsage.Snapshot usage,
+            ContextUsage context,
             Map<String, List<String>> resources, List<Map<String, Object>> team) {
         /** 兼容不装配 Team 的离线显示调用。 */
         public Display(String id, String title, String model, ModelMetadata metadata, ThinkingSettings thinking,
-                String thinkingLabel, List<ThinkingSettings> thinkingChoices, SessionUsage.Snapshot usage, ContextUsage context,
+                String thinkingLabel, List<ThinkingSettings> thinkingChoices, SessionUsage.Snapshot usage,
+                ContextUsage context,
                 Map<String, List<String>> resources) {
-            this(id, title, model, metadata, thinking, thinkingLabel, thinkingChoices, usage, context, resources, List.of());
+            this(id, title, model, metadata, thinking, thinkingLabel, thinkingChoices, usage, context, resources,
+                    List.of());
         }
+
         public Display {
             team = List.copyOf(team);
             thinkingChoices = List.copyOf(thinkingChoices);
@@ -260,23 +316,30 @@ public final class SessionRuntime implements AutoCloseable {
      */
     public void telemetry(SessionUsage value, boolean owner, LlmClient client,
             java.util.concurrent.atomic.AtomicReference<ThinkingSettings> thinking) {
-        if (consumer != null || journal != null) throw new IllegalStateException("Session is already started");
-        usage = java.util.Objects.requireNonNull(value); ownsUsage = owner;
-        profile = java.util.Objects.requireNonNull(client); requestThinking = java.util.Objects.requireNonNull(thinking);
+        if (consumer != null || journal != null)
+            throw new IllegalStateException("Session is already started");
+        usage = java.util.Objects.requireNonNull(value);
+        ownsUsage = owner;
+        profile = java.util.Objects.requireNonNull(client);
+        requestThinking = java.util.Objects.requireNonNull(thinking);
     }
 
     /**
      * 装配只读服务快照端口；必须在会话启动前调用。供应商只能做纯内存复制，不能连接服务。
      */
     public void services(java.util.function.Supplier<List<com.jadecode.mcp.McpManager.ServerSnapshot>> supplier) {
-        if (consumer != null || journal != null) throw new IllegalStateException("Session is already started");
+        if (consumer != null || journal != null)
+            throw new IllegalStateException("Session is already started");
         mcpSnapshot = supplier == null ? List::of : supplier;
     }
 
     /** @return 当前 MCP 服务只读快照；空列表表示没有配置或尚未装配。 */
     public List<com.jadecode.mcp.McpManager.ServerSnapshot> mcpServers() {
-        try { return List.copyOf(mcpSnapshot.get()); }
-        catch (RuntimeException failure) { return List.of(); }
+        try {
+            return List.copyOf(mcpSnapshot.get());
+        } catch (RuntimeException failure) {
+            return List.of();
+        }
     }
 
     /** 只读当前已发布的快照，不读盘、不请求模型；允许 TUI 在自己的线程采用。 */
@@ -286,11 +349,14 @@ public final class SessionRuntime implements AutoCloseable {
         return new Display(sessionId(), metadata == null ? "" : metadata.title(), model,
                 profile == null ? new ModelMetadata(ModelMetadata.Limits.unknown(), "") : profile.metadata(), setting,
                 profile == null ? "default" : profile.thinkingLabel(setting),
-                profile == null ? List.of(ThinkingSettings.DEFAULT) : profile.thinkingChoices(), usage.snapshot(), contextUsage, resources, teamSnapshot.get());
+                profile == null ? List.of(ThinkingSettings.DEFAULT) : profile.thinkingChoices(), usage.snapshot(),
+                contextUsage, resources, teamSnapshot.get());
     }
 
     /** 只取当前设置，供新队友/一次性子任务在创建时继承；不会改已有队友。 */
-    public ThinkingSettings thinking() { return requestThinking.get(); }
+    public ThinkingSettings thinking() {
+        return requestThinking.get();
+    }
 
     /**
      * 用户的本地设置操作：先保存，再供下一次请求读取，不等待当前模型结束或改写其输入。
@@ -299,9 +365,15 @@ public final class SessionRuntime implements AutoCloseable {
     public void changeThinking(ThinkingSettings value) throws IOException {
         synchronized (historyMonitor) {
             ensureOpen();
-            if (!display().thinkingChoices().contains(value)) throw new IllegalArgumentException("This endpoint or model does not support that thinking setting");
-            try { if (journal != null) journal.thinking(value); }
-            catch (IOException failure) { persistenceError(); throw failure; }
+            if (!display().thinkingChoices().contains(value))
+                throw new IllegalArgumentException("This endpoint or model does not support that thinking setting");
+            try {
+                if (journal != null)
+                    journal.thinking(value);
+            } catch (IOException failure) {
+                persistenceError();
+                throw failure;
+            }
             requestThinking.set(value);
         }
     }
@@ -311,11 +383,17 @@ public final class SessionRuntime implements AutoCloseable {
         String valid = com.jadecode.session.history.SessionMetadata.validTitle(title);
         synchronized (historyMonitor) {
             ensureOpen();
-            if (journal == null) throw new IOException("Persistent saving is not enabled for this session");
-            try { journal.rename(valid); }
-            catch (IOException failure) { persistenceError(); throw failure; }
+            if (journal == null)
+                throw new IOException("Persistent saving is not enabled for this session");
+            try {
+                journal.rename(valid);
+            } catch (IOException failure) {
+                persistenceError();
+                throw failure;
+            }
         }
     }
+
     /** 恢复后的系统说明，不伪装成人类新输入；提醒模型旧运行资源并没有随聊天记录复活。 */
     private String resumeContext = "";
     private volatile boolean persistenceFailed, switching;
@@ -325,32 +403,54 @@ public final class SessionRuntime implements AutoCloseable {
     /** start 创建的任务处理线程；旧 runExisting 直接用调用者线程。 */
     private Thread consumer;
     /** 工厂组合 Team、MCP 等依赖清理；后登记的依赖先关闭，动作不能互相覆盖。 */
-    private Runnable closeDependents = () -> { };
+    private Runnable closeDependents = () -> {
+    };
 
     /** 安装本会话拥有的额外资源清理，不启动它们；须在 start 前调用。 */
     public synchronized void onClose(Runnable cleanup) {
         java.util.Objects.requireNonNull(cleanup);
         Runnable previous = closeDependents;
         // 后装配的依赖先关闭；即使其中失败，也继续释放先前登记的资源，不能覆盖 Team/MCP 清理。
-        closeDependents = () -> { try { cleanup.run(); } finally { previous.run(); } };
+        closeDependents = () -> {
+            try {
+                cleanup.run();
+            } finally {
+                previous.run();
+            }
+        };
     }
 
-    private java.util.function.Consumer<String> taskCleanup = ignored -> { };
+    private java.util.function.Consumer<String> taskCleanup = ignored -> {
+    };
+
     /** 真正任务结束才撤销任务级资源；压缩和单次模型回复不触发，清理失败必须报告。 */
     public void onTaskEnd(java.util.function.Consumer<String> cleanup) {
         var previous = taskCleanup;
-        taskCleanup = run -> { try { previous.accept(run); } finally { cleanup.accept(run); } };
+        taskCleanup = run -> {
+            try {
+                previous.accept(run);
+            } finally {
+                cleanup.accept(run);
+            }
+        };
     }
 
     /** 工厂登记真实 Todo 和模型名，不开始存盘；旧兼容调用仍可使用没有日志的运行时。 */
     public void historyState(TodoManager manager, String modelName, java.util.function.BooleanSupplier blocked) {
-        if (consumer != null || journal != null || closed) throw new IllegalStateException("Session is already started or closed");
+        if (consumer != null || journal != null || closed)
+            throw new IllegalStateException("Session is already started or closed");
         todos = java.util.Objects.requireNonNull(manager);
-        model = java.util.Objects.requireNonNull(modelName); switchBlocked = java.util.Objects.requireNonNull(blocked);
+        model = java.util.Objects.requireNonNull(modelName);
+        switchBlocked = java.util.Objects.requireNonNull(blocked);
     }
 
-    public String model() { return model; }
-    public String sessionId() { return journal == null ? "" : journal.metadata().id(); }
+    public String model() {
+        return model;
+    }
+
+    public String sessionId() {
+        return journal == null ? "" : journal.metadata().id();
+    }
 
     /** 路由包装只归本运行时，绝不保存认证；非持久化调用也已有稳定的临时身份。 */
     private com.jadecode.llm.SessionLlmClient modelRequests;
@@ -365,65 +465,89 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /** 会话清单只保存这份无凭据身份，不将整个 AppConfig 交给日志。 */
-    public String backendIdentity() { return backendIdentity; }
+    public String backendIdentity() {
+        return backendIdentity;
+    }
 
     /** 关闭依赖失败时保留失败事实，阻止服务提前释放工作区。 */
     private volatile boolean cleanupFailed;
     private long executionTokenBudget;
+
     /** 调用方在启动前显式配置每轮累计用量软上限；所有运行方式默认不限。 */
     public void executionTokenBudget(long tokens) {
-        if (consumer != null || tokens < 1) throw new IllegalArgumentException("Set a positive budget before starting");
+        if (consumer != null || tokens < 1)
+            throw new IllegalArgumentException("Set a positive budget before starting");
         executionTokenBudget = tokens;
     }
+
     /** 关闭后消费者确实退出才返回 true；不把“已发中断”冒充“线程已停止”。 */
-    public boolean isStopped() { return closed && !cleanupFailed && (consumer == null || !consumer.isAlive()); }
+    public boolean isStopped() {
+        return closed && !cleanupFailed && (consumer == null || !consumer.isAlive());
+    }
 
     /** 取消当前轮次；子代理和 Shell 观察同一标记，下一轮仍可执行。 */
     public void cancelCurrent() {
         Active task = active;
-        if (task == null) return;
+        if (task == null)
+            return;
         task.cancelled.set(true);
         taskCancellation.accept(task.context().id());
         inbox.wake();
-        if (consumer != null) consumer.interrupt();
+        if (consumer != null)
+            consumer.interrupt();
     }
-    private java.util.function.Consumer<String> taskCancellation = ignored -> { };
+
+    private java.util.function.Consumer<String> taskCancellation = ignored -> {
+    };
+
     /** 顶层装配取消该轮所属 Team 派工；不关闭整个协作管理器。 */
-    public void onTaskCancel(java.util.function.Consumer<String> value) { taskCancellation = value; }
+    public void onTaskCancel(java.util.function.Consumer<String> value) {
+        taskCancellation = value;
+    }
 
     /**
      * 启动前采用恢复结果并接管写者所有权。只安装历史和计划，不提交旧请求或执行旧工具。
      * @throws IllegalStateException 运行时已经启动、已关闭或已经安装日志
      */
     public synchronized void restore(SessionJournal writer, RestoredSession restored) {
-        if (consumer != null || closed || journal != null) throw new IllegalStateException("Cannot install history into a running session");
+        if (consumer != null || closed || journal != null)
+            throw new IllegalStateException("Cannot install history into a running session");
         String previousBackend = restored.metadata().backendIdentity();
         // 原兼容入口保留旧恢复行为；涉及 Go 时必须证明来源一致，不能把旧签名/工具历史交给另一个后端。
         // 先检查再改变内存历史或采用 writer，失败时宿主仍能关闭目标日志并保留旧会话。
         if ((backendIdentity.startsWith("opencode-go:") || previousBackend.startsWith("opencode-go:"))
                 && !backendIdentity.equals(previousBackend))
-            throw new IllegalArgumentException("OpenCode Go history requires the same provider, Messages endpoint and model; start a new session for a different backend");
-        if (modelRequests != null) modelRequests.restoreIdentity(restored.metadata().id());
-        if (todos != null) todos.restore(restored.todos());
+            throw new IllegalArgumentException(
+                    "OpenCode Go history requires the same provider, Messages endpoint and model; start a new session for a different backend");
+        if (modelRequests != null)
+            modelRequests.restoreIdentity(restored.metadata().id());
+        if (todos != null)
+            todos.restore(restored.todos());
         history = new ArrayList<>(restored.history());
         engine.invalidateContext();
-        if (!restored.entries().isEmpty()) resumeContext = "\nRestored conversation: previous background processes, teammates, inbox and approval grants were not restored."
-                + " Workspace files and persistent tasks and memory reflect current disk state, not a rollback."
-                + " Do not replay old tool calls to reconstruct history. An unrecorded result does not prove the operation did not execute."
-                + " Runtime artifacts are stored under the user data directory. Use current artifact paths; shell commands run in the project.";
+        if (!restored.entries().isEmpty())
+            resumeContext = "\nRestored conversation: previous background processes, teammates, inbox and approval grants were not restored."
+                    + " Workspace files and persistent tasks and memory reflect current disk state, not a rollback."
+                    + " Do not replay old tool calls to reconstruct history. An unrecorded result does not prove the operation did not execute."
+                    + " Runtime artifacts are stored under the user data directory. Use current artifact paths; shell commands run in the project.";
         journal = java.util.Objects.requireNonNull(writer);
         usage.restore(writer, restored.entries());
         if (goals != null) {
             // 只恢复最后的目标元数据；不恢复旧审批/线程，不在恢复时自动 submit。
             GoalState saved = null;
-            for (JournalEntry entry : restored.entries()) if (entry.kind() == JournalEntry.Kind.GOAL) saved = entry.goal();
+            for (JournalEntry entry : restored.entries())
+                if (entry.kind() == JournalEntry.Kind.GOAL)
+                    saved = entry.goal();
             goals.restore(saved);
             goalUsageStart = usage.snapshot().total();
         }
         ThinkingSettings saved = restored.metadata().thinking();
         if (saved != null) {
-            if (display().thinkingChoices().contains(saved)) requestThinking.set(saved);
-            else errors.accept("[Warning] The current model does not support the restored session's thinking setting; using the current configuration default.");
+            if (display().thinkingChoices().contains(saved))
+                requestThinking.set(saved);
+            else
+                errors.accept(
+                        "[Warning] The current model does not support the restored session's thinking setting; using the current configuration default.");
         }
     }
 
@@ -432,23 +556,36 @@ public final class SessionRuntime implements AutoCloseable {
      * Team/后台检查放在 Inbox 锁外，避免与生产者持有的资源锁形成反向等待。
      */
     public boolean freezeForSwitch() {
-        if (switchBlocked.getAsBoolean() || background != null && background.hasPending()) return false;
+        if (switchBlocked.getAsBoolean() || background != null && background.hasPending())
+            return false;
         synchronized (inbox) {
-            if (closed || switching || active != null || dispatching || !inbox.isEmpty()) return false;
+            if (closed || switching || active != null || dispatching || !inbox.isEmpty())
+                return false;
             switching = true;
             return true;
         }
     }
 
     /** 目标加载/装配失败时撤销冻结，让原会话继续接收请求；不会重放任何任务。 */
-    public void unfreeze() { synchronized (inbox) { switching = false; inbox.wake(); } }
+    public void unfreeze() {
+        synchronized (inbox) {
+            switching = false;
+            inbox.wake();
+        }
+    }
 
     /** 是否正处理大轮次；等待后台也算忙，不能把新派工直接当当前工作。 */
-    public boolean isBusy() { return active != null; }
+    public boolean isBusy() {
+        return active != null;
+    }
+
     /** 服务闲置回收只观察真实资源；空闲主 Agent 仍可能拥有队友或非必等后台。 */
     public boolean idleForReaping() {
-        if (state != State.IDLE || switchBlocked.getAsBoolean() || background != null && background.hasPending()) return false;
-        synchronized (inbox) { return !closed && active == null && !dispatching && inbox.isEmpty(); }
+        if (state != State.IDLE || switchBlocked.getAsBoolean() || background != null && background.hasPending())
+            return false;
+        synchronized (inbox) {
+            return !closed && active == null && !dispatching && inbox.isEmpty();
+        }
     }
 
     /** 给提交结果工具检查当前轮次是否仍欠必等后台结果，不把“启动成功”当业务完成。 */
@@ -463,23 +600,29 @@ public final class SessionRuntime implements AutoCloseable {
      */
     public CompletableFuture<String> submitUser(String prompt, Approval approval) {
         // 设置不走忙时用户缓冲：整条命令应在当前任务之后开始，避免被拼到旧条件里。
-        if (goalCommand(prompt)) return submit(prompt, approval);
-        if (!isBusy()) return submit(prompt, approval);
-        if (prompt == null || prompt.isBlank()) return CompletableFuture.failedFuture(new IllegalArgumentException("Empty prompt"));
+        if (goalCommand(prompt))
+            return submit(prompt, approval);
+        if (!isBusy())
+            return submit(prompt, approval);
+        if (prompt == null || prompt.isBlank())
+            return CompletableFuture.failedFuture(new IllegalArgumentException("Empty prompt"));
         var context = ExecutionContext.create(ExecutionContext.Source.USER, approval, () -> closed);
         CompletableFuture<String> result;
         synchronized (inbox) {
             result = closed || switching || persistenceFailed ? null : inbox.buffer(prompt, context);
             publishBuffer();
         }
-        return result == null ? CompletableFuture.failedFuture(new RejectedExecutionException("Session inbox is full or closed")) : result;
+        return result == null
+                ? CompletableFuture.failedFuture(new RejectedExecutionException("Session inbox is full or closed"))
+                : result;
     }
 
     /** 空输入 Enter 只升级待处理原批次，没缓冲则不做事。 */
     public boolean promoteUserBuffer() {
         synchronized (inbox) {
             boolean changed = !closed && !switching && !persistenceFailed && inbox.promote();
-            publishBuffer(); return changed;
+            publishBuffer();
+            return changed;
         }
     }
 
@@ -522,7 +665,8 @@ public final class SessionRuntime implements AutoCloseable {
                 context.approval(), () -> closed, context.goal(), context.assignment());
         synchronized (inbox) {
             if (closed || switching || persistenceFailed || !inbox.offer(new SessionInbox.Entry(
-                    new SessionEvent.Request(incoming.render(), scoped), result))) return null;
+                    new SessionEvent.Request(incoming.render(), scoped), result)))
+                return null;
         }
         return result;
     }
@@ -578,9 +722,12 @@ public final class SessionRuntime implements AutoCloseable {
      * @throws IllegalStateException 会话已经关闭
      */
     public synchronized void start() {
-        if (closed) throw new IllegalStateException("Session is closed");
-        if (consumer != null) return;
-        if (memory != null) memory.start();
+        if (closed)
+            throw new IllegalStateException("Session is closed");
+        if (consumer != null)
+            return;
+        if (memory != null)
+            memory.start();
         consumer = new Thread(this::consume, "jade-session-consumer");
         consumer.setDaemon(true);
         consumer.start();
@@ -602,7 +749,8 @@ public final class SessionRuntime implements AutoCloseable {
      */
     public CompletableFuture<String> submit(String prompt, Approval approval) {
         CompletableFuture<String> local = localGoalCommand(prompt);
-        if (local != null) return local;
+        if (local != null)
+            return local;
         CompletableFuture<String> result = new CompletableFuture<>();
         if (prompt == null || prompt.isBlank()) {
             result.completeExceptionally(new IllegalArgumentException("Prompt must not be blank"));
@@ -612,7 +760,8 @@ public final class SessionRuntime implements AutoCloseable {
         SessionEvent.Request request = new SessionEvent.Request(prompt, context);
         synchronized (inbox) {
             if (closed || switching || persistenceFailed || !inbox.offer(new SessionInbox.Entry(request, result)))
-                result.completeExceptionally(new RejectedExecutionException("Session inbox is full, switching or unavailable"));
+                result.completeExceptionally(
+                        new RejectedExecutionException("Session inbox is full, switching or unavailable"));
         }
         return result;
     }
@@ -621,7 +770,9 @@ public final class SessionRuntime implements AutoCloseable {
      * 查看现在是在处理任务、等后台结果，还是已退出，不返回消息列表。
      * @return 此刻的状态；返回后，处理线程可能已经做到了下一步
      */
-    public State state() { return state; }
+    public State state() {
+        return state;
+    }
 
     /**
      * 空闲时按请求顺序领取独立工作，等 execute 处理完，再取下一项。
@@ -639,8 +790,13 @@ public final class SessionRuntime implements AutoCloseable {
                     dispatching = entry != null;
                 }
                 if (entry != null) {
-                    try { execute(entry, true); }
-                    finally { synchronized (inbox) { dispatching = false; } }
+                    try {
+                        execute(entry, true);
+                    } finally {
+                        synchronized (inbox) {
+                            dispatching = false;
+                        }
+                    }
                     continue;
                 }
                 inbox.awaitChange(observed);
@@ -660,12 +816,15 @@ public final class SessionRuntime implements AutoCloseable {
         task.memoryStart = journal == null ? 0 : journal.sequence();
         task.memoryHistoryStart = append ? history.size() : Math.max(0, history.size() - 1);
         active = task;
-        if (ownsUsage && executionTokenBudget > 0) usage.limitAdditionalTokens(executionTokenBudget);
+        if (ownsUsage && executionTokenBudget > 0)
+            usage.limitAdditionalTokens(executionTokenBudget);
         changeState(State.RUNNING);
         // 实时计数和最终耗时共用 Active 的同一起点，不累加工具或模型的局部耗时。
         engine.notice(ExecutionNotice.event(ExecutionNotice.Kind.TURN_START, task.context().id(), "", "", "RUNNING")
                 .started(task.timer.startedNanos()));
-        synchronized (inbox) { publishBuffer(); }
+        synchronized (inbox) {
+            publishBuffer();
+        }
         try {
             ensureOpen();
             // 在首次模型请求前保存轮次开始；后续失败保留已采用历史，不回滚或重跑业务。
@@ -679,36 +838,47 @@ public final class SessionRuntime implements AutoCloseable {
                 if (userRequest && goalCommand(entry.request().prompt())) {
                     synchronized (historyMonitor) {
                         ensureOpen();
-                        if (goals == null) throw new IllegalStateException("Goal commands are not available in this session");
+                        if (goals == null)
+                            throw new IllegalStateException("Goal commands are not available in this session");
                         String condition = entry.request().prompt().strip().substring(5).strip();
                         goals.set(condition);
                         goalUsageStart = usage.snapshot().total();
                         // 条件作为本轮真正任务交给模型，不让它把 /goal 当成要执行的 Shell 命令。
                         appendMessage(Message.userText(condition), "request");
                     }
-                } else apply(entry.request());
+                } else
+                    apply(entry.request());
             }
             // 先记住用户请求，再加入后台通知；之后历史即使压缩，仍记着用户原本要做什么。
             task.goal = activeRequest(history);
-            if (task.isUserRequest() && task.goal != null && journal == null) task.memoryHumans.add(task.goal);
-            if (memory != null) memory.beginTask(sessionId(), task.context().id(), task.isUserRequest() ? task.goal : "");
+            if (task.isUserRequest() && task.goal != null && journal == null)
+                task.memoryHumans.add(task.goal);
+            if (memory != null)
+                memory.beginTask(sessionId(), task.context().id(), task.isUserRequest() ? task.goal : "");
             task.system = prepareTaskSystem();
             // 新工作开始后可采用以前停放的通知；它们不改变本轮执行身份。
             deliverIncoming(task);
             runTask(task);
         } catch (LlmException | RuntimeException failure) {
-            if (task.cancelled.get() && !closed) Thread.interrupted();
+            if (task.cancelled.get() && !closed)
+                Thread.interrupted();
             fail(task, failure);
         } catch (InterruptedException interrupted) {
-            if (!task.cancelled.get() || closed) Thread.currentThread().interrupt();
+            if (!task.cancelled.get() || closed)
+                Thread.currentThread().interrupt();
             fail(task, new IllegalStateException("Session execution interrupted", interrupted));
         } finally {
-            try { taskCleanup.accept(task.context().id()); }
-            catch (RuntimeException failed) { errors.accept("[Sandbox] Task resource cleanup did not finish"); }
+            try {
+                taskCleanup.accept(task.context().id());
+            } catch (RuntimeException failed) {
+                errors.accept("[Sandbox] Task resource cleanup did not finish");
+            }
             active = null;
             // 轮次取消不能让消费者永久退出；关闭会话仍保留中断状态。
-            if (task.cancelled.get() && !closed) Thread.interrupted();
-            if (!closed && !persistenceFailed) changeState(State.IDLE);
+            if (task.cancelled.get() && !closed)
+                Thread.interrupted();
+            if (!closed && !persistenceFailed)
+                changeState(State.IDLE);
         }
     }
 
@@ -744,11 +914,13 @@ public final class SessionRuntime implements AutoCloseable {
     private String prepareTaskSystem() {
         ensureOpen();
         String base = engine.system() + resumeContext;
-        if (memory == null) return base;
+        if (memory == null)
+            return base;
         String system = memory.prepareSystem(base);
         String reference = memory.reference();
         // 来源存在内部字段，不靠正文前缀判断；只追加，不替换上一轮已发出的内容。
-        if (!reference.isEmpty()) appendMessage(Message.memoryReference(reference), "memory_reference");
+        if (!reference.isEmpty())
+            appendMessage(Message.memoryReference(reference), "memory_reference");
         return system;
     }
 
@@ -774,13 +946,15 @@ public final class SessionRuntime implements AutoCloseable {
      */
     private void runTask(Active task) throws LlmException, InterruptedException {
         while (!closed) {
-            if (task.context().isCancelled()) throw new IllegalStateException("Current execution was cancelled");
+            if (task.context().isCancelled())
+                throw new IllegalStateException("Current execution was cancelled");
             // 1. 请模型继续前，批量采用插入通知；旧轮次结果也可以进入当前上下文。
             deliverIncoming(task);
             flushNotices(task);
             String system = goalSystem(task);
             ModelReply reply = engine.request(history, task.goal, system, this::adoptHistory);
-            if (task.context().isCancelled()) throw new IllegalStateException("Current execution was cancelled");
+            if (task.context().isCancelled())
+                throw new IllegalStateException("Current execution was cancelled");
             if (reply.calls().isEmpty()) {
                 // 回答先展示一次，再记录显示截止；Memory 还会照常收尾，不能提前宣布业务完成。
                 // 流式时间来自生产端 complete，旧客户端在这里回退输出，不再在多个结束分支重放。
@@ -789,18 +963,23 @@ public final class SessionRuntime implements AutoCloseable {
                 task.timer.answerCompleted(reply.textDisplayed() ? reply.displayCompletedNanos() : null);
             }
             apply(reply);
-            if (memory != null) memory.observeReply(reply.message());
+            if (memory != null)
+                memory.observeReply(reply.message());
             if (!reply.calls().isEmpty()) {
                 // 3. 执行这一批工具，把每个调用的结果一起写入历史；出错也要配齐调用和结果的 ID。
                 ToolBatch batch = engine.executeTools(reply, task.context(), task.rounds);
                 task.toolCalls += reply.calls().size();
                 // 取消只阻止后续行动，已开始的一批仍须配齐 tool_result 并落盘。
-                if (task.cancelled.get() && !closed) Thread.interrupted();
+                if (task.cancelled.get() && !closed)
+                    Thread.interrupted();
                 apply(batch);
-                if (task.context().isCancelled()) throw new IllegalStateException("Current execution was cancelled");
-                if (memory != null) memory.observeTools(batch.calls(), Message.userBlocks(batch.results()));
+                if (task.context().isCancelled())
+                    throw new IllegalStateException("Current execution was cancelled");
+                if (memory != null)
+                    memory.observeTools(batch.calls(), Message.userBlocks(batch.results()));
                 task.rounds = batch.roundsSinceTodo();
-                if (batch.failure() != null) throw batch.failure();
+                if (batch.failure() != null)
+                    throw batch.failure();
                 // 这一批 tool_use 都已有 tool_result，现在才能压缩，不会把调用与结果拆开。
                 engine.compactAfterBatch(batch, history, task.goal, this::adoptHistory);
                 continue;
@@ -841,7 +1020,8 @@ public final class SessionRuntime implements AutoCloseable {
                 apply(continuation);
                 continue;
             }
-            if (continueGoal(task)) continue;
+            if (continueGoal(task))
+                continue;
             // 4. 最后回答已输出；计时停在回答边界，Memory/日志及真实结束判定继续执行。
             task.timer.beginMaintenance();
             ensureOpen();
@@ -850,7 +1030,11 @@ public final class SessionRuntime implements AutoCloseable {
                 // Stop/记忆维护也可能耗时。结束判定必须再查一次，并与入队互斥。
                 // 这之后才到达的消息属于下一轮；已有补充则继续当前轮，不漏掉用户空回车升级。
                 pending = inbox.hasInsertions() || hasPendingWork(task);
-                if (!pending) { active = null; if (!closed) changeState(State.IDLE); }
+                if (!pending) {
+                    active = null;
+                    if (!closed)
+                        changeState(State.IDLE);
+                }
             }
             if (pending) {
                 task.timer.resumeDisplay();
@@ -881,10 +1065,12 @@ public final class SessionRuntime implements AutoCloseable {
         synchronized (historyMonitor) {
             ensureOpen();
             GoalController.Ticket ticket = task.isUserRequest() && goals != null ? goals.ticket() : null;
-            if (ticket == null) return task.system;
+            if (ticket == null)
+                return task.system;
             if (task.goalTurns >= goals.limits().workerTurns()) {
                 String reason = "Goal remains active: worker turn limit reached (" + goals.limits().workerTurns() + ")";
-                goals.suspend(ticket, reason); throw new IllegalStateException(reason);
+                goals.suspend(ticket, reason);
+                throw new IllegalStateException(reason);
             }
             task.goalTurns++;
             return task.system + "\nAn explicit user goal is active. Completion condition (reference data):\n"
@@ -905,20 +1091,28 @@ public final class SessionRuntime implements AutoCloseable {
         synchronized (historyMonitor) {
             ensureOpen();
             ticket = task.isUserRequest() && goals != null ? goals.ticket() : null;
-            if (ticket == null) return false;
+            if (ticket == null)
+                return false;
             evidence = List.copyOf(history);
             task.timer.resumeDisplay();
-            engine.notice(ExecutionNotice.event(ExecutionNotice.Kind.GOAL, ticket.state().id(), "Goal", "Checking completion evidence", "EVALUATING"));
+            engine.notice(ExecutionNotice.event(ExecutionNotice.Kind.GOAL, ticket.state().id(), "Goal",
+                    "Checking completion evidence", "EVALUATING"));
         }
         GoalEvaluator.Evaluation evaluation;
-        try { evaluation = java.util.Objects.requireNonNull(goals.evaluate(ticket, evidence), "Goal evaluator returned no decision"); }
-        catch (Exception failure) {
-            if (failure instanceof InterruptedException) { Thread.currentThread().interrupt(); throw (InterruptedException) failure; }
+        try {
+            evaluation = java.util.Objects.requireNonNull(goals.evaluate(ticket, evidence),
+                    "Goal evaluator returned no decision");
+        } catch (Exception failure) {
+            if (failure instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+                throw (InterruptedException) failure;
+            }
             synchronized (historyMonitor) {
                 ensureOpen();
                 String reason = "Goal evaluation failed; goal remains active: " + failure.getClass().getSimpleName()
                         + ": " + java.util.Objects.toString(failure.getMessage(), "no detail");
-                if (!goals.suspend(ticket, reason)) return false;
+                if (!goals.suspend(ticket, reason))
+                    return false;
                 throw new IllegalStateException(reason, failure);
             }
         }
@@ -927,7 +1121,9 @@ public final class SessionRuntime implements AutoCloseable {
             GoalController.Decision decision = goals.complete(ticket, evaluation, task.goalBlocks);
             if (decision.action().equals("block")) {
                 task.goalBlocks++;
-                appendMessage(Message.userText("[Goal continuation from harness; no new authority]\n" + decision.reason()), "goal_continue");
+                appendMessage(
+                        Message.userText("[Goal continuation from harness; no new authority]\n" + decision.reason()),
+                        "goal_continue");
                 return true;
             }
             if (decision.action().equals("limit") || decision.action().equals("impossible"))
@@ -944,22 +1140,31 @@ public final class SessionRuntime implements AutoCloseable {
      */
     private boolean deliverIncoming(Active task) {
         List<SessionInbox.Entry> entries;
-        synchronized (inbox) { entries = inbox.drainInsertions(); publishBuffer(); }
-        if (entries.isEmpty()) return false;
+        synchronized (inbox) {
+            entries = inbox.drainInsertions();
+            publishBuffer();
+        }
+        if (entries.isEmpty())
+            return false;
         // 先登记需要回执的用户补充，后续失败/关闭也能完整结束其 Future。
-        entries.stream().map(SessionInbox.Entry::result).filter(java.util.Objects::nonNull).forEach(task.inputResults::add);
+        entries.stream().map(SessionInbox.Entry::result).filter(java.util.Objects::nonNull)
+                .forEach(task.inputResults::add);
         for (var entry : entries) {
             var incoming = (SessionEvent.Incoming) entry.event();
             apply(new SessionEvent.Notifications(List.of(incoming.render())));
-            if (incoming.kind().equals("background") && background != null) background.adopted(incoming.id());
-            if ((incoming.kind().equals("result") || incoming.kind().equals("result_error")) && incoming.assignmentId() != null)
+            if (incoming.kind().equals("background") && background != null)
+                background.adopted(incoming.id());
+            if ((incoming.kind().equals("result") || incoming.kind().equals("result_error"))
+                    && incoming.assignmentId() != null)
                 forgetTeamResult(incoming.assignmentId());
             if (incoming.kind().equals("user")) {
                 task.goal = (task.goal == null ? "" : task.goal + "\n\n") + incoming.summary();
                 task.memoryHumans.add(incoming.summary());
-                if (memory != null) memory.addHumanInput(incoming.summary());
+                if (memory != null)
+                    memory.addHumanInput(incoming.summary());
             }
-            task.notices.add(incoming.kind().equals("background") ? "[Background] 1 command result received" : "[Incoming] " + incoming.summary());
+            task.notices.add(incoming.kind().equals("background") ? "[Background] 1 command result received"
+                    : "[Incoming] " + incoming.summary());
         }
         return true;
     }
@@ -1020,7 +1225,8 @@ public final class SessionRuntime implements AutoCloseable {
     private void awaitResults(Active task) throws InterruptedException {
         while (!closed) {
             long observed = inbox.revision();
-            if (deliverIncoming(task) || !hasPendingWork(task)) return;
+            if (deliverIncoming(task) || !hasPendingWork(task))
+                return;
             inbox.awaitChange(observed);
         }
         throw new IllegalStateException("Session is closed");
@@ -1033,7 +1239,8 @@ public final class SessionRuntime implements AutoCloseable {
      */
     private void adoptHistory(List<Message> messages) {
         apply(new SessionEvent.HistoryPrepared(messages));
-        engine.notice(ExecutionNotice.event(ExecutionNotice.Kind.COMPACT, "", "", "Model context compacted; UI history preserved", ""));
+        engine.notice(ExecutionNotice.event(ExecutionNotice.Kind.COMPACT, "", "",
+                "Model context compacted; UI history preserved", ""));
     }
 
     /** 采用执行器已验证的模型回复，写入历史，不在这里决定任务是否完成。 */
@@ -1055,15 +1262,18 @@ public final class SessionRuntime implements AutoCloseable {
     /** 先保留已得到的完整消息，再同步存盘；失败时内存证据仍在，但不开始下一步。 */
     private void appendMessage(Message message, String reason) {
         synchronized (historyMonitor) {
-            ensureOpen(); history.add(message);
-            if (!reason.equals("reply")) refreshContextUsage();
+            ensureOpen();
+            history.add(message);
+            if (!reason.equals("reply"))
+                refreshContextUsage();
             record(JournalEntry.Kind.APPEND, List.of(message), reason);
         }
     }
 
     /** 只读模型限额，不在历史锁中构建包含资源清单的整个 display；没有 profile 就保持未知。 */
     private void refreshContextUsage() {
-        contextUsage = profile == null ? null : ContextUsage.projected(engine.contextEstimate(history), profile.metadata());
+        contextUsage = profile == null ? null
+                : ContextUsage.projected(engine.contextEstimate(history), profile.metadata());
     }
 
     /**
@@ -1078,9 +1288,13 @@ public final class SessionRuntime implements AutoCloseable {
     /** 收尾时 active 已清空，仍显式记录原轮次编号；不为此保留另一份可变执行状态。 */
     private void record(JournalEntry.Kind kind, List<Message> messages, String reason, String runId) {
         synchronized (historyMonitor) {
-            if (journal == null || closed) return;
-            try { journal.append(kind, messages, todos == null ? com.jadecode.util.Json.mapper().createArrayNode() : todos.snapshot(), reason, runId); }
-            catch (IOException failure) {
+            if (journal == null || closed)
+                return;
+            try {
+                journal.append(kind, messages,
+                        todos == null ? com.jadecode.util.Json.mapper().createArrayNode() : todos.snapshot(), reason,
+                        runId);
+            } catch (IOException failure) {
                 persistenceError();
                 throw new IllegalStateException(failure.getMessage(), failure);
             }
@@ -1108,10 +1322,13 @@ public final class SessionRuntime implements AutoCloseable {
             switch (event) {
                 case SessionEvent.Request request -> appendMessage(Message.userText(
                         request.context().source() == ExecutionContext.Source.SCHEDULED
-                                ? "[Scheduled] " + request.prompt() : request.prompt()), "request");
+                                ? "[Scheduled] " + request.prompt()
+                                : request.prompt()),
+                        "request");
                 case SessionEvent.HistoryPrepared prepared -> {
                     // 事件已经复制列表，clear 不会把候选一起清空；日志同样保存“替换”而非追加。
-                    history.clear(); history.addAll(prepared.messages());
+                    history.clear();
+                    history.addAll(prepared.messages());
                     // 真正摘要改变旧前缀后，tracker 比较投影会自动失效；只改新结果时保留已报告的锚点。
                     record(JournalEntry.Kind.REPLACE_HISTORY, history, "compaction");
                 }
@@ -1121,15 +1338,20 @@ public final class SessionRuntime implements AutoCloseable {
                     // 召回资料保持独立，避免通知合并后丢失来源或让提取误收旧记忆。
                     boolean merge = !history.isEmpty() && history.getLast().role() == Role.USER
                             && history.getLast().source() != Message.Source.MEMORY_REFERENCE;
-                    if (merge) content.addAll(history.getLast().content());
+                    if (merge)
+                        content.addAll(history.getLast().content());
                     notifications.texts().forEach(text -> content.add(new TextBlock(text)));
                     Message message = Message.userBlocks(List.copyOf(content));
-                    if (merge) history.set(history.size() - 1, message);
-                    else history.add(message);
+                    if (merge)
+                        history.set(history.size() - 1, message);
+                    else
+                        history.add(message);
                     refreshContextUsage();
-                    record(merge ? JournalEntry.Kind.REPLACE_LAST : JournalEntry.Kind.APPEND, List.of(message), "notification");
+                    record(merge ? JournalEntry.Kind.REPLACE_LAST : JournalEntry.Kind.APPEND, List.of(message),
+                            "notification");
                 }
-                case SessionEvent.Incoming incoming -> throw new IllegalArgumentException("Incoming must be queued first; history cannot be mutated across threads");
+                case SessionEvent.Incoming incoming -> throw new IllegalArgumentException(
+                        "Incoming must be queued first; history cannot be mutated across threads");
             }
         }
     }
@@ -1140,18 +1362,25 @@ public final class SessionRuntime implements AutoCloseable {
      */
     private void fail(Active task, Exception failure) {
         pendingTeam.entrySet().removeIf(entry -> entry.getValue().equals(task.context().id()));
-        try { if (!persistenceFailed) record(JournalEntry.Kind.TURN_FAILED, List.of(), "turn", task.context().id()); }
-        catch (RuntimeException recording) { failure.addSuppressed(recording); }
-        if (!closed && !persistenceFailed) finishMemory(task, "failed");
+        try {
+            if (!persistenceFailed)
+                record(JournalEntry.Kind.TURN_FAILED, List.of(), "turn", task.context().id());
+        } catch (RuntimeException recording) {
+            failure.addSuppressed(recording);
+        }
+        if (!closed && !persistenceFailed)
+            finishMemory(task, "failed");
         if (persistenceFailed) {
             // 写失败也可能刚刚发生在失败记录本身；统一收尾，排队 future 不能永久等待。
             inbox.close();
-            if (background != null) background.close();
+            if (background != null)
+                background.close();
         }
         task.entry.result().completeExceptionally(failure);
         turnEnded(task, "FAILED", false);
         task.inputResults.forEach(result -> result.completeExceptionally(failure));
-        if (!closed) errors.accept("[Error] " + task.context().id() + ": " + failure.getMessage());
+        if (!closed)
+            errors.accept("[Error] " + task.context().id() + ": " + failure.getMessage());
     }
 
     /**
@@ -1159,12 +1388,17 @@ public final class SessionRuntime implements AutoCloseable {
      * 持久会话按日志区间读取，嵌入入口仅截取本轮历史，避免重复提取往轮任务。
      */
     private void finishMemory(Active task, String outcome) {
-        if (memory == null || !task.isUserRequest() || task.memoryRegistered) return;
+        if (memory == null || !task.isUserRequest() || task.memoryRegistered)
+            return;
         synchronized (historyMonitor) {
-            if (task.memoryRegistered) return;
+            if (task.memoryRegistered)
+                return;
             task.memoryRegistered = true;
-            List<Message> evidence = journal == null ? List.copyOf(history.subList(Math.min(task.memoryHistoryStart, history.size()), history.size())) : List.of();
-            memory.finishTask(sessionId(), task.context().id(), journal == null ? null : journal.eventsPath(), task.memoryStart,
+            List<Message> evidence = journal == null
+                    ? List.copyOf(history.subList(Math.min(task.memoryHistoryStart, history.size()), history.size()))
+                    : List.of();
+            memory.finishTask(sessionId(), task.context().id(), journal == null ? null : journal.eventsPath(),
+                    task.memoryStart,
                     journal == null ? 0 : journal.sequence(), evidence, List.copyOf(task.memoryHumans), outcome);
         }
     }
@@ -1174,13 +1408,17 @@ public final class SessionRuntime implements AutoCloseable {
      * @throws IllegalStateException 用户已退出会话
      */
     private void ensureOpen() {
-        if (usage.failed() && !persistenceFailed && !closed) persistenceError();
-        if (closed || persistenceFailed || switching) throw new IllegalStateException("Session is closed, switching or persistence failed");
+        if (usage.failed() && !persistenceFailed && !closed)
+            persistenceError();
+        if (closed || persistenceFailed || switching)
+            throw new IllegalStateException("Session is closed, switching or persistence failed");
     }
 
     /** 统一停止本会话的新动作；已发生的工具副作用不回滚，内存结果仍留作排查。 */
     private void persistenceError() {
-        persistenceFailed = true; engine.close(); changeState(State.PERSISTENCE_FAILED);
+        persistenceFailed = true;
+        engine.close();
+        changeState(State.PERSISTENCE_FAILED);
     }
 
     /**
@@ -1189,7 +1427,8 @@ public final class SessionRuntime implements AutoCloseable {
      * 只有最终确实有回复文字时才指向 Reply 卡，不把先前阶段回答冒充最终回答。
      */
     private void turnEnded(Active task, String outcome, boolean hasReply) {
-        engine.notice(ExecutionNotice.event(ExecutionNotice.Kind.TURN_END, task.context().id(), hasReply ? "Reply" : "", "", outcome)
+        engine.notice(ExecutionNotice
+                .event(ExecutionNotice.Kind.TURN_END, task.context().id(), hasReply ? "Reply" : "", "", outcome)
                 .timed(task.timer.elapsedNanos()));
     }
 
@@ -1226,6 +1465,7 @@ public final class SessionRuntime implements AutoCloseable {
         int rounds;
         /** 当前大轮次的循环额度计数，与历史总判断次数/Todo 提醒分别统计。 */
         int goalTurns, goalBlocks;
+
         /** 领取请求后派生本轮计时与取消信号，不复制历史，不新建业务身份。 */
         Active(SessionInbox.Entry entry, java.util.function.Consumer<ExecutionNotice> notices) {
             this.entry = entry;
@@ -1234,12 +1474,18 @@ public final class SessionRuntime implements AutoCloseable {
             execution = new ExecutionContext(origin.id(), origin.source(), timer.track(origin.approval()),
                     () -> origin.isCancelled() || cancelled.get(), origin.goal(), origin.assignment());
         }
+
         /**
          * @return 原任务 ID、来源、审批和退出检查，再附上包含已接收补充的当前任务说明
          */
-        ExecutionContext context() { return execution.withGoal(goal == null ? entry.request().prompt() : goal); }
+        ExecutionContext context() {
+            return execution.withGoal(goal == null ? entry.request().prompt() : goal);
+        }
+
         /** 来源和派工身份在入口固定，可直接推导，不保存另一份可变 goalEligible 标记。 */
-        boolean isUserRequest() { return execution.source() == ExecutionContext.Source.USER && execution.assignment() == null; }
+        boolean isUserRequest() {
+            return execution.source() == ExecutionContext.Source.USER && execution.assignment() == null;
+        }
 
     }
 
@@ -1255,20 +1501,25 @@ public final class SessionRuntime implements AutoCloseable {
      */
     public void run(List<Message> messages) throws LlmException {
         ensureOpen();
-        if (journal != null) throw new IllegalStateException("Persistent sessions do not borrow external history");
-        if (consumer != null) throw new IllegalStateException("Session consumer is already started");
+        if (journal != null)
+            throw new IllegalStateException("Persistent sessions do not borrow external history");
+        if (consumer != null)
+            throw new IllegalStateException("Session consumer is already started");
         // 只在这个同步调用内借用列表；正式会话和兼容调用都由同一 active/closed 状态管理。
         List<Message> ownedHistory = history;
         history = messages;
         ExecutionContext context = ExecutionContext.create(ExecutionContext.Source.USER, null, () -> closed);
-        SessionInbox.Entry entry = new SessionInbox.Entry(new SessionEvent.Request("", context), new CompletableFuture<>());
+        SessionInbox.Entry entry = new SessionInbox.Entry(new SessionEvent.Request("", context),
+                new CompletableFuture<>());
         try {
             execute(entry, false);
             entry.result().join();
         } catch (CompletionException wrapped) {
             // join 包装实际异常；保留原类型，旧调用方不需要改错误处理方式。
-            if (wrapped.getCause() instanceof LlmException failure) throw failure;
-            if (wrapped.getCause() instanceof RuntimeException failure) throw failure;
+            if (wrapped.getCause() instanceof LlmException failure)
+                throw failure;
+            if (wrapped.getCause() instanceof RuntimeException failure)
+                throw failure;
             throw new IllegalStateException(wrapped.getCause());
         } finally {
             history = ownedHistory;
@@ -1283,7 +1534,9 @@ public final class SessionRuntime implements AutoCloseable {
      * @throws RuntimeException 非法历史、执行失败或执行器已关闭
      */
     public static void runExisting(AgentExecutor engine, List<Message> messages) throws LlmException {
-        new SessionRuntime(engine, ignored -> { }, ignored -> { }).run(messages);
+        new SessionRuntime(engine, ignored -> {
+        }, ignored -> {
+        }).run(messages);
     }
 
     /**
@@ -1300,39 +1553,53 @@ public final class SessionRuntime implements AutoCloseable {
     @Override
     public void close() {
         synchronized (historyMonitor) {
-            if (closed) return;
+            if (closed)
+                return;
             closed = true;
             changeState(State.CLOSED);
         }
         Active interruptedTask = active;
-        if (interruptedTask != null) finishMemory(interruptedTask, "interrupted");
-        if (memory != null) memory.close();
-        try { closeDependents.run(); }
-        catch (RuntimeException failure) { cleanupFailed = true; errors.accept("[Error] Dependent session cleanup failed: " + failure.getMessage()); }
+        if (interruptedTask != null)
+            finishMemory(interruptedTask, "interrupted");
+        if (memory != null)
+            memory.close();
+        try {
+            closeDependents.run();
+        } catch (RuntimeException failure) {
+            cleanupFailed = true;
+            errors.accept("[Error] Dependent session cleanup failed: " + failure.getMessage());
+        }
         // 先停止执行器和命令，再通知 future 的调用者；对方可能立即运行自己的代码，不能拖延停止工具。
         engine.close();
-        if (background != null) background.close();
+        if (background != null)
+            background.close();
         inbox.close();
         Active running = active;
         if (running != null) {
             running.entry.result().completeExceptionally(new IllegalStateException("Session closed"));
             // 模型网络调用可能不响应中断；已采用的插入批次也不能一直留下 pending future。
-            running.inputResults.forEach(result -> result.completeExceptionally(new IllegalStateException("Session closed")));
+            running.inputResults
+                    .forEach(result -> result.completeExceptionally(new IllegalStateException("Session closed")));
         }
         if (consumer != null && consumer != Thread.currentThread()) {
             consumer.interrupt();
             try {
                 consumer.join(2000);
-                if (consumer.isAlive()) errors.accept("[Session] Model/IO still finishing; new tools are disabled.");
+                if (consumer.isAlive())
+                    errors.accept("[Session] Model/IO still finishing; new tools are disabled.");
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
             }
         }
         synchronized (historyMonitor) {
-            if (ownsUsage) usage.close();
+            if (ownsUsage)
+                usage.close();
             if (journal != null) {
-                try { journal.close(); }
-                catch (IOException failure) { errors.accept("[Error] Failed to close the session journal: " + failure.getMessage()); }
+                try {
+                    journal.close();
+                } catch (IOException failure) {
+                    errors.accept("[Error] Failed to close the session journal: " + failure.getMessage());
+                }
             }
         }
     }

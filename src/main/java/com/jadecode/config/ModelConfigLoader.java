@@ -33,7 +33,8 @@ public final class ModelConfigLoader {
     private static final Map<String, String> FIELDS = Map.of(
             "apiKey", KEY, "baseUrl", URL, "model", MODEL, "maxTokens", TOKENS, "provider", PROVIDER);
 
-    private ModelConfigLoader() { }
+    private ModelConfigLoader() {
+    }
 
     /** 用户级默认位置；与非秘密 config.json 分开，不随工作区切换。 */
     public static Path defaultPath() {
@@ -57,18 +58,23 @@ public final class ModelConfigLoader {
         ModelProvider previousProvider = ModelProvider.parse(values.get(PROVIDER));
         String previousUrl = values.getOrDefault(URL, previousProvider.defaultBaseUrl());
         for (String name : FIELDS.values()) {
-            if (process.containsKey(name)) values.put(name, process.get(name));
+            if (process.containsKey(name))
+                values.put(name, process.get(name));
         }
         // provider 自身也会改变缺省 URL/认证方式；不能只检查显式 URL，漏掉由 provider 引起的换服务。
         ModelProvider provider = ModelProvider.parse(values.get(PROVIDER));
         String effectiveUrl = values.getOrDefault(URL, provider.defaultBaseUrl());
         if ((provider != previousProvider || !effectiveUrl.strip().equals(previousUrl.strip()))
                 && (process.get(KEY) == null || process.get(KEY).isBlank()))
-            throw invalid("Changing provider or ANTHROPIC_BASE_URL requires ANTHROPIC_API_KEY in the same override source");
+            throw invalid(
+                    "Changing provider or ANTHROPIC_BASE_URL requires ANTHROPIC_API_KEY in the same override source");
         // 先校验再交给 AppConfig 转换，避免转换异常把无效额度的原始值写进 stderr。
         validate(values);
-        try { return AppConfig.fromEnv(Env.of(values)); }
-        catch (IllegalArgumentException unsupported) { throw invalid(unsupported.getMessage()); }
+        try {
+            return AppConfig.fromEnv(Env.of(values));
+        } catch (IllegalArgumentException unsupported) {
+            throw invalid(unsupported.getMessage());
+        }
     }
 
     /**
@@ -78,7 +84,8 @@ public final class ModelConfigLoader {
     private static Map<String, String> readJson(Path file) {
         try (var input = Files.newInputStream(file)) {
             byte[] bytes = input.readNBytes(MAX_BYTES + 1);
-            if (bytes.length > MAX_BYTES) throw invalid("Model configuration exceeds 64 KiB");
+            if (bytes.length > MAX_BYTES)
+                throw invalid("Model configuration exceeds 64 KiB");
             try (JsonParser parser = Json.mapper().getFactory().createParser(bytes)) {
                 parser.enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION);
                 JsonNode root = Json.mapper().readTree(parser);
@@ -89,14 +96,16 @@ public final class ModelConfigLoader {
                 while (fields.hasNext()) {
                     var field = fields.next();
                     String name = field.getKey();
-                    if (!FIELDS.containsKey(name)) throw invalid("Unsupported model configuration field");
+                    if (!FIELDS.containsKey(name))
+                        throw invalid("Unsupported model configuration field");
                     JsonNode value = field.getValue();
                     if (name.equals("maxTokens")) {
                         if (value.isIntegralNumber() && value.canConvertToInt() && value.intValue() > 0)
                             values.put(TOKENS, value.asText());
                         else if (value.isTextual() && value.textValue().strip().equalsIgnoreCase("auto"))
                             values.put(TOKENS, "auto");
-                        else throw invalid("maxTokens must be auto or a positive integer");
+                        else
+                            throw invalid("maxTokens must be auto or a positive integer");
                     } else {
                         if (!value.isTextual() || value.textValue().isBlank())
                             throw invalid(name + " must be a non-empty string");
@@ -117,25 +126,36 @@ public final class ModelConfigLoader {
     /** 校验合并后的有效值；默认额度、默认端点/模型仍由 AppConfig 统一提供。 */
     private static void validate(Map<String, String> values) {
         if (values.get(KEY) == null || values.get(KEY).isBlank())
-            throw invalid("Missing apiKey / ANTHROPIC_API_KEY; configure ~/.jadecode/config/model.json or --model-config");
+            throw invalid(
+                    "Missing apiKey / ANTHROPIC_API_KEY; configure ~/.jadecode/config/model.json or --model-config");
         if (values.get(KEY).chars().anyMatch(c -> c < 32 || c == 127))
             throw invalid("apiKey / ANTHROPIC_API_KEY must not contain control characters");
-        if (values.containsKey(MODEL) && values.get(MODEL).isBlank()) throw invalid("model / MODEL_ID must not be blank");
+        if (values.containsKey(MODEL) && values.get(MODEL).isBlank())
+            throw invalid("model / MODEL_ID must not be blank");
         String url = values.getOrDefault(URL, ModelProvider.parse(values.get(PROVIDER)).defaultBaseUrl());
         try {
             URI parsed = URI.create(url);
-            if (!("http".equalsIgnoreCase(parsed.getScheme()) || "https".equalsIgnoreCase(parsed.getScheme())) || parsed.getHost() == null
+            if (!("http".equalsIgnoreCase(parsed.getScheme()) || "https".equalsIgnoreCase(parsed.getScheme()))
+                    || parsed.getHost() == null
                     || parsed.getUserInfo() != null || parsed.getRawQuery() != null || parsed.getRawFragment() != null)
-                throw invalid("baseUrl / ANTHROPIC_BASE_URL must be an HTTP(S) URL without credentials, query or fragment");
-        } catch (IllegalArgumentException failure) { throw invalid("Invalid baseUrl / ANTHROPIC_BASE_URL"); }
+                throw invalid(
+                        "baseUrl / ANTHROPIC_BASE_URL must be an HTTP(S) URL without credentials, query or fragment");
+        } catch (IllegalArgumentException failure) {
+            throw invalid("Invalid baseUrl / ANTHROPIC_BASE_URL");
+        }
         String tokens = values.get(TOKENS);
         if (tokens != null && !tokens.isBlank() && !tokens.strip().equalsIgnoreCase("auto")) {
             try {
-                if (Integer.parseInt(tokens.strip()) <= 0) throw new NumberFormatException();
-            } catch (NumberFormatException failure) { throw invalid("maxTokens / MAX_TOKENS must be auto or a positive integer"); }
+                if (Integer.parseInt(tokens.strip()) <= 0)
+                    throw new NumberFormatException();
+            } catch (NumberFormatException failure) {
+                throw invalid("maxTokens / MAX_TOKENS must be auto or a positive integer");
+            }
         }
     }
 
     /** 固定格式、无 cause 的失败；不把可能含凭据的底层消息拼进诊断。 */
-    private static IllegalStateException invalid(String message) { return new IllegalStateException(message); }
+    private static IllegalStateException invalid(String message) {
+        return new IllegalStateException(message);
+    }
 }

@@ -35,18 +35,25 @@ import com.jadecode.util.Json;
  */
 public final class ModelMetadataResolver {
     /** 可替换的只读传输，离线检查不使用真实密钥或公网；生产仍先验证官方地址。 */
-    @FunctionalInterface public interface Fetcher {
-        JsonNode get(URI endpoint, Map<String, String> headers, int timeoutMillis) throws IOException, InterruptedException;
+    @FunctionalInterface
+    public interface Fetcher {
+        JsonNode get(URI endpoint, Map<String, String> headers, int timeoutMillis)
+                throws IOException, InterruptedException;
     }
+
     private final Path cacheDirectory;
     private final Clock clock;
     private final Fetcher fetcher;
 
-    public ModelMetadataResolver(Path cacheDirectory) { this(cacheDirectory, Clock.systemUTC(), ModelMetadataResolver::get); }
+    public ModelMetadataResolver(Path cacheDirectory) {
+        this(cacheDirectory, Clock.systemUTC(), ModelMetadataResolver::get);
+    }
 
     /** 注入时钟与传输便于离线验证时效／失败；所有生产校验仍经过 resolve，不跳过身份检查。 */
     public ModelMetadataResolver(Path cacheDirectory, Clock clock, Fetcher fetcher) {
-        this.cacheDirectory = cacheDirectory; this.clock = clock; this.fetcher = fetcher;
+        this.cacheDirectory = cacheDirectory;
+        this.clock = clock;
+        this.fetcher = fetcher;
     }
 
     public static Path defaultCacheDirectory() {
@@ -62,9 +69,11 @@ public final class ModelMetadataResolver {
      * @return 部分或完整限额和固定来源说明；普通网络／缓存失败不抛出
      */
     public ModelMetadata resolve(AppConfig config, JadeSettings.Models settings) {
-        Limits official = Limits.unknown(); String source;
+        Limits official = Limits.unknown();
+        String source;
         Target target = target(config);
-        if (!settings.autoDiscover()) source = "Automatic discovery is off; using the existing configuration";
+        if (!settings.autoDiscover())
+            source = "Automatic discovery is off; using the existing configuration";
         else if (config.provider() == com.jadecode.config.ModelProvider.OPENCODE_GO) {
             // AppConfig 已限定 Go 只支持 deepseek-v4.1-flash；用户确认它与官方 Flash 限额一致。
             // 2026-10-31 核对：https://api-docs.deepseek.com/api/list-models/ 。使用精确 token 数，
@@ -72,14 +81,15 @@ public final class ModelMetadataResolver {
             // 官方只公布总窗口和输出上限：输入需要给实际输出留空间，不能伪造独立最大输入。
             official = new Limits(1048576, null, 393216);
             source = "DeepSeek official documentation snapshot (2026-10-31) for OpenCode Go; input and output share the context window";
-        }
-        else if (target == null) source = "No official lookup is adapted for this endpoint; using the existing configuration";
+        } else if (target == null)
+            source = "No official lookup is adapted for this endpoint; using the existing configuration";
         else {
             // 1. 缓存按实际端点和精确请求模型区分；命中有效记录才免去查询。
             Path cache = cacheFile(config, target);
             CatalogMatch cached = readCache(cache, target, config.model(), settings.cacheTtlHours());
             official = cached.limits();
-            if (official.known()) source = "Valid official parameter cache" + cached.matchNote(config.model());
+            if (official.known())
+                source = "Valid official parameter cache" + cached.matchNote(config.model());
             else {
                 source = "Official parameters were not obtained; using the existing configuration";
                 try {
@@ -91,10 +101,13 @@ public final class ModelMetadataResolver {
                     official = matched.limits();
                     if (official.known()) {
                         source = "Official API" + matched.matchNote(config.model());
-                        if (!writeCache(cache, target, config.model(), matched)) source += " (cache not written; still usable for this run)";
-                    } else source = matched.fallbackReason() + matched.matchNote(config.model());
+                        if (!writeCache(cache, target, config.model(), matched))
+                            source += " (cache not written; still usable for this run)";
+                    } else
+                        source = matched.fallbackReason() + matched.matchNote(config.model());
                 } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt(); source = "Parameter lookup was interrupted; using the existing configuration";
+                    Thread.currentThread().interrupt();
+                    source = "Parameter lookup was interrupted; using the existing configuration";
                 } catch (IOException | RuntimeException unavailable) {
                     // 不能输出异常正文：第三方响应、URL 或 HTTP 调试信息可能含敏感资料。
                     source = "Official parameter lookup failed; using the existing configuration";
@@ -104,8 +117,10 @@ public final class ModelMetadataResolver {
         // 2. 手动设置与官方字段分别合并；即使网络不可用，也允许明确配置的值生效。
         Limits manual = settings.overrides().getOrDefault(config.model(), Limits.unknown());
         Limits effective = new Limits(choose(manual.contextWindowTokens(), official.contextWindowTokens()),
-                choose(manual.maxInputTokens(), official.maxInputTokens()), choose(manual.maxOutputTokens(), official.maxOutputTokens()));
-        if (manual.known()) source += "; merged manual limits for this model (never above known official values)";
+                choose(manual.maxInputTokens(), official.maxInputTokens()),
+                choose(manual.maxOutputTokens(), official.maxOutputTokens()));
+        if (manual.known())
+            source += "; merged manual limits for this model (never above known official values)";
         return new ModelMetadata(effective, source);
     }
 
@@ -113,8 +128,10 @@ public final class ModelMetadataResolver {
     private static Integer choose(Integer manual, Integer official) {
         // 不写混合 Integer／int 的嵌套三目式：Java 可能先自动拆箱，未知的 null 会变成 NPE。
         // 先单独返回未知分支，只有两者都非空时才比较数值。
-        if (manual == null) return official;
-        if (official == null) return manual;
+        if (manual == null)
+            return official;
+        if (official == null)
+            return manual;
         return Math.min(manual, official);
     }
 
@@ -126,7 +143,8 @@ public final class ModelMetadataResolver {
         try {
             URI base = URI.create(config.baseUrl());
             if (!"https".equalsIgnoreCase(base.getScheme()) || base.getHost() == null || base.getRawUserInfo() != null
-                    || base.getRawQuery() != null || base.getRawFragment() != null || base.getPort() != -1 && base.getPort() != 443)
+                    || base.getRawQuery() != null || base.getRawFragment() != null
+                    || base.getPort() != -1 && base.getPort() != 443)
                 return null;
             String host = base.getHost(), path = base.getRawPath().replaceAll("/+$", "");
             if (host.equalsIgnoreCase("api.deepseek.com") && java.util.Set.of("", "/anthropic", "/v1").contains(path))
@@ -134,10 +152,13 @@ public final class ModelMetadataResolver {
             if (host.equalsIgnoreCase("api.anthropic.com") && java.util.Set.of("", "/v1").contains(path))
                 return new Target(URI.create("https://api.anthropic.com/v1/models/"
                         + URLEncoder.encode(config.model(), StandardCharsets.UTF_8).replace("+", "%20")), false);
-        } catch (IllegalArgumentException invalid) { /* 非法端点不用于参数发现；原配置的消息请求仍按原机制处理。 */ }
+        } catch (IllegalArgumentException invalid) {
+            /* 非法端点不用于参数发现；原配置的消息请求仍按原机制处理。 */ }
         return null;
     }
-    private record Target(URI endpoint, boolean deepseek) { }
+
+    private record Target(URI endpoint, boolean deepseek) {
+    }
 
     /**
      * 两家官方字段有不同语义。DeepSeek 先按精确 ID 匹配，缺少时才使用官方明确声明的兼容别名；
@@ -145,31 +166,42 @@ public final class ModelMetadataResolver {
      * Anthropic retrieve 本身解析别名，返回的规范 ID 因而可以不同于请求名。
      */
     private static CatalogMatch parse(JsonNode root, boolean deepseek, String model) {
-        if (root == null || !root.isObject()) return CatalogMatch.absent("Official catalog response is not a JSON object; using the existing configuration");
+        if (root == null || !root.isObject())
+            return CatalogMatch
+                    .absent("Official catalog response is not a JSON object; using the existing configuration");
         if (!deepseek) {
             if (!root.path("id").isTextual() || root.path("id").textValue().isBlank())
-                return CatalogMatch.absent("Official catalog returned no model identifiers; using the existing configuration");
+                return CatalogMatch
+                        .absent("Official catalog returned no model identifiers; using the existing configuration");
             return new CatalogMatch(new Limits(null, positive(root, "max_input_tokens"), positive(root, "max_tokens")),
-                    root.path("id").textValue(), "Official catalog contains the model but no usable token limits; using the existing configuration");
+                    root.path("id").textValue(),
+                    "Official catalog contains the model but no usable token limits; using the existing configuration");
         }
         JsonNode data = root.path("data");
-        if (!data.isArray()) return CatalogMatch.absent("Official catalog is missing the model data array; using the existing configuration");
+        if (!data.isArray())
+            return CatalogMatch
+                    .absent("Official catalog is missing the model data array; using the existing configuration");
         // 即使官方兼容别名表有映射，也优先采用目录实际给出的精确记录，避免覆盖更明确的服务端事实。
         JsonNode item = findModel(data, model);
         String lookupModel = model;
         if (item == null) {
             lookupModel = deepseekAlias(model);
-            if (!lookupModel.equals(model)) item = findModel(data, lookupModel);
+            if (!lookupModel.equals(model))
+                item = findModel(data, lookupModel);
         }
-        if (item == null) return CatalogMatch.absent("Official catalog has no current model or confirmed compatible alias; using the existing configuration");
+        if (item == null)
+            return CatalogMatch.absent(
+                    "Official catalog has no current model or confirmed compatible alias; using the existing configuration");
         return new CatalogMatch(new Limits(positive(item, "context_window"), null, positive(item, "max_output_tokens")),
-                lookupModel, "Official catalog contains the model but no usable token limits; using the existing configuration");
+                lookupModel,
+                "Official catalog contains the model but no usable token limits; using the existing configuration");
     }
 
     /** 只寻找完全相等的服务端模型 ID；结果缺字段仍是这个模型，不能偷换成另一项。 */
     private static JsonNode findModel(JsonNode data, String id) {
         for (JsonNode item : data)
-            if (item.isObject() && item.path("id").isTextual() && item.path("id").textValue().equals(id)) return item;
+            if (item.isObject() && item.path("id").isTextual() && item.path("id").textValue().equals(id))
+                return item;
         return null;
     }
 
@@ -187,43 +219,60 @@ public final class ModelMetadataResolver {
 
     /** 保存“参数来自哪条目录记录”及固定失败说明，便于缓存命中后仍能解释兼容别名。 */
     private record CatalogMatch(Limits limits, String lookupModel, String fallbackReason) {
-        private static CatalogMatch absent(String reason) { return new CatalogMatch(Limits.unknown(), "", reason); }
+        private static CatalogMatch absent(String reason) {
+            return new CatalogMatch(Limits.unknown(), "", reason);
+        }
+
         private String matchNote(String requested) {
-            return lookupModel.isEmpty() || lookupModel.equals(requested) ? "" : " (catalog match: " + requested + " → " + lookupModel + ")";
+            return lookupModel.isEmpty() || lookupModel.equals(requested) ? ""
+                    : " (catalog match: " + requested + " → " + lookupModel + ")";
         }
     }
 
     /** 服务端 null、零、小数、字符串或溢出的数字不算事实；其它有效字段仍可以使用。 */
     private static Integer positive(JsonNode root, String field) {
         JsonNode value = root.get(field);
-        return value != null && value.isIntegralNumber() && value.canConvertToInt() && value.intValue() > 0 ? value.intValue() : null;
+        return value != null && value.isIntegralNumber() && value.canConvertToInt() && value.intValue() > 0
+                ? value.intValue()
+                : null;
     }
 
     /** 文件名只用摘要，模型名中的斜杠或特殊字符不能变成磁盘路径。摘要不含密钥。 */
     private Path cacheFile(AppConfig config, Target target) {
         try {
-            byte[] bytes = (config.baseUrl() + "\n" + target.endpoint() + "\n" + config.model()).getBytes(StandardCharsets.UTF_8);
-            return cacheDirectory.resolve(HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)) + ".json");
-        } catch (java.security.NoSuchAlgorithmException impossible) { throw new IllegalStateException("The JDK does not provide SHA-256", impossible); }
+            byte[] bytes = (config.baseUrl() + "\n" + target.endpoint() + "\n" + config.model())
+                    .getBytes(StandardCharsets.UTF_8);
+            return cacheDirectory
+                    .resolve(HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)) + ".json");
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("The JDK does not provide SHA-256", impossible);
+        }
     }
 
     /** 缓存只是一份可丢弃的派生资料；坏文件、过期或时钟倒退不会阻止查询及原会话启动。 */
     private CatalogMatch readCache(Path path, Target target, String model, int ttlHours) {
         try {
-            if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS) || Files.size(path) > 65536) return CatalogMatch.absent("");
-            JsonNode data = Json.mapper().reader().with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS).readTree(Files.readString(path));
+            if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS) || Files.size(path) > 65536)
+                return CatalogMatch.absent("");
+            JsonNode data = Json.mapper().reader().with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+                    .readTree(Files.readString(path));
             if (data == null || !data.path("version").isInt() || data.path("version").intValue() != 1
-                    || !data.path("endpoint").asText().equals(target.endpoint().toString()) || !data.path("model").asText().equals(model))
+                    || !data.path("endpoint").asText().equals(target.endpoint().toString())
+                    || !data.path("model").asText().equals(model))
                 return CatalogMatch.absent("");
             Instant fetched = Instant.parse(data.path("fetchedAt").asText());
-            if (fetched.isAfter(clock.instant()) || !fetched.plus(Duration.ofHours(ttlHours)).isAfter(clock.instant())) return CatalogMatch.absent("");
+            if (fetched.isAfter(clock.instant()) || !fetched.plus(Duration.ofHours(ttlHours)).isAfter(clock.instant()))
+                return CatalogMatch.absent("");
             // 旧缓存没有 lookupModel 时仍按原请求名读取；新缓存保留实际匹配项，不能误报为精确命中。
             String lookup = data.path("lookupModel").isTextual() ? data.path("lookupModel").textValue() : model;
             if (lookup.isBlank() || target.deepseek() && !lookup.equals(model) && !lookup.equals(deepseekAlias(model)))
                 return CatalogMatch.absent("");
             JsonNode limits = data.path("limits");
-            return new CatalogMatch(new Limits(positive(limits, "contextWindowTokens"), positive(limits, "maxInputTokens"), positive(limits, "maxOutputTokens")), lookup, "");
-        } catch (IOException | RuntimeException invalid) { return CatalogMatch.absent(""); }
+            return new CatalogMatch(new Limits(positive(limits, "contextWindowTokens"),
+                    positive(limits, "maxInputTokens"), positive(limits, "maxOutputTokens")), lookup, "");
+        } catch (IOException | RuntimeException invalid) {
+            return CatalogMatch.absent("");
+        }
     }
 
     /** 同目录临时文件再替换，避免半份缓存；IO 失败只影响缓存命中，不回退本次成功查询的数据。 */
@@ -232,37 +281,53 @@ public final class ModelMetadataResolver {
         try {
             Files.createDirectories(cacheDirectory);
             var root = Json.mapper().createObjectNode().put("version", 1).put("endpoint", target.endpoint().toString())
-                    .put("model", model).put("lookupModel", matched.lookupModel()).put("fetchedAt", clock.instant().toString());
+                    .put("model", model).put("lookupModel", matched.lookupModel())
+                    .put("fetchedAt", clock.instant().toString());
             root.set("limits", Json.mapper().valueToTree(matched.limits()));
             temporary = Files.createTempFile(cacheDirectory, "model-", ".tmp");
             Files.writeString(temporary, root.toPrettyString() + "\n");
-            try { Files.move(temporary, path, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING); }
-            catch (java.nio.file.AtomicMoveNotSupportedException unsupported) { Files.move(temporary, path, StandardCopyOption.REPLACE_EXISTING); }
+            try {
+                Files.move(temporary, path, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            } catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {
+                Files.move(temporary, path, StandardCopyOption.REPLACE_EXISTING);
+            }
             return true;
-        } catch (IOException | RuntimeException unavailable) { return false; }
-        finally { if (temporary != null) try { Files.deleteIfExists(temporary); } catch (IOException | RuntimeException ignored) { } }
+        } catch (IOException | RuntimeException unavailable) {
+            return false;
+        } finally {
+            if (temporary != null)
+                try {
+                    Files.deleteIfExists(temporary);
+                } catch (IOException | RuntimeException ignored) {
+                }
+        }
     }
 
     /**
      * 不跟随重定向，避免认证被发往另一主机；总等待含响应正文，超时主动取消。
      * 不发模型生成请求，不重试。异常只携带固定说明，调用者不能回显响应或请求头。
      */
-    private static JsonNode get(URI endpoint, Map<String, String> headers, int timeoutMillis) throws IOException, InterruptedException {
+    private static JsonNode get(URI endpoint, Map<String, String> headers, int timeoutMillis)
+            throws IOException, InterruptedException {
         HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofMillis(timeoutMillis))
                 .followRedirects(HttpClient.Redirect.NEVER).build();
         java.util.concurrent.CompletableFuture<HttpResponse<String>> pending = null;
         try {
-            HttpRequest.Builder builder = HttpRequest.newBuilder(endpoint).timeout(Duration.ofMillis(timeoutMillis)).GET();
+            HttpRequest.Builder builder = HttpRequest.newBuilder(endpoint).timeout(Duration.ofMillis(timeoutMillis))
+                    .GET();
             headers.forEach(builder::header);
             pending = http.sendAsync(builder.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
             var response = pending.get(timeoutMillis, TimeUnit.MILLISECONDS);
-            if (response.statusCode() != 200 || response.body().length() > 2_000_000) throw new IOException("Model catalog lookup did not succeed");
-            return Json.mapper().reader().with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS).readTree(response.body());
+            if (response.statusCode() != 200 || response.body().length() > 2_000_000)
+                throw new IOException("Model catalog lookup did not succeed");
+            return Json.mapper().reader().with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+                    .readTree(response.body());
         } catch (java.util.concurrent.ExecutionException | java.util.concurrent.TimeoutException failure) {
             throw new IOException("Model catalog lookup failed or timed out");
         } finally {
             // shutdownNow 不像 close 那样无限等外部服务，初始化不能因元数据连接挂住。
-            if (pending != null) pending.cancel(true);
+            if (pending != null)
+                pending.cancel(true);
             http.shutdownNow();
         }
     }

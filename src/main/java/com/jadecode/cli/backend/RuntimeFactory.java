@@ -35,11 +35,18 @@ public final class RuntimeFactory {
     private Path workspace = Path.of("").toAbsolutePath();
     private com.jadecode.sandbox.DockerRuntime.WriteScopes writeScopes;
     private com.jadecode.workspace.ManagedWorkspace managed;
+
     /** 只在运行时装配前绑定独立工作区，/new 和 /resume 继续沿用同一资源身份。 */
     public RuntimeFactory managed(com.jadecode.workspace.ManagedWorkspace value) {
-        if (created) throw new IllegalStateException("Runtime factory is already fixed"); managed=value; return this;
+        if (created)
+            throw new IllegalStateException("Runtime factory is already fixed");
+        managed = value;
+        return this;
     }
-    public com.jadecode.workspace.ManagedWorkspace managed() { return managed; }
+
+    public com.jadecode.workspace.ManagedWorkspace managed() {
+        return managed;
+    }
 
     /**
      * 一次启动固定模型配置，恢复/切换会话不重新混入项目文件；不联网，不改变工作区。
@@ -54,33 +61,52 @@ public final class RuntimeFactory {
 
     /** 服务在装配前绑定真实工作区与同组占用入口；此方法不更改进程工作目录。 */
     public RuntimeFactory workspace(Path path, com.jadecode.sandbox.DockerRuntime.WriteScopes scopes) {
-        if (created) throw new IllegalStateException("Runtime factory workspace is already fixed");
-        workspace = path; writeScopes = scopes; return this;
+        if (created)
+            throw new IllegalStateException("Runtime factory workspace is already fixed");
+        workspace = path;
+        writeScopes = scopes;
+        return this;
     }
+
     /**
      * 仅为明确请求预算的调用方设置每轮累计用量软上限，默认不调用此入口。
      * 正整数包含同组 Agent 和辅助请求；/new、/resume 沿用显式策略。
      * 不修改用户配置、不发模型请求；工厂装配后或非正数输入立即失败。
      */
     public RuntimeFactory tokenBudget(long value) {
-        if (created || value < 1) throw new IllegalArgumentException("Set a positive budget before creating a runtime");
-        tokenBudget=value; return this;
+        if (created || value < 1)
+            throw new IllegalArgumentException("Set a positive budget before creating a runtime");
+        tokenBudget = value;
+        return this;
     }
-    public Path workspace() { return workspace; }
-    public com.jadecode.config.JadePaths paths() { return paths; }
+
+    public Path workspace() {
+        return workspace;
+    }
+
+    public com.jadecode.config.JadePaths paths() {
+        return paths;
+    }
 
     /** 离线验证注入客户端和数据根，不读取真实认证或联网查询模型目录。 */
     public RuntimeFactory(JadeSettings settings, PermissionState permissions, AppConfig config,
             com.jadecode.llm.LlmClient client, com.jadecode.config.JadePaths paths) {
-        this.settings = settings; this.permissions = permissions; modelConfig = config;
-        injectedClient = client; this.paths = paths;
+        this.settings = settings;
+        this.permissions = permissions;
+        modelConfig = config;
+        injectedClient = client;
+        this.paths = paths;
     }
 
     /** @return 本会话共享的设置快照（只读）。 */
-    public JadeSettings settings() { return settings; }
+    public JadeSettings settings() {
+        return settings;
+    }
 
     /** @return 本会话共享的权限状态；TUI 与 headless 都必须用这一份。 */
-    public PermissionState permissions() { return permissions; }
+    public PermissionState permissions() {
+        return permissions;
+    }
 
     /**
      * 装配一个尚未 start 的会话。
@@ -94,10 +120,15 @@ public final class RuntimeFactory {
             Supplier<ResponseStream> streams, ExecutionObserver observer) {
         created = true;
         SessionRuntime runtime;
-        if (injectedClient != null) runtime = JadeCodeFactory.create(modelConfig, workspace, injectedClient,
-                output, errors, (hooks,cwd,ignored) -> { }, streams, observer, settings, permissions, paths, writeScopes, managed);
-        else runtime = JadeCodeFactory.create((hooks, cwd, ignored) -> { }, output, errors, streams, observer, settings, permissions, modelConfig, workspace, writeScopes, managed);
-        if (tokenBudget > 0) runtime.executionTokenBudget(tokenBudget);
+        if (injectedClient != null)
+            runtime = JadeCodeFactory.create(modelConfig, workspace, injectedClient,
+                    output, errors, (hooks, cwd, ignored) -> {
+                    }, streams, observer, settings, permissions, paths, writeScopes, managed);
+        else
+            runtime = JadeCodeFactory.create((hooks, cwd, ignored) -> {
+            }, output, errors, streams, observer, settings, permissions, modelConfig, workspace, writeScopes, managed);
+        if (tokenBudget > 0)
+            runtime.executionTokenBudget(tokenBudget);
         return runtime;
     }
 }
