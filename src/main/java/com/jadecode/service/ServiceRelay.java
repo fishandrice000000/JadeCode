@@ -7,21 +7,19 @@ import java.nio.channels.SocketChannel;
 import java.nio.file.*;
 import java.time.Duration;
 import java.util.*;
-import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.jadecode.cli.backend.protocol.*;
-import com.jadecode.config.*;
+import com.jadecode.config.JadePaths;
 import com.jadecode.util.Json;
 
 /**
- * 本地 UDS 或 SSH 的窄连接器。远端命令固定为 jade --service-relay，工作区等参数只走 JSON，
- * 不拼接到远端 shell。SSH 保留主机密钥校验，首版使用已配置的非交互认证。
+ * SSH 远端的服务适配入口：只连接该机器的私有 UDS，必要时启动本机 daemon。
+ * 不解析客户端命令、不启动 Node；stdin EOF 只解绑连接，不停止服务会话。
  */
-public final class ServiceClient {
-    private ServiceClient() {
+public final class ServiceRelay {
+    private ServiceRelay() {
     }
 
-    /** 一条连接拥有自身 IO 和 SSH 子进程；close 不发停止会话命令。 */
-    public static final class Peer implements AutoCloseable {
+    /** 一条连接拥有自身 IO 和 socket；close 不发停止会话命令。 */
+    private static final class Peer implements AutoCloseable {
         public final InputStream input;
         public final OutputStream output;
         private final AutoCloseable resource;
@@ -40,24 +38,6 @@ public final class ServiceClient {
                 throw new IOException("Service connection close failed", failure);
             }
         }
-    }
-
-    /** 本机连接按需启动 daemon；远端 relay 自己启动其本机服务。 */
-    public static Peer connect(String remote) throws IOException {
-        if (remote != null) {
-            if (!remote.matches("[A-Za-z0-9_][A-Za-z0-9_.@:\\-]*"))
-                throw new IOException("Invalid SSH target");
-            var process = new ProcessBuilder("ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o",
-                    "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2", "--", remote, "jade --service-relay")
-                    .redirectError(ProcessBuilder.Redirect.INHERIT).start();
-            return new Peer(process.getInputStream(), process.getOutputStream(), () -> {
-                process.getOutputStream().close();
-                process.getInputStream().close();
-                if (process.isAlive())
-                    process.destroy();
-            });
-        }
-        return local(true);
     }
 
     /** 私有发现文件只含 socket 与进程身份；不读取任何模型认证。 */
@@ -121,26 +101,11 @@ public final class ServiceClient {
                 .redirectError(ProcessBuilder.Redirect.appendTo(log.toFile())).start();
     }
 
+    /** 将启动时的类路径固定为绝对路径，避免 daemon 的工作目录影响 JAR 定位。 */
     private static String absoluteClasspath() {
         return Arrays.stream(System.getProperty("java.class.path").split(java.io.File.pathSeparator))
                 .map(part -> Path.of(part).toAbsolutePath().normalize().toString())
                 .reduce((a, b) -> a + java.io.File.pathSeparator + b).orElseThrow();
-    }
-
-    /** 管理前导帧与正常 TUI 帧使用相同大小/UTF-8 验证，失败不进入协议握手。 */
-    public static ObjectNode request(Peer peer, String type, ObjectNode payload) throws IOException {
-        try {
-            peer.output.write(WireCodec.encode(WireMessage.event(1, "", type, null, null, payload)));
-            peer.output.flush();
-            var reply = WireCodec.readFrame(peer.input);
-            if (reply == null)
-                throw new IOException("Service connection ended before its reply");
-            if (reply.payload().has("error"))
-                throw new IOException(reply.payload().path("error").asText());
-            return reply.payload();
-        } catch (ProtocolException invalid) {
-            throw new IOException("Invalid service reply", invalid);
-        }
     }
 
     /** SSH 远端固定入口；只转发字节，不渲染，不加载模型，EOF 不停止 daemon。 */

@@ -8,8 +8,6 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import com.jadecode.cli.LaunchOptions;
-import com.jadecode.cli.ServiceCli;
 import com.jadecode.cli.backend.RuntimeFactory;
 import com.jadecode.config.*;
 import com.jadecode.llm.*;
@@ -82,18 +80,4 @@ class HeadlessRunnerTest {
         }
     }
 
-    @Test
-    void blankPromptIsAUsageError() {
-        assertThrows(LaunchOptions.UsageException.class,
-                () -> LaunchOptions.parse(new String[] { "--headless", "   " }));
-        var errors = new ByteArrayOutputStream();
-        PrintStream original = System.err;
-        try {
-            System.setErr(new PrintStream(errors, true, StandardCharsets.UTF_8));
-            assertEquals(2, ServiceCli.run(new String[] { "--headless", "" }));
-        } finally {
-            System.setErr(original);
-        }
-        assertFalse(errors.toString(StandardCharsets.UTF_8).isBlank());
-    }
 }

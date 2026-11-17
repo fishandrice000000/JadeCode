@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+# 只启动 Java 服务或远端 relay，不依赖 Node。
+DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec "${JAVA21_HOME:-/usr/lib/jvm/java-21-openjdk-amd64}/bin/java" -jar "$DIR/target/jadecode.jar" "$@"
