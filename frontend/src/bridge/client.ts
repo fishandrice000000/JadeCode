@@ -1,5 +1,6 @@
-import { connect, type Socket } from "node:net";
+import { Socket } from "node:net";
 import { Buffer } from "node:buffer";
+import type { Duplex } from "node:stream";
 import { MAX_FRAME_BYTES, parseFrame, ProtocolViolation, type Payload, type WireMessage } from "./wire.ts";
 
 /** 与后端相同的连接级预算；慢 peer 不能让 Node 的 writable buffer/待答命令无限增长。 */
@@ -14,7 +15,8 @@ const MAX_PENDING_COMMANDS = 4096;
  * 多字节字符同样可能被切开，所以用 Buffer 拼接后再严格解码。
  */
 export interface BackendClientOptions {
-	socketPath: string;
+	/** CLI 已建立的服务直连通道；本类不创建额外 socket 或转发进程。 */
+	transport: Duplex;
 	onEvent: (message: WireMessage) => void;
 	onClosed: (reason: string) => void;
 	/** 协议/传输层致命错误：保留第一次原因并进入统一收口。 */
@@ -31,7 +33,8 @@ export interface CommandResult {
 
 export class BackendClient {
 	private readonly options: BackendClientOptions;
-	private socket: Socket | undefined;
+	private socket: Duplex | undefined;
+	private prelude: { resolve: (value: Payload) => void; reject: (error: Error) => void } | undefined;
 	private buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
 	private seq = 0n;
 	private connectionId = "";
@@ -56,33 +59,58 @@ export class BackendClient {
 	/** 建立 socket；真正的协议握手由 {@link hello} 完成。 */
 	async open(): Promise<void> {
 		await new Promise<void>((resolve, reject) => {
-			const socket = connect(this.options.socketPath);
+			const socket = this.options.transport;
 			this.socket = socket;
-			socket.setNoDelay(true);
-			socket.once("connect", () => resolve());
-			socket.once("error", (error) => {
+			if ("setNoDelay" in socket) (socket as Socket).setNoDelay(true);
+			socket.on("error", (error) => {
 				reject(error);
 				this.options.onFatal(`Socket error: ${error.message}`, error);
 				this.fail(`Socket error: ${error.message}`);
 			});
-			socket.on("data", (chunk) => this.ingest(chunk));
+			socket.on("data", (chunk: Buffer) => this.ingest(chunk));
 			socket.on("end", () => this.fail("The backend closed the connection"));
 			socket.on("close", () => this.fail("The backend connection closed"));
+			if (socket instanceof Socket && socket.connecting) socket.once("connect", resolve);
+			else resolve();
+		});
+	}
+
+	/** 串行交换服务前导；始终使用同一分帧器，后续 hello 不会丢掉同批剩余字节。 */
+	async serviceRequest(type: string, payload: Payload): Promise<Payload> {
+		if (this.prelude) throw new Error("A service request is already pending");
+		return new Promise<Payload>((resolve, reject) => {
+			const timer = setTimeout(() => {
+				this.prelude = undefined;
+				this.fail("Service request timed out");
+				reject(new Error("Service request timed out"));
+			}, 10_000);
+			this.prelude = {
+				resolve: (value) => { clearTimeout(timer); resolve(value); },
+				reject: (error) => { clearTimeout(timer); reject(error); },
+			};
+			try { this.send(type, payload, {}); }
+			catch (error) { this.prelude?.reject(error as Error); this.prelude = undefined; }
 		});
 	}
 
 	/**
 	 * 发送 hello 并等待 server.hello。
-	 * @param credential 一次性凭据（仅来自子进程环境）
+	 * @param credential service.open 在本次连接返回的一次性凭据，不写入环境或磁盘
 	 */
 	async hello(credential: string, buildId: string): Promise<WireMessage> {
+		if (this.closed) throw new Error("The backend connection is closed");
 		const wait = this.waitFor("server.hello", 10_000);
-		this.send("client.hello", {
-			protocolVersion: 1,
-			buildId,
-			credential,
-			frontendCapabilities: ["snapshot", "approval-evidence", "terminal-progress", "path-completion"],
-		}, {});
+		try {
+			this.send("client.hello", {
+				protocolVersion: 1,
+				buildId,
+				credential,
+				frontendCapabilities: ["snapshot", "approval-evidence", "terminal-progress", "path-completion"],
+			}, {});
+		} catch (error) {
+			// 已登记的等待也要完成；统一由下方 await 接收拒绝，不能遗留超时或未处理 Promise。
+			this.fail(error instanceof Error ? error.message : String(error));
+		}
 		const hello = await wait;
 		this.connectionId = hello.connectionId;
 		return hello;
@@ -186,6 +214,14 @@ export class BackendClient {
 	}
 
 	private dispatch(message: WireMessage): void {
+		if (message.type === "service.result") {
+			const pending = this.prelude;
+			this.prelude = undefined;
+			if (!pending) { this.fail("Unexpected service result"); return; }
+			if (typeof message.payload.error === "string") pending.reject(new Error(message.payload.error));
+			else pending.resolve(message.payload);
+			return;
+		}
 		if (message.type === "command.result" || message.type === "command.error") {
 			const id = message.commandId;
 			if (!id) {
@@ -236,20 +272,27 @@ export class BackendClient {
 				cleanup();
 				resolve(message);
 			};
+			const failure = (error: Error): void => { cleanup(); reject(error); };
 			const cleanup = (): void => {
+				this.waitFailures.delete(failure);
 				clearTimeout(timer);
 				this.waiters = this.waiters.filter((item) => item !== listener);
 			};
+			this.waitFailures.add(failure);
 			this.waiters.push(listener);
 		});
 	}
 
 	private waiters: Array<(message: WireMessage) => void> = [];
+	private waitFailures = new Set<(error: Error) => void>();
 
 	private fail(reason: string): void {
 		if (this.closed) return;
 		this.closed = true;
+		this.prelude?.reject(new Error(reason));
+		this.prelude = undefined;
 		this.buffer = Buffer.alloc(0);
+		for (const reject of [...this.waitFailures]) reject(new Error(reason));
 		try { this.socket?.destroy(); } catch { /* 已断开。 */ }
 		for (const waiter of this.pending.values()) waiter.reject(new Error(reason));
 		this.pending.clear();

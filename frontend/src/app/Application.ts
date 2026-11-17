@@ -13,6 +13,7 @@ import {
 	type OverlayHandle,
 } from "@earendil-works/pi-tui";
 import { BackendClient } from "../bridge/client.ts";
+import { prepareSession, type SessionStartup } from "../cli/session.ts";
 import { PayloadAssembler } from "../bridge/payload-assembler.ts";
 import { UiEventBarrier } from "./ui-barrier.ts";
 import { isGlobalActionPress } from "../terminal/global-keys.ts";
@@ -100,7 +101,7 @@ export class Application {
 	/** 最近 64 条协议元数据；只在失败时输出，不倾倒 payload。 */
 	private readonly traceBuffer: Array<{ at: number; direction: string; type: string; seq: string; connection: string; uiReady: boolean }> = [];
 
-	constructor() {
+	constructor(private readonly startup?: SessionStartup) {
 		this.conversation = new ConversationView(this.transcript, this.session, this.markdown);
 		this.status = new StatusView(this.session);
 		this.approval = new ApprovalController({
@@ -145,15 +146,10 @@ export class Application {
 
 	/** 启动：连接、握手、bootstrap、主题、终端，然后进入快照同步。 */
 	async run(): Promise<number> {
-		const socketPath = process.env.JADE_BRIDGE_SOCKET ?? "";
-		const credential = process.env.JADE_BRIDGE_CREDENTIAL ?? "";
-		const buildId = process.env.JADE_BRIDGE_BUILD_ID ?? "";
-		if (!socketPath || !credential) {
-			process.stderr.write("JadeCode frontend: missing bridge environment\n");
-			return 2;
-		}
+		if (!this.startup) throw new Error("Application requires a direct service connection");
+		const startup = this.startup;
 		const client = new BackendClient({
-			socketPath,
+			transport: startup.connection.stream,
 			onEvent: (message) => this.onEvent(message),
 			onClosed: (reason) => this.onClosed(reason),
 			onFatal: (reason, error) => this.reportFailure(reason, error),
@@ -161,7 +157,8 @@ export class Application {
 		this.client = client;
 		try {
 			await client.open();
-			await client.hello(credential, buildId);
+			const credential = await prepareSession(client, startup);
+			await client.hello(credential, startup.installation.buildId);
 			await this.waitForBootstrap();
 			this.setupThemeAndTerminal();
 			this.host.start();

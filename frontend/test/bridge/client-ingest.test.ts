@@ -1,3 +1,4 @@
+import { PassThrough } from "node:stream";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BackendClient } from "../../src/bridge/client.ts";
@@ -14,7 +15,7 @@ function client(): {
 	const fatal: string[] = [];
 	const closed: string[] = [];
 	const value = new BackendClient({
-		socketPath: "/unused", onEvent: (message) => { events.push(message); },
+		transport: new PassThrough(), onEvent: (message) => { events.push(message); },
 		onFatal: (reason) => { fatal.push(reason); }, onClosed: (reason) => { closed.push(reason); },
 	});
 	return { ingest: (chunk) => (value as unknown as { ingest(chunk: Buffer): void }).ingest(chunk), events, fatal, closed };

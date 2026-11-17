@@ -1,3 +1,4 @@
+import { connect } from "node:net";
 import assert from "node:assert/strict";
 import { createServer, type Socket } from "node:net";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -31,7 +32,7 @@ test("a paused UDS peer drains ordered frames and overload closes once", async (
 	await new Promise<void>((resolve) => server.listen(socketPath, resolve));
 	const failures: string[] = [];
 	let closed = 0;
-	const client = new BackendClient({ socketPath, onEvent: () => {}, onFatal: (message) => failures.push(message), onClosed: () => { closed += 1; } });
+	const client = new BackendClient({ transport: connect(socketPath), onEvent: () => {}, onFatal: (message) => failures.push(message), onClosed: () => { closed += 1; } });
 	try {
 		await client.open();
 		await connected;

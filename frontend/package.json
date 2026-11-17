@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@earendil-works/pi-tui": "file:vendor/pi-tui",
+    "fflate": "0.8.3",
     "get-east-asian-width": "1.6.0",
     "grok-mermaid": "0.2.3",
     "highlight.js": "10.7.3",
