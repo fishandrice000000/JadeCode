@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://jadecode.local/protocol/tui-bridge-v1.schema.json",
-  "title": "JadeCode internal TUI bridge protocol v1",
-  "description": "Private NDJSON envelope used only between the JadeCode Java backend and the Node terminal frontend. Not a public RPC service.",
+  "title": "JadeCode internal service and terminal protocol v1",
+  "description": "Private NDJSON envelope between the Node CLI/TUI and Java service, directly over local UDS or SSH relay. Not a public network RPC service.",
   "type": "object",
   "required": ["version", "connectionId", "seq", "type", "commandId", "sessionId", "generation", "payload"],
   "properties": {
@@ -17,6 +17,18 @@
   },
   "additionalProperties": false,
   "$defs": {
+    "serviceIdentityResult": {
+      "description": "service.identity returns service.result before service.open without allocating a session; local clients compare pid/started to endpoint metadata.",
+      "type": "object",
+      "required": ["pid", "started", "buildId", "protocolVersion", "paired"],
+      "properties": {
+        "pid": { "type": "integer", "minimum": 1 },
+        "started": { "type": "integer", "minimum": 0 },
+        "buildId": { "type": "string" },
+        "protocolVersion": { "const": 1 },
+        "paired": { "type": "boolean" }
+      }
+    },
     "teamReportRequest": {
       "description": "Read-only report lookup for the current session; accepts an assignment ID, never a file path. Response carries textBlobRef.",
       "type": "object",

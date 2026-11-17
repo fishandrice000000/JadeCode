@@ -36,7 +36,8 @@ public final class WireCodec {
 
     /** Node → Java 命令类型白名单。 */
     public static final Set<String> COMMANDS = Set.of(
-            "service.workspace", "service.cancel", "service.open", "service.list", "service.stop", "service.close",
+            "service.identity", "service.workspace", "service.cancel", "service.open", "service.list", "service.stop",
+            "service.close",
             "client.hello", "session.ready", "session.submit", "session.promoteBuffer", "session.new",
             "session.list", "session.find", "session.resume", "session.rename", "session.thinking",
             "workspace.complete", "team.report",

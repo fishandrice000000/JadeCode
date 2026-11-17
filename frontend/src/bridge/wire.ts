@@ -11,6 +11,7 @@ export const PROTOCOL_VERSION = 1;
 export const MAX_FRAME_BYTES = 1024 * 1024;
 
 export const COMMAND_TYPES = [
+	"service.identity", "service.open", "service.list", "service.cancel", "service.close", "service.stop", "service.workspace",
 	"client.hello",
 	"session.ready",
 	"session.submit",
@@ -44,6 +45,7 @@ export const COMMAND_TYPES = [
 ] as const;
 
 export const EVENT_TYPES = [
+	"service.result",
 	"server.hello",
 	"server.bootstrap",
 	"session.snapshot.begin",

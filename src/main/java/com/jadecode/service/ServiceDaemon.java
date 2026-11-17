@@ -9,7 +9,6 @@ import java.nio.file.attribute.PosixFilePermissions;
 import java.util.*;
 import java.util.concurrent.*;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.jadecode.cli.FrontendDistribution;
 import com.jadecode.cli.backend.protocol.*;
 import com.jadecode.config.*;
 import com.jadecode.util.Json;
@@ -39,7 +38,7 @@ public final class ServiceDaemon {
                 if (lock == null)
                     return 0;
                 cleanupOldEndpoint(root);
-                String build = FrontendDistribution.backendBuildId();
+                String build = ServerBuild.load().buildId();
                 socketDirectory = Files.createTempDirectory("jade-service-", PosixFilePermissions.asFileAttribute(
                         PosixFilePermissions.fromString("rwx------")));
                 Path socket = socketDirectory.resolve("agent.sock");
@@ -116,7 +115,7 @@ public final class ServiceDaemon {
         }
     }
 
-    /** 第一帧选择会话，之后直接沿用成套 TUI 协议；第一帧不触发模型执行。 */
+    /** 先处理可选的身份探测，再选择管理操作或会话；会话握手仍沿用同一连接，前导不触发模型执行。 */
     static void serve(AgentService service, SocketChannel peer, Runnable stop, ScheduledFuture<?> deadline)
             throws Exception {
         InputStream in = ChannelStreams.input(peer);
@@ -125,6 +124,17 @@ public final class ServiceDaemon {
         if (request == null)
             return;
         try {
+            // 身份探测不创建会话；后续前导和握手复用同一连接，不能丢失客户端已发的字节。
+            if (request.type().equals("service.identity")) {
+                var build = ServerBuild.load();
+                reply(out, Json.mapper().createObjectNode().put("pid", ProcessHandle.current().pid())
+                        .put("started", ProcessHandle.current().info().startInstant().orElseThrow().toEpochMilli())
+                        .put("buildId", build.buildId()).put("protocolVersion", build.protocolVersion())
+                        .put("paired", build.paired()));
+                request = WireCodec.readFrame(in);
+                if (request == null)
+                    return;
+            }
             // 文件按块往返同一 SSH/UDS 连接，避免每块重新启动 SSH 或把大 ZIP 放进单帧。
             if (request.type().equals("service.workspace")) {
                 deadline.cancel(false);
