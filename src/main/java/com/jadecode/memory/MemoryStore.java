@@ -13,11 +13,14 @@ import java.util.*;
 import java.util.function.Consumer;
 
 /**
- * 全局记忆文件库：正文、来源、待处理作业和反馈分开保存。
+ * 按文件保存正式知识、经验来源、候选笔记、反馈和维护作业。
  *
- * <p>模型只提出候选；文件名、作用域、版本及发布顺序由本类确定。普通操作持短文件锁，
- * 不在此锁内等待模型。正式手册与短摘要复用旧库的备份事务，失败不覆盖未知外部修改。
- * 这是应用内存储约束，不是对任意 Shell 的操作系统沙箱。</p>
+ * <p>工作区真实路径决定 scope；全局分区与当前工作区分区参与本次整理。
+ * 普通读写在 MemoryLibraryLock 的短锁内完成。publish 根据预期快照核对版本，重建分区正文，
+ * 通过 MemoryTransaction 备份与逐文件替换发布；后续库访问恢复未完成事务。</p>
+ *
+ * @see MemoryLibraryLock
+ * @see MemoryTransaction
  */
 final class MemoryStore {
     static final String EMPTY_SUMMARY = "# Memory routes\n\nNo consolidated memories yet.\n";
@@ -27,7 +30,12 @@ final class MemoryStore {
     private final String scope;
     private final Consumer<String> warnings;
 
-    /** 只绑定显式目录；构造不创建用户文件，也不读取模型配置。 */
+    /**
+     * 从工作区布局绑定记忆根、真实工作区和作用域，保存恢复告警出口，供首次 initialize 建立库结构。
+     *
+     * @param paths 当前工作区的真实目录与用户数据布局
+     * @param warnings 接收文件或维护告警的文本出口
+     */
     MemoryStore(com.jadecode.config.WorkspacePaths paths, Consumer<String> warnings) {
         this.paths = paths;
         this.root = paths.jade().memory();
@@ -36,25 +44,47 @@ final class MemoryStore {
         this.warnings = warnings;
     }
 
+    /**
+     * 返回本库绑定的工作区数据布局，供证据读取定位对应的 sessions 目录。
+     *
+     * @return 此库绑定的真实工作区数据布局
+     */
     com.jadecode.config.WorkspacePaths paths() {
         return paths;
     }
 
+    /**
+     * 返回正式知识、材料和维护状态共用的记忆库根目录。
+     *
+     * @return 正式知识、经验和维护状态共用的记忆根
+     */
     Path root() {
         return root;
     }
 
+    /**
+     * 返回当前真实工作区对应的哈希作用域 ID，供作业筛选与知识分区发布使用。
+     *
+     * @return 当前真实工作区的哈希作用域 ID
+     */
     String scope() {
         return scope;
     }
 
+    /**
+     * 返回本库绑定的真实工作区目录，供整理输入说明知识适用位置。
+     *
+     * @return 当前绑定的真实工作区路径
+     */
     Path workspace() {
         return workspace;
     }
 
     /**
-     * 首次实际使用才建立目录与空基线；每一级都拒绝符号链接。
-     * 库锁内只初始化缺失文件，不覆盖既有手册；残缺或被外部替换的库在后续检查中报错，不猜测修复正文。
+     * 逐级确认或创建库目录，在短锁内建立经验、候选、事件和状态目录，恢复未完成事务并补齐初始清单与空文档。
+     * 已有发布版本缺失正文或无法识别的旧库内容会抛出 IOException。
+     *
+     * @throws IOException 目录类型不合法、事务恢复失败、旧库无法识别或已发布文件缺失
      */
     void initialize() throws IOException {
         directory(root, true);
@@ -82,7 +112,13 @@ final class MemoryStore {
         });
     }
 
-    /** 一次锁内读取同一代正文和清单；返回不可变字符串，不把磁盘可变对象交给模型。 */
+    /**
+     * 在同一库锁内恢复未完成事务，读取并校验清单，取得总正文、当前工作区与全局分区、处理基线及已处理 ID，
+     * 附上清单哈希返回一代快照。文件格式或 IO 错误向上传递。
+     *
+     * @return 同一代正文、分区、处理基线与清单指纹组成的快照
+     * @throws IOException 未完成事务无法恢复，清单格式错误，或正式正文读取失败
+     */
     Snapshot snapshot() throws IOException {
         return MemoryLibraryLock.run(root, () -> {
             MemoryTransaction.recover(root, warnings);
@@ -103,33 +139,87 @@ final class MemoryStore {
         });
     }
 
+    /**
+     * 表示锁内读取的一代正式知识，保存总正文、当前工作区与全局分区、已处理输入和版本指纹，
+     * 供整理输入与发布冲突核对使用。
+     *
+     * @param revision 当前正式记忆的发布代数
+     * @param summary 全库按作用域拼接后的正式 memory_summary.md 完整正文
+     * @param handbook 全库按作用域拼接后的正式 MEMORY.md 完整正文
+     * @param baseline 提示词与材料、笔记共同计算的整理基线哈希
+     * @param updatedAt 当前作用域上次成功维护的时间文本
+     * @param workspaceSummary 当前工作区作用域的正式短路由
+     * @param workspaceHandbook 当前工作区作用域的正式手册正文
+     * @param globalSummary 全局作用域的正式短路由
+     * @param globalHandbook 全局作用域的正式手册正文
+     * @param processedNotes 本工作区已成功确认处理的候选笔记 ID 列表
+     * @param processedMaterials 本工作区已成功确认处理的经验材料 ID 列表
+     * @param manifestHash 读取快照时的清单内容哈希，供发布时比较
+     */
     record Snapshot(long revision, String summary, String handbook, String baseline, String updatedAt,
             String workspaceSummary, String workspaceHandbook, String globalSummary, String globalHandbook,
             List<String> processedNotes, List<String> processedMaterials, String manifestHash) {
     }
 
+    /**
+     * 保存一个作用域待发布的完整短路由和手册正文，供存储层替换该分区并重建全库文档。
+     *
+     * @param summary 一个作用域的完整短路由文本
+     * @param handbook 一个作用域的完整详细手册正文
+     */
     record Artifacts(String summary, String handbook) {
     }
 
     /**
-     * 只发布已校验候选。模型等待期间清单或正文有变化就拒绝，不能以旧快照盖掉新修正。
-     * 先准备可恢复备份，再替换摘要/清单/手册，最后提交；恢复材料保留用于诊断。
+     * 发布本批候选并确认输入基线，沿用快照中已有的已处理笔记与材料 ID。委托完整发布入口，返回正式正文是否变化；
+     * 快照冲突或文件操作失败抛出 IOException。
+     *
+     * @param expected 整理开始时取得的正式快照，发布前用它核对版本与正文
+     * @param changes 按作用域保存的完整候选短路由与手册正文
+     * @param baseline 提示词与材料、笔记共同计算的整理基线哈希
+     * @param sources 本批来源引用或来源元数据，用于构造允许清单和确认处理输入
+     * @return 正式正文发生变化并成功发布时为 true；只确认处理基线时为 false
+     * @throws IOException 预期快照已过期、候选跨工作区、备份或正式文件发布失败
      */
     boolean publish(Snapshot expected, Map<String, Artifacts> changes, String baseline, List<String> sources)
             throws IOException {
         return publish(expected, changes, baseline, sources, expected.processedNotes());
     }
 
-    /** 成功发布同时登记已处理笔记；失败时不提前把纠正标成已应用。 */
+    /**
+     * 发布本批候选并登记传入的已处理笔记，沿用快照中的已处理材料 ID。委托完整发布入口，返回正式正文是否变化，
+     * 失败以 IOException 报告。
+     *
+     * @param expected 整理开始时取得的正式快照，发布前用它核对版本与正文
+     * @param changes 按作用域保存的完整候选短路由与手册正文
+     * @param baseline 提示词与材料、笔记共同计算的整理基线哈希
+     * @param sources 本批来源引用或来源元数据，用于构造允许清单和确认处理输入
+     * @param processedNotes 本批发布成功后确认已处理的候选笔记 ID
+     * @return 正式正文发生变化并成功发布时为 true；只确认处理基线时为 false
+     * @throws IOException 预期快照已过期、候选跨工作区、备份或正式文件发布失败
+     */
     boolean publish(Snapshot expected, Map<String, Artifacts> changes, String baseline, List<String> sources,
             List<String> processedNotes) throws IOException {
         return publish(expected, changes, baseline, sources, processedNotes, expected.processedMaterials());
     }
 
     /**
-     * 原子确认本批处理结果，返回正式正文是否发生变化；无变化也是成功处理。
-     * 已处理材料 ID 与笔记 ID 只在发布成功后登记，下一轮仅把新增材料交给整理器。
-     * 没有正文变化时只原子更新清单，不改写两份 Markdown，不制造空工作区知识块。
+     * 在短库锁内发布候选知识，并确认本批来源和笔记已处理。
+     *
+     * <p>先恢复未完成事务，再核对 expected 的 revision、清单哈希和两份正文。校验当前工作区或 global 候选，
+     * 更新对应分区、处理基线及 ID，并推进 revision。正文相同时原子更新清单并返回 false；
+     * 正文变化时按 scope 排序重建全库短路由和手册，保留其他分区。</p>
+     * <p>有正文变化时先准备新旧备份，再逐文件原子替换并写入事务完成标记，成功返回 true。
+     * 替换失败尝试回滚，快照冲突、范围错误或文件操作失败以 IOException 返回。</p>
+     *
+     * @param expected 整理开始时取得的正式快照，发布前用它核对版本与正文
+     * @param changes 按作用域保存的完整候选短路由与手册正文
+     * @param baseline 提示词与材料、笔记共同计算的整理基线哈希
+     * @param sources 本批来源引用或来源元数据，用于构造允许清单和确认处理输入
+     * @param processedNotes 本批发布成功后确认已处理的候选笔记 ID
+     * @param processedMaterials 本批发布成功后确认已处理的经验材料 ID
+     * @return 正式正文发生变化并成功发布时为 true；只确认处理基线时为 false
+     * @throws IOException 预期快照已过期、候选跨工作区、备份或正式文件发布失败
      */
     boolean publish(Snapshot expected, Map<String, Artifacts> changes, String baseline, List<String> sources,
             List<String> processedNotes, List<String> processedMaterials) throws IOException {
@@ -209,7 +299,12 @@ final class MemoryStore {
         });
     }
 
-    /** JSON 作业用程序计算的哈希命名；同任务重复登记不会覆盖已经处理的作业。 */
+    /**
+     * 按作业哈希 ID 在短锁内创建 JSON 文件；已有同 ID 作业保持原状态，供重复轮次登记去重。
+     *
+     * @param job 提取作业的完整 JSON 状态，包含 ID、作用域、事件区间和重试进度
+     * @throws IOException 作业 ID 或目标类型不合法，或原子创建失败
+     */
     void enqueue(ObjectNode job) throws IOException {
         MemoryLibraryLock.run(root, () -> {
             create(root.resolve("state/jobs/" + id(job.path("id").asText()) + ".json"), job.toString());
@@ -217,12 +312,22 @@ final class MemoryStore {
         });
     }
 
-    /** 返回待处理作业的独立副本；进程退出遗留的 running 由持有维护锁的新进程接管。 */
+    /**
+     * 在短锁内扫描持久提取作业，返回独立 JSON 对象列表，供维护者筛选与接管积压任务。
+     *
+     * @return 按文件名扫描得到的独立作业 JSON 对象列表
+     * @throws IOException 作业目录或某份 JSON 状态无法读取
+     */
     List<ObjectNode> jobs() throws IOException {
         return MemoryLibraryLock.run(root, () -> nodes(root.resolve("state/jobs")));
     }
 
-    /** 已持有维护锁的 worker 保存重试状态；文件锁只覆盖短写入。 */
+    /**
+     * 在短锁内原子替换指定 ID 的作业状态，保存 running、done、retry 和尝试次数等处理进度。
+     *
+     * @param job 提取作业的完整 JSON 状态，包含 ID、作用域、事件区间和重试进度
+     * @throws IOException 作业 ID 不合法或状态原子替换失败
+     */
     void saveJob(ObjectNode job) throws IOException {
         MemoryLibraryLock.run(root, () -> {
             replace(root.resolve("state/jobs/" + id(job.path("id").asText()) + ".json"), job.toString());
@@ -231,8 +336,13 @@ final class MemoryStore {
     }
 
     /**
-     * 保存不可变回顾及来源元数据。正文先发布、元数据后发布，只有完整元数据才进入整理输入。
-     * 同 ID 不允许换内容；重试遇到相同正文正常复用，遇到未知内容明确失败。
+     * 按固定 ID 先保存经验 Markdown，再保存来源元数据，使完整元数据成为材料可见入口。相同内容的重试复用已有文件，
+     * 内容冲突抛出 IOException。
+     *
+     * @param materialId 经验材料的 64 位小写十六进制身份
+     * @param summary 一个作用域的完整短路由文本
+     * @param metadata 当前会话或经验来源的持久元数据
+     * @throws IOException 同 ID 已有内容与新材料冲突，或来源正文、元数据写入失败
      */
     void material(String materialId, String summary, ObjectNode metadata) throws IOException {
         String name = id(materialId);
@@ -245,7 +355,12 @@ final class MemoryStore {
         });
     }
 
-    /** 当前工作区及全局材料可见，其它项目材料不会进入本次整理工作集。 */
+    /**
+     * 在短锁内读取来源元数据，筛选当前工作区及 global 作用域，返回本次整理可使用的材料列表。
+     *
+     * @return 当前工作区和 global 的来源元数据列表
+     * @throws IOException 来源目录或元数据文件读取解析失败
+     */
     List<ObjectNode> materials() throws IOException {
         return MemoryLibraryLock.run(root, () -> nodes(root.resolve("state/materials")).stream()
                 .filter(n -> n.path("scope").asText().equals(scope) || n.path("scope").asText().equals("global"))
@@ -253,8 +368,17 @@ final class MemoryStore {
     }
 
     /**
-     * 用户纠正单独入箱，源请求与内容分开保存；这里只承认候选，不假装正式记忆已更新。
-     * 重复工具调用使用同一个笔记 ID 时只保存一份，正文改变则报错。
+     * 将候选类型、正文、用户原话与会话轮次组成笔记，按固定 ID 保存到 pending。相同 ID 和内容复用，内容冲突时报错；
+     * 返回候选 ID，供后续整理确认处理。
+     *
+     * @param noteId 候选笔记的 64 位小写十六进制身份
+     * @param kind 候选类型，remember、correct 或 forget
+     * @param body 候选记忆正文，保存时已经完成来源绑定与脱敏
+     * @param userRequest 随候选保存的真实用户原话证据
+     * @param session 本轮所属的持久会话 ID
+     * @param turn 提交候选笔记的用户轮次 ID
+     * @return 已持久保存的候选笔记 ID
+     * @throws IOException 候选 ID 不合法、同 ID 内容冲突或写入失败
      */
     String note(String noteId, String kind, String body, String userRequest, String session, String turn)
             throws IOException {
@@ -269,7 +393,12 @@ final class MemoryStore {
         return name;
     }
 
-    /** 保留原始纠正材料，是否已处理由成功发布的 baseline 表达，不能先删除再整理。 */
+    /**
+     * 读取 pending 中当前工作区及 global 的候选笔记，返回列表；正式快照中的 processedNotes 用于后续筛选尚待处理项。
+     *
+     * @return 当前工作区和 global 的候选笔记列表
+     * @throws IOException 候选目录或 JSON 对象读取解析失败
+     */
     List<ObjectNode> notes() throws IOException {
         return MemoryLibraryLock.run(root, () -> nodes(root.resolve("pending")).stream()
                 .filter(n -> n.path("scope").asText().equals(scope) || n.path("scope").asText().equals("global"))
@@ -277,8 +406,11 @@ final class MemoryStore {
     }
 
     /**
-     * 反馈采用独立追加日志；主键由来源事件计算。日志不复制记忆正文，失败不能改变工具结果。
-     * 汇总按 event_id 去重，避免重复投递凭空增加使用次数。
+     * 在短锁内将一条反馈 JSON 追加到 feedback.jsonl 并刷新文件，保存后续整理所需的读取、引用或候选事件。
+     * event_id 由调用方提供，汇总读取时负责去重。
+     *
+     * @param event 带稳定 event_id 的读取、引用或候选反馈 JSON
+     * @throws IOException 反馈日志追加刷新或读取失败
      */
     void feedback(ObjectNode event) throws IOException {
         MemoryLibraryLock.run(root, () -> {
@@ -295,7 +427,13 @@ final class MemoryStore {
         });
     }
 
-    /** 反馈只用于排序和复核；尾部不完整行不计数，也不据此删除任何正式记忆。 */
+    /**
+     * 在短锁内读取反馈日志，以 event_id 保留首次出现的事件并返回独立列表。日志缺失返回空列表，
+     * 格式错误的行产生告警后跳过。
+     *
+     * @return 按 event_id 去重的反馈列表；反馈文件不存在时为空列表
+     * @throws IOException 反馈日志追加刷新或读取失败
+     */
     List<ObjectNode> feedback() throws IOException {
         return MemoryLibraryLock.run(root, () -> {
             Path path = root.resolve("events/feedback.jsonl");
@@ -315,7 +453,13 @@ final class MemoryStore {
         });
     }
 
-    /** 只读入口仅允许正式 Markdown 与回顾；配置、状态和备份不因记忆权限而暴露。 */
+    /**
+     * 检查目标属于正式手册、短路由或哈希命名的经验 Markdown，并检查父目录与普通文件类型。符合可读布局时返回 true，
+     * 其他路径或 IO 错误返回 false。
+     *
+     * @param path 记忆库中的候选读取或写入路径，按方法说明核对布局和文件类型
+     * @return 路径、目录和文件类型均满足记忆读取规则时为 true
+     */
     boolean readable(Path path) {
         Path p = path.toAbsolutePath().normalize();
         if (!p.startsWith(root))
@@ -334,9 +478,13 @@ final class MemoryStore {
     }
 
     /**
-     * 从固定的来源/候选目录读取一个普通文件，不接受任意路径或符号链接。
-     * 调用者还必须检查本轮允许清单：本方法能解析 pending 路径不表示模型有权读取所有候选。
-     * 候选记录额外核对文件名与内部 ID、种类和证据字段，不能把同名任意 JSON 当成纠正来源。
+     * 按固定格式解析一份 rollout 或 pending 相对来源名，读取普通文件；
+     * pending 额外核对内部 ID、类型、正文、用户原话和 scope。返回来源文本，名称或结构非法时抛出 IOException；
+     * 本次可用范围由维护者的来源清单筛选。
+     *
+     * @param relative 记忆库内符合固定格式的来源相对路径
+     * @return 通过固定命名与来源结构检查的完整正文
+     * @throws IOException 来源名称或候选结构不合法，或目标文件无法读取
      */
     String readSource(String relative) throws IOException {
         if (!relative.matches("(?:rollout_summaries/[a-f0-9]{64}\\.md|pending/[a-f0-9]{64}\\.json)"))
@@ -356,7 +504,13 @@ final class MemoryStore {
         return body;
     }
 
-    /** 每个项目持久保存整理失败退避，避免重启或每秒轮询重复付费；成功后随新基线重置。 */
+    /**
+     * 读取当前 scope 的整理尝试状态，返回 baseline、attempts、retry_at 等字段；状态文件缺失时返回空对象，
+     * 格式错误抛出 IOException。
+     *
+     * @return 当前 scope 的整理尝试状态；尚无文件时为空对象
+     * @throws IOException 当前 scope 状态文件格式错误或读写失败
+     */
     ObjectNode maintenanceState() throws IOException {
         return MemoryLibraryLock.run(root, () -> {
             Path path = root.resolve("state/maintenance-" + scope + ".json");
@@ -369,7 +523,13 @@ final class MemoryStore {
         });
     }
 
-    /** 在维护锁内调用，仅短暂占用文件库锁；保留尝试次数及下一次允许时间。 */
+    /**
+     * 在短库锁内原子保存当前 scope 的整理状态，持久记录尝试次数、下次处理时间和发布结果；
+     * 调用方在维护锁内协调同一基线的处理。
+     *
+     * @param state 当前作用域的整理基线、尝试次数和下一次重试时间
+     * @throws IOException 当前 scope 状态文件格式错误或读写失败
+     */
     void maintenanceState(ObjectNode state) throws IOException {
         MemoryLibraryLock.run(root, () -> {
             Path path = root.resolve("state/maintenance-" + scope + ".json");
@@ -379,7 +539,14 @@ final class MemoryStore {
         });
     }
 
-    /** 扫描只接受普通 JSON；坏状态明确失败，不把材料丢失伪装成没有内容。 */
+    /**
+     * 按文件名排序扫描指定目录的 JSON 普通文件，逐项解析为对象，返回不可变列表。
+     * 目录、文件或对象格式错误以 IOException 返回。
+     *
+     * @param dir 本次扫描的记忆状态或材料目录
+     * @return 按文件名排序的 JSON 对象不可变列表
+     * @throws IOException 目录不可访问、状态文件不是有效 JSON 对象或读取失败
+     */
     private static List<ObjectNode> nodes(Path dir) throws IOException {
         directory(dir, false);
         var result = new ArrayList<ObjectNode>();
@@ -394,7 +561,14 @@ final class MemoryStore {
         return List.copyOf(result);
     }
 
-    /** 逐级拒绝符号链接；并发创建同名普通目录允许复用，不接受其它对象。 */
+    /**
+     * 从绝对路径根开始逐级核对普通目录，create 为 true 时为缺失级创建私有目录，并接纳并发创建的同名目录。
+     * 链接或其他类型报错，create 为 false 且目录缺失时抛出 NoSuchFileException。
+     *
+     * @param path 记忆库中的候选读取或写入路径，按方法说明核对布局和文件类型
+     * @param create 是否为缺失路径创建目录
+     * @throws IOException 路径包含链接或非目录，目录缺失且未允许创建，或创建失败
+     */
     static void directory(Path path, boolean create) throws IOException {
         Path absolute = path.toAbsolutePath().normalize(), cursor = absolute.getRoot();
         for (Path part : absolute) {
@@ -419,7 +593,13 @@ final class MemoryStore {
         }
     }
 
-    /** 只读有限大小的普通 UTF-8 文件；不跟随最终符号链接。 */
+    /**
+     * 校验目标为普通文件并检查 8000000 字节读取上限，再以 UTF-8 返回完整正文；超限或读取失败抛出 IOException。
+     *
+     * @param path 记忆库中的候选读取或写入路径，按方法说明核对布局和文件类型
+     * @return 通过类型与大小检查的完整 UTF-8 文本
+     * @throws IOException 目标不是普通文件、超过读取字节预算或 UTF-8 读取失败
+     */
     static String text(Path path) throws IOException {
         plainIfExists(path);
         if (Files.size(path) > 8_000_000)
@@ -427,6 +607,13 @@ final class MemoryStore {
         return Files.readString(path, StandardCharsets.UTF_8);
     }
 
+    /**
+     * 按记忆文件的读取规则取得正文并解析 JSON；空内容抛出 IOException，返回的节点供作业、清单和来源校验使用。
+     *
+     * @param path 记忆库中的候选读取或写入路径，按方法说明核对布局和文件类型
+     * @return 文件正文解析得到的非空 JSON 节点
+     * @throws IOException 文本读取失败、JSON 格式错误或解析结果为空
+     */
     static JsonNode json(Path path) throws IOException {
         JsonNode value = Json.mapper().readTree(text(path));
         if (value == null)
@@ -434,11 +621,25 @@ final class MemoryStore {
         return value;
     }
 
+    /**
+     * 目标已存在时检查其为普通文件；目录、链接等类型抛出 IOException，尚未创建的路径可继续用于新文件发布。
+     *
+     * @param path 记忆库中的候选读取或写入路径，按方法说明核对布局和文件类型
+     * @throws IOException 目标已存在且不是普通文件
+     */
     private static void plainIfExists(Path path) throws IOException {
         if (Files.exists(path, LinkOption.NOFOLLOW_LINKS) && !Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS))
             throw new IOException("Memory path is not a regular file");
     }
 
+    /**
+     * 调用方持有库锁时创建缺失文件：先确认路径类型，已有普通文件保持原内容，缺失文件通过 replace 完整发布。
+     * 用于初始化和同 ID 作业去重。
+     *
+     * @param path 记忆库中的候选读取或写入路径，按方法说明核对布局和文件类型
+     * @param content 本次准备保存到目标文件的完整 UTF-8 文本
+     * @throws IOException 目标类型不合法或缺失文件原子写入失败
+     */
     private static void create(Path path, String content) throws IOException {
         plainIfExists(path);
         if (Files.exists(path, LinkOption.NOFOLLOW_LINKS))
@@ -447,7 +648,13 @@ final class MemoryStore {
         replace(path, content);
     }
 
-    /** 原子替换并刷新目录项，用于持久作业状态；正式三文件发布仍必须走恢复事务。 */
+    /**
+     * 将内容通过同目录临时文件原子替换到目标，再刷新父目录，供作业、笔记和维护状态持久写入使用。
+     *
+     * @param path 记忆库中的候选读取或写入路径，按方法说明核对布局和文件类型
+     * @param content 本次准备保存到目标文件的完整 UTF-8 文本
+     * @throws IOException 临时文件写入、原子替换或父目录刷新失败
+     */
     private static void replace(Path path, String content) throws IOException {
         MemoryTransaction.atomicReplace(path, content);
         try (var directory = FileChannel.open(path.getParent(), StandardOpenOption.READ)) {
@@ -455,6 +662,13 @@ final class MemoryStore {
         }
     }
 
+    /**
+     * 保存内容固定的经验来源：文件缺失时创建，已有且内容一致时复用，已有内容与本次不同则抛出 IOException。
+     *
+     * @param path 记忆库中的候选读取或写入路径，按方法说明核对布局和文件类型
+     * @param content 本次准备保存到目标文件的完整 UTF-8 文本
+     * @throws IOException 已有文件正文与输入不一致，或新文件发布失败
+     */
     private static void immutable(Path path, String content) throws IOException {
         if (Files.exists(path, LinkOption.NOFOLLOW_LINKS)) {
             if (!text(path).equals(content))
@@ -463,13 +677,26 @@ final class MemoryStore {
             create(path, content);
     }
 
+    /**
+     * 校验作业或材料身份是 64 位小写十六进制哈希，成功返回原 ID，格式不匹配时抛出 IOException。
+     *
+     * @param id 用于作业或材料文件名的 64 位小写十六进制哈希
+     * @return 通过格式检查的原始 64 位哈希 ID
+     * @throws IOException 身份不是 64 位小写十六进制字符串
+     */
     private static String id(String id) throws IOException {
         if (!id.matches("[a-f0-9]{64}"))
             throw new IOException("Invalid memory identity");
         return id;
     }
 
-    /** UTF-8 SHA-256 仅用于身份、版本与去重，不代表内容可信，也不用于隐匿秘密。 */
+    /**
+     * 对 UTF-8 文本计算小写十六进制 SHA-256，供作业命名、版本比较和去重使用。
+     *
+     * @param text 本次处理的完整文本，按该入口执行编码、脱敏、显示或组装
+     * @return 文本 UTF-8 内容对应的小写十六进制 SHA-256
+     * @throws IllegalStateException 当前 Java 运行环境无法提供 SHA-256 算法
+     */
     static String hash(String text) {
         try {
             return HexFormat.of()

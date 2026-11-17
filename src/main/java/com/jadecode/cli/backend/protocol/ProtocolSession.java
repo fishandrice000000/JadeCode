@@ -17,34 +17,54 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jadecode.util.Json;
 
 /**
- * 一条控制连接的协议状态机：握手 → 快照同步 → ready → 收口。
+ * 管理一条控制连接从握手、快照同步、ready 到关闭的协议状态。核对凭据、版本、构建身份、连接序号和重复命令，
+ * 业务交给 CommandSink。出站事件统一进入 EventOutbox，写线程实际发送时分配序号；客户端确认同一快照后触发会话启动。
  *
- * <p>它只做“连接层”的判断：凭据/版本/构建身份、连接唯一性、方向内序号、命令去重、
- * ready 屏障和序号分配。它不执行任何会话操作，也不读终端；业务命令交给
- * {@link CommandSink}，由后端串行服务再校验会话代次。</p>
- *
- * <p>握手只允许在 {@code ACCEPTED} 状态发生一次。{@code session.ready} 只有在 Node 完整安装
- * 了最近一次快照后才被接受，因此首轮任务和正文事件不会抢在历史清屏之前出现。</p>
+ * @see EventOutbox
+ * @see WireCodec
  */
 public final class ProtocolSession implements AutoCloseable, EventEndpoint {
-    /** 连接状态；只有 READY 接受会话命令。 */
+    /**
+     * 连接状态；只有 READY 接受会话命令。
+     */
     public enum State {
         ACCEPTED, HELLO, SYNC, READY, CLOSING, CLOSED
     }
 
-    /** 握手结果：服务端 hello 与首份 bootstrap 资料。 */
+    /**
+     * 握手结果：服务端 hello 与首份 bootstrap 资料。
+     *
+     * @param helloPayload 服务端握手响应中的身份与构建资料
+     * @param bootstrapPayload 握手后发送的启动模式和初始配置资料
+     */
     public record Greeting(ObjectNode helloPayload, ObjectNode bootstrapPayload) {
     }
 
-    /** 握手校验器：由后端提供真实构建身份、协议版本与启动资料。 */
+    /**
+     * 握手校验器：由后端提供真实构建身份、协议版本与启动资料。
+     */
     @FunctionalInterface
     public interface Greeter {
+        /**
+         * 依据 client.hello 准备服务身份和启动资料，返回握手响应；握手意图不合法时抛出协议错误。
+         *
+         * @param hello 客户端发送的 client.hello 握手帧
+         * @return 用于 server.hello 和 server.bootstrap 的完整资料
+         * @throws ProtocolException 握手意图或客户端声明不符合当前服务要求
+         */
         Greeting greet(WireMessage hello) throws ProtocolException;
     }
 
-    /** 业务命令接收器；在协议层校验之后调用。 */
+    /**
+     * 业务命令接收器；在协议层校验之后调用。
+     */
     @FunctionalInterface
     public interface CommandSink {
+        /**
+         * 接收已经通过连接、序号和 ready 检查的业务命令，交给后端命令线程处理。
+         *
+         * @param command 已通过连接协议检查的业务命令，包含类型、会话代次及操作载荷
+         */
         void accept(WireMessage command);
     }
 
@@ -82,13 +102,27 @@ public final class ProtocolSession implements AutoCloseable, EventEndpoint {
     /** 最近一次 ready 的客户端序号，仅用于诊断；ready 不做结果缓存。 */
     private long localStorageReadySeq;
 
+    /**
+     * 保存已完成命令的结果类型、载荷和会话代次，供同一命令重发时返回原结果。
+     *
+     * @param type 当前协议事件或命令结果的类型名
+     * @param payload 协议事件的完整 JSON 业务载荷
+     * @param sessionId 持久会话 ID，用于关联本次事件与历史
+     * @param generation 当前完整快照对应的会话代次，客户端 ready 必须回传相同值
+     */
     private record CachedResult(String type, ObjectNode payload, String sessionId, Long generation) {
     }
 
     /**
-     * @param out          连接输出流；写线程与序号分配由本类串行化
-     * @param credential   本次启动唯一的一次性凭据（不写日志、不进 argv）
-     * @param connectionId Java 分配的连接身份
+     * 建立连接状态机，绑定输出、一次性凭据、连接身份、握手资料和业务命令出口，以及关闭回调。使用空 ready 回调，
+     * 供无需启动屏障回调的调用方使用。
+     *
+     * @param out 当前连接的输出流
+     * @param credential 本次连接握手需要的一次性凭据
+     * @param connectionId 本次控制连接的唯一身份
+     * @param greeter 为 client.hello 生成服务端身份和启动资料的回调
+     * @param commands 通过协议检查后接收业务命令的出口
+     * @param onClosed 协议连接最终关闭后的清理回调
      */
     public ProtocolSession(OutputStream out, String credential, String connectionId,
             Greeter greeter, CommandSink commands, Runnable onClosed) {
@@ -97,8 +131,15 @@ public final class ProtocolSession implements AutoCloseable, EventEndpoint {
     }
 
     /**
-     * 允许会话切换时再次经过 ready 屏障：每次 {@link #expectReady} 之后，Node 都必须先安装
-     * 完整快照再发 ready，Java 才会启动该代次的消费者/首轮任务。
+     * 建立带 ready 回调的连接状态机；客户端安装完整快照并确认后调用 onReady，首次 hello 使用空回调。
+     *
+     * @param out 当前连接的输出流
+     * @param credential 本次连接握手需要的一次性凭据
+     * @param connectionId 本次控制连接的唯一身份
+     * @param greeter 为 client.hello 生成服务端身份和启动资料的回调
+     * @param commands 通过协议检查后接收业务命令的出口
+     * @param onClosed 协议连接最终关闭后的清理回调
+     * @param onReady 客户端确认完整快照后调用的会话启动回调
      */
     public ProtocolSession(OutputStream out, String credential, String connectionId,
             Greeter greeter, CommandSink commands, Runnable onClosed, Runnable onReady) {
@@ -107,8 +148,17 @@ public final class ProtocolSession implements AutoCloseable, EventEndpoint {
     }
 
     /**
-     * @param onHello server.hello/server.bootstrap 已入队后调用；后端在这里才打开会话并发送快照，
-     *                从而保证 Node 先完成 bootstrap 初始化再安装快照。
+     * 保存连接身份和生命周期回调，创建有界事件出口与握手计时任务。hello 与 bootstrap 排队后调用 onHello，
+     * 客户端通过快照屏障后调用 onReady，关闭时调用 onClosed。
+     *
+     * @param out 当前连接的输出流
+     * @param credential 本次连接握手需要的一次性凭据
+     * @param connectionId 本次控制连接的唯一身份
+     * @param greeter 为 client.hello 生成服务端身份和启动资料的回调
+     * @param commands 通过协议检查后接收业务命令的出口
+     * @param onClosed 协议连接最终关闭后的清理回调
+     * @param onReady 客户端确认完整快照后调用的会话启动回调
+     * @param onHello hello 与 bootstrap 排队后调用的打开会话回调
      */
     public ProtocolSession(OutputStream out, String credential, String connectionId,
             Greeter greeter, CommandSink commands, Runnable onClosed, Runnable onReady, Runnable onHello) {
@@ -129,28 +179,52 @@ public final class ProtocolSession implements AutoCloseable, EventEndpoint {
         handshakeTimer.scheduleWithFixedDelay(this::handshakeTick, 1, 1, TimeUnit.SECONDS);
     }
 
-    /** @return 传输层/outbox 的第一次致命失败；null 表示没有。 */
+    /**
+     * 读取当前连接在传输或事件队列中记录的首次致命失败。
+     *
+     * @return 传输层/outbox 的第一次致命失败；null 表示没有。
+     */
     public String failureReason() {
         RuntimeException failure = outbox.failure();
         return failure == null ? null : failure.getMessage();
     }
 
-    /** @return 本连接的唯一事件出口；大资料分块器与观察器共用一个有界队列。 */
+    /**
+     * 取得此连接的有界事件出口，供大文本分块与普通事件保持统一发送顺序。
+     *
+     * @return 本连接的唯一事件出口；大资料分块器与观察器共用一个有界队列。
+     */
     public EventOutbox outbox() {
         return outbox;
     }
 
-    /** @return 当前连接状态；测试与诊断使用。 */
+    /**
+     * 读取此连接当前的握手、同步、就绪或关闭阶段。
+     *
+     * @return 当前连接状态；测试与诊断使用。
+     */
     public synchronized State state() {
         return state;
     }
 
-    /** @return 握手后已发送事件/答复的数量（下一个 seq 减一）。 */
+    /**
+     * 读取本连接已经实际写出的最后序号，供状态查询与快照同步定位发送进度。
+     *
+     * @return 握手后已发送事件/答复的数量（下一个 seq 减一）。
+     */
     public synchronized long sentSeq() {
         return nextSeq - 1;
     }
 
-    /** @param sourceSeq 快照 begin 事件携带的来源序号；ready 必须原样回传 */
+    /**
+     * 登记正在同步的快照 ID、会话代次和 begin 来源序号，设置等待 ready 标记，并把 HELLO 或 READY 连接切换到 SYNC。
+     * 客户端随后原样回传这些资料完成屏障。
+     *
+     * @param id 刚刚发送的完整历史快照 ID
+     * @param generation 当前完整快照对应的会话代次，客户端 ready 必须回传相同值
+     * @param sourceSeq 完整快照 begin 固定的展示来源序号
+     * @throws NullPointerException sourceSeq 为 null
+     */
     public synchronized void expectReady(String id, Long generation, Long sourceSeq) {
         snapshotId = id;
         snapshotGeneration = generation;
@@ -160,14 +234,26 @@ public final class ProtocolSession implements AutoCloseable, EventEndpoint {
             state = State.SYNC;
     }
 
-    /** 发送一个事件（不合并）。 */
+    /**
+     * 发送一个事件（不合并）。
+     *
+     * @param type 当前协议事件或命令结果的类型名
+     * @param payload 协议事件的完整 JSON 业务载荷
+     * @param sessionId 持久会话 ID，用于关联本次事件与历史
+     * @param generation 当前完整快照对应的会话代次，客户端 ready 必须回传相同值
+     */
     public void sendEvent(String type, ObjectNode payload, String sessionId, Long generation) {
         outbox.offer(type, encode(payload, sessionId, generation), sessionId, generation, null);
     }
 
     /**
-     * 仅在当前连接出口把完整资料变为 blob 引用；不修改服务持有的原始 JSON。
-     * 分块先排入同一有界 outbox，再投递引用帧。缓存保留原文，重发会生成本连接可用的新 blob。
+     * 复制出站载荷，对协议约定的长文本、工具参数、详情、历史与状态字段发送 payload 分块，再将字段改为 blob 引用。
+     * 分块先于引用帧排入同一队列，返回当前连接使用的独立载荷。
+     *
+     * @param source 准备转换为本连接 blob 引用的完整业务载荷
+     * @param sessionId 持久会话 ID，用于关联本次事件与历史
+     * @param generation 当前完整快照对应的会话代次，客户端 ready 必须回传相同值
+     * @return 带当前连接 blob 引用的独立载荷，原始业务对象保留
      */
     private ObjectNode encode(ObjectNode source, String sessionId, Long generation) {
         ObjectNode result = source.deepCopy();
@@ -193,12 +279,28 @@ public final class ProtocolSession implements AutoCloseable, EventEndpoint {
         return result;
     }
 
-    /** 发送一个可以与前一个相邻同键增量合并的正文/预览事件。 */
+    /**
+     * 发送一个可以与前一个相邻同键增量合并的正文/预览事件。
+     *
+     * @param type 当前协议事件或命令结果的类型名
+     * @param payload 协议事件的完整 JSON 业务载荷
+     * @param sessionId 持久会话 ID，用于关联本次事件与历史
+     * @param generation 当前完整快照对应的会话代次，客户端 ready 必须回传相同值
+     * @param mergeKey 增量合并键；null 表示结构事件单独发送
+     */
     public void sendStreamEvent(String type, ObjectNode payload, String sessionId, Long generation, String mergeKey) {
         outbox.offer(type, payload, sessionId, generation, mergeKey);
     }
 
-    /** 发送命令答复，并请求尽快送出。 */
+    /**
+     * 按命令 ID 缓存完整结果，保留最近 64 项；为当前连接编码大载荷后入队并请求立即刷新。供重复命令返回既有结果。
+     *
+     * @param commandId 客户端命令 ID，供命令回执和重复请求查找使用
+     * @param type 当前协议事件或命令结果的类型名
+     * @param payload 协议事件的完整 JSON 业务载荷
+     * @param sessionId 持久会话 ID，用于关联本次事件与历史
+     * @param generation 当前完整快照对应的会话代次，客户端 ready 必须回传相同值
+     */
     public void sendResult(String commandId, String type, ObjectNode payload, String sessionId, Long generation) {
         cachedResults.put(commandId, new CachedResult(type, payload, sessionId, generation));
         while (cachedResults.size() > MAX_CACHED_RESULTS) {
@@ -208,7 +310,15 @@ public final class ProtocolSession implements AutoCloseable, EventEndpoint {
         outbox.offerResult(type, encode(payload, sessionId, generation), commandId, sessionId, generation);
     }
 
-    /** 发送可恢复的命令错误；不会执行业务。 */
+    /**
+     * 把错误码、说明和可重试标记组成 command.error，交给统一命令结果通道缓存并发送。
+     *
+     * @param commandId 客户端命令 ID，供命令回执和重复请求查找使用
+     * @param error 本次协议错误类别，决定错误码和可重试标记
+     * @param message 需要返回给调用者的结果或错误说明
+     * @param sessionId 持久会话 ID，用于关联本次事件与历史
+     * @param generation 当前完整快照对应的会话代次，客户端 ready 必须回传相同值
+     */
     public void sendError(String commandId, ProtocolError error, String message, String sessionId, Long generation) {
         ObjectNode payload = Json.mapper().createObjectNode();
         payload.put("status", "error");
@@ -218,15 +328,24 @@ public final class ProtocolSession implements AutoCloseable, EventEndpoint {
         sendResult(commandId, "command.error", payload, sessionId, generation);
     }
 
-    /** 发送真正的命令成功结果（dispatched/ok 等由 payload 决定）。 */
+    /**
+     * 把成功载荷作为 command.result 交给统一命令结果通道，业务状态由 payload 提供。
+     *
+     * @param commandId 客户端命令 ID，供命令回执和重复请求查找使用
+     * @param payload 协议事件的完整 JSON 业务载荷
+     * @param sessionId 持久会话 ID，用于关联本次事件与历史
+     * @param generation 当前完整快照对应的会话代次，客户端 ready 必须回传相同值
+     */
     public void sendOk(String commandId, ObjectNode payload, String sessionId, Long generation) {
         sendResult(commandId, "command.result", payload, sessionId, generation);
     }
 
     /**
-     * 处理一条已经通过编解码校验的入站消息。
+     * 处理完整入站帧：核对连接状态与身份，按序号和命令 ID 去重，分派 hello、ready 或已就绪业务命令。
+     * 可恢复协议错误发送命令错误，连接级错误抛给外层结束连接。
      *
-     * @throws ProtocolException 连接级错误（调用方应回错误并关闭）；可恢复错误在内部转成答复
+     * @param message 待编码、校验或投影的完整消息
+     * @throws ProtocolException 当前连接身份、状态、握手或消息方向不符合协议
      */
     public void receive(WireMessage message) throws ProtocolException {
         if (message.type().equals("client.hello")) {
@@ -255,6 +374,13 @@ public final class ProtocolSession implements AutoCloseable, EventEndpoint {
         }
     }
 
+    /**
+     * 处理 client.hello：核对当前握手阶段、协议版本、一次性凭据和构建身份。校验通过后进入 HELLO，
+     * 依次发送 server.hello 与 server.bootstrap，再调用 onHello 打开会话并准备快照；校验失败抛出协议错误。
+     *
+     * @param message 待编码、校验或投影的完整消息
+     * @throws ProtocolException 握手阶段、协议版本、凭据或构建身份不匹配
+     */
     private void hello(WireMessage message) throws ProtocolException {
         synchronized (this) {
             if (state != State.ACCEPTED)
@@ -286,6 +412,19 @@ public final class ProtocolSession implements AutoCloseable, EventEndpoint {
         onHello.run();
     }
 
+    /**
+     * 采用客户端对本次完整快照的 ready 确认，并打开业务处理屏障。
+     *
+     * <p>处理过程：</p>
+     * <ol>
+     * <li>检查当前为 SYNC，固定正在等待的快照身份；已完成屏障的重复 ready 直接返回。</li>
+     * <li>解析十进制 generation 与 lastSnapshotSeq，依次核对快照 ID、代次和 begin 固定的 sourceSeq。</li>
+     * <li>发布 READY 并清除等待标记，停止握手定时器，再执行 onReady 启动当前会话。</li>
+     * </ol>
+     *
+     * @param message 待编码、校验或投影的完整消息
+     * @throws ProtocolException 尚未同步快照，或快照 ID、代次、来源序号不符合屏障
+     */
     private void ready(WireMessage message) throws ProtocolException {
         String presentedSnapshot;
         synchronized (this) {
@@ -328,7 +467,13 @@ public final class ProtocolSession implements AutoCloseable, EventEndpoint {
         onReady.run();
     }
 
-    /** 序号/命令 ID 去重：重复的已答复命令回缓存结果；否则回 DUPLICATE 且不执行。 */
+    /**
+     * 在连接锁内核对客户端序号和最近命令 ID。新命令更新有界去重记录并返回 false；重复命令优先回缓存结果，
+     * 否则回 DUPLICATE。ready 使用自身幂等屏障逻辑，仅更新序号记录。
+     *
+     * @param message 待编码、校验或投影的完整消息
+     * @return 该帧属于已处理序号或命令 ID 时为 true，此时已经发送去重回执
+     */
     private boolean isDuplicate(WireMessage message) {
         synchronized (this) {
             // ready 是屏障命令，不是可缓存的业务命令；重复 ready 由 ready() 自身幂等处理。
@@ -363,6 +508,11 @@ public final class ProtocolSession implements AutoCloseable, EventEndpoint {
         }
     }
 
+    /**
+     * 检查连接已完成快照同步并进入 READY；尚未完成时抛出 NOT_READY，供业务命令入口返回协议错误。
+     *
+     * @throws ProtocolException 连接尚未完成最近一次快照的 ready 确认
+     */
     private void requireReady() throws ProtocolException {
         synchronized (this) {
             if (state != State.READY)
@@ -371,7 +521,17 @@ public final class ProtocolSession implements AutoCloseable, EventEndpoint {
         }
     }
 
-    /** 真实 socket 写入；序号在合并完成后、实际发帧时分配，与入队顺序分开记账。 */
+    /**
+     * 在实际写出时分配下一协议序号，编码为完整 NDJSON 帧并写到连接输出，供队列单写线程依次发送；
+     * IO 失败交给 outbox 收尾。
+     *
+     * @param type 当前协议事件或命令结果的类型名
+     * @param payload 协议事件的完整 JSON 业务载荷
+     * @param sessionId 持久会话 ID，用于关联本次事件与历史
+     * @param generation 当前完整快照对应的会话代次，客户端 ready 必须回传相同值
+     * @param commandId 客户端命令 ID，供命令回执和重复请求查找使用
+     * @throws IOException 向连接写出或刷新完整 NDJSON 帧失败
+     */
     private void writeFrame(String type, ObjectNode payload, String sessionId, Long generation, String commandId)
             throws IOException {
         long seq;
@@ -396,6 +556,9 @@ public final class ProtocolSession implements AutoCloseable, EventEndpoint {
         }
     }
 
+    /**
+     * 推进首次握手的等待计数；已经 ready、正在同步快照或连接已关闭时停止计时器，累计十个等待 tick 后关闭连接。
+     */
     private void handshakeTick() {
         synchronized (this) {
             if (state == State.READY || state == State.SYNC || closed) {
@@ -410,13 +573,17 @@ public final class ProtocolSession implements AutoCloseable, EventEndpoint {
         closeQuietly();
     }
 
-    /** 先把已入队答复/事件送出，再走正常收口；用于 server.stopped 之后的最终关闭。 */
+    /**
+     * 先把已入队答复/事件送出，再走正常收口；用于 server.stopped 之后的最终关闭。
+     */
     public void flushAndClose() {
         outbox.flushNow();
         close();
     }
 
-    /** 请求有序收口：拒绝新事件、排空已入队答复，最后关闭与回调。 */
+    /**
+     * 请求有序收口：拒绝新事件、排空已入队答复，最后关闭与回调。
+     */
     @Override
     public void close() {
         synchronized (this) {
@@ -439,6 +606,9 @@ public final class ProtocolSession implements AutoCloseable, EventEndpoint {
             /* 关闭回调失败不能掩盖原状态。 */ }
     }
 
+    /**
+     * 调用连接关闭流程，吸收收尾时的运行时异常，供超时和传输失败回调结束当前连接。
+     */
     private void closeQuietly() {
         try {
             close();

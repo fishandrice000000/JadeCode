@@ -14,26 +14,48 @@ public final class WireContext {
     private volatile String sessionId = "";
     private volatile long generation;
 
+    /**
+     * 绑定会话事件出口；会话打开或切换时由 update 填入 sessionId 和 generation。
+     *
+     * @param session 当前会话的事件出口
+     */
     public WireContext(EventEndpoint session) {
         this.session = session;
     }
 
-    /** 协议出口；所有业务事件都经它的 outbox 发出。 */
+    /**
+     * 协议出口；所有业务事件都经它的 outbox 发出。
+     *
+     * @return 当前会话使用的事件与命令回执出口
+     */
     public EventEndpoint session() {
         return session;
     }
 
-    /** @return 当前会话 UUID；尚未打开会话时为空串。 */
+    /**
+     * 读取当前事件出口绑定的持久会话身份。
+     *
+     * @return 当前会话 UUID；尚未打开会话时为空串。
+     */
     public String sessionId() {
         return sessionId;
     }
 
-    /** @return 当前会话代次；尚未打开会话时为 0。 */
+    /**
+     * 读取当前事件出口绑定的会话代次，供所有事件携带一致身份。
+     *
+     * @return 当前会话代次；尚未打开会话时为 0。
+     */
     public long generation() {
         return generation;
     }
 
-    /** 会话打开/切换成功后由串行服务更新；之后的事件与命令都引用这一代。 */
+    /**
+     * 会话打开/切换成功后由串行服务更新；之后的事件与命令都引用这一代。
+     *
+     * @param id 当前 Agent 或会话的稳定身份标识
+     * @param value 新打开会话的 generation 代次
+     */
     public void update(String id, long value) {
         this.sessionId = id == null ? "" : id;
         this.generation = value;

@@ -29,14 +29,9 @@ import com.jadecode.messages.RedactedThinkingBlock;
 import com.jadecode.util.Json;
 
 /**
- * 用官方 Anthropic SDK 实现 {@link LlmClient}。
- *
- * <p>这是全项目唯一引用 {@code com.anthropic.*} 的类：发出请求时把内部消息转成 SDK 类型，
- * 收到响应时马上转回内部的 ContentBlock。其他代码都不认识 SDK 类型。
- *
- * <p>OpenCode Go 的目标模型原生使用 Chat Completions，本轮利用 Console 的 Messages 转换，
- * 因而继续复用 SDK 的流拼装、工具校验与用量语义。供应商档案只改变认证、身份头和思考设置；
- * 不自行模拟其它协议，也不把本地夹具通过等同于真实网关已经验收。</p>
+ * 在 JadeCode 内部消息与 Anthropic Messages SDK 之间转换请求和响应。
+ * 正式流式请求边接收正文、思考和工具预览边累计完整消息，辅助请求使用非流式入口；
+ * 根据配置应用兼容端点或 OpenCode Go 的认证、稳定会话头与思考字段。
  */
 public class AnthropicSdkLlmClient implements LlmClient {
     /** SDK 客户端：只在木类内部使用，不暴露给其他代码。 */
@@ -52,9 +47,10 @@ public class AnthropicSdkLlmClient implements LlmClient {
     private final List<ThinkingSettings> thinkingChoices;
 
     /**
-     * 用配置里的 apiKey / baseUrl / model 建客户端;SDK 自动在 baseUrl 后拼 /v1/messages。
+     * 使用运行配置创建 SDK 客户端，以未知模型限额元数据沿用请求原预算。
+     * 需要窗口上限的生产装配使用显式 metadata 构造入口。
      *
-     * @param config 运行期配置(见 {@link AppConfig})
+     * @param config 已解析的模型运行配置，提供模型名、端点和请求额度
      */
     public AnthropicSdkLlmClient(AppConfig config) {
         this(config, new ModelMetadata(ModelMetadata.Limits.unknown(),
@@ -62,8 +58,12 @@ public class AnthropicSdkLlmClient implements LlmClient {
     }
 
     /**
-     * 生产工厂已取得模型参数后创建共享客户端；构造本身不查询目录、不发生成请求。
-     * 所有正式／辅助请求在转 SDK 参数时采用同一输出封顶，不改变用户选择的模型和认证。
+     * 使用运行配置与已解析元数据建立 SDK 客户端，固定端点、模型及供应商适配，计算可用思考档位；
+     * 后续请求按同一模型上限收紧输出预算。
+     *
+     * @param config 已解析的模型运行配置，提供模型名、端点和请求额度
+     * @param metadata 当前模型的窗口和输出限额资料
+     * @throws NullPointerException metadata 为 null
      */
     public AnthropicSdkLlmClient(AppConfig config, ModelMetadata metadata) {
         openCodeGo = config.provider() == com.jadecode.config.ModelProvider.OPENCODE_GO;
@@ -95,16 +95,32 @@ public class AnthropicSdkLlmClient implements LlmClient {
             thinkingChoices = List.of(ThinkingSettings.DEFAULT);
     }
 
+    /**
+     * 返回当前模型已解析的窗口、输出额度等元数据，供请求预算与上下文压缩使用。
+     *
+     * @return 当前模型的窗口和输出限额元数据
+     */
     @Override
     public ModelMetadata metadata() {
         return metadata;
     }
 
+    /**
+     * 返回当前模型支持的思考档位列表，供会话设置和前端选择器使用。
+     *
+     * @return 当前模型适配的可选思考档位
+     */
     @Override
     public List<ThinkingSettings> thinkingChoices() {
         return thinkingChoices;
     }
 
+    /**
+     * 将思考档位转换为界面名称；DeepSeek 的 DEFAULT 显示为 high，其他值使用客户端通用名称。
+     *
+     * @param value 需要转换为界面名称的思考档位
+     * @return 供界面显示的思考档位名称
+     */
     @Override
     public String thinkingLabel(ThinkingSettings value) {
         return value == ThinkingSettings.DEFAULT && deepseek ? "high" : LlmClient.super.thinkingLabel(value);
@@ -133,15 +149,15 @@ public class AnthropicSdkLlmClient implements LlmClient {
     }
 
     /**
-     * 同步读取 SDK 的事件流，一边显示可读增量，一边由 SDK 拼成完整消息。
+     * display 为 NONE 时发送非流式请求；其他情况读取 SDK 事件流，按块开始、增量和结束维护状态，
+     * 转发正文、思考和工具参数预览，并检查工具 JSON 完整性。正常取得 message_stop 后将累计消息转为 ModelResponse；
+     * 网络、协议或拼装错误以 LlmException 返回，资源块最终关闭网络流。
      *
-     * <p>工具 JSON 只用于校验与拼装，thinking 签名只用于拼装，不输出到终端。
-     * 必须收到 message_stop 才返回；EOF、服务端错误或不完整 JSON 均不能当成功。
-     * try-with-resources 在成功、异常或展示方因退出而抛错时都会关闭本次网络流。</p>
-     * @param request 本次请求，不修改
-     * @param display 本次请求独占的可读片段接收者，不能保存在共享客户端字段中
-     * @return 与非流式相同的完整内部响应
-     * @throws LlmException 服务端、网络、事件格式或消息拼装失败
+     * @param request 本次完整模型请求，含 system、历史、工具目录、额度与思考设置
+     * @param display 本次请求的流式片段接收者，NONE 选择非流式请求
+     * @return 完整助手消息、停止原因和可选用量报告
+     * @throws LlmException 模型服务、网络、流事件或完整消息组装失败
+     * @throws NullPointerException display 为 null
      */
     @Override
     public ModelResponse complete(CompleteRequest request, ResponseStream display) throws LlmException {
@@ -226,8 +242,11 @@ public class AnthropicSdkLlmClient implements LlmClient {
     }
 
     /**
-     * Go 错误只保留固定分类和状态码；兼容网关错误体可能回显请求，不能把原文或 cause 带入日志。
-     * 认证/权限/套餐额度不伪装成上下文溢出，也不在这里切端点或重复整个 Agent 行动。
+     * 把 SDK 服务错误转换为项目 LlmException。兼容端点保留状态码和原错误链；
+     * OpenCode Go 按 HTTP 状态生成固定的参数、认证、权限、额度或限流说明，供上层选择错误处理路径。
+     *
+     * @param failure 已经发生的 IO、模型或执行异常，供原任务收尾与回执使用
+     * @return 带当前供应商错误分类与 HTTP 状态的模型异常
      */
     private LlmException serviceFailure(AnthropicServiceException failure) {
         if (!openCodeGo)
@@ -245,9 +264,11 @@ public class AnthropicSdkLlmClient implements LlmClient {
     }
 
     /**
-     * 工具块结束时检查原始 JSON，不能信任 SDK 对非法片段回退得到的空对象。
-     * @param json 仅本次工具调用的原始参数片段，绝不打印到错误信息中
-     * @throws LlmException 非完整对象或带尾随内容；空白参数按无参工具的空对象处理
+     * 在工具参数块结束时解析累计原始 JSON，要求为单个完整对象；空白按无参工具处理，
+     * 非对象、语法错误或尾随内容抛出 LlmException。
+     *
+     * @param json 当前工具参数块累计的原始 JSON 文本
+     * @throws LlmException 参数不是单个完整 JSON 对象，或含无效与尾随内容
      */
     private static void validateToolJson(String json) throws LlmException {
         if (json.isBlank())
@@ -264,7 +285,14 @@ public class AnthropicSdkLlmClient implements LlmClient {
 
     // ===== 出方向:内部类型 → SDK 类型 =====
 
-    /** 出方向:请求 → SDK 参数;system 与 tools 都按"有才注入"处理(空 tools 不占 schema 位) */
+    /**
+     * 将内部请求转换为 SDK 参数：映射历史、使用模型上限收紧输出额度，按存在情况加入 system 与工具 schema。
+     * OpenCode Go 附带稳定会话头；核对思考档位并生成对应 thinking 与 output_config 字段。返回构建完成的请求。
+     *
+     * @param request 本次完整模型请求，含 system、历史、工具目录、额度与思考设置
+     * @return 可直接交给 SDK 发送的请求参数
+     * @throws IllegalArgumentException Go 请求缺少稳定会话 ID，或所选思考档位尚未适配
+     */
     private com.anthropic.models.messages.MessageCreateParams toParams(CompleteRequest request) {
         com.anthropic.models.messages.MessageCreateParams.Builder builder = com.anthropic.models.messages.MessageCreateParams
                 .builder()
@@ -301,7 +329,12 @@ public class AnthropicSdkLlmClient implements LlmClient {
         return builder.build();
     }
 
-    /** 单条消息 → SDK 类型:内部 Role 枚举映射到 SDK 的角色枚举 */
+    /**
+     * 将内部消息的 USER 或 ASSISTANT 角色映射到 SDK 角色，逐块转换内容，返回单条 SDK 消息参数。
+     *
+     * @param msg 待转换为 SDK 参数的内部消息
+     * @return 角色和内容块都已转换的 SDK 消息
+     */
     private com.anthropic.models.messages.MessageParam toMessageParam(Message msg) {
         return com.anthropic.models.messages.MessageParam.builder()
                 .role(msg.role() == Role.USER
@@ -311,7 +344,13 @@ public class AnthropicSdkLlmClient implements LlmClient {
                 .build();
     }
 
-    /** 内容块转 SDK 类型；thinking 保留原字段，不转成普通正文或重新生成签名。 */
+    /**
+     * 按内容类型转换正文、工具调用、工具结果、思考和隐藏思考块，保留工具 ID、参数、错误标记及思考签名等协议字段。
+     * 返回对应 SDK 联合类型。
+     *
+     * @param block 待转换的一个模型内容块
+     * @return 与原内容块类型对应的 SDK 参数块
+     */
     private com.anthropic.models.messages.ContentBlockParam toContentBlockParam(ContentBlock block) {
         return switch (block) {
             case ThinkingBlock t -> com.anthropic.models.messages.ContentBlockParam.ofThinking(
@@ -335,7 +374,12 @@ public class AnthropicSdkLlmClient implements LlmClient {
         };
     }
 
-    /** SDK 的 Input 没有 of(JsonNode) 工厂:逐字段塞进 builder */
+    /**
+     * 遍历工具输入对象，将每个 JSON 字段转换为 SDK JsonValue 后加入 Input builder，返回完整参数对象。
+     *
+     * @param input 本次工具参数 JSON 对象，包含该工具 schema 约定的字段
+     * @return 保留所有输入 JSON 字段的 SDK 工具参数
+     */
     private com.anthropic.models.messages.ToolUseBlockParam.Input toSdkInput(JsonNode input) {
         com.anthropic.models.messages.ToolUseBlockParam.Input.Builder builder = com.anthropic.models.messages.ToolUseBlockParam.Input
                 .builder();
@@ -346,8 +390,11 @@ public class AnthropicSdkLlmClient implements LlmClient {
     }
 
     /**
-     * 工具数据定义转换为 SDK 类型，不持有可执行 Tool。
-     * 完整传递 schema；根级约束与嵌套定义都不应因外部工具适配而丢失。
+     * 将工具名、说明和完整 JSON schema 转为 SDK 工具定义。type、properties、required 使用对应 builder 入口，
+     * 其余根字段逐项保留，嵌套 JSON 原样转换。
+     *
+     * @param tool 本条目已固定的宿主工具身份资料
+     * @return 包含完整 schema 的 SDK 工具定义
      */
     private com.anthropic.models.messages.Tool toSdkTool(ToolDefinition tool) {
         ObjectNode schema = tool.inputSchema();
@@ -382,7 +429,14 @@ public class AnthropicSdkLlmClient implements LlmClient {
 
     // ===== 入方向:SDK 类型 → 内部类型 =====
 
-    /** SDK 响应转内部类型；保留两种 thinking，未知其它类型只报告类型名，不回显完整 payload。 */
+    /**
+     * 逐块将 SDK 响应转换为内部正文、工具、思考和隐藏思考内容，核对工具参数为对象，未知块输出类型告警。
+     * 转换普通输入、输出与缓存用量，缺报保留 null，返回带停止原因的内部 ModelResponse。
+     *
+     * @param message 待编码、校验或投影的完整消息
+     * @return 转换后的内部消息、停止原因与用量
+     * @throws LlmException 模型工具参数不是 JSON 对象或内部内容转换失败
+     */
     private ModelResponse toResponse(com.anthropic.models.messages.Message message) throws LlmException {
         List<ContentBlock> blocks = new ArrayList<>();
         for (com.anthropic.models.messages.ContentBlock b : message.content()) {

@@ -11,25 +11,42 @@ import com.jadecode.config.JadePaths;
 import com.jadecode.util.Json;
 
 /**
- * SSH 远端的服务适配入口：只连接该机器的私有 UDS，必要时启动本机 daemon。
- * 不解析客户端命令、不启动 Node；stdin EOF 只解绑连接，不停止服务会话。
+ * 将远端 SSH 的标准输入输出接到同机 Java 常驻服务。读取私有端点并核对进程身份，必要时启动 daemon，
+ * 随后双向转发字节；服务会话生命周期由显式管理命令控制。
  */
 public final class ServiceRelay {
+    /**
+     * 汇集 SSH 标准流与远端常驻服务之间的连接及转发入口。
+     */
     private ServiceRelay() {
     }
 
-    /** 一条连接拥有自身 IO 和 socket；close 不发停止会话命令。 */
+    /**
+     * 一条连接拥有自身 IO 和 socket；close 不发停止会话命令。
+     */
     private static final class Peer implements AutoCloseable {
         public final InputStream input;
         public final OutputStream output;
         private final AutoCloseable resource;
 
+        /**
+         * 保存到远端常驻服务的输入、输出流及底层连接资源，供 relay 两个方向转发字节。
+         *
+         * @param input 从当前连接读取字节的输入流
+         * @param output 命令有界输出或子代理最终结果正文
+         * @param resource 随 relay 连接一起关闭的底层 socket 资源
+         */
         Peer(InputStream input, OutputStream output, AutoCloseable resource) {
             this.input = input;
             this.output = output;
             this.resource = resource;
         }
 
+        /**
+         * 关闭 relay 持有的服务连接，资源关闭失败包装为 IOException 交给转发流程收尾。
+         *
+         * @throws IOException 底层服务连接关闭失败
+         */
         @Override
         public void close() throws IOException {
             try {
@@ -40,7 +57,14 @@ public final class ServiceRelay {
         }
     }
 
-    /** 私有发现文件只含 socket 与进程身份；不读取任何模型认证。 */
+    /**
+     * 读取私有端点并核对 PID、启动时间和 socket，建立到常驻服务的连接。launch 为 true 且连接失败时启动 daemon，
+     * 十五秒内重试端点；失败或中断以 IOException 返回。
+     *
+     * @param launch 端点不可用时是否允许按需启动 daemon
+     * @return 已连接本机服务并持有输入输出与 socket 资源的 Peer
+     * @throws IOException 服务端点不可用、身份过期、启动超时或连接等待被中断
+     */
     private static Peer local(boolean launch) throws IOException {
         JadePaths paths = JadePaths.defaults();
         Path root = paths.root().resolve("service");
@@ -84,7 +108,13 @@ public final class ServiceRelay {
         }
     }
 
-    /** 独立进程不继承终端输入；setsid 使终端关闭不会向 daemon 发送挂断信号。 */
+    /**
+     * 核对或创建私有 daemon 日志，用 setsid 启动当前 Java 类路径下的 Main --service-daemon，stdin 接 /dev/null，
+     * stdout 和 stderr 追加到日志。
+     *
+     * @param root 执行机器用户数据根下的 service 目录
+     * @throws IOException 服务日志类型不合法、日志创建或独立 Java 进程启动失败
+     */
     private static void start(Path root) throws IOException {
         Path log = root.resolve("daemon.log");
         if (Files.exists(log, LinkOption.NOFOLLOW_LINKS) && !Files.isRegularFile(log, LinkOption.NOFOLLOW_LINKS))
@@ -101,14 +131,23 @@ public final class ServiceRelay {
                 .redirectError(ProcessBuilder.Redirect.appendTo(log.toFile())).start();
     }
 
-    /** 将启动时的类路径固定为绝对路径，避免 daemon 的工作目录影响 JAR 定位。 */
+    /**
+     * 把当前 JVM 类路径的每一项转为规范化绝对路径，再按平台分隔符拼接，供独立 daemon 定位同一套类与 JAR。
+     *
+     * @return 当前 JVM 各类路径转为绝对路径后重新拼接的字符串
+     */
     private static String absoluteClasspath() {
         return Arrays.stream(System.getProperty("java.class.path").split(java.io.File.pathSeparator))
                 .map(part -> Path.of(part).toAbsolutePath().normalize().toString())
                 .reduce((a, b) -> a + java.io.File.pathSeparator + b).orElseThrow();
     }
 
-    /** SSH 远端固定入口；只转发字节，不渲染，不加载模型，EOF 不停止 daemon。 */
+    /**
+     * 建立或启动本机服务连接，以独立转发任务将 SSH stdin 写到服务、将服务输出送到 stdout。
+     * 任一方向结束时关闭本连接并完成 relay 收尾，返回相应退出状态。
+     *
+     * @return 双向转发正常结束时为 0，连接或转发失败时为 1
+     */
     public static int relay() {
         var inputEnded = new java.util.concurrent.atomic.AtomicBoolean();
         try (Peer peer = local(true)) {

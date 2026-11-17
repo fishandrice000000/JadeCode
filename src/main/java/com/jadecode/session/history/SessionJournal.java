@@ -21,15 +21,11 @@ import com.jadecode.messages.Message;
 import com.jadecode.util.Json;
 
 /**
- * 当前会话的唯一日志写者，拥有日志通道和 OS 会话锁，关闭时一并释放。
+ * 保存当前会话已经采用的消息、轮次、用量和元数据。
  *
- * <p>每条记录包含换行，并在允许下一步执行前 force 到本地文件。这样可恢复的事实
- * 不依赖 UI 是否已经显示文本。文件系统/硬件仍可能失效，工具副作用与日志也不是事务。
- * 清单只是列表索引，更新失败会告警；完整日志写入失败则锁定本写者，禁止继续追加。</p>
- *
- * <p>模型/Workflow 线程可能被取消。NIO 会因调用线程中断而关闭 FileChannel，不能让这些线程
- * 直接操作共享通道。因此文件操作交给本会话独占的 I/O 线程，调用者同步等到提交结束；
- * 等待期间的中断在返回时恢复，不取消已提交的日志事实。此线程不执行模型或业务任务。</p>
+ * <p>独占日志通道及会话文件锁，每条事件按递增序号写入 JSON 行并刷新后返回。
+ * 文件写入交给专属 IO 线程，调用线程同步等待，等待中的中断在返回时恢复。
+ * 完整日志失败后写者停止接收新记录；会话清单索引更新失败以告警报告。</p>
  */
 public final class SessionJournal implements AutoCloseable {
     private final Path directory;
@@ -44,7 +40,18 @@ public final class SessionJournal implements AutoCloseable {
     private long sequence;
     private boolean closed, failed, indexWarning;
 
-    /** 由 SessionStore 在取得写锁并校验日志后创建，不对外提供无锁写入。 */
+    /**
+     * 由 SessionStore 在取得写锁并校验日志后创建，不对外提供无锁写入。
+     *
+     * @param directory 当前会话已取得独占写者锁的持久目录
+     * @param metadata 打开会话时已经核验的元数据
+     * @param sequence 当前日志最后一个已经落盘的事件序号
+     * @param events 会话 events.jsonl 的写入通道
+     * @param lockChannel 持有会话文件锁的通道
+     * @param lock 本会话独占的操作系统文件锁
+     * @param warnings 接收文件或维护告警的文本出口
+     * @param releaseLocal 日志关闭后释放 JVM 内会话占用的回调
+     */
     SessionJournal(Path directory, SessionMetadata metadata, long sequence, FileChannel events,
             FileChannel lockChannel, FileLock lock, Consumer<String> warnings, Runnable releaseLocal) {
         this.directory = directory;
@@ -57,24 +64,42 @@ public final class SessionJournal implements AutoCloseable {
         this.releaseLocal = releaseLocal;
     }
 
+    /**
+     * 返回当前日志持有的会话元数据，供会话身份、标题和更新时间查询使用。
+     *
+     * @return 此日志当前已采用的会话元数据
+     */
     public SessionMetadata metadata() {
         return metadata;
     }
 
-    /** 提取器只读取已落盘事件，调用者仍不能直接追加日志；不打开第二个写者。 */
+    /**
+     * 返回当前会话的 events.jsonl 路径，供记忆提取按固定事件区间读取已持久化证据。
+     *
+     * @return 此会话的 events.jsonl 路径
+     */
     public Path eventsPath() {
         return directory.resolve("events.jsonl");
     }
 
-    /** 与 append 共用锁，返回已经 force 成功的事件序号，作为任务证据的闭区间终点。 */
+    /**
+     * 与 append 共用锁，返回已经 force 成功的事件序号，作为任务证据的闭区间终点。
+     *
+     * @return 最后一个已经写入并刷新成功的事件序号
+     */
     public synchronized long sequence() {
         return sequence;
     }
 
     /**
-     * 同步保存一次正式采用的变化。调用者必须保留已执行工具的结果，写盘失败不能据此重跑工具。
-     * 任何写入失败后，本对象不再接受新记录，以免在半行后追加而破坏合法前缀。
-     * @throws IOException 通道关闭、已经失败、序列化或落盘失败
+     * 以当前会话、下一序号和当前时间构造一条正式事件，保存消息、Todo 与原因，并同步等待日志写入刷新。
+     * 通道关闭、写者已失败或 IO 错误时抛出 IOException。
+     *
+     * @param kind 要保存的持久会话事件种类
+     * @param messages 本次读取或采用的模型消息列表
+     * @param todos 与当前历史一起保存的 Todo 状态
+     * @param reason 当前事件来源或失败的业务原因
+     * @throws IOException 日志写者不可用或本条事件序列化、写入刷新失败
      */
     public synchronized void append(JournalEntry.Kind kind, List<Message> messages, ArrayNode todos, String reason)
             throws IOException {
@@ -83,8 +108,15 @@ public final class SessionJournal implements AutoCloseable {
     }
 
     /**
-     * 保存真实采用轮次；只增加审计关联，不把上下文中的函数、许可或临时状态序列化。
-     * 与旧 append 使用同一写入/force 路径；失败仍封住日志，不重跑已执行工具。
+     * 在正式事件中同时保存 runId，将消息和状态变化关联到真实轮次；构造下一序号后交给统一日志写入刷新流程，
+     * IO 失败向上传递。
+     *
+     * @param kind 要保存的持久会话事件种类
+     * @param messages 本次读取或采用的模型消息列表
+     * @param todos 与当前历史一起保存的 Todo 状态
+     * @param reason 当前事件来源或失败的业务原因
+     * @param runId 当前轮次 ID，用于关联取消、后台命令和任务收尾
+     * @throws IOException 日志写者不可用或本条事件序列化、写入刷新失败
      */
     public synchronized void append(JournalEntry.Kind kind, List<Message> messages, ArrayNode todos,
             String reason, String runId) throws IOException {
@@ -92,25 +124,45 @@ public final class SessionJournal implements AutoCloseable {
                 kind, messages, todos, reason, null, null, null, null, runId));
     }
 
-    /** 统计线程只写用量事实，不读取或修改会话消费者拥有的 Todo。 */
+    /**
+     * 统计线程只写用量事实，不读取或修改会话消费者拥有的 Todo。
+     *
+     * @param value 本次模型请求的用量事实及用途、Agent 归属
+     * @throws IOException 用量事件写入失败
+     */
     public synchronized void usage(com.jadecode.llm.UsageRecord value) throws IOException {
         write(new JournalEntry(SessionMetadata.VERSION, metadata.id(), sequence + 1, Instant.now().toString(),
                 JournalEntry.Kind.USAGE, List.of(), null, "usage", value, null, null, null, null));
     }
 
-    /** 名称先可靠写入日志，再更新清单；即使索引更新失败，也能在下次恢复时找回名称。 */
+    /**
+     * 名称先可靠写入日志，再更新清单；即使索引更新失败，也能在下次恢复时找回名称。
+     *
+     * @param value 用户选择的新会话标题
+     * @throws IOException 会话改名事件写入失败
+     */
     public synchronized void rename(String value) throws IOException {
         write(new JournalEntry(SessionMetadata.VERSION, metadata.id(), sequence + 1, Instant.now().toString(),
                 JournalEntry.Kind.RENAMED, List.of(), null, "rename", null, value, null, null, null));
     }
 
-    /** 只保存会话选择，不记录密钥，也不将更改伪装成用户提示词。 */
+    /**
+     * 只保存会话选择，不记录密钥，也不将更改伪装成用户提示词。
+     *
+     * @param value 后续请求应读取的思考档位
+     * @throws IOException 思考档位事件写入失败
+     */
     public synchronized void thinking(com.jadecode.llm.ThinkingSettings value) throws IOException {
         write(new JournalEntry(SessionMetadata.VERSION, metadata.id(), sequence + 1, Instant.now().toString(),
                 JournalEntry.Kind.THINKING, List.of(), null, "thinking", null, null, value, null, null));
     }
 
-    /** 目标状态只作为会话元数据持久化，不放进模型历史、不覆盖 Todo 或保存审批能力。 */
+    /**
+     * 目标状态只作为会话元数据持久化，不放进模型历史、不覆盖 Todo 或保存审批能力。
+     *
+     * @param value 本次需要持久保存的目标状态
+     * @throws IOException 目标状态事件写入失败
+     */
     public synchronized void goal(com.jadecode.goal.GoalState value) throws IOException {
         write(new JournalEntry(SessionMetadata.VERSION, metadata.id(), sequence + 1, Instant.now().toString(),
                 JournalEntry.Kind.GOAL, List.of(), null, "goal", null, null, null, value, null));
@@ -119,6 +171,9 @@ public final class SessionJournal implements AutoCloseable {
     /**
      * 所有生产者持同一把锁同步提交。调用线程中断不会触碰文件通道；磁盘/通道真实失败仍封住后续写入。
      * 清单告警回到调用线程处理，不能让 IO 线程执行可能回调会话的显示函数而形成跨线程锁等待。
+     *
+     * @param record 本次需要同步保存的完整会话事件
+     * @throws IOException 专属 IO 线程不可用或本次事件保存失败
      */
     private void write(JournalEntry record) throws IOException {
         if (closed || failed)
@@ -134,7 +189,22 @@ public final class SessionJournal implements AutoCloseable {
             warnings.accept("Session list index was not updated, but the journal was saved; resume by UUID.");
     }
 
-    /** 只由 ioOwner 操作通道、序号和清单；完成 future 后变更才对等待调用者可见。 */
+    /**
+     * 在日志专属 IO 线程提交一条正式事件，并更新可重建的会话索引。
+     *
+     * <p>处理过程：</p>
+     * <ol>
+     * <li>核对日志可写，把完整 JSON 行写入 events.jsonl 并刷新，随后推进 sequence。</li>
+     * <li>按 request、USAGE、RENAMED、THINKING 等事件更新本地元数据，正文提交失败时封住写者并抛出 IOException。</li>
+     * <li>尝试原子保存 session.json；索引首次失败返回 true，通知调用方发出一次索引告警，后续同类失败返回 false。</li>
+     * </ol>
+     *
+     * <p>返回值用于索引告警，日志正文成功提交与索引是否更新分别记录。</p>
+     *
+     * @param record 本次需要同步保存的完整会话事件
+     * @return 日志正文提交成功后，元数据索引首次保存失败、需要发出一次告警时为 true；其余成功提交为 false
+     * @throws IOException 写者关闭或已失败，事件序列化、日志写入或刷新失败
+     */
     private boolean writeRecord(JournalEntry record) throws IOException {
         try {
             ByteBuffer bytes = ByteBuffer
@@ -177,6 +247,11 @@ public final class SessionJournal implements AutoCloseable {
      * 把一段文件提交交给不受分支取消影响的线程，并等待确定结果。
      * InterruptedException 只中断了等待，没有撤销已经发生的 IO；不能取消 future 或提前放开日志锁。
      * 无论成功/失败，都恢复调用者中断标志，让其后续执行边界照常响应取消。
+     *
+     * @param <T> 本次操作返回值的类型
+     * @param operation 本次提交给日志独占 IO 线程的文件操作
+     * @return 文件操作在专属 IO 线程完成后取得的结果
+     * @throws IOException 专属 IO 线程拒绝任务，或操作以 IO、运行时故障结束
      */
     private <T> T onIo(Callable<T> operation) throws IOException {
         Future<T> pending;
@@ -204,7 +279,13 @@ public final class SessionJournal implements AutoCloseable {
         }
     }
 
-    /** 原子更新可重建的清单，不原地截断旧文件；临时文件也留在会话目录中。 */
+    /**
+     * 原子更新可重建的清单，不原地截断旧文件；临时文件也留在会话目录中。
+     *
+     * @param directory 当前会话已取得独占写者锁的持久目录
+     * @param metadata 打开会话时已经核验的元数据
+     * @throws IOException 元数据序列化、临时文件写入、原子替换或临时文件清理失败
+     */
     static void saveMetadata(Path directory, SessionMetadata metadata) throws IOException {
         Path temporary = Files.createTempFile(directory, "session-", ".tmp");
         IOException original = null;
@@ -230,6 +311,8 @@ public final class SessionJournal implements AutoCloseable {
     /**
      * 关闭与 append 使用同一锁，最后一次写入结束前不会释放进程锁。
      * SessionRuntime 还会先禁止新的历史采用，避免迟到网络回复写入另一份会话。
+     *
+     * @throws IOException 日志或锁通道刷新关闭失败
      */
     @Override
     public synchronized void close() throws IOException {

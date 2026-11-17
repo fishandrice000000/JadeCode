@@ -6,15 +6,8 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 保存一些在特定时刻要调用的函数，比如执行工具前查权限、执行后显示结果。
- *
- * <p>register 把函数加进表，trigger 按加入顺序执行；能否短路由事件的控制契约决定。
- * PreToolUse 返回文字表示拒绝这次工具调用；Stop 返回文字表示任务还没做完，
- * 要把这段提示交给模型继续；内置通知忽略返回值并通知全部订阅者；自定义事件保留首个非 null 短路。</p>
- *
- * <p>这些函数在调用 trigger 的同一线程执行，不是任务队列，也不自动开线程。
- * 父 history 由 SessionRuntime 修改，子 Agent 修改自己的消息列表；
- * hook 只检查参数或显示信息，不应直接给 history 插消息。</p>
+ * 按事件名保存同步回调表，供用户提交、工具前后和轮次结束等边界调用。register 追加回调，trigger 按注册顺序执行；
+ * PreToolUse、Stop 和自定义控制事件以首个非 null 文本结束，普通通知向全部订阅者广播。
  */
 public class Hooks {
     // 用常量统一事件名，避免拼错；需要新事件时也可以注册新名字。
@@ -58,31 +51,22 @@ public class Hooks {
     @FunctionalInterface
     public interface Hook {
         /**
-         * 处理一次通知。调用者传什么参数、返回文字怎么用，取决于事件名。
+         * 处理当前事件的参数表。PreToolUse 的非 null 返回值为阻止原因，Stop 的非 null 返回值为续跑提示；
+         * 内置通知忽略返回值，自定义事件沿用首个非 null 短路。用户提交带 query，工具事件带 block 及可选 output，
+         * 子代理结束带 output 与 outcome。
          *
-         * <ul>
-         * <li>UserPromptSubmit：query 是用户请求，CLI 还传 executionContext；返回文字不使用。</li>
-         * <li>PreToolUse：block 是 ToolUseBlock，CLI 父子 Agent 还传 executionContext；
-         * 返回文字就阻止工具，把原因作为 tool_result 发给模型。</li>
-         * <li>PostToolUse：block 和 output 是调用及结果，只展示或记录。</li>
-         * <li>Stop：messages 是当前历史；返回文字就让模型继续，不返回则不再要求继续。</li>
-         * <li>SubagentStart：没有参数。</li>
-         * <li>SubagentTool：block 和 output 是子工具调用及结果。</li>
-         * <li>SubagentEnd：output 是最终文字，outcome 是 DONE/STOPPED/FAILED。</li>
-         * </ul>
-         * @param params 当前事件的参数表，只读，不保证每次都有 executionContext
-         * @return 拒绝原因或让模型继续的提示；内置通知的返回值不参与控制，自定义事件仍以非 null 短路
+         * @param params 当前 Hook 事件携带的工具、上下文或结果参数表
+         * @return 控制事件的阻止或续跑文本；null 表示该回调继续放行，普通通知忽略返回值
          */
         String run(Map<String, ?> params);
     }
 
     /**
-     * 把一个函数加在指定事件的最后，之后 trigger 时才执行。
+     * 在开始任务前把回调追加到指定事件的有序列表。后续 trigger 按顺序执行，权限回调放在工具运行展示回调之前，
+     * 供阻止结果先于运行状态作出。
      *
-     * <p>应在开始任务前注册。这个表不是线程安全的，不要边执行边从其它线程增加函数。
-     * 顺序会影响结果：权限检查要放在“调用了哪个工具”的日志前面，免得被拒绝也显示成执行过。</p>
-     * @param event 事件名，也可以新增名字，但调用者要讲清参数和返回文字的用途
-     * @param hook 要执行的函数，不会立即调用
+     * @param event 本次注册的 Hook 事件名，如 PreToolUse 或 Stop
+     * @param hook 本事件需要按注册顺序执行的回调
      */
     public void register(String event, Hook hook) {
         if (!registry.containsKey(event)) {
@@ -94,6 +78,9 @@ public class Hooks {
     /**
      * 装配阶段把可信控制检查放在现有扩展之前，例如权限闸门必须先于展示与用户扩展。
      * 只改变指定事件的首位，其余注册顺序不变；不执行回调，不允许运行中并发修改。
+     *
+     * @param event 本次注册的 Hook 事件名，如 PreToolUse 或 Stop
+     * @param hook 本事件需要按注册顺序执行的回调
      */
     public void registerFirst(String event, Hook hook) {
         registry.computeIfAbsent(event, ignored -> new ArrayList<>()).addFirst(hook);
@@ -101,8 +88,9 @@ public class Hooks {
 
     /**
      * 按注册顺序同步执行。内置通知广播全部回调，控制事件和自定义事件遇非 null 停止。
+     *
      * @param event 这次发生的事件名
-     * @param params 给函数读取的参数，不保证每个事件都有任务信息
+     * @param params 当前事件定义的参数，任务上下文按事件契约提供
      * @return 控制事件和自定义事件的首个非 null 结果；内置通知始终返回 null
      * @throws RuntimeException 某函数意外抛异常，原样交给调用者，不当作检查通过
      */

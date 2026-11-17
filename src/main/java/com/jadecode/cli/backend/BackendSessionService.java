@@ -31,43 +31,73 @@ import com.jadecode.session.history.SessionMetadata;
 import com.jadecode.util.Json;
 
 /**
- * 后端会话服务：把协议命令串行地变成 Host/Runtime/权限/设置的调用。
+ * 将客户端命令串行转换为会话、权限和设置操作。
  *
- * <p>为什么单独一层：{@link SessionHost} 的 {@code current()} 只是“现在打开的是谁”，不是
- * 已经校验过的提交 API。每条命令都必须先核对“我看到的是哪一代会话”，再采用结果；切换会话
- * 期间、旧代次回包、未来会话改名都返回真实错误，而不是改到另一个会话上。</p>
+ * <p>命令线程先核对会话 ID 与代次，再调用 SessionHost 和 SessionRuntime；用户请求返回提交回执，
+ * 完整任务的 Future 完成后再回到命令线程发送 task.result 或 task.failed。配置写入由 PreferenceService 串行保存，
+ * 模型和工具的运行事件通过当前代次的观察器、流与审批通道返回前端。</p>
  *
- * <p>并发模型：所有命令在单线程 {@code jade-backend-commands} 上执行；不会在协议 reader
- * 线程里等待模型 Future，也不在持锁回调里等 socket。任务 Future 完成后的回调也只把结果
- * 投递给 outbox，不反向调用 Node。</p>
- *
- * <p>它不持有终端、不渲染 Markdown、不写前端配置；设置写入交给唯一的
- * {@link PreferenceService}。</p>
+ * @see com.jadecode.cli.SessionHost
+ * @see com.jadecode.session.SessionRuntime
  */
 public final class BackendSessionService implements AutoCloseable {
-    /** 快照出口：完整快照（含历史）与只读状态刷新分开，避免每帧重发历史。 */
+    /**
+     * 快照出口：完整快照（含历史）与只读状态刷新分开，避免每帧重发历史。
+     */
     public interface SnapshotSink {
+        /**
+         * 发送指定代次的完整历史条目和运行状态，使用 snapshotId 标识这次同步，供客户端安装后确认 ready。
+         *
+         * @param snapshotId 本次完整历史快照的身份，供客户端安装后确认
+         * @param generation 客户端看到的会话代次，切换会话后随新代次更新
+         * @param entries 按展示顺序排列的历史条目
+         * @param snapshot 本次读取或发送的完整状态快照
+         */
         void full(String snapshotId, long generation,
                 List<BackendHistoryProjector.Entry> entries, BackendSnapshot snapshot);
 
+        /**
+         * 发送当前运行状态快照，供前端更新权限、设置、任务和用量显示。
+         *
+         * @param snapshot 本次读取或发送的完整状态快照
+         */
         void state(BackendSnapshot snapshot);
     }
 
-    /** 一次启动的意图，进入 server.bootstrap 供 Node 决定首轮/选择器行为。 */
+    /**
+     * 一次启动的意图，进入 server.bootstrap 供 Node 决定首轮/选择器行为。
+     *
+     * @param mode 本次启动意图的模式，如 new、resume 或 prompt
+     * @param prompt 用户输入的任务正文
+     * @param resumeTarget 启动时要求恢复的持久会话 ID
+     * @param autoSubmit 客户端通过 ready 后是否自动登记首轮任务
+     */
     public record Startup(String mode, String prompt, String resumeTarget, boolean autoSubmit) {
     }
 
     /**
      * full-access 二次确认的一次性票据。
      *
+     * @param id 本次 Full Access 一次性确认票据 ID
+     * @param revision 本次操作依据的版本号，用于读取后修改时核对状态
      * @param intent runtime=只切换本次运行；default=同时保存启动默认。一次票据只服务一种意图。
+     * @param presented 该确认票据是否已有可核验的页面呈现
+     * @param frameId 已提交到终端的呈现帧身份
+     * @param terminalEpoch 终端布局代次，重建布局后更新
+     * @param rawWatermark 呈现帧提交时已接收原始输入的水位
+     * @param decodedWatermark 呈现帧提交时已解码输入的水位
+     * @param rects 当前帧可操作按钮的坐标与选项列表
+     * @param columns 呈现帧的终端列数
+     * @param rows 呈现帧的终端行数
      */
     private record Ticket(String id, long revision, String intent, boolean presented, String frameId,
             long terminalEpoch, long rawWatermark, long decodedWatermark,
             List<BridgeApproval.Rect> rects, int columns, int rows) {
     }
 
-    /** 一个会话代次的全部前端协作对象；切换会话时整体替换。 */
+    /**
+     * 一个会话代次的全部前端协作对象；切换会话时整体替换。
+     */
     private static final class Generation {
         final long generation;
         final DisplayClock clock;
@@ -77,6 +107,14 @@ public final class BackendSessionService implements AutoCloseable {
         final BridgeApproval approval;
         volatile String sessionId = "";
 
+        /**
+         * 为新会话代次创建独立的协议身份、显示时钟、执行观察器、消息出口和人工审批通道。时钟变化经 owner 发送，
+         * 状态变化向 owner 请求快照刷新。
+         *
+         * @param owner 负责接收该代次时钟和状态刷新通知的后端服务
+         * @param generation 客户端看到的会话代次，切换会话后随新代次更新
+         * @param wire 当前会话代次的事件出口与身份上下文
+         */
         Generation(BackendSessionService owner, long generation, WireContext wire) {
             this.generation = generation;
             this.wire = new WireContext(wire.session());
@@ -114,7 +152,12 @@ public final class BackendSessionService implements AutoCloseable {
     private volatile boolean startupRegistered;
     private boolean headless;
 
-    /** 装配阶段选择无人工通道；连接前设置，运行后不从客户端临时改变。 */
+    /**
+     * 装配阶段选择无人工通道；连接前设置，运行后不从客户端临时改变。
+     *
+     * @param value 是否使用没有人工审批通道的 headless 接线
+     * @throws IllegalStateException 首轮 ready 已登记，当前接线已固定
+     */
     public void headless(boolean value) {
         if (startupRegistered)
             throw new IllegalStateException("Session already started");
@@ -127,12 +170,33 @@ public final class BackendSessionService implements AutoCloseable {
     private volatile String shutdownFailure;
     private ObjectNode stoppedPayload;
 
+    /**
+     * 装配单个客户端使用的会话后端，绑定配置、运行时工厂、快照出口和启动意图。
+     * 会话创建与消费线程启动分别由 openInitial 和 ready 完成。
+     *
+     * @param wire 当前会话代次的事件出口与身份上下文
+     * @param preferences 负责串行保存白名单设置的配置服务
+     * @param factory 根据会话代次创建完整运行时的工厂
+     * @param snapshots 完整历史与运行状态快照的发送出口
+     * @param diagnostics 接收容器、连接或会话诊断信息的出口
+     * @param startup 服务打开会话时固定的启动意图
+     */
     public BackendSessionService(WireContext wire, PreferenceService preferences, RuntimeFactory factory,
             SnapshotSink snapshots, Consumer<String> diagnostics, Startup startup) {
         this(wire, preferences, factory, snapshots, diagnostics, startup, false);
     }
 
-    /** 常驻服务拥有 Host，客户端断开只关闭出口；配置写者由服务统一关闭。 */
+    /**
+     * 常驻服务拥有 Host，客户端断开只关闭出口；配置写者由服务统一关闭。
+     *
+     * @param wire 当前会话代次的事件出口与身份上下文
+     * @param preferences 负责串行保存白名单设置的配置服务
+     * @param factory 根据会话代次创建完整运行时的工厂
+     * @param snapshots 完整历史与运行状态快照的发送出口
+     * @param diagnostics 接收容器、连接或会话诊断信息的出口
+     * @param startup 服务打开会话时固定的启动意图
+     * @param persistent 是否由常驻服务持有会话与配置生命周期
+     */
     public BackendSessionService(WireContext wire, PreferenceService preferences, RuntimeFactory factory,
             SnapshotSink snapshots, Consumer<String> diagnostics, Startup startup, boolean persistent) {
         this.persistent = persistent;
@@ -148,19 +212,30 @@ public final class BackendSessionService implements AutoCloseable {
                 warning -> diagnostics(warning));
     }
 
-    /** @return 当前配置版本；Node 用它拒绝陈旧 patch。 */
+    /**
+     * 读取配置服务最近成功保存并发布的版本，供 bootstrap、快照和补丁校验共用。
+     *
+     * @return 当前配置版本；Node 用它拒绝陈旧 patch。
+     */
     public long configRevision() {
         return preferences.state().revision();
     }
 
-    /** @return 当前已保存设置；bootstrap 与快照使用同一份。 */
+    /**
+     * 读取当前已保存的应用设置快照，供首屏与状态刷新采集。
+     *
+     * @return 当前已保存设置；bootstrap 与快照使用同一份。
+     */
     public JadeSettings settings() {
         return preferences.state().settings();
     }
 
     /**
-     * 由 SessionHost 在切换/新开时调用：为这一代建立观察器/审批/流出口。
-     * 只构造后端对象，不启动模型、不读终端。
+     * 由 SessionHost 在切换或新开会话时调用。建立该代次的观察器、审批和流出口，保存为待采用代次，再由工厂装配运行时。
+     * 返回的会话等待宿主恢复历史和 ready 启动。
+     *
+     * @param generation 客户端看到的会话代次，切换会话后随新代次更新
+     * @return 已绑定新代次显示出口、等待宿主恢复与启动的运行时
      */
     private SessionRuntime createRuntime(long generation) {
         Generation candidate = new Generation(this, generation, wire);
@@ -181,6 +256,13 @@ public final class BackendSessionService implements AutoCloseable {
         open(target);
     }
 
+    /**
+     * 打开 targetId 对应的历史会话；targetId 为 null 时创建新会话。采用工厂为新代次建立的观察器和审批通道，
+     * 更新会话身份，清空提交去重表，并发送完整历史快照。打开失败以 IOException 交给调用方处理。
+     *
+     * @param targetId 待恢复的持久会话 ID；null 表示创建新会话
+     * @throws IOException 宿主打开目标失败或工厂未提供对应代次
+     */
     private void open(String targetId) throws IOException {
         SessionHost.Opened opened = host.open(targetId);
         Generation generation = pending;
@@ -211,7 +293,7 @@ public final class BackendSessionService implements AutoCloseable {
                 sendDiagnostic("Node reported ready before a session was opened");
                 return;
             }
-            // 首轮 prompt 来自 Java 启动参数，不经过 Node 回传，避免“重绘重放”或前端改写任务。
+            // 首轮 prompt 已由 service.open 保存到启动意图；ready 只确认快照安装完成。
             String prompt = startup.prompt() == null ? "" : startup.prompt();
             try {
                 if (startup.autoSubmit() && !startupRegistered) {
@@ -238,7 +320,11 @@ public final class BackendSessionService implements AutoCloseable {
         });
     }
 
-    /** 处理一条已通过协议层校验的业务命令。 */
+    /**
+     * 处理一条已通过协议层校验的业务命令。
+     *
+     * @param command 已通过连接协议校验的业务命令，包含会话身份、代次及本次操作载荷
+     */
     public void dispatch(WireMessage command) {
         serial.execute(() -> {
             if (closed.get())
@@ -268,6 +354,10 @@ public final class BackendSessionService implements AutoCloseable {
     /**
      * 只读报告入口绑定当前会话和派工编号；正文走现有有界分块协议，前端不能传文件路径。
      * 不发模型请求，不改变报告核对状态。IO 失败沿用命令错误通道。
+     *
+     * @param command 已通过连接协议校验的业务命令，包含会话身份、代次及本次操作载荷
+     * @throws ProtocolException 会话身份或派工 ID 字段无效
+     * @throws IOException 派工报告不存在或正文读取失败
      */
     private void teamReport(WireMessage command) throws ProtocolException, IOException {
         requireSession(command);
@@ -279,6 +369,23 @@ public final class BackendSessionService implements AutoCloseable {
         wire.session().sendOk(command.commandId(), result, wire.sessionId(), wire.generation());
     }
 
+    /**
+     * 按客户端命令类型选择对应的会话、设置、权限或审批处理分支。
+     *
+     * <p>处理过程：</p>
+     * <ol>
+     * <li>将提交、缓冲升级、列表查询、会话切换与元数据修改交给相应业务方法。</li>
+     * <li>将设置补丁、权限档位、Full Access 呈现及审批输入交给各自的版本与证据检查入口。</li>
+     * <li>停止操作取消当前轮次并清除待审批；关闭操作进入统一资源收尾。</li>
+     * <li>常驻模式的 client.shutdown 发送分离事件并关闭控制连接；独立模式关闭整个后端。</li>
+     * </ol>
+     *
+     * <p>输入已经完成连接级校验，各业务分支继续核对 sessionId、generation 与对应版本；未知类型抛出 UNSUPPORTED。</p>
+     *
+     * @param command 已通过连接协议校验的业务命令，包含会话身份、代次及本次操作载荷
+     * @throws ProtocolException 命令类型、会话身份、输入字段或操作状态不符合对应契约
+     * @throws IOException 会话清单、报告、补全或相关持久操作失败
+     */
     private void handle(WireMessage command) throws ProtocolException, IOException {
         switch (command.type()) {
             case "session.submit" -> submit(command);
@@ -326,6 +433,22 @@ public final class BackendSessionService implements AutoCloseable {
         }
     }
 
+    /**
+     * 把一条 session.submit 转换为当前会话的一次用户提交。
+     *
+     * <p>处理过程：</p>
+     * <ol>
+     * <li>校验命令的会话 ID 和代次，取出内联文本或消费已经组装好的 blob，并检查非空与服务文本大小。</li>
+     * <li>按 clientSubmissionId 和 SHA-256 检查重复：相同 ID 与正文返回已有分派状态，正文冲突则报协议错误。</li>
+     * <li>先发送 task.submitted 建立用户卡片，再调用 submitUser 取得本次独立请求或缓冲批次的结果 Future。</li>
+     * <li>保存去重登记，为 Future 绑定最终结果回调，返回 dispatched 命令回执。</li>
+     * </ol>
+     *
+     * <p>此方法在后端命令线程执行。模型工作由会话消费线程领取；Future 完成时才发送 task.result 或 task.failed。</p>
+     *
+     * @param command 已通过连接协议校验的业务命令，包含会话身份、代次及本次操作载荷
+     * @throws ProtocolException 会话身份过期、文本为空或超限、提交 ID 冲突、去重表满或运行时拒绝接纳
+     */
     private void submit(WireMessage command) throws ProtocolException {
         SessionRuntime runtime = requireSession(command);
         String text = command.payload().hasNonNull("textBlobRef")
@@ -373,7 +496,13 @@ public final class BackendSessionService implements AutoCloseable {
             wire.session().sendOk(command.commandId(), status("dispatched"), wire.sessionId(), wire.generation());
     }
 
-    /** 终端补全在执行机器枚举工作区文件名；不读正文，不跟随链接到外部或敏感目录。 */
+    /**
+     * 终端补全在执行机器枚举工作区文件名；不读正文，不跟随链接到外部或敏感目录。
+     *
+     * @param command 已通过连接协议校验的业务命令，包含会话身份、代次及本次操作载荷
+     * @throws ProtocolException 命令所属会话已经改变
+     * @throws IOException 补全前缀过长或目标目录解析、枚举失败
+     */
     private void completePath(WireMessage command) throws ProtocolException, IOException {
         requireSession(command);
         String prefix = command.payload().path("prefix").asText();
@@ -406,6 +535,13 @@ public final class BackendSessionService implements AutoCloseable {
         wire.session().sendOk(command.commandId(), result, wire.sessionId(), wire.generation());
     }
 
+    /**
+     * 将当前会话缓冲的用户消息升级为本轮补充，使消费线程在下一个安全边界采用它。
+     * 回执中的 changed 表示本次是否改变了缓冲状态。
+     *
+     * @param command 已通过连接协议校验的业务命令，包含会话身份、代次及本次操作载荷
+     * @throws ProtocolException 命令所属会话或代次不匹配
+     */
     private void promoteBuffer(WireMessage command) throws ProtocolException {
         SessionRuntime runtime = requireSession(command);
         boolean changed = runtime.promoteUserBuffer();
@@ -414,6 +550,14 @@ public final class BackendSessionService implements AutoCloseable {
         wire.session().sendOk(command.commandId(), payload, wire.sessionId(), wire.generation());
     }
 
+    /**
+     * 切换到指定历史会话，targetId 为 null 时新建会话。成功后关闭上一代审批通道并返回 switching；
+     * 打开失败时清除候选代次，保留原会话并返回 BUSY。
+     *
+     * @param command 已通过连接协议校验的业务命令，包含会话身份、代次及本次操作载荷
+     * @param targetId 待恢复的持久会话 ID；null 表示创建新会话
+     * @throws ProtocolException 当前会话不匹配或目标会话无法打开
+     */
     private void switchSession(WireMessage command, String targetId) throws ProtocolException {
         requireSession(command);
         Generation previous = current;
@@ -430,6 +574,13 @@ public final class BackendSessionService implements AutoCloseable {
         wire.session().sendOk(command.commandId(), status("switching"), wire.sessionId(), wire.generation());
     }
 
+    /**
+     * 读取当前工作区中可切换的会话清单，将会话元数据编码为 sessions 数组并返回命令回执。
+     *
+     * @param command 已通过连接协议校验的业务命令，包含会话身份、代次及本次操作载荷
+     * @throws ProtocolException 命令所属会话或代次不匹配
+     * @throws IOException 当前工作区会话清单读取失败
+     */
     private void list(WireMessage command) throws ProtocolException, IOException {
         requireSession(command);
         ArrayNode items = Json.mapper().createArrayNode();
@@ -440,6 +591,13 @@ public final class BackendSessionService implements AutoCloseable {
         wire.session().sendOk(command.commandId(), payload, wire.sessionId(), wire.generation());
     }
 
+    /**
+     * 按用户输入的会话 ID 或名称查询历史候选，将匹配的元数据作为 sessions 数组返回。
+     *
+     * @param command 已通过连接协议校验的业务命令，包含会话身份、代次及本次操作载荷
+     * @throws ProtocolException 会话身份或查询名称字段无效
+     * @throws IOException 会话清单读取或名称查询失败
+     */
     private void find(WireMessage command) throws ProtocolException, IOException {
         requireSession(command);
         String name = requiredText(command, "name");
@@ -451,6 +609,12 @@ public final class BackendSessionService implements AutoCloseable {
         wire.session().sendOk(command.commandId(), payload, wire.sessionId(), wire.generation());
     }
 
+    /**
+     * 校验当前会话后保存新标题，刷新状态快照并返回成功回执。写入失败转换为 PERSISTENCE_FAILED 协议错误。
+     *
+     * @param command 已通过连接协议校验的业务命令，包含会话身份、代次及本次操作载荷
+     * @throws ProtocolException 会话身份、标题字段不合法或持久保存失败
+     */
     private void rename(WireMessage command) throws ProtocolException {
         SessionRuntime runtime = requireSession(command);
         String title = requiredText(command, "title");
@@ -463,6 +627,13 @@ public final class BackendSessionService implements AutoCloseable {
         wire.session().sendOk(command.commandId(), status("ok"), wire.sessionId(), wire.generation());
     }
 
+    /**
+     * 解析用户选择的思考档位并保存到当前会话，刷新快照后返回实际档位。非法档位返回 INVALID_MESSAGE，
+     * 保存失败返回 PERSISTENCE_FAILED；新设置由后续模型请求读取。
+     *
+     * @param command 已通过连接协议校验的业务命令，包含会话身份、代次及本次操作载荷
+     * @throws ProtocolException 档位名称不合法、会话改变或保存失败
+     */
     private void thinking(WireMessage command) throws ProtocolException {
         SessionRuntime runtime = requireSession(command);
         String value = requiredText(command, "value");
@@ -483,6 +654,13 @@ public final class BackendSessionService implements AutoCloseable {
         wire.session().sendOk(command.commandId(), payload, wire.sessionId(), wire.generation());
     }
 
+    /**
+     * 读取期望配置版本，将 JSON 补丁转换为 Java 值后交给配置服务异步保存。先返回 accepted，
+     * 再由保存回调发送 settings.saved 或 settings.failed，成功时刷新界面快照。
+     *
+     * @param command 已通过连接协议校验的业务命令，包含会话身份、代次及本次操作载荷
+     * @throws ProtocolException 会话身份不匹配或 patch 不是对象
+     */
     private void patchSettings(WireMessage command) throws ProtocolException {
         requireSession(command);
         long expected = longValue(command.payload(), "expectedConfigRevision", -1);
@@ -493,6 +671,13 @@ public final class BackendSessionService implements AutoCloseable {
         node.properties().forEach(entry -> patch.put(entry.getKey(), plain(entry.getValue())));
         wire.session().sendOk(command.commandId(), status("accepted"), wire.sessionId(), wire.generation());
         preferences.apply(patch, expected, new PreferenceService.Callback() {
+            /**
+             * 配置保存成功后发送 settings.saved，携带新配置版本、TUI 设置与界面状态，并请求刷新运行状态快照。
+             *
+             * @param settings 本次装配或保存的应用设置快照
+             * @param revision 本次操作依据的版本号，用于读取后修改时核对状态
+             * @param applied 本次交给配置保存服务的字段与值
+             */
             @Override
             public void saved(JadeSettings settings, long revision, Map<String, Object> applied) {
                 ObjectNode payload = Json.mapper().createObjectNode();
@@ -503,6 +688,12 @@ public final class BackendSessionService implements AutoCloseable {
                 requestStateSnapshot();
             }
 
+            /**
+             * 配置保存失败后发送 settings.failed，携带失败原因、当前配置版本和可重试标记，供前端保留并重试用户修改。
+             *
+             * @param failure 已经发生的 IO、模型或执行异常，供原任务收尾与回执使用
+             * @param applied 本次交给配置保存服务的字段与值
+             */
             @Override
             public void failed(IOException failure, Map<String, Object> applied) {
                 ObjectNode payload = Json.mapper().createObjectNode();
@@ -514,6 +705,13 @@ public final class BackendSessionService implements AutoCloseable {
         });
     }
 
+    /**
+     * 解析权限档位并核对当前权限版本；选择 Full Access 时校验确认票据。更新本次运行的权限状态，回传新档位和版本，
+     * 并刷新快照。受管工作区选择 Full Access 时返回协议错误。
+     *
+     * @param command 已通过连接协议校验的业务命令，包含会话身份、代次及本次操作载荷
+     * @throws ProtocolException 档位名称、权限版本、工作区模式或 Full Access 确认证据无效
+     */
     private void selectPermission(WireMessage command) throws ProtocolException {
         SessionRuntime runtime = requireSession(command);
         String value = requiredText(command, "profile");
@@ -540,6 +738,13 @@ public final class BackendSessionService implements AutoCloseable {
         sendStateSnapshot();
     }
 
+    /**
+     * 为当前权限版本创建一次 Full Access 确认票据，将票据 ID 和版本返回给权限页面。
+     * 调用时的期望版本过期则返回 STALE_REVISION。
+     *
+     * @param command 已通过连接协议校验的业务命令，包含会话身份、代次及本次操作载荷
+     * @throws ProtocolException 会话不匹配或权限版本已经改变
+     */
     private void prepareFullAccess(WireMessage command) throws ProtocolException {
         SessionRuntime runtime = requireSession(command);
         long expected = longValue(command.payload(), "expectedPermissionRevision", -1);
@@ -554,6 +759,13 @@ public final class BackendSessionService implements AutoCloseable {
         wire.session().sendOk(command.commandId(), payload, wire.sessionId(), wire.generation());
     }
 
+    /**
+     * 登记 Full Access 确认页面的呈现结果：核对票据、权限版本和终端代次，检查按钮位于可见区域，
+     * 并保存帧 ID、输入水位及本次确认用途，供后续作答校验。
+     *
+     * @param command 已通过连接协议校验的业务命令，包含会话身份、代次及本次操作载荷
+     * @throws ProtocolException 票据、用途、帧、终端代次或按钮可见区域不符合确认要求
+     */
     private void presentFullAccess(WireMessage command) throws ProtocolException {
         requireSession(command);
         String id = requiredText(command, "confirmationId");
@@ -594,12 +806,24 @@ public final class BackendSessionService implements AutoCloseable {
         wire.session().sendOk(command.commandId(), status("ok"), wire.sessionId(), wire.generation());
     }
 
+    /**
+     * 按确认 ID 移除 Full Access 票据，并返回 cancelled 回执。
+     *
+     * @param command 已通过连接协议校验的业务命令，包含会话身份、代次及本次操作载荷
+     */
     private void cancelFullAccess(WireMessage command) {
         String id = command.payload().path("confirmationId").asText("");
         tickets.remove(id);
         wire.session().sendOk(command.commandId(), status("cancelled"), wire.sessionId(), wire.generation());
     }
 
+    /**
+     * 解析并保存下次启动使用的默认权限档位；Full Access 先消费对应用途的确认票据。
+     * 保存成功回传配置版本和默认档位并刷新快照，保存失败返回 PERSISTENCE_FAILED。
+     *
+     * @param command 已通过连接协议校验的业务命令，包含会话身份、代次及本次操作载荷
+     * @throws ProtocolException 会话身份、档位名称或默认权限用途的确认票据无效
+     */
     private void defaultPermission(WireMessage command) throws ProtocolException {
         requireSession(command);
         String value = requiredText(command, "profile");
@@ -613,6 +837,13 @@ public final class BackendSessionService implements AutoCloseable {
         if (profile == PermissionProfile.FULL_ACCESS)
             requireFullAccessEvidence(command, "default");
         preferences.saveDefaultPermission(profile, expected, new PreferenceService.Callback() {
+            /**
+             * 默认权限保存成功后，将新配置版本和默认档位作为原命令的结果返回，并请求状态快照刷新。
+             *
+             * @param settings 本次装配或保存的应用设置快照
+             * @param revision 本次操作依据的版本号，用于读取后修改时核对状态
+             * @param applied 本次交给配置保存服务的字段与值
+             */
             @Override
             public void saved(JadeSettings settings, long revision, Map<String, Object> applied) {
                 ObjectNode payload = status("saved");
@@ -623,6 +854,12 @@ public final class BackendSessionService implements AutoCloseable {
                 requestStateSnapshot();
             }
 
+            /**
+             * 默认权限保存失败时，将写入错误作为原命令的 PERSISTENCE_FAILED 回执返回。
+             *
+             * @param failure 已经发生的 IO、模型或执行异常，供原任务收尾与回执使用
+             * @param applied 本次交给配置保存服务的字段与值
+             */
             @Override
             public void failed(IOException failure, Map<String, Object> applied) {
                 wire.session().sendError(command.commandId(), ProtocolError.PERSISTENCE_FAILED,
@@ -632,8 +869,19 @@ public final class BackendSessionService implements AutoCloseable {
     }
 
     /**
-     * full-access 必须有：同一次意图的票据、已提交帧、当前 revision/epoch，且确认来自呈现之后的新输入。
-     * 鼠标确认还必须落在该帧 confirm 按钮矩形内；键盘确认必须带显式 confirm 动作。
+     * 核验并消费一次用于 Full Access 的明确确认。
+     *
+     * <p>处理过程：</p>
+     * <ol>
+     * <li>根据票据 ID 找到已呈现记录，检查用途与当前权限版本。</li>
+     * <li>检查输入为新的 PRESS，且帧、终端代次、原始输入水位和解码序号属于这次呈现之后。</li>
+     * <li>鼠标确认检查左键按下命中确认按钮；键盘确认检查 approval.confirm 动作。</li>
+     * <li>核验全部通过后移除票据，使原确认只服务本次档位修改。</li>
+     * </ol>
+     *
+     * @param command 已通过连接协议校验的业务命令，包含会话身份、代次及本次操作载荷
+     * @param requiredIntent 本次确认用途，runtime 表示临时切换，default 表示保存默认
+     * @throws ProtocolException 确认用途、版本、帧或本次按键点击证据不匹配
      */
     private void requireFullAccessEvidence(WireMessage command, String requiredIntent) throws ProtocolException {
         SessionRuntime runtime = requireSession(command);
@@ -675,6 +923,13 @@ public final class BackendSessionService implements AutoCloseable {
         tickets.remove(id);
     }
 
+    /**
+     * 将前端提交的帧身份、按钮位置、输入水位和权限版本组装为审批呈现记录，交给当前审批通道保存。
+     * 终端代次匹配后返回成功回执，供稍后的点击或按键核验使用。
+     *
+     * @param command 已通过连接协议校验的业务命令，包含会话身份、代次及本次操作载荷
+     * @throws ProtocolException 会话、终端代次或审批呈现记录不符合要求
+     */
     private void presented(WireMessage command) throws ProtocolException {
         requireSession(command);
         String requestId = requiredText(command, "requestId");
@@ -697,6 +952,13 @@ public final class BackendSessionService implements AutoCloseable {
         wire.session().sendOk(command.commandId(), status("ok"), wire.sessionId(), wire.generation());
     }
 
+    /**
+     * 解析审批选项和输入证据，将帧、终端代次、输入序号及可选鼠标坐标交给当前审批通道核验。核验完成后返回命令回执，
+     * 等待该审批的工具线程由审批通道唤醒。
+     *
+     * @param command 已通过连接协议校验的业务命令，包含会话身份、代次及本次操作载荷
+     * @throws ProtocolException 请求、选项或输入证据不符合当前审批记录
+     */
     private void answer(WireMessage command) throws ProtocolException {
         requireSession(command);
         String requestId = requiredText(command, "requestId");
@@ -729,6 +991,9 @@ public final class BackendSessionService implements AutoCloseable {
      *
      * <p>Node 上传的是它重建后的新 epoch；Java 只接受严格递增，旧帧/旧票据不能再用。审批申请
      * 本身仍 pending，下一帧重新呈现后才可确认。</p>
+     *
+     * @param command 已通过连接协议校验的业务命令，包含会话身份、代次及本次操作载荷
+     * @throws ProtocolException 会话身份无效或未提供新终端代次
      */
     private void terminalInvalidated(WireMessage command) throws ProtocolException {
         requireSession(command);
@@ -741,24 +1006,37 @@ public final class BackendSessionService implements AutoCloseable {
         wire.session().sendOk(command.commandId(), status("ok"), wire.sessionId(), wire.generation());
     }
 
-    /** 当前终端代次；测试与诊断使用。 */
+    /**
+     * 当前终端代次；测试与诊断使用。
+     *
+     * @return 当前终端布局代次
+     */
     public long terminalEpoch() {
         return terminalEpoch;
     }
 
-    /** 请求一次节流的状态刷新；观察器线程只投递请求，不等待渲染。 */
+    /**
+     * 请求一次节流的状态刷新；观察器线程只投递请求，不等待渲染。
+     */
     public void requestStateSnapshot() {
         if (closed.get())
             return;
         serial.execute(this::sendStateSnapshot);
     }
 
+    /**
+     * 会话已打开且后端运行中时，采集当前运行状态并发送状态快照；完整历史由 sendFullSnapshot 发送。
+     */
     private void sendStateSnapshot() {
         if (closed.get() || current == null)
             return;
         snapshots.state(snapshot());
     }
 
+    /**
+     * 把恢复的会话记录投影成界面条目，为当前代次生成新的快照 ID，再连同运行状态发送完整快照。
+     * 会话和恢复记录齐备后执行。
+     */
     private void sendFullSnapshot() {
         Generation generation = current;
         if (generation == null || restored == null)
@@ -768,7 +1046,11 @@ public final class BackendSessionService implements AutoCloseable {
         snapshots.full(snapshotId, generation.generation, entries, snapshot());
     }
 
-    /** 组装当前只读资料；历史条目不在其中，避免每帧重发。 */
+    /**
+     * 组装当前只读资料；历史条目不在其中，避免每帧重发。
+     *
+     * @return 采集当前运行事实与设置的状态快照
+     */
     private BackendSnapshot snapshot() {
         Generation generation = current;
         JadeSettings settings = preferences.state().settings();
@@ -782,6 +1064,14 @@ public final class BackendSessionService implements AutoCloseable {
                 generation == null ? Map.of() : generation.clock.all());
     }
 
+    /**
+     * 将指定 Agent 的轮次 ID、耗时、运行与暂停状态、展示停止状态和时钟版本编码为 display.clock 事件，
+     * 经传入代次的出口发送。
+     *
+     * @param wire 当前会话代次的事件出口与身份上下文
+     * @param actor 产生此操作的 Agent 身份，用于事件展示、用量归属和资源回收
+     * @param tick 该 Agent 当前轮次的耗时、暂停及显示计时状态
+     */
     private void sendClock(WireContext wire, String actor, DisplayClock.Tick tick) {
         ObjectNode payload = Json.mapper().createObjectNode();
         payload.put("actor", actor);
@@ -794,6 +1084,14 @@ public final class BackendSessionService implements AutoCloseable {
         wire.session().sendEvent("display.clock", payload, wire.sessionId(), wire.generation());
     }
 
+    /**
+     * 构造 task.submitted 事件载荷，以提交 ID 派生用户卡片 ID，初始状态设为 SUBMITTING；null 文本转为空串。
+     * 返回新 JSON 对象。
+     *
+     * @param submissionId 用户提交 ID，用于关联用户卡片和整轮结果
+     * @param text 本次用户提交的完整文本；构造事件时 null 转为空串
+     * @return 带 submissionId、用户卡片 ID、SUBMITTING 状态和文本的新载荷
+     */
     private ObjectNode taskSubmitted(String submissionId, String text) {
         ObjectNode payload = Json.mapper().createObjectNode();
         payload.put("submissionId", submissionId);
@@ -803,6 +1101,14 @@ public final class BackendSessionService implements AutoCloseable {
         return payload;
     }
 
+    /**
+     * 构造包含提交 ID 和失败说明的 task.failed 载荷；尚无轮次身份时 runId 使用空串，null 说明转为空串。
+     * 返回新 JSON 对象。
+     *
+     * @param submissionId 用户提交 ID，用于关联用户卡片和整轮结果
+     * @param message 需要返回给前端的失败或诊断说明；null 编码为空串
+     * @return 带 submissionId 和失败说明的新载荷
+     */
     private ObjectNode taskFailed(String submissionId, String message) {
         ObjectNode payload = Json.mapper().createObjectNode();
         payload.put("submissionId", submissionId);
@@ -811,7 +1117,12 @@ public final class BackendSessionService implements AutoCloseable {
         return payload;
     }
 
-    /** 任务 Future 完成只投递结果；共享 Future 的多次提交都会各自收到同一次最终回答。 */
+    /**
+     * 任务 Future 完成只投递结果；共享 Future 的多次提交都会各自收到同一次最终回答。
+     *
+     * @param result 当前提交最终取得回答的 Future，回调转交命令串行线程发送结果
+     * @param submissionId 用户提交 ID，用于关联用户卡片和整轮结果
+     */
     private void attachResult(CompletableFuture<String> result, String submissionId) {
         result.whenComplete((text, failure) -> serial.execute(() -> {
             if (closed.get())
@@ -835,6 +1146,14 @@ public final class BackendSessionService implements AutoCloseable {
         }));
     }
 
+    /**
+     * 核对命令携带的 sessionId 和 generation，返回当前可操作的 SessionRuntime。
+     * 尚未打开、身份过期或会话已关闭分别转换成对应协议错误。
+     *
+     * @param command 已通过连接协议校验的业务命令，包含会话身份、代次及本次操作载荷
+     * @return 与命令 sessionId、generation 匹配的可操作会话
+     * @throws ProtocolException 尚无会话、命令身份或代次不匹配、宿主已关闭
+     */
     private SessionRuntime requireSession(WireMessage command) throws ProtocolException {
         Generation generation = current;
         if (generation == null)
@@ -852,6 +1171,14 @@ public final class BackendSessionService implements AutoCloseable {
         }
     }
 
+    /**
+     * 读取命令载荷中指定的非空白字符串字段并原样返回；字段缺失、类型错误或只有空白时返回 INVALID_MESSAGE 协议错误。
+     *
+     * @param command 已通过连接协议校验的业务命令，包含会话身份、代次及本次操作载荷
+     * @param field 本次读取或写入的 JSON 字段名
+     * @return 该字段的原始非空白字符串
+     * @throws ProtocolException 指定字段缺失、类型不是字符串或内容为空白
+     */
     private String requiredText(WireMessage command, String field) throws ProtocolException {
         JsonNode node = command.payload().path(field);
         if (!node.isTextual() || node.asText().isBlank())
@@ -859,6 +1186,15 @@ public final class BackendSessionService implements AutoCloseable {
         return node.asText();
     }
 
+    /**
+     * 将指定 JSON 字段解析为 long，同时接受整数节点和十进制字符串；
+     * 字段缺失、类型不匹配或字符串解析失败时返回 fallback。
+     *
+     * @param payload 协议事件的完整 JSON 业务载荷
+     * @param field 本次读取或写入的 JSON 字段名
+     * @param fallback 字段缺失、类型不符或解析失败时返回的缺省值
+     * @return 解析出的 long；缺失、类型不符或格式错误时为 fallback
+     */
     private static long longValue(JsonNode payload, String field, long fallback) {
         JsonNode node = payload.path(field);
         if (node.isIntegralNumber())
@@ -873,12 +1209,25 @@ public final class BackendSessionService implements AutoCloseable {
         return fallback;
     }
 
+    /**
+     * 创建仅包含 status 字段的命令状态载荷，供各处理分支添加业务字段后返回。
+     *
+     * @param value 命令回执中的业务状态，如 dispatched、ok 或 cancelled
+     * @return 只含 status 字段的新 JSON 对象
+     */
     private static ObjectNode status(String value) {
         ObjectNode payload = Json.mapper().createObjectNode();
         payload.put("status", value);
         return payload;
     }
 
+    /**
+     * 将按钮区域数组转换为 Rect 列表，逐项读取位置、尺寸和选项编号；非数组输入返回空列表。
+     * 区域有效性由具体呈现处理方法检查。
+     *
+     * @param node 当前读取或写入的 JSON 节点
+     * @return 转换后的按钮矩形列表；非数组输入返回空列表
+     */
     private static List<BridgeApproval.Rect> rects(JsonNode node) {
         if (!node.isArray())
             return List.of();
@@ -890,6 +1239,12 @@ public final class BackendSessionService implements AutoCloseable {
         return rects;
     }
 
+    /**
+     * 将一条会话元数据转换为前端清单项，包含 ID、标题、更新时间、工作区和模型名。返回新 JSON 对象。
+     *
+     * @param metadata 当前会话或经验来源的持久元数据
+     * @return 包含会话 ID、标题、更新时间、工作区与模型的清单项
+     */
     private static ObjectNode metadata(SessionMetadata metadata) {
         ObjectNode node = Json.mapper().createObjectNode();
         node.put("id", metadata.id());
@@ -900,6 +1255,13 @@ public final class BackendSessionService implements AutoCloseable {
         return node;
     }
 
+    /**
+     * 递归将 JSON 转成配置服务接收的 Java 值：字符串、布尔、整数、小数、列表或键值表；JSON null 和其他节点返回 null。
+     * 容器值重新构建。
+     *
+     * @param node 当前读取或写入的 JSON 节点
+     * @return 递归转换后的 Java 标量、列表或映射；JSON null 返回 null
+     */
     private static Object plain(JsonNode node) {
         if (node.isTextual())
             return node.asText();
@@ -922,13 +1284,23 @@ public final class BackendSessionService implements AutoCloseable {
         return null;
     }
 
-    /** 供 settings.saved 事件携带完整 TUI 子快照，Node 无需再取整份配置。 */
+    /**
+     * 供 settings.saved 事件携带完整 TUI 子快照，Node 无需再取整份配置。
+     *
+     * @param settings 本次装配或保存的应用设置快照
+     * @return 当前设置的完整 TUI 子快照 JSON
+     */
     private static ObjectNode tuiJson(JadeSettings settings) {
         return (ObjectNode) BackendSnapshot.capture(0, null, null, settings, 0, List.of(), Map.of(),
                 "", "", Map.of(), Map.of()).toJson().get("tui");
     }
 
-    /** 已组装入站 blob 的解析；未知引用明确失败，不使用截断内容。 */
+    /**
+     * 已组装入站 blob 的解析；未知引用明确失败，不使用截断内容。
+     *
+     * @param id 已完成入站组装的 blob ID
+     * @param text 本次用户提交的完整文本；构造事件时 null 转为空串
+     */
     public void registerBlob(String id, String text) {
         serial.execute(() -> {
             while (blobs.size() >= 16)
@@ -937,6 +1309,13 @@ public final class BackendSessionService implements AutoCloseable {
         });
     }
 
+    /**
+     * 按引用 ID 取出并移除已组装的文本；空引用返回空串，未知引用返回 INVALID_MESSAGE。成功读取后该引用即被消费。
+     *
+     * @param ref 已经完整组装的入站文本引用 ID
+     * @return 已经完整组装的文本；空引用返回空串，成功取出后移除登记
+     * @throws ProtocolException 非空引用在已组装文本登记中不存在
+     */
     private String blob(String ref) throws ProtocolException {
         if (ref == null || ref.isBlank())
             return "";
@@ -946,10 +1325,20 @@ public final class BackendSessionService implements AutoCloseable {
         return text;
     }
 
+    /**
+     * 将会话宿主产生的告警转交统一诊断出口，由 sendDiagnostic 同时通知前端和本地诊断接收者。
+     *
+     * @param warning 需要经诊断通道展示的告警文本
+     */
     private void diagnostics(String warning) {
         sendDiagnostic(warning);
     }
 
+    /**
+     * 后端运行中时构造 warning 级 diagnostic 事件，并把相同文本交给诊断回调；null 文本转为空串，已关闭时结束处理。
+     *
+     * @param message 需要返回给前端的失败或诊断说明；null 编码为空串
+     */
     private void sendDiagnostic(String message) {
         if (closed.get())
             return;
@@ -960,7 +1349,19 @@ public final class BackendSessionService implements AutoCloseable {
         diagnostics.accept(message == null ? "" : message);
     }
 
-    /** 有序收口：拒绝审批、保存设置、关闭会话与依赖，最后通知前端。 */
+    /**
+     * 结束后端会话，确认设置与所属资源的最终状态。
+     *
+     * <p>处理过程：</p>
+     * <ol>
+     * <li>原子进入关闭状态，关闭当前代次的审批通道。</li>
+     * <li>关闭 SessionHost，并把未停止资源或关闭异常保存为 shutdownFailure。</li>
+     * <li>等待已提交的配置保存，构造含 preferencesSaved、cleanupConfirmed 和原因的结束载荷。</li>
+     * <li>独立模式发送 server.stopped 并排空连接；常驻模式保存载荷，等待外层服务确认审计与范围释放后发布。</li>
+     * </ol>
+     *
+     * @param reason 当前事件来源或失败的业务原因
+     */
     public void shutdown(String reason) {
         if (!closed.compareAndSet(false, true))
             return;
@@ -998,7 +1399,11 @@ public final class BackendSessionService implements AutoCloseable {
         wire.session().flushAndClose();
     }
 
-    /** 服务在释放自身资源后公布最终回执；未知清理结果必须让客户端看见失败。 */
+    /**
+     * 服务在释放自身资源后公布最终回执；未知清理结果必须让客户端看见失败。
+     *
+     * @param outerFailure 外层审计或范围清理失败的说明；正常时为 null
+     */
     public void publishClosed(String outerFailure) {
         ObjectNode payload = stoppedPayload == null ? Json.mapper().createObjectNode() : stoppedPayload.deepCopy();
         if (outerFailure != null)
@@ -1007,12 +1412,18 @@ public final class BackendSessionService implements AutoCloseable {
         wire.session().flushAndClose();
     }
 
-    /** @return 收口阶段的失败原因；null 表示正常。 */
+    /**
+     * 读取最近一次会话或设置收尾失败的说明，供外层服务组织最终关闭回执。
+     *
+     * @return 收口阶段的失败原因；null 表示正常。
+     */
     public String shutdownFailure() {
         return shutdownFailure;
     }
 
-    /** 断连只使旧呈现和票据失效，审批账本仍由当前会话持有。 */
+    /**
+     * 断连只使旧呈现和票据失效，审批账本仍由当前会话持有。
+     */
     public void disconnected() {
         if (closed.get())
             return;
@@ -1024,7 +1435,12 @@ public final class BackendSessionService implements AutoCloseable {
         });
     }
 
-    /** 重连同步与命令串行；快照期间不允许事件插入其分块之间。 */
+    /**
+     * 重连同步与命令串行；快照期间不允许事件插入其分块之间。
+     *
+     * @param synchronizedDisplay 完整快照排队后恢复实时增量的回调
+     * @return 完整快照与审批同步结束后完成的 Future；同步失败时异常完成
+     */
     public CompletableFuture<Void> reconnect(Runnable synchronizedDisplay) {
         var result = new CompletableFuture<Void>();
         serial.execute(() -> {
@@ -1044,7 +1460,11 @@ public final class BackendSessionService implements AutoCloseable {
         return result;
     }
 
-    /** 管理连接可以取消当前轮次；真正的执行停止仍由 runtime 的取消链完成。 */
+    /**
+     * 管理连接可以取消当前轮次；真正的执行停止仍由 runtime 的取消链完成。
+     *
+     * @return 取消请求已交给当前轮次并清除待审批后完成的 Future
+     */
     public CompletableFuture<Void> cancelCurrent() {
         var result = new CompletableFuture<Void>();
         serial.execute(() -> {
@@ -1059,26 +1479,55 @@ public final class BackendSessionService implements AutoCloseable {
         return result;
     }
 
+    /**
+     * 返回宿主当前可操作的会话运行时；会话尚未打开或宿主已关闭时，由宿主抛出 IllegalStateException。
+     *
+     * @return 当前可操作的会话运行时
+     */
     public SessionRuntime runtime() {
         return host.current();
     }
 
+    /**
+     * 返回后端已关闭且宿主资源已停止的状态，供服务决定何时释放工作区占用。
+     *
+     * @return 后端已关闭且宿主资源已停止时为 true
+     */
     public boolean stopped() {
         return closed.get() && host.isStopped();
     }
 
+    /**
+     * 返回后端是否已经进入关闭流程。
+     *
+     * @return 后端已经进入关闭流程时为 true
+     */
     public boolean closed() {
         return closed.get();
     }
 
+    /**
+     * 返回首次 ready 处理是否已登记，供重连流程选择首次启动或状态同步。
+     *
+     * @return 首次 ready 已登记时为 true
+     */
     public boolean started() {
         return startupRegistered;
     }
 
+    /**
+     * 返回当前会话等待处理的审批请求快照；会话尚未打开时返回空列表。
+     *
+     * @return 当前待审批请求列表；会话未打开时为空列表
+     */
     public List<com.jadecode.safety.approval.ApprovalRequest> pendingApprovals() {
         return current == null ? List.of() : current.approval.requests();
     }
 
+    /**
+     * 关闭会话后端，停止串行命令执行器并最多等待三秒；独立模式同时关闭配置服务，常驻模式由外层服务管理配置生命周期。
+     * 等待被中断时恢复线程中断标记。
+     */
     @Override
     public void close() {
         shutdown("closed");

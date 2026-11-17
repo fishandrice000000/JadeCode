@@ -38,39 +38,44 @@ import com.jadecode.session.history.SessionJournal;
 import com.jadecode.todo.TodoManager;
 
 /**
- * 管理一次 Agent 会话：每次只执行一项工作，在完整工具批次之间接收允许插入的补充。
+ * 管理一个 Agent 会话的排队、执行、等待和结果采用。
  *
- * <p>例如，用户要求“构建项目，再检查报告”。构建可以放到后台，模型趁这时读其它文件。
- * 但只要构建结果还没处理，这项任务就没有结束；后来的独立请求继续排队；原轮次中断时，后台命令可继续向会话交付结果。
- * 本类负责决定什么时候请模型继续、什么时候等后台命令、什么时候才算做完。</p>
+ * <p>submit 把独立请求放入 Inbox，consume 逐项领取，execute 建立本轮状态，
+ * runTask 调用 AgentExecutor 驱动模型与工具循环。
+ * 后台结果、Team 报告和用户补充在完整工具批次之间写入历史；本轮必等结果采用、报告验收、Stop 和 Goal 条件处理后，
+ * 保存轮次终态并完成请求 Future。正式历史由会话消费线程同步记录到日志，关闭时统一释放会话资源。</p>
  *
- * <p>阅读顺序：{@link #submit} 把任务放进队列 → {@link #consume} 取出任务 →
- * {@link #execute} 准备这项任务需要的数据 → {@link #runTask} 请求模型并执行工具。
- * 所有模型回复和工具结果都由 apply 的各个重载写入 history；具体怎么请求模型、执行工具和
- * 压缩历史，则交给 {@link AgentExecutor}。</p>
- *
- * <p>通常只有本类启动的一个线程修改 history。其它线程只往队列放任务，或告诉它
- * “有后台命令跑完了”。旧的 {@link #run(List)} 则直接用调用者线程。
- * 程序退出后队列不会恢复；REPL 通过日志恢复已采用历史，不恢复执行线程和已批准权限。
- * 已经写入的业务文件不会还原，网络请求也不一定立即停止。</p>
+ * @see com.jadecode.agent.AgentExecutor
+ * @see SessionInbox
+ * @see com.jadecode.session.history.SessionJournal
  */
 public final class SessionRuntime implements AutoCloseable {
     private com.jadecode.safety.PermissionState permissions = com.jadecode.safety.PermissionState.defaults();
 
-    /** 工厂装配一次，共享的是权限配置，不是队友的历史或工具表。 */
+    /**
+     * 绑定当前会话使用的共享权限状态，供工具检查和界面快照读取同一档位与版本。
+     *
+     * @param value 本会话与工具权限检查共用的权限状态
+     * @throws IllegalStateException 运行时已启动、已绑定日志或已经关闭
+     * @throws NullPointerException value 为 null
+     */
     public void permissions(com.jadecode.safety.PermissionState value) {
         if (consumer != null || journal != null || closed)
             throw new IllegalStateException("Session is already started or closed");
         permissions = java.util.Objects.requireNonNull(value);
     }
 
-    /** 界面通过共享状态切换档位；不能在运行后换成与工具检查器不同的另一份状态。 */
+    /**
+     * 返回当前会话与工具检查器共用的权限状态，供界面读取和切换档位。
+     *
+     * @return 与当前工具检查器共用的权限状态
+     */
     public com.jadecode.safety.PermissionState permissionState() {
         return permissions;
     }
 
     /**
-     * 这次会话现在在做什么，不是 s10 任务文件里保存的任务状态。
+     * 标识会话当前处于空闲、运行、等待后台、等待队友、持久化失败或关闭阶段，供控制操作与界面显示使用。
      */
     public enum State {
         /** 现在没有任务，处理线程等待队列里的下一项请求。 */
@@ -101,14 +106,28 @@ public final class SessionRuntime implements AutoCloseable {
     private final Map<String, String> pendingTeam = new java.util.concurrent.ConcurrentHashMap<>();
     private java.util.function.Supplier<List<Map<String, Object>>> teamSnapshot = List::of;
 
-    /** 装配只读 Team 视图；供应方只复制内存，不能在 UI 线程读取邮箱正文。 */
+    /**
+     * 装配只读 Team 视图；供应方只复制内存，不能在 UI 线程读取邮箱正文。
+     *
+     * @param supplier 为界面提供当前状态副本的函数
+     * @throws NullPointerException supplier 为 null
+     */
     public void teamView(java.util.function.Supplier<List<Map<String, Object>>> supplier) {
         teamSnapshot = java.util.Objects.requireNonNull(supplier);
     }
 
-    /** 只读报告端口只接受派工 ID；后台服务不接受模型或前端指定任意文件路径。 */
+    /**
+     * 只读报告端口只接受派工 ID；后台服务不接受模型或前端指定任意文件路径。
+     */
     @FunctionalInterface
     public interface TeamReports {
+        /**
+         * 按派工 ID 读取队友提交的报告正文，供 Leader 界面查看；报告不可读时抛出 IOException。
+         *
+         * @param assignment 需要交付或查询报告的派工 ID
+         * @return 对应派工已提交的完整报告正文
+         * @throws IOException 报告不存在或完整正文读取失败
+         */
         String read(String assignment) throws IOException;
     }
 
@@ -116,7 +135,12 @@ public final class SessionRuntime implements AutoCloseable {
         throw new IllegalArgumentException("No Team is active");
     };
 
-    /** 工厂安装当前 Team 的只读报告端口，不启动 IO。 */
+    /**
+     * 工厂安装当前 Team 的只读报告端口，不启动 IO。
+     *
+     * @param reader 显式详情查询时按派工 ID 读取报告正文的函数
+     * @throws NullPointerException reader 为 null
+     */
     public void teamReports(TeamReports reader) {
         teamReports = java.util.Objects.requireNonNull(reader);
     }
@@ -124,28 +148,55 @@ public final class SessionRuntime implements AutoCloseable {
     /** Leader 验收属于当前轮的决策工作；在 Inbox 锁外检查，避免与 Team 投递形成锁反转。 */
     private java.util.function.Function<String, String> teamCompletion = run -> "";
 
+    /**
+     * 绑定 Team 完成检查函数，供主循环在候选结束时查询尚待交付或验收的工作。
+     * 返回的检查文本由主循环采用为继续处理的提示。
+     *
+     * @param check 按轮次 ID 返回尚待 Leader 验收工作的检查函数
+     * @throws NullPointerException check 为 null
+     */
     public void teamCompletion(java.util.function.Function<String, String> check) {
         teamCompletion = java.util.Objects.requireNonNull(check);
     }
 
-    /** 后端详情页显式请求时才读取正文，普通快照不读磁盘。 */
+    /**
+     * 后端详情页显式请求时才读取正文，普通快照不读磁盘。
+     *
+     * @param assignment 需要交付或查询报告的派工 ID
+     * @return 指定派工的完整报告正文
+     * @throws IOException 报告入口未绑定、报告身份无效或正文读取失败
+     */
     public String teamReport(String assignment) throws IOException {
         return teamReports.read(assignment);
     }
 
-    /** 当前执行编号供只读 Team 统计使用，空闲时为空串。 */
+    /**
+     * 当前执行编号供只读 Team 统计使用，空闲时为空串。
+     *
+     * @return 正在运行的轮次 ID；空闲时为空串
+     */
     public String currentExecutionId() {
         Active task = active;
         return task == null ? "" : task.context().id();
     }
 
-    /** 运行中派工来自当前执行上下文；空闲时为空，不借用排队任务冒充当前工作。 */
+    /**
+     * 返回当前 Active 中的派工 ID；会话空闲或当前轮次为普通用户请求时返回空串。
+     *
+     * @return 当前派工 ID；用户轮次或空闲时为空串
+     */
     public String currentAssignmentId() {
         Active current = active;
         return current == null || current.context().assignment() == null ? "" : current.context().assignment().id();
     }
 
-    /** 在派工投递前登记本轮义务；上限防止必等报告的独立接收槽无限增长。 */
+    /**
+     * 在派工投递前把该派工登记为当前轮次的必等结果，达到独立接收槽上限时报告失败。
+     *
+     * @param assignment 需要交付或查询报告的派工 ID
+     * @param owner 必等派工所属的原轮次 ID；telemetry 中表示是否由本会话关闭共享账本
+     * @throws IllegalStateException 必等派工数量已达到接收槽上限
+     */
     public void expectTeamResult(String assignment, String owner) {
         synchronized (inbox) {
             ensureOpen();
@@ -155,7 +206,11 @@ public final class SessionRuntime implements AutoCloseable {
         }
     }
 
-    /** 仅撤销尚未交付的派工或已退出轮次；不撤销已执行的业务副作用。 */
+    /**
+     * 撤销尚待交付的派工等待，供派工投递失败或所属轮次收尾使用；已执行操作按实际结果保留。
+     *
+     * @param assignment 需要交付或查询报告的派工 ID
+     */
     public void forgetTeamResult(String assignment) {
         synchronized (inbox) {
             pendingTeam.remove(assignment);
@@ -163,7 +218,12 @@ public final class SessionRuntime implements AutoCloseable {
         }
     }
 
-    /** 当前任务是否仍欠必要报告；不调用 TeamManager，避免队列锁与管理器锁互等。 */
+    /**
+     * 按轮次 ID 查询会话内登记的必等派工，返回该轮是否仍有尚未交付报告。
+     *
+     * @param owner 必等派工所属的原轮次 ID；telemetry 中表示是否由本会话关闭共享账本
+     * @return 指定原轮次仍有必等派工报告时为 true
+     */
     private boolean hasPendingTeam(String owner) {
         return pendingTeam.containsValue(owner);
     }
@@ -197,19 +257,34 @@ public final class SessionRuntime implements AutoCloseable {
     /** 查看活跃目标时展示本进程自设置/恢复以来的会话用量差值，包含辅助/队友，不称为主模型费用。 */
     private SessionUsage.Totals goalUsageStart = SessionUsage.Totals.empty();
 
-    /** 启动前安装独立判断端口；不发模型请求，已有 Stop hook 与后台职责不被替换。 */
+    /**
+     * 会话启动前绑定 Goal 控制器和目标状态出口，供后续用户目标命令及候选完成检查使用。
+     *
+     * @param evaluator 依据当前历史证据判断 Goal 是否完成的评估器
+     * @param limits 当前压缩流程使用的预算与保留限制
+     * @throws IllegalStateException 目标入口在运行时启动后才尝试重新绑定
+     */
     public void goals(GoalEvaluator evaluator, GoalController.Limits limits) {
         if (consumer != null || journal != null || closed || goals != null)
             throw new IllegalStateException("Cannot install goal evaluator now");
         goals = new GoalController(evaluator, this::saveGoal, limits);
     }
 
-    /** UI/测试可读取不可变状态；没有 Goal 能力或从未设置时为 null，不启动判断。 */
+    /**
+     * 返回当前 Goal 状态快照；未装配或尚未设置目标时返回 null。
+     *
+     * @return 当前不可变 Goal 状态；没有 Goal 时为 null
+     */
     public GoalState goalState() {
         return goals == null ? null : goals.state();
     }
 
-    /** 先可靠保存元数据再通知界面；由 Controller 发布内存状态，失败沿原持久化围栏停止执行。 */
+    /**
+     * 先将目标状态保存到会话元数据，再通知界面更新；持久化失败通过 persistenceError 停止后续执行。
+     *
+     * @param next 待尝试合并的下一条增量
+     * @throws IllegalStateException 目标事件持久写入失败，当前会话进入持久化故障
+     */
     private void saveGoal(GoalState next) {
         ensureOpen();
         try {
@@ -223,7 +298,12 @@ public final class SessionRuntime implements AutoCloseable {
                 next.condition() + "\n" + next.reason(), next.status().name()));
     }
 
-    /** 只识别用户入口的一条完整命令；其它来源不调用本方法，正文包含 /goal 不授予能力。 */
+    /**
+     * 检查用户输入是否为一条完整的 /goal 命令，供用户请求入口选择本地查询、清除或目标任务分支。
+     *
+     * @param prompt 用户输入的任务正文
+     * @return 输入是本地识别的完整 /goal 命令时为 true
+     */
     private static boolean goalCommand(String prompt) {
         if (prompt == null)
             return false;
@@ -232,8 +312,10 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 查看/清除在本地处理，忙时也可用；设置命令走原 FIFO，不能夹进别的任务。
-     * 返回 null 表示需要入队；非法条件返回失败 future，既不改历史也不发模型请求。
+     * 就地处理 /goal 查看与清除，返回已完成结果；设置新条件返回 null 以继续按 FIFO 入队。条件非法时返回失败 Future。
+     *
+     * @param prompt 用户输入的任务正文
+     * @return 本地处理结果 Future；需要入队执行或普通文本返回 null
      */
     private CompletableFuture<String> localGoalCommand(String prompt) {
         if (!goalCommand(prompt))
@@ -271,7 +353,12 @@ public final class SessionRuntime implements AutoCloseable {
         }
     }
 
-    /** 会话启动前绑定只读目录，逐组复制，不能把完整指令正文作为展示资料传给前端。 */
+    /**
+     * 会话启动前按组复制可展示资源名，供后续 Display 快照列出已装配能力。
+     *
+     * @param value 按组列出的可展示资源名称；方法逐组复制列表
+     * @throws IllegalStateException 资源目录在运行时启动后才尝试修改
+     */
     public void resources(Map<String, List<String>> value) {
         if (consumer != null || journal != null)
             throw new IllegalStateException("Session is already started");
@@ -280,12 +367,41 @@ public final class SessionRuntime implements AutoCloseable {
         resources = Map.copyOf(copy);
     }
 
-    /** 界面读取的纯资料，不包含可修改的消息列表、日志写者、线程或审批授权。 */
+    /**
+     * 保存会话身份、状态、模型、用量、Todo、资源和队友信息的不可变展示资料，供后端生成状态快照。
+     *
+     * @param id 当前 Agent 或会话的稳定身份标识
+     * @param title 用户选择的会话标题或当前界面条目的标题
+     * @param model 用于请求与用量归属的模型标识
+     * @param metadata 当前模型的窗口和输出限额资料
+     * @param thinking 本 Agent 的思考设置或当前值来源
+     * @param thinkingLabel 当前思考档位的界面名称
+     * @param thinkingChoices 模型实际支持的思考档位列表
+     * @param usage 模型报告或会话累计的 token 用量
+     * @param context 上游已绑定来源、派工范围及取消条件的执行上下文
+     * @param resources 按组保存的可展示资源名
+     * @param team 共享的 Team 管理器，负责派工、报告和成员生命周期
+     */
     public record Display(String id, String title, String model, ModelMetadata metadata, ThinkingSettings thinking,
             String thinkingLabel, List<ThinkingSettings> thinkingChoices, SessionUsage.Snapshot usage,
             ContextUsage context,
             Map<String, List<String>> resources, List<Map<String, Object>> team) {
 
+        /**
+         * 将队友列表、思考选项和各组资源名复制成不可变集合，形成可跨线程读取的会话展示快照。
+         *
+         * @param id 当前 Agent 或会话的稳定身份标识
+         * @param title 用户选择的会话标题或当前界面条目的标题
+         * @param model 用于请求与用量归属的模型标识
+         * @param metadata 当前模型的窗口和输出限额资料
+         * @param thinking 本 Agent 的思考设置或当前值来源
+         * @param thinkingLabel 当前思考档位的界面名称
+         * @param thinkingChoices 模型实际支持的思考档位列表
+         * @param usage 模型报告或会话累计的 token 用量
+         * @param context 上游已绑定来源、派工范围及取消条件的执行上下文
+         * @param resources 按组保存的可展示资源名
+         * @param team 共享的 Team 管理器，负责派工、报告和成员生命周期
+         */
         public Display {
             team = List.copyOf(team);
             thinkingChoices = List.copyOf(thinkingChoices);
@@ -296,12 +412,15 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 工厂为同一用户会话绑定共享账本和本 Agent 独立的设置，构造阶段调用，不启动请求。
-     * @param value Leader、队友和辅助请求共用的账本，记录的是花费，不是共享历史
-     * @param owner 是否由本运行时关闭账本；只有 Leader 为 true，关闭队友不能停掉全队记账
-     * @param client 本 Agent 已装配的客户端，只读取限额/选项，不在这里请求网络
-     * @param thinking 本 Agent 的请求和本地设置操作读取同一个引用，已有请求仍持有自己的快照
+     * 在启动和安装日志前绑定运行组共享的用量账本、本 Agent 客户端及思考设置引用，登记当前运行时是否负责关闭账本。
+     * 供正式、队友与辅助请求统一累计用量，并让各 Agent 独立选择思考设置。
+     *
+     * @param value 运行组共享的模型用量账本
+     * @param owner 必等派工所属的原轮次 ID；telemetry 中表示是否由本会话关闭共享账本
+     * @param client 用于请求模型的客户端，由装配方确定具体后端
+     * @param thinking 本 Agent 的思考设置或当前值来源
      * @throws IllegalStateException 消费线程已经启动或日志已经安装
+     * @throws NullPointerException value、client、thinking 为 null
      */
     public void telemetry(SessionUsage value, boolean owner, LlmClient client,
             java.util.concurrent.atomic.AtomicReference<ThinkingSettings> thinking) {
@@ -314,7 +433,10 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 装配只读服务快照端口；必须在会话启动前调用。供应商只能做纯内存复制，不能连接服务。
+     * 会话启动前绑定 MCP 服务快照来源，供界面读取当前服务状态。
+     *
+     * @param supplier 为界面提供当前状态副本的函数
+     * @throws IllegalStateException 运行时已经启动或关闭，服务快照入口已固定
      */
     public void services(java.util.function.Supplier<List<com.jadecode.mcp.McpManager.ServerSnapshot>> supplier) {
         if (consumer != null || journal != null)
@@ -322,7 +444,11 @@ public final class SessionRuntime implements AutoCloseable {
         mcpSnapshot = supplier == null ? List::of : supplier;
     }
 
-    /** @return 当前 MCP 服务只读快照；空列表表示没有配置或尚未装配。 */
+    /**
+     * 读取已绑定的 MCP 服务快照，尚未装配时返回空列表。
+     *
+     * @return 当前 MCP 服务快照；未装配或采集失败时为空列表
+     */
     public List<com.jadecode.mcp.McpManager.ServerSnapshot> mcpServers() {
         try {
             return List.copyOf(mcpSnapshot.get());
@@ -331,7 +457,12 @@ public final class SessionRuntime implements AutoCloseable {
         }
     }
 
-    /** 只读当前已发布的快照，不读盘、不请求模型；允许 TUI 在自己的线程采用。 */
+    /**
+     * 读取当前模型、思考设置、会话元数据、用量、上下文、资源和队友状态，组装新的 Display 快照，
+     * 供前端状态采集线程使用。
+     *
+     * @return 按当前已发布状态组装的不可变会话展示快照
+     */
     public Display display() {
         ThinkingSettings setting = requestThinking.get();
         var metadata = journal == null ? null : journal.metadata();
@@ -342,14 +473,22 @@ public final class SessionRuntime implements AutoCloseable {
                 contextUsage, resources, teamSnapshot.get());
     }
 
-    /** 只取当前设置，供新队友/一次性子任务在创建时继承；不会改已有队友。 */
+    /**
+     * 返回此 Agent 当前的思考设置，供新队友与一次性子任务创建时继承。
+     *
+     * @return 本 Agent 当前思考档位
+     */
     public ThinkingSettings thinking() {
         return requestThinking.get();
     }
 
     /**
-     * 用户的本地设置操作：先保存，再供下一次请求读取，不等待当前模型结束或改写其输入。
-     * 不支持的选项明确拒绝；写盘失败和历史写失败一样停止本会话后续操作。
+     * 检查模型支持所选思考档位，先保存会话元数据再发布新值，供后续模型请求读取。非法档位报错，
+     * 保存失败进入会话持久化失败收尾。
+     *
+     * @param value 用户本次选择的模型思考档位
+     * @throws IOException 当前会话没有持久日志或思考档位写入失败
+     * @throws IllegalArgumentException 所选思考档位不在当前模型支持列表中
      */
     public void changeThinking(ThinkingSettings value) throws IOException {
         synchronized (historyMonitor) {
@@ -367,7 +506,12 @@ public final class SessionRuntime implements AutoCloseable {
         }
     }
 
-    /** 改名只保存元数据，不插入模型消息、不修改工作区路径；CLI 负责在工作线程调用。 */
+    /**
+     * 将新标题保存到当前会话元数据并更新展示快照，供会话清单与终端显示使用；保存失败按持久化故障处理。
+     *
+     * @param title 用户选择的会话标题或当前界面条目的标题
+     * @throws IOException 当前会话没有持久日志或标题保存失败
+     */
     public void rename(String title) throws IOException {
         String valid = com.jadecode.session.history.SessionMetadata.validTitle(title);
         synchronized (historyMonitor) {
@@ -395,7 +539,12 @@ public final class SessionRuntime implements AutoCloseable {
     private Runnable closeDependents = () -> {
     };
 
-    /** 安装本会话拥有的额外资源清理，不启动它们；须在 start 前调用。 */
+    /**
+     * 在启动前登记本会话额外拥有的资源清理回调，供 close 统一释放资源。
+     *
+     * @param cleanup 当前会话或轮次结束时调用的资源清理函数
+     * @throws NullPointerException cleanup 为 null
+     */
     public synchronized void onClose(Runnable cleanup) {
         java.util.Objects.requireNonNull(cleanup);
         Runnable previous = closeDependents;
@@ -412,7 +561,11 @@ public final class SessionRuntime implements AutoCloseable {
     private java.util.function.Consumer<String> taskCleanup = ignored -> {
     };
 
-    /** 真正任务结束才撤销任务级资源；压缩和单次模型回复不触发，清理失败必须报告。 */
+    /**
+     * 绑定轮次终态的资源清理回调，供 execute 的 finally 撤销该轮任务级沙箱资源；清理异常转成 Sandbox 告警。
+     *
+     * @param cleanup 当前会话或轮次结束时调用的资源清理函数
+     */
     public void onTaskEnd(java.util.function.Consumer<String> cleanup) {
         var previous = taskCleanup;
         taskCleanup = run -> {
@@ -424,7 +577,15 @@ public final class SessionRuntime implements AutoCloseable {
         };
     }
 
-    /** 工厂登记真实 Todo 和模型名，不开始存盘；离线执行器测试可以选择不安装持久日志。 */
+    /**
+     * 绑定真实 Todo 状态与模型名，供恢复日志和展示快照采集会话状态。
+     *
+     * @param manager 当前会话使用的 Todo 管理器
+     * @param modelName 当前会话使用的模型名
+     * @param blocked 判断 Team 等资源是否仍阻止会话切换的函数
+     * @throws IllegalStateException 会话已启动、关闭或安装日志，历史状态接线已固定
+     * @throws NullPointerException manager、modelName、blocked 为 null
+     */
     public void historyState(TodoManager manager, String modelName, java.util.function.BooleanSupplier blocked) {
         if (consumer != null || journal != null || closed)
             throw new IllegalStateException("Session is already started or closed");
@@ -433,10 +594,20 @@ public final class SessionRuntime implements AutoCloseable {
         switchBlocked = java.util.Objects.requireNonNull(blocked);
     }
 
+    /**
+     * 返回此会话绑定的模型名，供会话清单、历史创建和状态快照使用。
+     *
+     * @return 当前会话模型名
+     */
     public String model() {
         return model;
     }
 
+    /**
+     * 返回当前持久会话日志的 ID；嵌入式运行尚未绑定日志时返回空串。
+     *
+     * @return 当前持久会话 ID；尚无日志时为空串
+     */
     public String sessionId() {
         return journal == null ? "" : journal.metadata().id();
     }
@@ -445,7 +616,14 @@ public final class SessionRuntime implements AutoCloseable {
     private com.jadecode.llm.SessionLlmClient modelRequests;
     private String backendIdentity = "";
 
-    /** 工厂在 start/restore 前安装模型路由与非秘密恢复身份；本方法不发请求或写盘。 */
+    /**
+     * 启动或恢复日志前绑定模型请求路由与后端恢复身份，供后续会话清单核对模型配置。
+     *
+     * @param client 用于请求模型的客户端，由装配方确定具体后端
+     * @param identity 宿主工具目录提供的可信工具身份
+     * @throws IllegalStateException 会话已经开始请求或恢复流程，模型路由接线已固定
+     * @throws NullPointerException client、identity 为 null
+     */
     public void modelRequests(com.jadecode.llm.SessionLlmClient client, String identity) {
         if (consumer != null || journal != null || closed || modelRequests != null)
             throw new IllegalStateException("Model requests are already bound or the session has started");
@@ -453,7 +631,11 @@ public final class SessionRuntime implements AutoCloseable {
         backendIdentity = java.util.Objects.requireNonNull(identity);
     }
 
-    /** 会话清单只保存这份无凭据身份，不将整个 AppConfig 交给日志。 */
+    /**
+     * 返回会话清单使用的后端身份，供历史恢复比较运行环境。
+     *
+     * @return 恢复检查使用的供应商、端点与模型身份文本
+     */
     public String backendIdentity() {
         return backendIdentity;
     }
@@ -462,19 +644,30 @@ public final class SessionRuntime implements AutoCloseable {
     private volatile boolean cleanupFailed;
     private long executionTokenBudget;
 
-    /** 调用方在启动前显式配置每轮累计用量软上限；所有运行方式默认不限。 */
+    /**
+     * 在启动前设置每轮累计 token 软上限，正数表示限制，默认 0 表示不限；上限由共享用量账本在本轮执行中检查。
+     *
+     * @param tokens 每轮累计 token 用量软上限
+     * @throws IllegalArgumentException 额度不是正数或消费线程已经启动
+     */
     public void executionTokenBudget(long tokens) {
         if (consumer != null || tokens < 1)
             throw new IllegalArgumentException("Set a positive budget before starting");
         executionTokenBudget = tokens;
     }
 
-    /** 关闭后消费者确实退出才返回 true；不把“已发中断”冒充“线程已停止”。 */
+    /**
+     * 检查关闭状态、消费线程退出及资源清理结果，供服务确认可释放工作区占用。
+     *
+     * @return 会话已关闭、依赖清理完成且消费线程退出时为 true
+     */
     public boolean isStopped() {
         return closed && !cleanupFailed && (consumer == null || !consumer.isAlive());
     }
 
-    /** 取消当前轮次；子代理和 Shell 观察同一标记，下一轮仍可执行。 */
+    /**
+     * 标记当前 Active 取消并唤醒处理线程，由工具、子代理和主循环观察同一取消信号，失败收尾后继续领取后续用户请求。
+     */
     public void cancelCurrent() {
         Active task = active;
         if (task == null)
@@ -489,14 +682,33 @@ public final class SessionRuntime implements AutoCloseable {
     private java.util.function.Consumer<String> taskCancellation = ignored -> {
     };
 
-    /** 顶层装配取消该轮所属 Team 派工；不关闭整个协作管理器。 */
+    /**
+     * 绑定当前轮次取消时的派工撤销回调，供顶层工厂清理该轮所属的 Team 工作。
+     *
+     * @param value 取消当前轮次时按 run ID 撤销派工的回调
+     */
     public void onTaskCancel(java.util.function.Consumer<String> value) {
         taskCancellation = value;
     }
 
     /**
-     * 启动前采用恢复结果并接管写者所有权。只安装历史和计划，不提交旧请求或执行旧工具。
-     * @throws IllegalStateException 运行时已经启动、已关闭或已经安装日志
+     * 在消费者启动前接管持久日志并恢复可供下一轮使用的会话状态。
+     *
+     * <p>处理过程：</p>
+     * <ol>
+     * <li>核对运行时尚未启动、未关闭且没有旧日志；涉及 OpenCode Go 时核对原后端身份一致。</li>
+     * <li>恢复稳定模型会话 ID 与 Todo，用独立列表采用恢复历史，清除旧上下文用量锚点。</li>
+     * <li>接管日志写者，恢复用量账本与最后一份 Goal 元数据，并加入历史恢复说明。</li>
+     * <li>检查历史思考档位是否被当前模型支持；支持则采用，否则保留当前配置并发出说明。</li>
+     * </ol>
+     *
+     * <p>本方法完成恢复准备。新的工作由后续 submit 登记，真实副作用依据当前工作区状态继续处理。</p>
+     *
+     * @param writer 当前会话接管的日志写者
+     * @param restored 由持久日志恢复的历史、元数据、Todo 和告警
+     * @throws IllegalArgumentException Go 历史的供应商、Messages 端点与模型身份不匹配
+     * @throws IllegalStateException 运行时已经启动、关闭或持有日志
+     * @throws NullPointerException writer 为 null
      */
     public synchronized void restore(SessionJournal writer, RestoredSession restored) {
         if (consumer != null || closed || journal != null)
@@ -542,8 +754,10 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 原子冻结空闲会话，之后拒绝新入队，供 CLI 安全切换。失败不改变当前会话。
-     * Team/后台检查放在 Inbox 锁外，避免与生产者持有的资源锁形成反向等待。
+     * 核对会话空闲、队列和后台与队友状态后，在 Inbox 锁内设置切换标记，使会话进入可更换状态。条件不满足返回 false，
+     * 供宿主保留当前会话。
+     *
+     * @return 会话满足空闲条件并成功设置切换标记时为 true
      */
     public boolean freezeForSwitch() {
         if (switchBlocked.getAsBoolean() || background != null && background.hasPending())
@@ -556,7 +770,9 @@ public final class SessionRuntime implements AutoCloseable {
         }
     }
 
-    /** 目标加载/装配失败时撤销冻结，让原会话继续接收请求；不会重放任何任务。 */
+    /**
+     * 清除会话切换标记并唤醒队列等待，供目标会话加载失败后恢复原会话接收请求。
+     */
     public void unfreeze() {
         synchronized (inbox) {
             switching = false;
@@ -564,12 +780,20 @@ public final class SessionRuntime implements AutoCloseable {
         }
     }
 
-    /** 是否正处理大轮次；等待后台也算忙，不能把新派工直接当当前工作。 */
+    /**
+     * 返回会话是否持有正在执行的大轮次；等待后台或队友结果期间也属于忙碌状态。
+     *
+     * @return 当前存在 Active 轮次时为 true，等待后台和队友仍属于该轮次
+     */
     public boolean isBusy() {
         return active != null;
     }
 
-    /** 服务闲置回收只观察真实资源；空闲主 Agent 仍可能拥有队友或非必等后台。 */
+    /**
+     * 结合当前轮次、队列、后台命令和队友状态判断会话是否可按闲置回收，供常驻服务维护使用。
+     *
+     * @return 当前轮次、队列、后台与协作资源满足闲置回收条件时为 true
+     */
     public boolean idleForReaping() {
         if (state != State.IDLE || switchBlocked.getAsBoolean() || background != null && background.hasPending())
             return false;
@@ -578,15 +802,23 @@ public final class SessionRuntime implements AutoCloseable {
         }
     }
 
-    /** 给提交结果工具检查当前轮次是否仍欠必等后台结果，不把“启动成功”当业务完成。 */
+    /**
+     * 检查当前轮次是否还有已接纳且尚待采用结果的后台命令，供任务完成检查使用。
+     *
+     * @return 当前轮次仍有必等后台结果时为 true
+     */
     public boolean hasPendingBackground() {
         Active task = active;
         return task != null && background != null && background.hasPending(task.context().id());
     }
 
     /**
-     * 真实终端使用：忙时合并用户输入，空闲时保持普通请求提交。
-     * 只改 Inbox，不在 UI 线程改 history。返回的 future 属于整批输入。
+     * 接收真实用户输入：空闲时走独立请求提交，忙时合并到用户缓冲；/goal 使用专门命令分支。
+     * 返回该批输入的最终结果 Future，队列和状态错误由失败 Future 表达。
+     *
+     * @param prompt 用户输入的任务正文
+     * @param approval 本轮人工审批通道；null 表示本轮没有人工通道
+     * @return 当前独立请求或缓冲批次的最终结果 Future
      */
     public CompletableFuture<String> submitUser(String prompt, Approval approval) {
         // 设置不走忙时用户缓冲：整条命令应在当前任务之后开始，避免被拼到旧条件里。
@@ -607,7 +839,11 @@ public final class SessionRuntime implements AutoCloseable {
                 : result;
     }
 
-    /** 空输入 Enter 只升级待处理原批次，没缓冲则不做事。 */
+    /**
+     * 将待处理用户缓冲改为本轮可插入消息，唤醒消费线程在安全边界采用；返回缓冲状态是否变化。
+     *
+     * @return 现有用户缓冲首次成功升级为插入消息时为 true
+     */
     public boolean promoteUserBuffer() {
         synchronized (inbox) {
             boolean changed = !closed && !switching && !persistenceFailed && inbox.promote();
@@ -616,22 +852,32 @@ public final class SessionRuntime implements AutoCloseable {
         }
     }
 
-    /** 复制现有业务缓冲的显示资料，TUI 不保存或消费另一份任务队列。 */
+    /**
+     * 从 Inbox 读取当前用户缓冲的文字摘要与 QUEUED 或 INSERTION 状态，发送 BUFFER 执行事实供前端更新。
+     */
     private void publishBuffer() {
         var view = inbox.bufferedView();
         engine.notice(ExecutionNotice.event(ExecutionNotice.Kind.BUFFER, view == null ? "" : view.id(), "",
                 view == null ? "" : view.summary(), view != null && view.allowInsertion() ? "INSERTION" : "QUEUED"));
     }
 
-    /** 状态变化来自真实执行路径；失败和关闭也通知，不只依靠正常完成的 TURN_END。 */
+    /**
+     * 保存会话新状态并通知执行观察器和状态快照，使运行、等待、失败及关闭状态同步到界面。
+     *
+     * @param next 待尝试合并的下一条增量
+     */
     private void changeState(State next) {
         state = next;
         engine.notice(ExecutionNotice.event(ExecutionNotice.Kind.SESSION, "", "", "", next.name()));
     }
 
     /**
-     * 投递插入通知，不创建 run 或执行权限；空闲时只保存，已有大轮次在安全边界采用。
-     * true 只表示入队，false 表示关闭/切换/容量不足。通知本身不分配业务结果 Future。
+     * 将后台、队友或用户补充作为 Incoming 投递到 Inbox，供运行轮次在安全边界采用；空闲时暂存。入队成功返回 true，
+     * 关闭、切换或容量不足返回 false。
+     *
+     * @param incoming 后台、队友或用户补充投递的插入消息
+     * @return 通知成功入队时为 true；关闭、切换或容量不足时为 false
+     * @throws IllegalArgumentException 传入的是 assignment 消息，或消息未声明允许在安全边界插入
      */
     public boolean receive(SessionEvent.Incoming incoming) {
         if (incoming.kind().equals("assignment") || !incoming.allowInsertion())
@@ -643,8 +889,13 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 显式派工是独立工作，创建接收方 run 并绑定 Harness 已校验的派工范围。
-     * 返回 null 说明未接单；成功入队后返回整轮执行 Future，后续异常不能被误当成未投递。
+     * 接收显式 Team 派工，为新轮次绑定已核验的 AssignmentScope 并排入独立请求队列。接纳成功返回整轮结果 Future，
+     * 未接纳返回 null。
+     *
+     * @param incoming 后台、队友或用户补充投递的插入消息
+     * @param context 上游已绑定来源、派工范围及取消条件的执行上下文
+     * @return 已接纳派工的整轮 Future；未接纳时为 null
+     * @throws IllegalArgumentException 派工上下文的来源或范围快照不合法
      */
     public CompletableFuture<String> receiveTask(SessionEvent.Incoming incoming, ExecutionContext context) {
         if (!incoming.kind().equals("assignment") || context.assignment() == null
@@ -662,9 +913,14 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 接收本会话的执行器、记忆、后台与结构化显示出口，取得前三者的关闭责任。
-     * 构造不启动请求；messages 须快速返回，错误与正常消息由各自分支明确标记。
-     * 无记忆或后台服务时显式传 null，仍使用相同的队列执行入口。
+     * 接收本会话的执行器、可选记忆维护者、可选后台服务及消息出口，建立空历史与用量账本，并把后台完成回调接入 Inbox。
+     * 会话取得这些组件的关闭责任，start 负责启动消费线程。
+     *
+     * @param engine 负责一次模型请求、工具批次和压缩的执行器
+     * @param memory 当前会话的长期记忆入口，负责参考、候选笔记和提取作业
+     * @param background 会话共用的后台命令管理器，负责编号、交付和停止
+     * @param messages 本次读取或采用的模型消息列表
+     * @throws NullPointerException engine、messages 为 null
      */
     public SessionRuntime(AgentExecutor engine, MemoryManager memory, BackgroundManager background,
             Consumer<com.jadecode.execution.RuntimeMessage> messages) {
@@ -678,14 +934,21 @@ public final class SessionRuntime implements AutoCloseable {
             background.onResult(this::backgroundCompleted);
     }
 
-    /** 在真实发生分支给消息加标签；不从正文反向解析任何身份或错误状态。 */
+    /**
+     * 将程序产生的消息标签、正文和错误标记组成 RuntimeMessage，交给会话消息出口展示。
+     *
+     * @param label 供终端显示的人类可读名称
+     * @param text 本次处理的完整文本，按该入口执行编码、脱敏、显示或组装
+     * @param error 本次执行或条目是否失败
+     */
     private void emit(String label, String text, boolean error) {
         messages.accept(new com.jadecode.execution.RuntimeMessage("", label, text, error));
     }
 
     /**
-     * 后台线程只生产 Inbox 事件，不改 history、不请求模型。
-     * 完成结果只带来源 run ID 与执行事实；后台专用槽避免普通请求满时丢通知。
+     * 将后台完成事实编码为 Incoming，放入后台结果专用槽；会话可用而入队失败时发送告警。正式结果由消费线程采用到历史。
+     *
+     * @param result 后台执行完成后交付的事实，含原轮次、退出码与有界输出
      */
     private void backgroundCompleted(Completion result) {
         var incoming = new SessionEvent.Incoming(result.id(), "background", "session", result.owner(), null,
@@ -696,8 +959,9 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 启动唯一消费线程，无工作时等待 Inbox；普通通知只唤起检查，不创建独立轮次。
-     * 重复调用不新增线程；关闭会话负责停止所属命令，构造本身不启动执行。
+     * 首次调用先启动记忆维护，再创建唯一的会话消费线程。消费线程按 Inbox 请求执行任务，无独立请求时等待变化；
+     * 重复调用复用已有线程，已关闭时抛出 IllegalStateException。
+     *
      * @throws IllegalStateException 会话已经关闭
      */
     public synchronized void start() {
@@ -713,18 +977,14 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 把用户的新请求放到队尾，立即返回，不等模型回答。
+     * 为用户新任务创建执行上下文和结果 Future，排入独立请求队列。
      *
-     * <p>比如 A 还在等构建结果，用户又输入 B，B 只会排队，不会打断 A。
-     * 程序会记录任务来自用户，并保存询问用户是否允许某项操作的函数。
-     * 模型不能在 prompt 或工具参数里给自己增加这项权限。通常调用前应先 start；唯一例外是
-     * 已 restore 但尚未 start 的准备态：CLI 可以让 SessionHost 先把首轮请求入队、再启动消费者，
-     * 准备态 submit 只写 Inbox，不执行任何任务，启动后按请求顺序处理。</p>
-     * @param prompt 用户要做的事，不得为 null 或全是空白
-     * @param approval 询问用户是否允许操作的函数；null 表示不能询问，需询问的操作会被拒绝
-     * @return 以后取得最终回答的 CompletableFuture。成功排队不代表做完：
-     *         空请求以 IllegalArgumentException 失败，队列满或会话退出以 RejectedExecutionException
-     *         失败，执行出错则记录实际错误。取消此 future 不会自动停止已经开始的命令
+     * <p>先处理可就地完成的 Goal 命令，普通请求校验非空文本，再创建 USER 来源上下文并保存人工审批通道。
+     * 在 Inbox 锁内完成接纳检查与入队，消费线程按顺序执行；恢复完成后的准备态可先入队再由宿主启动线程。</p>
+     *
+     * @param prompt 用户任务原文
+     * @param approval 人工审批通道，null 表示本次任务没有人工通道
+     * @return 整轮最终回答的 Future；空文本、队列满或会话不可用时以异常完成。停止实际轮次使用 cancelCurrent
      */
     public CompletableFuture<String> submit(String prompt, Approval approval) {
         CompletableFuture<String> local = localGoalCommand(prompt);
@@ -746,18 +1006,17 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 查看现在是在处理任务、等后台结果，还是已退出，不返回消息列表。
-     * @return 此刻的状态；返回后，处理线程可能已经做到了下一步
+     * 返回当前会话的运行、等待、失败或关闭状态快照。
+     *
+     * @return 此刻的会话状态
      */
     public State state() {
         return state;
     }
 
     /**
-     * 空闲时按请求顺序领取独立工作，等 execute 处理完，再取下一项。
-     *
-     * <p>当前任务在等后台构建时，也不会去做下一项任务。普通执行错误由 execute 报告，
-     * 不会丢掉后面排队的请求。没有任务时等 revision 变化，不忙轮询；中断时记住中断状态并退出。</p>
+     * 按 FIFO 领取独立请求并同步执行完整轮次，结束后再取下一项。队列无请求或正在切换时等待 Inbox 版本变化；
+     * 收到线程中断时恢复中断标记并退出。普通轮次错误由 execute 完成其失败 Future。
      */
     private void consume() {
         try {
@@ -786,9 +1045,18 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 领取独立请求，建立 Active 后推进完整大轮次；普通通知只由 deliverIncoming 采用。
-     * append=false 用于调用者已提供历史的同步入口，不重复追加提示词。
-     * 失败保留真实历史和副作用，完成 Future 后清理本轮资源；已接纳后台命令独立收口。
+     * 为 Inbox 领取的独立请求建立 Active，并推进一个完整轮次。
+     *
+     * <p>处理过程：</p>
+     * <ol>
+     * <li>固定日志与历史证据起点，建立取消和计时状态，发布 RUNNING 与 TURN_START。</li>
+     * <li>保存 TURN_STARTED，触发用户提交 Hook，并按普通任务或 Goal 条件采用请求消息。</li>
+     * <li>提取本轮目标，绑定记忆人类证据，准备 system 与参考，再采用停放通知并调用 runTask。</li>
+     * <li>模型、执行或中断异常交给 fail；finally 执行任务资源清理，解除 Active，并在会话可继续时回到 IDLE。</li>
+     * </ol>
+     *
+     * @param entry 消费线程已经领取的请求及其最终结果 Future
+     * @param append 是否先把领取的请求追加到历史；false 表示已由调用方提供
      */
     private void execute(SessionInbox.Entry entry, boolean append) {
         Active task = new Active(entry, engine::notice);
@@ -862,15 +1130,11 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 开始处理任务时，检查消息中的工具调用和结果是否配对，然后记住用户请求。
+     * 先校验历史中的工具调用与结果配对。启用压缩或记忆时从历史提取当前用户请求，固定为本轮目标；
+     * 两者均未启用时返回 null。历史不完整或请求提取失败时抛出 IllegalArgumentException。
      *
-     * <p>用户请求只取这一次。以后 history 末条可能变成工具结果、后台通知或 Stop 提示，
-     * 不能再把那些文字当成用户想做的新任务。压缩和长期记忆都没启用时，不需要请求原文，
-     * 返回 null，但仍检查工具调用配对。</p>
-     * @param messages 已含本次请求的历史；只读取，不修改，也不调用模型或读写文件
-     * @return 本次请求原文；压缩和记忆都未启用时为 null
-     * @throws IllegalArgumentException 调用和结果不配对，或需要请求原文却找不到合法请求
-     * @throws IllegalStateException 会话或执行器已退出
+     * @param messages 本次读取或采用的模型消息列表
+     * @return 本轮用户原文；压缩和记忆均关闭时为 null
      */
     private String activeRequest(List<Message> messages) {
         ensureOpen();
@@ -881,14 +1145,11 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 开始任务时准备稳定 system，并把召回资料追加到本轮历史末尾。
+     * 组合基础 system 与恢复上下文；记忆启用时追加稳定参考规则，
+     * 再把当前全局和工作区参考作为独立记忆消息追加历史并落盘。返回本轮后续请求复用的 system，
+     * 日志写入失败进入会话失败路径。
      *
-     * <p>没有记忆功能就直接返回原 system。后面即使运行多批工具、等后台或 Stop 要求继续，
-     * 也复用这次返回的字符串，不每次都查记忆。调用前已捕获 task.goal，新增参考消息不会
-     * 变成压缩/目标判断的请求；旧历史不改写。普通召回故障由 MemoryManager 告警降级，
-     * 追加日志失败仍停止任务，不能假装资料已经保存。</p>
-     * @return 本任务复用的稳定提示；可能追加参考消息并同步写日志
-     * @throws IllegalStateException 会话或执行器已退出
+     * @return 本轮循环复用的稳定 system，参考正文另以消息采用
      */
     private String prepareTaskSystem() {
         ensureOpen();
@@ -904,24 +1165,19 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 反复请模型决定下一步，执行它要求的工具，直到这项任务真正做完。
+     * 驱动一个用户或派工轮次中的模型、工具与等待循环，直到该轮满足完成条件。
      *
-     * <p>每轮先把已完成的后台结果放进 history，再请求模型。有工具调用就执行整批工具，
-     * 把每个调用的结果一起加进 history，然后继续问模型。</p>
+     * <p>每次请求前采用通知并刷新展示，准备 Goal 条件，再取得并采用完整模型回复。
+     * 包含工具时执行整批、配齐并保存结果，更新 Todo 提醒和记忆读取反馈，在完整工具往返后处理压缩并继续请求。</p>
+     * <p>无工具回复后检查新增补充、本轮后台和队友交付、队友报告验收、Stop Hook 与 Goal。
+     * 待交付工作使用 Inbox 等待；需要继续的理由写回当前历史。最后在 Inbox 锁内复查新增工作，
+     * 满足结束条件后触发轮次 Hook，记录 TURN_FINISHED，登记记忆作业，发送 TURN_END，并完成请求及补充输入的 Future。
+     * </p>
      *
-     * <p>没有工具调用也不能马上结束。例如模型说“构建还在跑”，而当前任务必须等构建结果：
-     * 程序要等命令完成，不花模型请求反复问进度，也不做队列里的下一项任务。
-     * 结果到了再放进 history，请模型继续。Stop hook 若说还有事，也继续当前任务。
-     * 这些事都处理完才完成业务 future；在结束事件落盘后登记后台记忆作业，
-     * 不等待提取模型。</p>
-     *
-     * <p>等模型回答时，也可能刚好有后台命令跑完，所以想结束时再查一次。
-     * 最终检查与入队共用锁；本轮后台和派工都交付后才允许正常结束。
-     * 用户取消走失败收口，不要求等待全部命令结束。</p>
-     * @param task 当前任务的数据，等后台期间也保留
-     * @throws LlmException 请求模型或压缩摘要失败，已经不能继续
-     * @throws InterruptedException 等后台结果时线程被中断
-     * @throws RuntimeException 执行出错或用户退出，交给 execute 处理
+     * @param task 本轮共享状态，包含目标、执行身份、计时和等待结果
+     * @throws LlmException 模型请求或上下文压缩失败
+     * @throws InterruptedException 等待结果时收到线程中断
+     * @throws IllegalStateException 轮次取消、执行意外失败、Goal 无法继续或会话关闭
      */
     private void runTask(Active task) throws LlmException, InterruptedException {
         while (!closed) {
@@ -1043,9 +1299,12 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 每个主循环请求步骤前读取当前目标；清除后不再施加 Goal 上限或旧条件。
-     * 上限涵盖有工具/原 Stop hook 的轮次，避免模型一直调用工具而永远不到 Goal 检查。
-     * 只影响用户发起的轮次，Team 派工不会暗自接管一个暂挂的用户目标。
+     * 在每次模型请求前读取当前用户 Goal，为 system 加入完成条件并累计 worker turn。未设 Goal 时使用本轮 system；
+     * 达到工作步数上限时暂停目标并报告失败。
+     *
+     * @param task 当前 Active 轮次状态，包含目标、计时、取消信号和待交付工作
+     * @return 附有当前 Goal 条件的 system；未设置 Goal 时为原 system
+     * @throws IllegalStateException 当前 Goal 已达到允许的工作步骤上限
      */
     private String goalSystem(Active task) {
         synchronized (historyMonitor) {
@@ -1067,9 +1326,12 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 原 Stop 放行后、Memory 收尾前运行目标判断；相关必等后台此时已经处理完。
-     * 网络请求在历史锁外，允许用户查看/清除和退出。回来后核对 Ticket/关闭状态，
-     * 未完成理由以宿主来源写回同一历史；不是新用户授权或另一项队列任务。
+     * Stop Hook 放行后取得目标票据与历史快照，在历史锁外评估完成证据，再回锁核对并应用决定。
+     * 需要继续时写入 Goal 提示并返回 true；完成或用户已清除返回 false；超限、不可完成或评估错误进入轮次失败。
+     *
+     * @param task 当前 Active 轮次状态，包含目标、计时、取消信号和待交付工作
+     * @return 已经写入本轮 Goal 续跑提示时为 true；完成或已清除时为 false
+     * @throws InterruptedException 目标评估请求或等待被中断
      */
     private boolean continueGoal(Active task) throws InterruptedException {
         GoalController.Ticket ticket;
@@ -1120,9 +1382,11 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 在完整工具批次边界采用所有插入通知，不按来源 run 过滤。
-     * 正式历史写入成功即解除对应后台/派工的交付等待；新增内容之后必须再请求模型。
-     * 用户补充更新目标及记忆证据，工具输出和队友通知不冒充用户指令或改变执行身份。
+     * 从 Inbox 取出全部可插入消息，先登记用户补充的结果 Future，再写入正式历史。用户补充同时更新当前目标和记忆证据；
+     * 结果采用成功后解除对应后台或派工等待，并将通知留待展示。返回本次是否采用新消息。
+     *
+     * @param task 当前 Active 轮次状态，包含目标、计时、取消信号和待交付工作
+     * @return 本次实际采用了一项以上插入消息时为 true
      */
     private boolean deliverIncoming(Active task) {
         List<SessionInbox.Entry> entries;
@@ -1157,8 +1421,10 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 在开始下一次请求前显示通知；若刚有阶段回复，先显示回复再显示 Incoming。
-     * history 的先后顺序不受展示缓冲影响，后台结果只显示数量，完整有界输出保留在模型历史中。
+     * 在下一次模型请求前依次展示暂存通知，已有阶段回答先展示；后台通知展示数量，
+     * 完整的有界输出已由 deliverIncoming 写入模型历史。
+     *
+     * @param task 当前 Active 轮次状态，包含目标、计时、取消信号和待交付工作
      */
     private void flushNotices(Active task) {
         task.notices.forEach(messages);
@@ -1166,14 +1432,11 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 把结果写成准备发给模型的说明文字，不执行命令、不写文件，也不删除记录。
+     * 将后台完成结果编码为 task_notification 文本，包含原轮次、命令、状态、退出码和有界输出；截断时附说明。
+     * 标签属性使用 escape 转义，供后续安全边界作为通知采用。
      *
-     * <p>输出保留 Shell 的有界结果，不再额外截短至 500 字符；注明原 run、命令、状态和退出码。
-     * 原 bash 调用已经用“已启动”回答过，不能拿同一 tool_use_id 再回一个 tool_result，
-     * 所以这次把文字作为后台完成通知加入消息。</p>
-     * @param result process 提交的完成事实，只读，不执行命令
-     * @return 带 task_notification 标签的文字；截断时说明没有完整输出文件。
-     *         标签中的特殊字符会转义，但不保证命令输出里一定没有误导模型的内容
+     * @param result 后台执行完成后交付的事实，含原轮次、退出码与有界输出
+     * @return 带任务 ID、退出状态和转义输出的 task_notification 文本
      */
     private static String notification(Completion result) {
         String summary = result.output();
@@ -1187,27 +1450,34 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 把文字中的特殊字符写成实体，避免正文里的尖括号被误认成通知标签。
-     * 先替换 {@code &}，免得把后面新生成的实体再替换一次。
-     * @param value 要放进标签的非 null 文字
-     * @return 转义后的文字，只处理标签格式，不判断文字是否可信
+     * 按顺序把 {@code &}、尖括号等标签特殊字符转成实体，返回可放入通知标签的文字；
+     * 先处理 {@code &} 使后续生成实体保持原格式。
+     *
+     * @param value 需要放入通知标签的非 null 原文
+     * @return 将 {@code &} 和尖括号转换为实体后的文本
      */
     private static String escape(String value) {
         return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
     }
 
-    /** 等待归属只在本轮工作记录中判断，不传入 Inbox 或限制通知采用。 */
+    /**
+     * 按当前任务的工作记录检查后台与 Team 交付义务，返回本轮候选结束时是否仍有必等工作。
+     *
+     * @param task 当前 Active 轮次状态，包含目标、计时、取消信号和待交付工作
+     * @return 当前轮次仍欠后台或派工交付时为 true
+     */
     private boolean hasPendingWork(Active task) {
         String runId = task.context().id();
         return hasPendingTeam(runId) || background != null && background.hasPending(runId);
     }
 
     /**
-     * 等当前轮次所需结果或插入补充，不请求模型、不领取下一项独立工作。
-     * 先读取变更版本再检查消息；通知若恰好到达，awaitChange 发现版本变化就立即返回。
-     * 用户新请求只使线程重新检查，不会被误当成本轮结果；取消/关闭通过中断结束等待。
-     * @param task 当前 Active，用于采用通知和登记用户补充 Future，不参与 Inbox 筛选
-     * @throws InterruptedException 本轮取消或会话关闭
+     * 等待当前轮次结果或补充：先记录 Inbox 版本并尝试采用通知，再检查必等工作，仍需等待时调用 awaitChange。
+     * 新版本使等待返回并重新检查，取消或关闭以中断结束等待。
+     *
+     * @param task 当前 Active 轮次状态，包含目标、计时、取消信号和待交付工作
+     * @throws InterruptedException 当前轮次取消或会话关闭使等待被中断
+     * @throws IllegalStateException 等待期间会话已关闭
      */
     private void awaitResults(Active task) throws InterruptedException {
         while (!closed) {
@@ -1220,9 +1490,10 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 立即采用压缩器给出的列表；先复制再 clear，候选即使就是原列表也不会被清空。
-     * 调用发生在正式请求之前，失败时已采用的历史按原规则保留。
-     * @param messages 新历史，只复制列表，不修改旧 Message 或其 JSON
+     * 复制压缩器给出的消息列表，再将会话原列表内容替换为该副本并记录历史替换事件。
+     * 先复制使候选与原列表相同时也能保留全部消息，调用方持有的 history 对象继续有效。
+     *
+     * @param messages 本次读取或采用的模型消息列表
      */
     private void adoptHistory(List<Message> messages) {
         apply(new SessionEvent.HistoryPrepared(messages));
@@ -1230,23 +1501,41 @@ public final class SessionRuntime implements AutoCloseable {
                 "Model context compacted; UI history preserved", ""));
     }
 
-    /** 采用执行器已验证的模型回复，写入历史，不在这里决定任务是否完成。 */
+    /**
+     * 采用完整模型回复：追加助手消息并同步落盘，再刷新上下文占用估算，供后续工具批执行或候选完成检查使用。
+     *
+     * @param reply 已取得的完整模型回复
+     */
     private void apply(ModelReply reply) {
         appendMessage(reply.message(), "reply");
         refreshContextUsage();
     }
 
-    /** 整批采用工具结果，意外失败也先补齐 tool_result，再由执行流程抛出异常。 */
+    /**
+     * 将整批 tool_result 组成一个 USER 消息并采用到历史；批次携带意外异常时，调用方在保存完整配对结果后收尾失败。
+     *
+     * @param batch 本次按原顺序准备写出的事件批次
+     */
     private void apply(ToolBatch batch) {
         appendMessage(Message.userBlocks(batch.results()), "tool_batch");
     }
 
-    /** 把 Stop 续跑文字留在当前任务历史，不排成新目标。 */
+    /**
+     * 把 Stop Hook 的续跑提示追加到当前历史，供模型继续同一轮任务。
+     *
+     * @param continuation Stop Hook 给出的当前轮次续跑提示
+     */
     private void apply(Continue continuation) {
         appendMessage(Message.userText(continuation.prompt()), "stop");
     }
 
-    /** 先保留已得到的完整消息，再同步存盘；失败时内存证据仍在，但不开始下一步。 */
+    /**
+     * 在历史锁内采用完整消息，除模型回复外刷新上下文占用，再同步记录 APPEND 事件。
+     * 保存失败时保留已采用的内存消息并进入持久化故障处理。
+     *
+     * @param message 待编码、校验或投影的完整消息
+     * @param reason 当前事件来源或失败的业务原因
+     */
     private void appendMessage(Message message, String reason) {
         synchronized (historyMonitor) {
             ensureOpen();
@@ -1257,22 +1546,37 @@ public final class SessionRuntime implements AutoCloseable {
         }
     }
 
-    /** 只读模型限额，不在历史锁中构建包含资源清单的整个 display；没有 profile 就保持未知。 */
+    /**
+     * 结合执行器当前占用估算与模型窗口上限发布上下文用量；模型资料缺失时保留未知状态，供快照显示。
+     */
     private void refreshContextUsage() {
         contextUsage = profile == null ? null
                 : ContextUsage.projected(engine.contextEstimate(history), profile.metadata());
     }
 
     /**
-     * 保存正式采用的事实。日志故障关闭执行器，防止继续累积无法恢复的副作用。
-     * close 和本方法共用 historyMonitor；已有工具造成的文件变化不会因此回滚。
+     * 将当前采用事实连同 Active 轮次身份写入会话日志；无日志入口跳过文件写入，
+     * 写入错误交给 persistenceError 停止后续执行。
+     *
+     * @param kind 要写入会话日志的正式事件种类
+     * @param messages 本次读取或采用的模型消息列表
+     * @param reason 当前事件来源或失败的业务原因
      */
     private void record(JournalEntry.Kind kind, List<Message> messages, String reason) {
         Active current = active;
         record(kind, messages, reason, current == null ? null : current.context().id());
     }
 
-    /** 收尾时 active 已清空，仍显式记录原轮次编号；不为此保留另一份可变执行状态。 */
+    /**
+     * 按调用方明确传入的轮次 ID 保存正式事件，供 Active 已清除后的轮次终态仍关联原任务；
+     * 写入失败进入统一持久化故障流程。
+     *
+     * @param kind 要写入会话日志的正式事件种类
+     * @param messages 本次读取或采用的模型消息列表
+     * @param reason 当前事件来源或失败的业务原因
+     * @param runId 当前轮次 ID，用于关联取消、后台命令和任务收尾
+     * @throws IllegalStateException 正式会话事件持久写入失败
+     */
     private void record(JournalEntry.Kind kind, List<Message> messages, String reason, String runId) {
         synchronized (historyMonitor) {
             if (journal == null || closed)
@@ -1289,18 +1593,11 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 采用会话自身的请求、历史替换和通知事件；执行步骤结果由其它 apply 重载采用。
+     * 按事件类型采用请求、历史替换和通知：Request 追加用户任务；HistoryPrepared 替换原 history 列表内容；
+     * Notifications 优先与末尾普通 USER 消息合并，必要时新建消息。内容块和 Message 重新构建，并同步记录对应日志事件。
      *
-     * <p>Request 是新任务，HistoryPrepared 是整份候选历史，Notifications 是后台事实的文字说明。
-     * 它们发给模型时都可能用 USER role，但不代表它们都是用户新发的请求。
-     * 事件只告诉这里要采用什么内容；执行器的 ModelReply/ToolBatch/Continue 由其它 apply 重载采用。</p>
-     *
-     * <p>压缩时只换 history 中的内容，不换列表对象，旧 run(messages) 的调用者才看得见变化。
-     * 后台通知尽量加在最后一条 USER 内：若另加 USER，原工具结果不再是末条，
-     * 现有压缩器可能漏掉对最新工具结果的保护。这是当前压缩器需要，不是模型协议硬性要求。
-     * 合并会新建 content 和 Message，不修改旧消息里的块。</p>
-     * @param event 程序生成的新请求、整份历史或通知；交出后发送方不要再修改其中内容
-     * @throws IllegalStateException 会话已退出，不能再把稍后返回的结果写进去
+     * @param event 入队的独立 Request 或插入消息 Incoming
+     * @throws IllegalArgumentException 收到的会话事件类型不适用于此采用入口
      */
     private void apply(SessionEvent event) {
         synchronized (historyMonitor) {
@@ -1344,8 +1641,11 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 收口失败轮次，保留已发生历史与文件副作用，不重放业务或恢复通知。
-     * 撤销本轮派工等待，后台命令仍由会话拥有；日志故障则停止新增执行并关闭资源。
+     * 收尾失败轮次，撤销派工等待并记录 TURN_FAILED；符合条件时登记 failed 记忆作业，发送轮次失败通知，
+     * 并使原请求和已采用用户补充的 Future 异常完成。持久化故障额外关闭执行资源。
+     *
+     * @param task 当前 Active 轮次状态，包含目标、计时、取消信号和待交付工作
+     * @param failure 已经发生的 IO、模型或执行异常，供原任务收尾与回执使用
      */
     private void fail(Active task, Exception failure) {
         pendingTeam.entrySet().removeIf(entry -> entry.getValue().equals(task.context().id()));
@@ -1371,8 +1671,11 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 真正结束后登记一次记忆作业；只处理用户轮次，Team 派工和通知不自动变成人类记忆。
-     * 持久会话按日志区间读取，嵌入入口仅截取本轮历史，避免重复提取往轮任务。
+     * 对用户轮次按 memoryRegistered 标记登记一次提取作业，使用开始至结束的日志事件区间及本轮用户补充；
+     * 嵌入入口截取本轮历史快照。调用交给 MemoryManager 完成本地持久登记。
+     *
+     * @param task 当前 Active 轮次状态，包含目标、计时、取消信号和待交付工作
+     * @param outcome 本轮 DONE、FAILED 等展示终态，或记忆作业的 completed、failed、interrupted 状态
      */
     private void finishMemory(Active task, String outcome) {
         if (memory == null || !task.isUserRequest() || task.memoryRegistered)
@@ -1391,8 +1694,9 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 继续处理或修改消息前，检查用户是否已退出；不能还原已经开始的文件写入。
-     * @throws IllegalStateException 用户已退出会话
+     * 检查会话与执行器可用状态，已关闭或持久化故障时抛出 IllegalStateException，供当前步骤进入收尾。
+     *
+     * @throws IllegalStateException 会话、执行器或持久化状态已经不可继续
      */
     private void ensureOpen() {
         if (usage.failed() && !persistenceFailed && !closed)
@@ -1401,7 +1705,9 @@ public final class SessionRuntime implements AutoCloseable {
             throw new IllegalStateException("Session is closed, switching or persistence failed");
     }
 
-    /** 统一停止本会话的新动作；已发生的工具副作用不回滚，内存结果仍留作排查。 */
+    /**
+     * 记录持久化故障并停止执行器，拒绝后续新动作，保留已有内存历史供失败报告和排查。
+     */
     private void persistenceError() {
         persistenceFailed = true;
         engine.close();
@@ -1409,9 +1715,12 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 最后一次回答与该轮日志已经处理完后，才报告整轮耗时；这不是“模型流结束”的同义词。
-     * 工具、思考、必等后台计入工作量；人工审批及最后回答后的记忆维护不计入。
-     * 只有最终确实有回复文字时才指向 Reply 卡，不把先前阶段回答冒充最终回答。
+     * 在轮次日志处理完成后发布最终耗时与终态，按是否有最终文字关联 Reply 卡片。计时包含模型、工具及必等工作，
+     * 人工审批暂停与末尾维护由计时器单独处理。
+     *
+     * @param task 当前 Active 轮次状态，包含目标、计时、取消信号和待交付工作
+     * @param outcome 本轮 DONE、FAILED 等展示终态，或记忆作业的 completed、failed、interrupted 状态
+     * @param hasReply 本轮最终是否有可关联到 Reply 卡片的回答正文
      */
     private void turnEnded(Active task, String outcome, boolean hasReply) {
         engine.notice(ExecutionNotice
@@ -1420,9 +1729,7 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 保存当前任务已经做到了哪一步。
-     * 请求模型、执行工具和等后台时使用同一个对象，不因等待重新开始任务。
-     * 只有处理线程修改字段；退出线程只读 entry，用它通知调用者任务未完成。
+     * 保存同一轮次在模型请求、工具执行和等待期间共用的目标、上下文、计时、取消信号及交付状态，消费线程持续更新此对象。
      */
     private static final class Active {
         /** 外部线程发出本轮取消，执行上下文和主循环读取同一标记。 */
@@ -1453,7 +1760,12 @@ public final class SessionRuntime implements AutoCloseable {
         /** 当前大轮次的循环额度计数，与历史总判断次数/Todo 提醒分别统计。 */
         int goalTurns, goalBlocks;
 
-        /** 领取请求后派生本轮计时与取消信号，不复制历史，不新建业务身份。 */
+        /**
+         * 沿用请求身份建立本轮计时器与取消信号，供执行器和主循环观察同一轮任务状态。
+         *
+         * @param entry 消费线程已经领取的请求及其最终结果 Future
+         * @param notices 接收计时与轮次执行事实的观察出口
+         */
         Active(SessionInbox.Entry entry, java.util.function.Consumer<ExecutionNotice> notices) {
             this.entry = entry;
             var origin = entry.request().context();
@@ -1463,13 +1775,19 @@ public final class SessionRuntime implements AutoCloseable {
         }
 
         /**
-         * @return 原任务 ID、来源、审批和退出检查，再附上包含已接收补充的当前任务说明
+         * 沿用本轮 ID、来源、审批和取消条件，派生包含最新用户补充后任务目标的执行上下文。
+         *
+         * @return 沿用原执行身份、包含最新任务说明的上下文
          */
         ExecutionContext context() {
             return execution.withGoal(goal == null ? entry.request().prompt() : goal);
         }
 
-        /** 来源和派工身份在入口固定，可直接推导，不保存另一份可变 goalEligible 标记。 */
+        /**
+         * 根据入口固定的来源和派工身份，判断此轮是否为真实用户任务，供 Goal 与记忆分支使用。
+         *
+         * @return 来源为 USER 且没有派工身份时为 true
+         */
         boolean isUserRequest() {
             return execution.source() == ExecutionContext.Source.USER && execution.assignment() == null;
         }
@@ -1477,15 +1795,11 @@ public final class SessionRuntime implements AutoCloseable {
     }
 
     /**
-     * 显式关闭会话时停止整个执行；断开客户端不调用本方法，不等当前任务自然做完，也不执行剩余排队任务。
+     * 关闭整个会话及其拥有的执行资源。
      *
-     * <p>先记下“已关闭”，停止所有 shell 命令，再通知排队任务和当前任务失败，
-     * 最后中断处理线程，最多等它两秒。先停止执行，再完成 future，
-     * 是因为完成 future 可能立即运行调用者自己的代码，不能让这些代码拖延停止工具。</p>
-     *
-     * <p>重复调用没关系。不保存会话 Inbox，不还原已经写入的文件；记忆维护作业另行持久保存。
-     * 网络客户端可能不理会线程中断，稍后才返回；父子 Agent 会在继续请求模型或执行工具前
-     * 检查是否退出，但不能保证把正在进行的网络请求立刻停止。</p>
+     * <p>先设置关闭状态，当前轮次存在时登记 interrupted 记忆作业，再关闭维护者与附属资源。
+     * 停止执行器和后台命令，关闭 Inbox，并以异常完成当前及已采用补充的 Future。
+     * 最后中断消费线程并最多等待两秒，关闭自有用量账本和日志；重复关闭直接返回。</p>
      */
     @Override
     public void close() {

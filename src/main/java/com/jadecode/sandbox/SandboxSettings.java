@@ -4,10 +4,33 @@ package com.jadecode.sandbox;
  * 一次 CLI 启动固定的 Docker 配置，不含凭据，也不接受模型覆盖。
  * 镜像必须由用户或安装脚本准备，执行时只使用已存在镜像，不隐式联网下载。
  * 内存/CPU/PID 是容器上限；idleSeconds 与 maxIdle 只影响没有执行引用的实例。
+ *
+ * @param enabled 是否启用此记忆、沙箱或 MCP 能力
+ * @param image 使用的本地沙箱镜像标识
+ * @param memoryMiB 容器内存与交换总限制，单位 MiB
+ * @param cpus 容器可用 CPU 配额
+ * @param pids 容器进程数上限
+ * @param tmpMiB 容器 /tmp 临时文件系统容量，单位 MiB
+ * @param idleSeconds 最后一次释放后允许闲置的秒数
+ * @param maxIdle 允许保留的普通闲置容器数量
+ * @param maxContainers 本运行时登记的容器总数上限
  */
 public record SandboxSettings(boolean enabled, String image, int memoryMiB, int cpus, int pids,
         int tmpMiB, int idleSeconds, int maxIdle, int maxContainers) {
-    /** 检查配置边界，错误不回显任意模型输入或认证信息。 */
+    /**
+     * 检查配置边界，错误不回显任意模型输入或认证信息。
+     *
+     * @param enabled 是否启用此记忆、沙箱或 MCP 能力
+     * @param image 使用的本地沙箱镜像标识
+     * @param memoryMiB 容器内存与交换总限制，单位 MiB
+     * @param cpus 容器可用 CPU 配额
+     * @param pids 容器进程数上限
+     * @param tmpMiB 容器 /tmp 临时文件系统容量，单位 MiB
+     * @param idleSeconds 最后一次释放后允许闲置的秒数
+     * @param maxIdle 允许保留的普通闲置容器数量
+     * @param maxContainers 本运行时登记的容器总数上限
+     * @throws IllegalArgumentException 镜像名称非法或内存、CPU、进程、临时空间、回收参数不满足范围
+     */
     public SandboxSettings {
         if (image == null || image.isBlank() || image.startsWith("-")
                 || image.chars().anyMatch(Character::isWhitespace))
@@ -17,12 +40,20 @@ public record SandboxSettings(boolean enabled, String image, int memoryMiB, int 
             throw new IllegalArgumentException("Invalid sandbox resource or lifecycle limit");
     }
 
-    /** 正式配置缺省启用，首次使用前需构建镜像；不会因此启动 Docker。 */
+    /**
+     * 正式配置缺省启用，首次使用前需构建镜像；不会因此启动 Docker。
+     *
+     * @return 启用 Docker 并具有生产资源与闲置回收默认值的配置
+     */
     public static SandboxSettings defaults() {
         return new SandboxSettings(true, "jadecode-sandbox:1", 2048, 2, 256, 256, 600, 2, 8);
     }
 
-    /** 显式离线装配保留原测试契约，不偷偷访问本机 Docker。 */
+    /**
+     * 显式离线装配保留原测试契约，不偷偷访问本机 Docker。
+     *
+     * @return 用于离线装配、关闭 Docker 的默认配置
+     */
     public static SandboxSettings offline() {
         var d = defaults();
         return new SandboxSettings(false, d.image, d.memoryMiB, d.cpus, d.pids, d.tmpMiB, d.idleSeconds, d.maxIdle,

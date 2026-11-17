@@ -16,7 +16,14 @@ public final class ToolCatalog {
     private final Map<String, Tool> builtins;
     private final Supplier<List<Entry>> external;
 
-    /** 保存固定内置表与外部目录读取函数；读取函数应快速、无 IO。 */
+    /**
+     * 保存固定内置表与外部目录读取函数；读取函数应快速、无 IO。
+     *
+     * @param builtins 内置工具名到执行对象的固定映射
+     * @param external 读取当前已连接外部工具条目的函数
+     * @throws IllegalArgumentException 内置名称与工具名不一致，或占用了 MCP 命名空间
+     * @throws NullPointerException external 为 null
+     */
     public ToolCatalog(Map<String, Tool> builtins, Supplier<List<Entry>> external) {
         this.builtins = Map.copyOf(builtins);
         this.external = Objects.requireNonNull(external);
@@ -26,12 +33,22 @@ public final class ToolCatalog {
         });
     }
 
-    /** 构造仅含内置工具的固定目录；不增加外部服务或读取配置。 */
+    /**
+     * 构造仅含内置工具的固定目录；不增加外部服务或读取配置。
+     *
+     * @param tools 本次可执行工具目录，模型定义与执行查找使用同一目录
+     * @return 只含传入内置工具的固定目录
+     */
     public static ToolCatalog fixed(Map<String, Tool> tools) {
         return new ToolCatalog(tools, List::of);
     }
 
-    /** 构造时检查 compact 所需依赖，不触发外部目录或生成模型定义。 */
+    /**
+     * 构造时检查 compact 所需依赖，不触发外部目录或生成模型定义。
+     *
+     * @param name 本次要查询或展示的工具、服务、资源或会话名称
+     * @return 内置表中存在该工具名时为 true
+     */
     public boolean hasBuiltin(String name) {
         return builtins.containsKey(name);
     }
@@ -41,6 +58,9 @@ public final class ToolCatalog {
      * schema 由 ToolDefinition 深复制；Tool 本身仍是执行对象，不能写入 CompleteRequest。
      * 按工具名排序固定模型看到的数组顺序，避免 Map.copyOf 的跨进程遍历差异破坏请求前缀。
      * 只整理当前快照，不改变内置工具、外部目录或执行路由；冲突仍明确失败。
+     *
+     * @return 同一批条目生成的不可变执行表与有序模型定义
+     * @throws IllegalArgumentException 内外部工具重名，或工具生成定义时名称发生变化
      */
     public Snapshot snapshot() {
         // 两类来源一起按名称排序；外部服务返回顺序不同也不会重排同一组工具。
@@ -61,7 +81,14 @@ public final class ToolCatalog {
         return new Snapshot(entries, definitions);
     }
 
-    /** 服务与原始工具名分别规范化；不从规范化结果还原真实身份，冲突必须另行检查。 */
+    /**
+     * 服务与原始工具名分别规范化；不从规范化结果还原真实身份，冲突必须另行检查。
+     *
+     * @param server MCP 服务原始名称
+     * @param tool 模型调用的工具注册名
+     * @return 规范化后的 mcp__服务__工具 名称
+     * @throws IllegalArgumentException 规范化后的名称超过 64 字符
+     */
     public static String mcpName(String server, String tool) {
         String name = "mcp__" + server.replaceAll("[^a-zA-Z0-9_-]", "_") + "__"
                 + tool.replaceAll("[^a-zA-Z0-9_-]", "_");
@@ -70,7 +97,12 @@ public final class ToolCatalog {
         return name;
     }
 
-    /** 发布连接前核对所有 MCP 工具，防止 docs.one 与 docs_one 等规范化后互相覆盖。 */
+    /**
+     * 发布连接前核对所有 MCP 工具，防止 docs.one 与 docs_one 等规范化后互相覆盖。
+     *
+     * @param descriptors MCP 服务发现返回的原始工具描述列表
+     * @throws IllegalArgumentException 两个原始名称规范化后发生冲突
+     */
     public static void validateMcpNames(List<McpToolDescriptor> descriptors) {
         Set<String> names = new HashSet<>();
         for (var descriptor : descriptors) {
@@ -79,16 +111,39 @@ public final class ToolCatalog {
         }
     }
 
-    /** 注册项含可执行对象与可信身份，只存在内存中，不是模型可填写的数据。 */
+    /**
+     * 将可执行工具实例与宿主分配的可信身份配成一项，供模型定义生成、权限检查和执行查找使用。
+     *
+     * @param tool 本条目可执行的 Tool 实例
+     * @param identity 宿主工具目录提供的可信工具身份
+     */
     public record Entry(Tool tool, ToolIdentity identity) {
+        /**
+         * 检查工具实例和宿主身份均已提供，形成执行入口与权限身份一一对应的目录条目。
+         *
+         * @param tool 本条目可执行的 Tool 实例
+         * @param identity 宿主工具目录提供的可信工具身份
+         * @throws NullPointerException tool、identity 为 null
+         */
         public Entry {
             Objects.requireNonNull(tool);
             Objects.requireNonNull(identity);
         }
     }
 
-    /** 一次请求与其返回工具批次共同持有的不可变目录，不持久化工具实例。 */
+    /**
+     * 一次请求与其返回工具批次共同持有的不可变目录，不持久化工具实例。
+     *
+     * @param entries 按展示顺序排列的历史条目
+     * @param definitions 与本次执行目录同批生成的模型可见工具定义
+     */
     public record Snapshot(Map<String, Entry> entries, List<ToolDefinition> definitions) {
+        /**
+         * 将工具名索引和模型可见定义分别复制为不可变集合，固定本次模型请求及后续工具执行使用的同一份目录。
+         *
+         * @param entries 按展示顺序排列的历史条目
+         * @param definitions 与本次执行目录同批生成的模型可见工具定义
+         */
         public Snapshot {
             entries = Map.copyOf(entries);
             definitions = List.copyOf(definitions);

@@ -11,17 +11,29 @@ import java.util.function.Consumer;
 import com.jadecode.util.Json;
 
 /**
- * 整理整库前的磁盘备份与中断恢复，只由持有库锁的 MemoryStore 使用。
+ * 管理正式知识多文件发布的磁盘备份与恢复。
  *
- * <p>先把旧正文、新正文和文件清单写入专属备份目录并刷新，再写 READY；只有这之后才可改旧库。
- * 最后写 COMMITTED。下次操作遇到 READY 却没有完成标记时恢复旧正文，避免进程退出后只能靠内存恢复。
- * 成功或回滚后都保留备份，不自动清理用户的恢复材料。不能保证恶意并发修改或硬件不兑现刷新时的数据安全。</p>
+ * <p>MemoryStore 持有库锁时先 prepare 保存新旧正文与清单并写 READY，再替换正式文件，最后 commit 写 COMMITTED。
+ * 发布异常或后续访问发现未完成事务时，按备份恢复上一代并写 ROLLED_BACK。成功和回滚后的备份均保留。</p>
+ *
+ * @see MemoryStore
  */
 final class MemoryTransaction {
     private final Path root, backup;
     private final Map<String, String> originals, replacements;
     private final String oldIndex, newIndex;
 
+    /**
+     * 保存记忆库、备份目录及新旧文件内容，组成一份已准备的发布事务；后续 commit 标记成功，
+     * rollback 按这些内容恢复上一代。
+     *
+     * @param root 正式记忆库根目录，调用方已经持有库短锁
+     * @param backup 保存本次新旧正文与恢复清单的事务备份目录
+     * @param originals 发布前附属文件名到原正文的映射
+     * @param replacements 本次附属文件名到候选正文的映射
+     * @param oldIndex 发布前的 MEMORY.md 正文；原文件缺失时为 null
+     * @param newIndex 本次候选 MEMORY.md 完整正文
+     */
     private MemoryTransaction(Path root, Path backup, Map<String, String> originals,
             Map<String, String> replacements, String oldIndex, String newIndex) {
         this.root = root;
@@ -33,8 +45,15 @@ final class MemoryTransaction {
     }
 
     /**
-     * 保存完整可恢复材料；本方法失败时旧库完全未动，不创建 READY。
-     * 文件名已经由 Store 分配，本层仍检查单层文件名以防将来调用者把目录写进清单。
+     * 创建专属备份目录，把附属文件新旧内容、手册新旧正文和恢复清单写盘并刷新，最后写入 READY，返回发布事务。
+     * 单层文件名和备份 IO 失败以 IOException 返回，此阶段正式库保持原内容。
+     *
+     * @param root 正式记忆库根目录，调用方已经持有库短锁
+     * @param originals 发布前附属文件名到原正文的映射
+     * @param replacements 本次附属文件名到候选正文的映射
+     * @param newIndex 本次候选 MEMORY.md 完整正文
+     * @return 已经写好并刷新恢复材料、带 READY 标记的发布事务
+     * @throws IOException 恢复文件名非法或备份正文、清单、READY 写入刷新失败
      */
     static MemoryTransaction prepare(Path root, Map<String, String> originals, Map<String, String> replacements,
             String newIndex) throws IOException {
@@ -65,7 +84,12 @@ final class MemoryTransaction {
         return new MemoryTransaction(root, backup, Map.copyOf(originals), Map.copyOf(replacements), oldIndex, newIndex);
     }
 
-    /** 新记录与索引已经发布后刷新目录，再记录成功。标记前崩溃仍按旧库恢复。 */
+    /**
+     * 正式文件替换后刷新库目录，写入并刷新 COMMITTED 标记，确认这一代发布完成。
+     * 标记完成前的中断由后续 recover 按旧代恢复。
+     *
+     * @throws IOException 正式目录刷新、COMMITTED 写入或备份目录刷新失败
+     */
     void commit() throws IOException {
         force(root);
         write(backup.resolve("COMMITTED"), "committed\n");
@@ -73,8 +97,10 @@ final class MemoryTransaction {
     }
 
     /**
-     * 先完整检查当前文件，再恢复旧库；未知外部内容不覆盖，备份留给用户人工处理。
-     * 已恢复一半又退出时可重入：旧正文、新正文或缺失三种状态均可继续恢复。
+     * 撤销成功标记后核对所有当前文件属于备份中的旧版或候选版，再逐项原子恢复旧文件、删除本次新增文件并恢复旧手册，
+     * 最后写 ROLLED_BACK。发现未知外部正文时报错并保留备份；中途退出后可继续同一恢复过程。
+     *
+     * @throws IOException 当前内容包含未知外部修改，或旧正文恢复和标记写入失败
      */
     void rollback() throws IOException {
         // commit 的最后一次目录刷新也可能失败。先取消可能已写入的成功标记，
@@ -115,8 +141,12 @@ final class MemoryTransaction {
     }
 
     /**
-     * 每次库操作前检查未完成事务；没有 READY 的目录从未获准修改旧库，不自动删除它。
-     * 清单和旧/新文件均只读普通文件，不跟随链接；坏清单会明确报 IO 故障而非静默丢数据。
+     * 按目录顺序扫描备份，选择已 READY 且尚无 COMMITTED 或 ROLLED_BACK 标记的事务。校验恢复清单、读取新旧材料，
+     * 重建事务并回滚，随后报告恢复告警；文件或清单异常以 IOException 返回。
+     *
+     * @param root 正式记忆库根目录，调用方已经持有库短锁
+     * @param warnings 接收文件或维护告警的文本出口
+     * @throws IOException 备份目录或恢复清单不合法，材料读取失败或回滚失败
      */
     static void recover(Path root, Consumer<String> warnings) throws IOException {
         List<Path> backups;
@@ -143,7 +173,16 @@ final class MemoryTransaction {
         }
     }
 
-    /** 校验清单后再读恢复正文，拒绝目录逃逸、重名或空清单。 */
+    /**
+     * 校验恢复清单为非空文件名数组，读取指定备份子目录中的各份正文，返回按清单顺序排列的映射；
+     * 目录、文件名、重复项或文件读取错误抛出 IOException。
+     *
+     * @param backup 保存本次新旧正文与恢复清单的事务备份目录
+     * @param directory 备份内的 old 或 new 子目录名
+     * @param names 恢复清单中需要读取的单层文件名数组
+     * @return 恢复清单中各文件名到完整备份正文的有序映射
+     * @throws IOException 恢复文件名数组为空、类型不符、重名，或备份正文无法读取
+     */
     private static Map<String, String> readDocuments(Path backup, String directory,
             com.fasterxml.jackson.databind.JsonNode names) throws IOException {
         if (names == null || !names.isArray() || names.isEmpty())
@@ -162,6 +201,14 @@ final class MemoryTransaction {
         return documents;
     }
 
+    /**
+     * 校验恢复清单中的单层文件名，接受附属 Markdown 和固定的 memory_manifest.json；手册 MEMORY.md 由独立字段处理。
+     * 非法名称抛出 IOException。
+     *
+     * @param value 恢复清单中待核验的单层文件名
+     * @return 通过单层名称检查的原始文件名
+     * @throws IOException 恢复名包含路径、为空或不是允许的单层资料名
+     */
     private static String filename(String value) throws IOException {
         // 记忆清单与正文必须属于同一恢复事务；只额外开放这个固定 JSON 名称，不能任意恢复路径。
         if (value.isEmpty() || (!value.endsWith(".md") && !value.equals("memory_manifest.json"))
@@ -170,13 +217,27 @@ final class MemoryTransaction {
         return value;
     }
 
+    /**
+     * 以 UTF-8 读取备份或恢复目标的普通文件；目标类型不符时抛出 IOException，返回文本供新旧内容比较。
+     *
+     * @param file 本次读取、备份或原子替换的目标文件
+     * @return 普通文件中的完整 UTF-8 文本
+     * @throws IOException 目标不是普通文件或 UTF-8 正文读取失败
+     */
     private static String readPlain(Path file) throws IOException {
         if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS))
             throw new IOException("Memory backup or recovery target is not a regular file");
         return Files.readString(file, StandardCharsets.UTF_8);
     }
 
-    /** 新文件排他创建并刷新正文；恢复和索引使用同目录临时文件再原子替换。 */
+    /**
+     * 以 CREATE_NEW 创建备份文件，将 UTF-8 文本完整写入并刷新。目标已存在或写入失败以 IOException 返回，
+     * 供 prepare 和状态标记使用。
+     *
+     * @param file 本次读取、备份或原子替换的目标文件
+     * @param text 本次要写入并刷新到目标文件的完整 UTF-8 正文
+     * @throws IOException 目标已存在、正文写入或文件刷新失败
+     */
     static void write(Path file, String text) throws IOException {
         try (var channel = FileChannel.open(file, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)) {
             var data = StandardCharsets.UTF_8.newEncoder().encode(java.nio.CharBuffer.wrap(text));
@@ -186,6 +247,14 @@ final class MemoryTransaction {
         }
     }
 
+    /**
+     * 在目标同目录创建临时文件，写完 UTF-8 文本并刷新磁盘后，用原子移动替换目标；最后清理临时文件。
+     * 已有目标类型错误或写入、刷新、替换失败时抛出 IOException。
+     *
+     * @param target 本次操作的目标绝对路径
+     * @param text 本次要写入并刷新到目标文件的完整 UTF-8 正文
+     * @throws IOException 现有目标类型不合法，或临时文件写入、刷新、原子移动失败
+     */
     static void atomicReplace(Path target, String text) throws IOException {
         if (Files.exists(target, LinkOption.NOFOLLOW_LINKS) && !Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS))
             throw new IOException("Memory publish target is not a regular file");
@@ -203,7 +272,12 @@ final class MemoryTransaction {
         }
     }
 
-    /** Linux 本地文件系统上的目录刷新；不支持时明确失败，不能假称备份持久化完成。 */
+    /**
+     * 打开并刷新目录，使此前文件和标记的目录项变更持久化；文件系统操作失败以 IOException 返回。
+     *
+     * @param directory 需要逐级检查、创建或刷新目录项的目标目录
+     * @throws IOException 目录无法打开或文件系统刷新失败
+     */
     private static void force(Path directory) throws IOException {
         try (var channel = FileChannel.open(directory, StandardOpenOption.READ)) {
             channel.force(true);

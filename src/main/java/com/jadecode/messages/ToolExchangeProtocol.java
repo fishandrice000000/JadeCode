@@ -16,7 +16,9 @@ import java.util.Set;
  */
 public final class ToolExchangeProtocol {
 
-    /** 纯静态工具类,禁止实例化 */
+    /**
+     * 纯静态工具类,禁止实例化
+     */
     private ToolExchangeProtocol() {
     }
 
@@ -28,7 +30,7 @@ public final class ToolExchangeProtocol {
      * 让"ID 必须有效"成为消息进入系统的构造级不变量,配对方法不再需要重复防御。
      * </p>
      *
-     * @param id    工具调用 ID
+     * @param id 工具调用 ID
      * @param field 出错信息里的字段名(如 {@code tool_use id})
      * @throws IllegalArgumentException id 为 null 或空白
      */
@@ -86,7 +88,7 @@ public final class ToolExchangeProtocol {
      * 结果消息里可以同时带 reminder 等文本块。缺结果、重复、错序、ID 不对、以及孤零零的
      * tool_result，都不算完整。
      *
-     * @param messages       消息列表
+     * @param messages 消息列表
      * @param assistantIndex 候选 assistant 消息下标
      * @return true 表示这一对是完整的
      */

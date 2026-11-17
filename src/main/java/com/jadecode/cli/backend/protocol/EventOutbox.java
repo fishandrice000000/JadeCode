@@ -13,17 +13,11 @@ import java.util.function.Consumer;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 /**
- * 后端唯一的事件出口：有界队列 + 单写线程 + 相邻增量合并。
+ * 为一条连接提供有界事件队列、单写线程和相邻增量合并。
  *
- * <p>为什么需要它：模型正文每几个字符就会产生一个增量，如果每个增量都立即写 socket，
- * SSH/tmux 上的界面会被帧洪水和 JSON 开销拖慢；而如果无界缓存，慢终端又会让 JVM 内存
- * 无限增长。这里折中为：只合并“同一代次、同一请求、同一通道的相邻正文增量”，并且只在
- * 16ms 窗口、32KiB 或结构边界送出；开始/结束/工具/审批/切换等结构事件永不合并，也不会
- * 被正文越过。</p>
- *
- * <p>队列预算：8MiB 或 4096 个事件，先触发者生效。超出后标记 OVERLOADED，通过
- * {@code onOverload} 异步收口连接，绝不丢正文还假装成功。所有领域线程只调用 {@link #offer}
- * 立即返回，不在持有领域锁时等待 socket。</p>
+ * <p>正文和预览按相同请求与通道的合并键拼接，结构事件保持顺序。写线程按 16 毫秒窗口、
+ * 32 KiB 批次预算或命令回执的刷新请求发送，单批最多 256 个条目。
+ * 队列达到 4096 项或 8 MiB 预算时记录过载并通知关闭连接；领域线程完成入队后由写线程承担 socket IO。</p>
  */
 public final class EventOutbox implements AutoCloseable {
     /** 单次批量输出的目标上限（UTF-8 字节）。 */
@@ -35,13 +29,36 @@ public final class EventOutbox implements AutoCloseable {
     /** 待发数据字节上限。 */
     public static final long MAX_BYTES = 8L * 1024 * 1024;
 
-    /** 真正写出一帧的出口；序号分配与 socket 写入由 {@link ProtocolSession} 负责。 */
+    /**
+     * 真正写出一帧的出口；序号分配与 socket 写入由 {@link ProtocolSession} 负责。
+     */
     @FunctionalInterface
     public interface FrameSink {
+        /**
+         * 按给定事件类型、载荷、会话代次及命令 ID 写出一帧。协议层负责分配发送序号，IO 失败抛给队列写线程。
+         *
+         * @param type 当前协议事件或命令结果的类型名
+         * @param payload 协议事件的完整 JSON 业务载荷
+         * @param sessionId 持久会话 ID，用于关联本次事件与历史
+         * @param generation 客户端看到的会话代次，切换会话后随新代次更新
+         * @param commandId 客户端命令 ID，供命令回执和重复请求查找使用
+         * @throws IOException 编码后的协议帧无法完整写入连接
+         */
         void write(String type, ObjectNode payload, String sessionId, Long generation, String commandId)
                 throws IOException;
     }
 
+    /**
+     * 表示一条排队待发的事件，保存协议身份、可选合并键和载荷字节数，供有界队列计量与批量发送。
+     *
+     * @param type 当前协议事件或命令结果的类型名
+     * @param payload 协议事件的完整 JSON 业务载荷
+     * @param sessionId 持久会话 ID，用于关联本次事件与历史
+     * @param generation 客户端看到的会话代次，切换会话后随新代次更新
+     * @param commandId 客户端命令 ID，供命令回执和重复请求查找使用
+     * @param mergeKey 增量合并键；null 表示结构事件单独发送
+     * @param bytes 需要解码、校验或计算哈希的完整字节数组
+     */
     private record Pending(String type, ObjectNode payload, String sessionId, Long generation,
             String commandId, String mergeKey, int bytes) {
     }
@@ -59,7 +76,9 @@ public final class EventOutbox implements AutoCloseable {
     private RuntimeException failure;
 
     /**
-     * @param sink       唯一真实写出口
+     * 绑定唯一帧出口和连接失败回调，创建并启动本连接的单写线程。
+     *
+     * @param sink 唯一真实写出口
      * @param onOverload 队列预算耗尽时调用一次；调用方应异步关闭连接
      */
     public EventOutbox(FrameSink sink, Consumer<RuntimeException> onOverload) {
@@ -73,6 +92,10 @@ public final class EventOutbox implements AutoCloseable {
     /**
      * 投递一个事件；不会阻塞在 socket 上。
      *
+     * @param type 当前协议事件或命令结果的类型名
+     * @param payload 协议事件的完整 JSON 业务载荷
+     * @param sessionId 持久会话 ID，用于关联本次事件与历史
+     * @param generation 客户端看到的会话代次，切换会话后随新代次更新
      * @param mergeKey 只有相邻且 mergeKey 完全相同的增量才会合并；结构事件传 null
      */
     public void offer(String type, ObjectNode payload, String sessionId, Long generation, String mergeKey) {
@@ -80,12 +103,26 @@ public final class EventOutbox implements AutoCloseable {
         enqueue(pending);
     }
 
-    /** 投递一个命令答复；答复不与其他事件合并，并触发一次立即刷新以降低界面等待。 */
+    /**
+     * 投递一个命令答复；答复不与其他事件合并，并触发一次立即刷新以降低界面等待。
+     *
+     * @param type 当前协议事件或命令结果的类型名
+     * @param payload 协议事件的完整 JSON 业务载荷
+     * @param commandId 客户端命令 ID，供命令回执和重复请求查找使用
+     * @param sessionId 持久会话 ID，用于关联本次事件与历史
+     * @param generation 客户端看到的会话代次，切换会话后随新代次更新
+     */
     public void offerResult(String type, ObjectNode payload, String commandId, String sessionId, Long generation) {
         enqueue(new Pending(type, payload, sessionId, generation, commandId, null, sizeOf(payload)));
         flushNow();
     }
 
+    /**
+     * 在队列锁内登记待发事件并累计字节数，首项入队时记录合并窗口起点，然后唤醒写线程。
+     * 数量或字节预算超限时记录过载、清空队列并通知连接收尾；已关闭或过载时直接返回。
+     *
+     * @param pending 本次待处理的队列事件或审批记录
+     */
     private void enqueue(Pending pending) {
         synchronized (this) {
             if (closed || overloaded)
@@ -109,22 +146,43 @@ public final class EventOutbox implements AutoCloseable {
         }
     }
 
-    /** 请求把当前队列尽快送出（命令答复、关闭等结构边界）。 */
+    /**
+     * 请求把当前队列尽快送出（命令答复、关闭等结构边界）。
+     */
     public synchronized void flushNow() {
         flushRequested = true;
         notifyAll();
     }
 
-    /** 队列中是否还有未送出的数据。 */
+    /**
+     * 队列中是否还有未送出的数据。
+     *
+     * @return 队列仍有待发送事件时为 true
+     */
     public synchronized boolean hasPending() {
         return !queue.isEmpty();
     }
 
-    /** @return 传输层/写出口的致命失败；非 null 表示连接不可继续。 */
+    /**
+     * 读取该发送队列首次记录的致命失败，供协议层决定关闭连接。
+     *
+     * @return 传输层/写出口的致命失败；非 null 表示连接不可继续。
+     */
     public synchronized RuntimeException failure() {
         return failure;
     }
 
+    /**
+     * 运行当前连接唯一的写线程，把有界队列中的事件按批发送。
+     *
+     * <p>处理过程：</p>
+     * <ol>
+     * <li>在队列锁内等待首项到达；关闭且队列为空时退出。</li>
+     * <li>等到立即刷新、条数、字节或合并窗口条件成立，取出并合并一批相邻增量。</li>
+     * <li>释放队列锁，按批次顺序调用帧出口，让业务投递线程继续入队。</li>
+     * <li>写入异常记录失败并触发连接收尾；finally 发出 stopped 信号，结束关闭等待。</li>
+     * </ol>
+     */
     private void drain() {
         try {
             while (true) {
@@ -165,15 +223,31 @@ public final class EventOutbox implements AutoCloseable {
         }
     }
 
+    /**
+     * 按立即刷新标记、256 条事件、字节预算或合并窗口时长，返回当前队列是否达到批量发送条件。
+     *
+     * @return 已请求刷新或达到条数、字节、时间条件时为 true
+     */
     private synchronized boolean readyToFlush() {
         return flushRequested || queue.size() >= 256 || queuedBytes >= FLUSH_BYTES
                 || elapsedMillis() >= COALESCE_MILLIS;
     }
 
+    /**
+     * 将当前单调时间与首项入队时间之差换算成毫秒，供合并窗口判断使用。
+     *
+     * @return 首项入队以来的毫秒数
+     */
     private long elapsedMillis() {
         return (System.nanoTime() - firstQueuedAt) / 1_000_000L;
     }
 
+    /**
+     * 从队首取出一批待发事件并扣除队列字节数，按字节与条数控制批次；相邻且同合并键的文本片段拼接。
+     * 达到上限的下一项放回队首，剩余队列重新计时，最后清除立即刷新标记。
+     *
+     * @return 保持原顺序并完成相邻增量合并的待发送批次
+     */
     private List<Pending> takeBatch() {
         List<Pending> batch = new ArrayList<>();
         int bytes = 0;
@@ -203,6 +277,10 @@ public final class EventOutbox implements AutoCloseable {
     /**
      * 合并两个相邻的正文增量：保留前一个的 offset/身份，只有 text/fragment 串接。
      * 返回 false 表示两个载荷形状不同，必须分开送出。
+     *
+     * @param previous 紧邻当前项的前一条增量
+     * @param next 待尝试合并的下一条增量
+     * @return 成功修改 previous 的文本或参数片段时为 true；载荷形状不同为 false
      */
     private static boolean mergeInPlace(Pending previous, Pending next) {
         ObjectNode target = previous.payload();
@@ -218,12 +296,24 @@ public final class EventOutbox implements AutoCloseable {
         return false;
     }
 
+    /**
+     * 按批次中的原顺序将事件交给帧出口，保留会话身份和命令 ID；写入失败以 IOException 交给 drain 处理。
+     *
+     * @param batch 本次按原顺序准备写出的事件批次
+     * @throws IOException 批次中某一帧写入失败，后续由 drain 关闭出口
+     */
     private void writeBatch(List<Pending> batch) throws IOException {
         for (Pending pending : batch)
             sink.write(pending.type(), pending.payload(), pending.sessionId(), pending.generation(),
                     pending.commandId());
     }
 
+    /**
+     * 计算 JSON 载荷序列化后的 UTF-8 字节数，作为队列与批次预算的计量单位；null 载荷计为 0。
+     *
+     * @param payload 协议事件的完整 JSON 业务载荷
+     * @return 载荷 JSON 的 UTF-8 字节数；null 为 0
+     */
     private static int sizeOf(ObjectNode payload) {
         return payload == null ? 0 : payload.toString().getBytes(StandardCharsets.UTF_8).length;
     }

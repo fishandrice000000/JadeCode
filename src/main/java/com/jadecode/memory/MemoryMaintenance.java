@@ -16,9 +16,14 @@ import java.util.concurrent.*;
 import java.util.function.Consumer;
 
 /**
- * 记忆维护者：主线程只登记证据，后台在独立维护锁内执行提取和受限整理。
- * 正式手册仅接受完整候选；失败保留作业和旧版。构造不创建目录、不启动线程、不访问网络。
- * 文件锁跨进程协调维护，短存储锁协调读写；模型等待不占用短锁。
+ * 在后台把用户轮次整理为长期知识。
+ *
+ * <p>主会话通过 enqueue 保存证据区间；维护线程领取作业，先提取单轮经验材料，
+ * 再结合已有知识、候选笔记和独立用户原话进行整理。
+ * 整理模型读取来源并暂存候选，正常结束后由存储层检查版本并发布。维护锁覆盖模型过程，库短锁覆盖本地文件读写。</p>
+ *
+ * @see MemoryStore
+ * @see MemoryEvidence
  */
 final class MemoryMaintenance implements AutoCloseable {
     private final MemoryStore store;
@@ -36,7 +41,17 @@ final class MemoryMaintenance implements AutoCloseable {
     private final Map<String, String> reads = new HashMap<>();
     private String userRequest = "", session = "", turn = "";
 
-    /** 保存依赖；autoStart=false 的同包离线测试仍运行相同维护方法。 */
+    /**
+     * 保存记忆库、模型、预算和消息出口；autoStart 为 true 时创建单线程调度器，false 时由同包调用方直接驱动维护。
+     * 首次 initialize 后登记周期任务。
+     *
+     * @param store 当前操作使用的持久存储入口
+     * @param client 用于请求模型的客户端，由装配方确定具体后端
+     * @param settings 记忆开关以及提取、整理的输入输出预算
+     * @param information 接收记忆维护进度与发布结果的文本出口
+     * @param warnings 接收文件或维护告警的文本出口
+     * @param autoStart 是否创建周期维护调度器；false 时由同包调用方驱动维护
+     */
     MemoryMaintenance(MemoryStore store, LlmClient client, JadeSettings.Memory settings,
             Consumer<String> information, Consumer<String> warnings, boolean autoStart) {
         this.store = store;
@@ -48,7 +63,12 @@ final class MemoryMaintenance implements AutoCloseable {
                 .name("jade-memory-maintenance").daemon(true).inheritInheritableThreadLocals(false).factory()) : null;
     }
 
-    /** 首次使用恢复存储；初始化失败不发布空候选，后续入口可以重试。 */
+    /**
+     * 在生命周期锁内初始化文件库并恢复发布事务，成功后登记后台调度：首次等待 500 毫秒，
+     * 此后每次维护完成再等待 1000 毫秒。已初始化时复用现有状态，已关闭时抛出 IOException。
+     *
+     * @throws IOException 维护者已关闭或库目录、初始化与事务恢复失败
+     */
     private void initialize() throws IOException {
         synchronized (lifecycle) {
             if (closed)
@@ -62,14 +82,21 @@ final class MemoryMaintenance implements AutoCloseable {
         }
     }
 
-    /** 会话启动恢复积压任务，不必等待新的用户提问；不在构造或历史 restore 时发请求。 */
+    /**
+     * 初始化记忆库并启动已配置的周期调度，使积压提取作业和候选笔记开始获得后台处理。
+     *
+     * @throws IOException 文件库初始化或恢复失败
+     */
     void start() throws IOException {
         initialize();
     }
 
     /**
-     * 入口只读当前项目和全局的短路由，不调用召回模型，也不注入其它项目正文。
-     * 待处理纠正明确标注为候选，最新用户指示优先，避免正式整理前仍盲从旧记录。
+     * 读取全局与当前工作区的正式短路由，再附上尚待整理的候选笔记及其状态说明，返回本轮参考文本。
+     * 路由超过 20000 字符时报错，候选笔记超过 4000 字符时截断并加标记。
+     *
+     * @return 全局与当前工作区短路由，以及未处理笔记的候选提示
+     * @throws IOException 正式快照读取失败或短路由超出注入预算
      */
     String reference() throws IOException {
         initialize();
@@ -93,7 +120,13 @@ final class MemoryMaintenance implements AutoCloseable {
                                 + pending);
     }
 
-    /** 只从会话后端绑定人类原话，清掉上一轮读取记录；模型不能通过工具参数自报来源。 */
+    /**
+     * 绑定当前会话 ID、轮次 ID 和用户原文，清空上一轮记忆读取记录，供候选笔记和引用反馈关联本轮。null 原文转为空串。
+     *
+     * @param session 本轮所属的持久会话 ID
+     * @param turn 提交候选笔记的用户轮次 ID
+     * @param request 会话后端取得的用户原话，供候选笔记关联来源
+     */
     synchronized void begin(String session, String turn, String request) {
         this.session = session;
         this.turn = turn;
@@ -101,14 +134,28 @@ final class MemoryMaintenance implements AutoCloseable {
         reads.clear();
     }
 
-    /** 忙时补充也来自 Session 的真实用户通道，不从后台通知或模型输出提取。 */
+    /**
+     * 把会话接收的忙时用户补充追加到本轮用户原文，供记忆候选携带完整的后端证据。
+     *
+     * @param request 会话后端取得的用户原话，供候选笔记关联来源
+     */
     synchronized void addHuman(String request) {
         userRequest += "\n\n" + request;
     }
 
     /**
-     * 已落盘轮次登记为幂等作业；无日志的嵌入式入口保留有界快照并明确标记来源。
-     * 这里只做本地 IO，不等待模型。关闭或失败由外层降级，不能覆盖主任务结果。
+     * 按作用域、会话和任务生成稳定作业 ID，将日志路径、(start, end] 事件区间、用户补充和结果写为 pending 提取作业。
+     * 无日志入口先从传入历史生成脱敏、有界的 evidence_snapshot；存储层对相同 ID 去重。
+     *
+     * @param session 本轮所属的持久会话 ID
+     * @param task 待提取的用户轮次 ID
+     * @param journal 本轮证据所在的会话事件日志；无日志入口为 null
+     * @param start 证据日志区间的起始序号；提取时跳过该序号
+     * @param end 证据日志区间的终止序号；提取时包含该序号
+     * @param snapshot 无持久日志入口使用的本轮消息快照，登记时筛选并控制证据预算
+     * @param humans 后端单独绑定的真实用户补充，按到达顺序排列
+     * @param outcome 本轮收尾状态，用于持久作业或轮次终态展示
+     * @throws IOException 初始化、证据快照构造或作业持久登记失败
      */
     void enqueue(String session, String task, Path journal, long start, long end,
             List<Message> snapshot, List<String> humans, String outcome) throws IOException {
@@ -133,8 +180,11 @@ final class MemoryMaintenance implements AutoCloseable {
     }
 
     /**
-     * 全局作业不复制未脱敏的用户补充；累计预算优先保留较新的纠正，再恢复输入顺序。
-     * 原始完整证据仍在工作区日志，截断处明确标记，不能把部分输入冒称完整授权。
+     * 从最新用户补充向前选取文本，脱敏后按维护输入字符预算保留，过长项截断并标记。最后反转选中列表恢复输入次序，
+     * 返回独立的不可变证据列表。
+     *
+     * @param humans 后端单独绑定的真实用户补充，按到达顺序排列
+     * @return 优先保留新补充后恢复输入顺序的不可变脱敏列表
      */
     private List<String> boundedHumans(List<String> humans) {
         var retained = new ArrayList<String>();
@@ -151,8 +201,15 @@ final class MemoryMaintenance implements AutoCloseable {
     }
 
     /**
-     * 工具只提交 remember/correct/forget 候选及可信原话，不修改正式手册。
-     * 按轮次、种类和内容去重；源请求为空时拒绝，阻止定时通知冒充用户纠正。
+     * 校验候选属于当前有真实用户原文的轮次，并检查 remember、correct、forget 类型及正文预算。
+     * 脱敏后按轮次、类型和正文生成 ID，保存待处理笔记与使用事件，返回候选入队回执；
+     * 校验或文件操作失败抛出 IOException。
+     *
+     * @param kind 候选类型 remember、correct、forget，或反馈事件种类
+     * @param body 模型提出的候选知识正文，随后脱敏并检查长度
+     * @param taskId 当前轮次 ID，用于核对候选笔记所属任务
+     * @return 候选已经保存到 pending 的回执，包含候选 ID
+     * @throws IOException 用户来源、轮次、候选类型或预算不符，或候选写入失败
      */
     synchronized String note(String kind, String body, String taskId) throws IOException {
         initialize();
@@ -170,8 +227,12 @@ final class MemoryMaintenance implements AutoCloseable {
     }
 
     /**
-     * 仅记录成功 read_file 的受限记忆路径；按调用 ID 去重，版本为成功读取内容的哈希。
-     * Shell 内部读取不推测为已观测读取；错误文字与失败结果均不计入。
+     * 按调用 ID 关联本批工具与结果，筛选成功的 read_file 记忆资料读取。记录绝对路径和库内相对路径对应的内容哈希，
+     * 再保存去重读取事件，供本轮引用匹配与后续整理统计使用。
+     *
+     * @param calls 模型同一回复中的工具调用列表，保持原调用顺序
+     * @param results 该批工具调用对应的结果内容块
+     * @throws IOException 实际读取反馈的事件写入失败
      */
     synchronized void observe(List<ToolUseBlock> calls, Message results) throws IOException {
         if (!initialized || closed)
@@ -197,7 +258,13 @@ final class MemoryMaintenance implements AutoCloseable {
         }
     }
 
-    /** 引用只是模型声明；必须匹配本轮已成功读取的链接，不据此断言事实正确或任务成功。 */
+    /**
+     * 从助手正文提取 Markdown 链接，匹配本轮成功读取记录；命中时保存带内容版本的 cited 事件，
+     * 供后续整理统计记忆使用情况。
+     *
+     * @param reply 已取得的完整模型回复
+     * @throws IOException 匹配到的引用反馈保存失败
+     */
     synchronized void cited(Message reply) throws IOException {
         var links = java.util.regex.Pattern.compile("\\]\\(<?([^\\s)>]+)>?\\)").matcher(reply.extractText());
         while (links.find()) {
@@ -207,7 +274,15 @@ final class MemoryMaintenance implements AutoCloseable {
         }
     }
 
-    /** 事件没有对话正文；使用稳定键让日志追加重放时可去重。 */
+    /**
+     * 将反馈种类、来源路径、内容版本和会话轮次组成事件，以稳定哈希生成去重 ID，再交给存储层追加保存。
+     *
+     * @param kind 候选类型 remember、correct、forget，或反馈事件种类
+     * @param path 文件工具本次准备读取的记忆资料绝对路径
+     * @param version 反馈关联的来源内容版本哈希
+     * @param source 生成反馈去重 ID 时使用的稳定来源标识
+     * @throws IOException 去重反馈事件追加或刷新失败
+     */
     private void event(String kind, String path, String version, String source) throws IOException {
         var event = Json.mapper().createObjectNode();
         event.put("event_id", MemoryStore.hash(session + ":" + turn + ":" + kind + ":" + source))
@@ -216,7 +291,9 @@ final class MemoryMaintenance implements AutoCloseable {
         store.feedback(event);
     }
 
-    /** 后台异常只报告安全分类，调度线程不会因一次 IO/模型失败永久退出。 */
+    /**
+     * 执行一次后台维护，将异常转换为阶段告警，供周期调度在后续 tick 继续处理积压。
+     */
     private void maintainSafely() {
         try {
             maintain();
@@ -226,8 +303,19 @@ final class MemoryMaintenance implements AutoCloseable {
     }
 
     /**
-     * 一次最多提取两个任务，再检查资料基线。维护锁覆盖模型请求，以免两个进程重复整理。
-     * 不阻塞其它进程入口读索引；running 遗留作业在下一个持锁进程中可重试。
+     * 领取当前工作区的持久提取作业，再根据来源变化维护正式知识。
+     *
+     * <p>处理过程：</p>
+     * <ol>
+     * <li>初始化库，用 JVM 内集合和 .maintenance.lock 取得本次物理库维护权；锁忙时结束此 tick。</li>
+     * <li>筛选当前 scope、尚未 done、次数少于三次且已到 retry_at 的作业；每轮最多处理两个。</li>
+     * <li>先保存 running 和递增 attempts，再执行 extract；成功保存 done，失败保存 retry 并按六十秒乘次数退避。</li>
+     * <li>关闭标记允许时进入 consolidate，最后归还进程内与文件锁。</li>
+     * </ol>
+     *
+     * <p>维护锁覆盖模型请求；作业读写和正式发布另使用短库锁，主会话通过短锁登记新材料。</p>
+     *
+     * @throws IOException 维护锁或作业状态读写失败，或本轮整理失败
      */
     void maintain() throws IOException {
         initialize();
@@ -283,7 +371,23 @@ final class MemoryMaintenance implements AutoCloseable {
         }
     }
 
-    /** 单次无工具提取；严格两字段、空结果与截断分别处理，输出先脱敏再存来源材料。 */
+    /**
+     * 把一个已领取的作业转换为不可变经验材料。
+     *
+     * <p>处理过程：</p>
+     * <ol>
+     * <li>已存在完整同 ID 来源时复用；作业有已校验缓存时接续发布。</li>
+     * <li>读取区间证据或登记快照，发送只返回文本的提取请求，检查完整响应与严格的摘要、slug 两字段 JSON。</li>
+     * <li>脱敏并检查摘要字节上限和 slug；合法空结果结束提取，非空结果先缓存到作业文件。</li>
+     * <li>组装日志区间、真实用户补充、结果与摘要哈希元数据，在生命周期锁内发布来源正文及元数据。</li>
+     * </ol>
+     *
+     * <p>关闭期间模型返回后结束处理。作业 done 由 maintain 在材料保存完成后登记。</p>
+     *
+     * @param job 已领取并标记 running 的提取作业 JSON
+     * @throws IOException 证据或响应结构不合法，摘要超限，或缓存、材料发布失败
+     * @throws LlmException 经验提取模型请求失败
+     */
     private void extract(ObjectNode job) throws IOException, LlmException {
         // 崩溃可能发生在材料发布后、作业 done 标记前；已发布材料复用，避免重新生成不同正文。
         if (store.materials().stream().anyMatch(n -> n.path("id").asText().equals(job.path("id").asText())))
@@ -339,8 +443,17 @@ final class MemoryMaintenance implements AutoCloseable {
     }
 
     /**
-     * 输入变化才整理；读取反馈进入下一次有变更的维护，不因每次读取重写全库。
-     * 写工具只暂存内存候选，只有正常最终回复后才能一次发布；循环/输出/输入都有预算。
+     * 按本次材料基线决定是否执行知识整理，并保存可恢复的尝试状态。
+     *
+     * <p>处理过程：</p>
+     * <ol>
+     * <li>读取来源、候选笔记和正式快照，以整理提示与输入计算 baseline。</li>
+     * <li>输入为空或基线已经发布时返回；发现发布完成而维护状态未完成时补齐 completed。</li>
+     * <li>新基线建立新的次数记录；未到重试时间或达到三次上限时等待后续输入变化。</li>
+     * <li>保存 running 后调用 curate，成功记录正文变化与发布版本，失败保存 retry 或 exhausted。</li>
+     * </ol>
+     *
+     * @throws IOException 整理状态读取保存、候选整理或正式发布失败
      */
     private void consolidate() throws IOException {
         var sources = store.materials();
@@ -400,9 +513,27 @@ final class MemoryMaintenance implements AutoCloseable {
     }
 
     /**
-     * 在已取得维护锁和重试额度后执行一批整理，正常结束才发布，返回正式正文是否改变。
-     * 新来源元数据进入输入，旧来源只提供受控名字，已有正文仍用于合并与消除矛盾。
-     * close 时返回 false，调用者会再次检查 closed，不能把中断误记成成功。
+     * 在固定工具和预算内整理知识，模型正常收口后发布本批候选。
+     *
+     * <p>处理过程：</p>
+     * <ol>
+     * <li>区分新经验与未处理笔记，构造旧知识、独立用户原话和读取引用计数。</li>
+     * <li>核验经验哈希，建立本 scope 合法来源及旧知识合法引用的允许清单。</li>
+     * <li>最多执行十二步模型交互；read_source 读取允许来源并计入累计预算，
+     * stage_memory 检查作用域、字段、长度及已读引用后替换内存候选。</li>
+     * <li>收到完整无工具最终文本后，在生命周期锁内调用 store.publish，同时确认本批材料与笔记 ID。</li>
+     * </ol>
+     *
+     * <p>返回 true 表示正式正文变化；关闭时返回 false 并由调用方检查关闭状态。输入、来源、响应或预算错误结束本次尝试，
+     * 重试状态由 consolidate 记录。</p>
+     *
+     * @param sources 本批来源引用或来源元数据，用于构造允许清单和确认处理输入
+     * @param notes 本作用域可供本次整理处理的候选笔记
+     * @param snapshot 整理开始时读取的正式知识与版本快照
+     * @param baseline 提示词与材料、笔记共同计算的整理基线哈希
+     * @param prompt 用户输入的任务正文
+     * @return 正式短路由或手册正文发生变化时为 true；无正文变化或维护已关闭时为 false
+     * @throws IOException 来源校验、模型回复、工具参数、输入预算、步数或正式发布失败
      */
     private boolean curate(List<ObjectNode> sources, List<ObjectNode> notes, MemoryStore.Snapshot snapshot,
             String baseline, String prompt) throws IOException {
@@ -532,9 +663,12 @@ final class MemoryMaintenance implements AutoCloseable {
     }
 
     /**
-     * 给当前项目的来源补充独立的人类原话证据，不把辅助模型总结当成唯一事实来源。
-     * 总预算只占维护输入的一部分，优先较新的来源；缺失或不合法的日志仅标为未知，绝不越界读取。
-     * 来源正文与原始日志仍不修改；该表只在本次维护输入中使用，不新建永久用户画像。
+     * 按来源时间从新到旧读取对应日志中的真实用户请求，组成独立的 source_user_requests 表。
+     * 总字符预算为维护输入的四分之一，单来源最多 8000 字符；按完整性标为 available 或 partial，
+     * 日志不可用时标为 unavailable。
+     *
+     * @param sources 本批来源引用或来源元数据，用于构造允许清单和确认处理输入
+     * @return 按来源名索引的用户原话、完整性和可用状态 JSON
      */
     private ObjectNode sourceUserRequests(List<ObjectNode> sources) {
         var result = Json.mapper().createObjectNode();
@@ -558,7 +692,13 @@ final class MemoryMaintenance implements AutoCloseable {
         return result;
     }
 
-    /** 禁止额外字段与隐式类型转换，不能用模型参数构造任意路径。 */
+    /**
+     * 检查工具参数恰好由 fields 指定的字符串字段组成；字段数量或类型不符时抛出 IOException，供整理循环结束本次尝试。
+     *
+     * @param args 整理模型工具的参数对象，字段集合和类型由本方法校验
+     * @param fields 本次维护工具允许且要求提供的字符串字段集合
+     * @throws IOException 工具参数字段集合不匹配或某字段不是字符串
+     */
     private static void exact(ObjectNode args, Set<String> fields) throws IOException {
         if (args == null || args.size() != fields.size())
             throw new IOException("Invalid maintenance parameters");
@@ -567,7 +707,13 @@ final class MemoryMaintenance implements AutoCloseable {
                 throw new IOException("Invalid maintenance parameter type");
     }
 
-    /** 来源链接必须存在于本次允许材料；不接受伪造的哈希来源。 */
+    /**
+     * 提取候选正文中的经验和待处理笔记引用，逐项检查是否属于本次来源清单；发现未知来源时抛出 IOException。
+     *
+     * @param text 本次处理的完整文本，按该入口执行编码、脱敏、显示或组装
+     * @param sources 本批来源引用或来源元数据，用于构造允许清单和确认处理输入
+     * @throws IOException 候选引用了本次允许清单之外的来源
+     */
     private static void validateLinks(String text, Set<String> sources) throws IOException {
         var links = SOURCE_LINK.matcher(text);
         while (links.find())
@@ -575,7 +721,11 @@ final class MemoryMaintenance implements AutoCloseable {
                 throw new IOException("Candidate cites unknown evidence");
     }
 
-    /** 整理器只有这两把工具；它的执行回调不会进入正式 Agent 的工具分发器。 */
+    /**
+     * 返回整理模型可调用的 read_source 和 stage_memory 定义，分别用于读取一份来源和暂存完整知识分区。
+     *
+     * @return 仅含 read_source 与 stage_memory 的工具定义列表
+     */
     private static List<ToolDefinition> definitions() {
         return List.of(
                 new ToolDefinition("read_source", "Read one allowed rollout or human-linked note source",
@@ -584,7 +734,12 @@ final class MemoryMaintenance implements AutoCloseable {
                         schema("scope", "summary", "handbook")));
     }
 
-    /** 为维护器的固定字符串参数生成闭合 schema；运行时 exact 仍重新检查类型与字段集合。 */
+    /**
+     * 为传入字段创建 object schema，各字段都标为必填字符串，并关闭额外字段，供整理工具定义使用。
+     *
+     * @param fields 本次维护工具允许且要求提供的字符串字段集合
+     * @return 各字符串字段均必填、关闭额外字段的 object schema
+     */
     private static ObjectNode schema(String... fields) {
         var schema = Json.mapper().createObjectNode().put("type", "object").put("additionalProperties", false);
         var properties = schema.putObject("properties");
@@ -597,7 +752,13 @@ final class MemoryMaintenance implements AutoCloseable {
         return schema;
     }
 
-    /** 资源缺失属于装配错误；不把空提示发给模型。 */
+    /**
+     * 以 UTF-8 读取打包在 /memory 下的指定提示词资源，返回完整文本；资源缺失抛出 IOException。
+     *
+     * @param name memory 资源目录中的提示词文件名
+     * @return 指定记忆提示词资源的完整 UTF-8 文本
+     * @throws IOException 打包的提示词资源缺失或读取失败
+     */
     private static String resource(String name) throws IOException {
         try (var input = MemoryMaintenance.class.getResourceAsStream("/memory/" + name)) {
             if (input == null)
@@ -606,14 +767,31 @@ final class MemoryMaintenance implements AutoCloseable {
         }
     }
 
+    /**
+     * 交给存储层检查该路径是否属于本工作区可读的正式记忆或合法来源，供文件工具权限判断使用。
+     *
+     * @param path 文件工具本次准备读取的记忆资料绝对路径
+     * @return 目标符合当前库的可读资料布局时为 true
+     */
     boolean readable(Path path) {
         return store.readable(path);
     }
 
+    /**
+     * 返回后台维护使用的记忆库根目录，供主会话定位参考资料。
+     *
+     * @return 此维护者绑定的全局记忆根目录
+     */
     Path root() {
         return store.root();
     }
 
+    /**
+     * 将维护阶段和失败类别格式化为告警，交给 warnings 显示；响应格式错误使用具体校验原因，其余异常使用类名。
+     *
+     * @param phase 本次维护或输入处理所处阶段
+     * @param failure 已经发生的 IO、模型或执行异常，供原任务收尾与回执使用
+     */
     private void warn(String phase, Exception failure) {
         warnings.accept("[Warning] [Memory] " + phase + " failed: "
                 + (failure instanceof MemoryReply.Invalid invalid ? invalid.reason.description()
@@ -622,8 +800,8 @@ final class MemoryMaintenance implements AutoCloseable {
     }
 
     /**
-     * 先封住发布再中断后台；不等待不响应中断的网络请求。
-     * 迟到回复在 lifecycle 内再次检查 closed，因此不会在 close 返回后发布正式手册。
+     * 在生命周期锁内设置关闭标记，再中断后台调度器。提取保存和正式发布读取同一标记，
+     * 磁盘中的未完成作业供后续维护者接管。
      */
     @Override
     public void close() {

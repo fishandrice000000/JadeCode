@@ -3,15 +3,20 @@ package com.jadecode.tools;
 import java.util.Objects;
 
 /**
- * 一次工具执行的正文与明确失败标志，不携带调用 ID，也不修改历史。
+ * 保存一次工具执行返回的正文与错误标记，供执行器关联原调用 ID 并构造 tool_result。
+ * MCP、Shell 和本地工具分别按实际执行结果提供 isError，模型据此决定下一步处理。
  *
- * <p>MCP 的 isError 是服务明确报告的事实，不能在转成字符串时丢失，也不能靠正文
- * 是否以 Error 开头猜测。所有工具都显式提供本记录，不使用默认成功包装。</p>
- * @param content 给模型与界面看的非 null 文本
- * @param isError true 表示本次工具失败，不代表整个 Agent 任务必须结束
+ * @param content 给模型与界面显示的结果文本
+ * @param isError 本次工具执行是否失败
  */
 public record ToolOutcome(String content, boolean isError) {
-    /** 校验正文；构造没有 IO，不根据正文猜测成功与否。 */
+    /**
+     * 校验正文；构造没有 IO，不根据正文猜测成功与否。
+     *
+     * @param content 给模型与界面读取的完整工具结果文本
+     * @param isError 本次工具调用是否执行失败
+     * @throws NullPointerException content 为 null
+     */
     public ToolOutcome {
         Objects.requireNonNull(content, "content");
     }

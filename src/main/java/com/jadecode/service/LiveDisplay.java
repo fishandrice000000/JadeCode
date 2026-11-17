@@ -16,6 +16,12 @@ final class LiveDisplay {
     private final Map<String, String> active = new HashMap<>(), actors = new HashMap<>(), previews = new HashMap<>();
     private long ids, characters;
 
+    /**
+     * 安装一份完整展示基线：清空现有条目、活动回复、Agent、工具预览和字符计数，再逐项登记传入历史，
+     * 供首次打开或重连同步使用。
+     *
+     * @param baseline 提示词与材料、笔记共同计算的整理基线哈希
+     */
     void install(List<Entry> baseline) {
         rows.clear();
         active.clear();
@@ -25,11 +31,21 @@ final class LiveDisplay {
         baseline.forEach(this::put);
     }
 
+    /**
+     * 返回当前展示条目的不可变列表快照，保留登记顺序，供会话快照发送使用。
+     *
+     * @return 当前投影按登记顺序排列的不可变条目快照
+     */
     List<Entry> entries() {
         return List.copyOf(rows.values());
     }
 
-    /** 单个事件更新对应卡片；调用者已持有 SessionChannel 锁，不执行文件或网络 IO。 */
+    /**
+     * 单个事件更新对应卡片；调用者已持有 SessionChannel 锁，不执行文件或网络 IO。
+     *
+     * @param type 当前协议事件或命令结果的类型名
+     * @param p 已采用事件的完整 JSON 载荷
+     */
     void accept(String type, ObjectNode p) {
         String request = p.path("requestId").asText(), actor = p.path("actor").asText("leader");
         switch (type) {
@@ -100,7 +116,11 @@ final class LiveDisplay {
         }
     }
 
-    /** 执行卡按真实调用 ID 关联；Team/工作流等显示为独立通知，不赋予任何权限。 */
+    /**
+     * 执行卡按真实调用 ID 关联；Team/工作流等显示为独立通知，不赋予任何权限。
+     *
+     * @param p 已采用事件的完整 JSON 载荷
+     */
     private void notice(ObjectNode p) {
         String kind = p.path("kind").asText(), state = p.path("state").asText(),
                 actor = p.path("actor").asText("leader");
@@ -131,17 +151,47 @@ final class LiveDisplay {
         }
     }
 
+    /**
+     * 用事件字段建立一条新的界面条目，交给 put 统一计量、替换和裁剪，初始耗时为空且标为实时条目。
+     *
+     * @param id 界面条目 ID，用于后续更新同一张卡片
+     * @param kind 展示条目种类，如 USER、REPLY、THINKING、TOOL 或 NOTICE
+     * @param actor 产生此操作的 Agent 身份，用于事件展示、用量归属和资源回收
+     * @param title 用户选择的会话标题或当前界面条目的标题
+     * @param body 当前界面条目显示的正文
+     * @param args 工具参数的展示文本
+     * @param status 本次业务或展示条目的明确状态
+     * @param request 该卡片所属的模型请求观察 ID
+     * @param call 该工具卡片关联的模型调用 ID
+     * @param block 工具预览对应的内容块下标；其他条目可为 null
+     * @param tool 本条目已固定的宿主工具身份资料
+     */
     private void add(String id, String kind, String actor, String title, String body, String args, String status,
             String request, String call, Integer block, ToolInfo tool) {
         put(new Entry(id, kind, actor, title, body, args, status, request, call, block, null, false, tool));
     }
 
+    /**
+     * 沿用旧条目的身份、类型、标题、请求和调用关联，使用新的正文、参数、状态、耗时及工具信息重建条目，
+     * 再交给 put 更新展示投影。
+     *
+     * @param old 需要用新内容替换的现有条目
+     * @param body 当前界面条目显示的正文
+     * @param args 工具参数的展示文本
+     * @param status 本次业务或展示条目的明确状态
+     * @param elapsed 当前卡片的实际耗时毫秒数；缺报时为 null
+     * @param tool 本条目已固定的宿主工具身份资料
+     */
     private void replace(Entry old, String body, String args, String status, Long elapsed, ToolInfo tool) {
         put(new Entry(old.entryId(), old.kind(), old.actor(), old.title(), body, args, status, old.requestId(),
                 old.callId(), old.blockIndex(), elapsed, old.historical(), tool));
     }
 
-    /** 限额按正文与参数的字符数计；优先保留最新卡，裁剪旧卡时给出显式提示。 */
+    /**
+     * 限额按正文与参数的字符数计；优先保留最新卡，裁剪旧卡时给出显式提示。
+     *
+     * @param entry 本次需要入队、投影或发送的完整条目
+     */
     private void put(Entry entry) {
         Entry previous = rows.put(entry.entryId(), entry);
         characters += entry.body().length() + entry.arguments().length()

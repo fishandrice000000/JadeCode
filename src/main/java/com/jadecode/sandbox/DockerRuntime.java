@@ -12,48 +12,110 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jadecode.util.Json;
 
 /**
- * 一份 CLI 的本地 Docker 资源所有者。镜像/缓存与容器分开，构造不启动 Docker。
- * 实例按完整策略和 actor/run 复用；租约计数保护排队及后台操作，不根据 CPU 判断空闲。
- * 任何不完整结果都销毁对应实例，不重放；清理失败保留登记并报告，不能假称释放。
+ * 管理工具执行需要的 Docker 容器及其生命周期。
+ *
+ * <p>按 Agent、轮次、挂载、读写和网络策略复用实例；acquire 为排队和执行领取引用，release 归还引用并更新时间。
+ * 首次初始化后启动闲置扫描；引用归零的实例按数量和时长淘汰。故障或主动关闭先退休实例，
+ * 确认删除后释放可写范围占用，删除失败的登记留给后续重试。</p>
+ *
+ * @see ExecutionPlan
+ * @see SandboxWorker
  */
 public final class DockerRuntime implements AutoCloseable {
-    /** 受管工作区的执行屏障；租约覆盖实际后台执行，不只覆盖提交工具的那一刻。 */
+    /**
+     * 受管工作区的执行屏障；租约覆盖实际后台执行，不只覆盖提交工具的那一刻。
+     */
     public interface Operations {
+        /**
+         * 按本次执行计划领取工作区执行租约，返回供调用结束时关闭的句柄；协调失败以 IOException 报告。
+         *
+         * @param plan 已经固定操作、身份、权限版本和挂载策略的执行计划
+         * @return 执行期间持有、完成后关闭的工作区租约
+         * @throws IOException 工作区执行屏障无法领取
+         */
         AutoCloseable enter(ExecutionPlan plan) throws IOException;
 
+        /**
+         * 在工作区执行租约内记录本次计划的实际结果，供环境和工作区服务更新操作状态；记录失败以 IOException 报告。
+         *
+         * @param plan 已经固定操作、身份、权限版本和挂载策略的执行计划
+         * @param outcome 本次容器实际执行结果，供工作区协调器记录完成状态
+         * @throws IOException 执行结果无法记录到工作区操作状态
+         */
         void completed(ExecutionPlan plan, Outcome outcome) throws IOException;
     }
 
     private Operations operations;
 
-    /** 工厂在首次执行前绑定共享屏障，旧工作区保持原来的并发语义。 */
+    /**
+     * 首次执行前绑定共享工作区执行协调器，供 execute 在调用期间持有工作区租约并记录结果；
+     * 已关闭或已有容器时抛出 IllegalStateException。
+     *
+     * @param value 首次执行前绑定的共享工作区协调器
+     * @throws IllegalStateException 运行时已关闭或已有容器，协调入口已固定
+     */
     public synchronized void operations(Operations value) {
         if (closed || !instances.isEmpty())
             throw new IllegalStateException("Execution coordination must be bound before use");
         operations = value;
     }
 
-    /** 成功执行后返回已固定的镜像摘要；未使用时为 null，不为状态查询启动 Docker。 */
+    /**
+     * 返回已经解析的镜像 ID，尚未初始化时为 null，供状态显示使用。
+     *
+     * @return 已经固定的镜像 ID；尚未初始化时为 null
+     */
     public synchronized String resolvedImage() {
         return image;
     }
 
-    /** 环境准备先固定镜像身份，再判断保留的 .venv 是否属于同一工具链。 */
+    /**
+     * 初始化 Docker 与本地镜像后返回固定镜像 ID，供环境准备比较保留的 Python 环境所用工具链。
+     * 初始化失败抛出 IOException。
+     *
+     * @return 本地镜像检查通过后固定的镜像 ID
+     * @throws IOException 运行时初始化失败
+     */
     public synchronized String imageIdentity() throws IOException {
         initialize();
         return image;
     }
 
+    /**
+     * 将容器 Worker 的执行结果带回宿主，包含展示文本、错误标记、可选退出码、截断状态及原始输出。
+     *
+     * @param content 给模型与界面读取的完整工具结果文本
+     * @param error 本次执行或条目是否失败
+     * @param exitCode 实际进程退出码；null 表示未取得正常退出状态
+     * @param truncated 返回的输出是否因保留预算而截断
+     * @param rawOutput 命令的原始有界输出，供 Shell 结果直接采用
+     */
     public record Outcome(String content, boolean error, Integer exitCode, boolean truncated, String rawOutput) {
-        /** 启动失败没有程序原始输出，保留同一条失败说明。 */
+        /**
+         * 启动失败没有程序原始输出，保留同一条失败说明。
+         *
+         * @param content 给模型与界面读取的完整工具结果文本
+         * @param error 本次执行或条目是否失败
+         * @param exitCode 实际进程退出码；null 表示未取得正常退出状态
+         * @param truncated 返回的输出是否因保留预算而截断
+         */
         public Outcome(String content, boolean error, Integer exitCode, boolean truncated) {
             this(content, error, exitCode, truncated, content);
         }
     }
 
-    /** 返回的租约只在容器确认删除后释放；模型不能提供这个入口。 */
+    /**
+     * 为容器的可写挂载领取宿主路径占用的服务接口，返回的句柄由容器删除确认流程释放。
+     */
     @FunctionalInterface
     public interface WriteScopes {
+        /**
+         * 为容器将要写入的宿主路径领取范围占用，返回删除容器后释放的句柄；范围冲突或领取失败抛出 IOException。
+         *
+         * @param paths 本次计划领取或核对的宿主路径列表
+         * @return 容器删除确认后释放可写范围的句柄
+         * @throws IOException 可写范围与其他会话冲突或目标路径无法解析
+         */
         AutoCloseable acquire(List<Path> paths) throws IOException;
     }
 
@@ -75,12 +137,26 @@ public final class DockerRuntime implements AutoCloseable {
     private Path masks;
     private volatile boolean closed;
 
-    /** cache 必须由 WorkspacePaths 创建在本项目专属分区；绝不挂载整个宿主 HOME。 */
+    /**
+     * 绑定沙箱设置、工作区专属缓存和诊断出口，使用本运行时自身的范围管理；创建回收调度器，首次 initialize 后安排扫描。
+     *
+     * @param settings 本次容器的镜像、资源上限与闲置回收设置
+     * @param cache 此工作区专用的容器工具链缓存目录
+     * @param diagnostics 接收容器、连接或会话诊断信息的出口
+     */
     public DockerRuntime(SandboxSettings settings, Path cache, Consumer<String> diagnostics) {
         this(settings, cache, diagnostics, null);
     }
 
-    /** 服务注入顶层会话的范围领取器；无范围领取器的离线装配只使用自身的沙箱约束。 */
+    /**
+     * 绑定沙箱设置、工作区专属缓存、诊断出口和服务注入的可写范围领取器，并创建回收调度器。容器使用 scopes 领取范围，
+     * 删除确认后归还。
+     *
+     * @param settings 本次容器的镜像、资源上限与闲置回收设置
+     * @param cache 此工作区专用的容器工具链缓存目录
+     * @param diagnostics 接收容器、连接或会话诊断信息的出口
+     * @param scopes 为容器可写挂载领取范围占用的服务接口
+     */
     public DockerRuntime(SandboxSettings settings, Path cache, Consumer<String> diagnostics, WriteScopes scopes) {
         this.writeScopes = scopes;
         this.settings = settings;
@@ -93,7 +169,24 @@ public final class DockerRuntime implements AutoCloseable {
         });
     }
 
-    /** 按身份与完整策略复用，额外挂载另绑定任务；文件保护列表变化时不沿用旧视图。 */
+    /**
+     * 根据执行计划领取一个容器，并建立本次调用的引用。
+     *
+     * <p>处理过程：</p>
+     * <ol>
+     * <li>消费该计划已接纳的后台资格，检查运行时与轮次状态，初始化 Docker 并扫描实际挂载保护点。</li>
+     * <li>用 Agent、归属轮次、读写、网络、业务挂载、保护点和显式限制组成复用键；命中健康实例时增加引用并返回。</li>
+     * <li>新建前运行闲置回收；总数达到上限时让最老无引用实例让位，仍满则报告容量不足。</li>
+     * <li>领取可写范围占用，先登记确定容器名，再按固定镜像 ID、资源限制和层叠挂载创建启动。</li>
+     * <li>成功后建立首个引用；创建或启动 IO 失败时按确定名称清理并向上传递。</li>
+     * </ol>
+     *
+     * <p>调用方领取引用后才等待实例执行锁，排队者也计入 references。单工作区基线可使用空归属轮次跨任务复用。</p>
+     *
+     * @param plan 已经固定操作、身份、权限版本和挂载策略的执行计划
+     * @return 已经领取一份引用的容器实例，调用方使用结束后 release
+     * @throws IOException 运行时或轮次已结束，镜像与挂载检查失败、容量不足或容器创建启动失败
+     */
     private synchronized Instance acquire(ExecutionPlan plan) throws IOException {
         boolean accepted = acceptedBackground.remove(plan);
         if (closed || ended.contains(plan.actor() + "/" + plan.runId()) && !accepted)
@@ -180,7 +273,15 @@ public final class DockerRuntime implements AutoCloseable {
         }
     }
 
-    /** 调用固定镜像里的执行端；模型不能指定 Docker 参数、entrypoint 或额外环境。 */
+    /**
+     * 在工作区执行协调器的租约内执行一次计划，取消时返回错误结果，否则进入容器执行流程；取得结果后通知协调器记录完成。
+     * 协调或关闭租约失败转成错误 Outcome。
+     *
+     * @param plan 已经固定操作、身份、权限版本和挂载策略的执行计划
+     * @param timeoutSeconds 每次命令或容器操作的正数等待上限，单位秒
+     * @param cancelled 执行过程中读取的取消检查函数
+     * @return 包含正文、错误、退出码与原始输出的执行结果
+     */
     public Outcome execute(ExecutionPlan plan, long timeoutSeconds, BooleanSupplier cancelled) {
         try (var lease = operations == null ? (AutoCloseable) () -> {
         } : operations.enter(plan)) {
@@ -196,7 +297,23 @@ public final class DockerRuntime implements AutoCloseable {
         }
     }
 
-    /** 已领取工作区执行租约后的原有容器流程；清理与取消语义保持在同一个实现中。 */
+    /**
+     * 在一个已授权容器内执行本次操作，并把 Worker 结果转换为宿主 Outcome。
+     *
+     * <p>处理过程：</p>
+     * <ol>
+     * <li>领取实例引用，限时等待该容器的串行执行锁，检查退休与取消状态。</li>
+     * <li>把工作目录、工具、参数和超时编码为 JSON，用 docker exec 启动 SandboxWorker 并写入标准输入。</li>
+     * <li>Worker 异常退出时读取 cgroup OOM 计数；正常退出时校验 protocol、content、isError 和 clean 等结构。</li>
+     * <li>清理未完成或 OOM 次数增长时退休实例，解析退出码、截断和原始输出。</li>
+     * <li>异常转换为失败结果；finally 归还引用，已经取得的执行锁在内部 finally 释放。</li>
+     * </ol>
+     *
+     * @param plan 已经固定操作、身份、权限版本和挂载策略的执行计划
+     * @param timeoutSeconds 每次命令或容器操作的正数等待上限，单位秒
+     * @param cancelled 执行过程中读取的取消检查函数
+     * @return Worker 正常结果或异常转成的错误结果
+     */
     private Outcome executeIsolated(ExecutionPlan plan, long timeoutSeconds, BooleanSupplier cancelled) {
         Instance instance = null;
         boolean entered = false;
@@ -259,8 +376,11 @@ public final class DockerRuntime implements AutoCloseable {
     }
 
     /**
-     * 在返回后台接收回执之前登记一次许可；任务结束不撤销已接收操作，会话关闭仍取消。
-     * 这里只登记，不创建容器；真正执行时原子消费，失败不重放。调用方入队失败必须 discard。
+     * 在向模型返回后台启动回执前，按计划对象登记一次已接纳资格。实际 acquire 时消费该资格，
+     * 使已结束的父轮次仍可兑现已接纳命令；会话关闭或非后台 bash 计划抛出 IOException。
+     *
+     * @param plan 已经固定操作、身份、权限版本和挂载策略的执行计划
+     * @throws IOException 运行时或轮次已结束，或计划不是已批准的后台 bash
      */
     public synchronized void acceptBackground(ExecutionPlan plan) throws IOException {
         if (closed || ended.contains(plan.actor() + "/" + plan.runId()))
@@ -270,12 +390,22 @@ public final class DockerRuntime implements AutoCloseable {
         acceptedBackground.add(plan);
     }
 
-    /** 入队失败、上下文取消或版本过期时撤销未消费许可，不触碰其他后台操作。 */
+    /**
+     * 移除尚未由 acquire 消费的后台计划资格，供后台入队或启动失败时撤销接纳记录。
+     *
+     * @param plan 已经固定操作、身份、权限版本和挂载策略的执行计划
+     */
     public synchronized void discardBackground(ExecutionPlan plan) {
         acceptedBackground.remove(plan);
     }
 
-    /** 首次实际执行才核对 daemon、镜像与 UID；固定镜像 ID 后不受 tag 后续变化影响。 */
+    /**
+     * 首次使用时核对本地 Docker、镜像协议和非 root UID/GID，准备私有缓存、遮蔽路径及容器身份文件。
+     * 恢复已失去所有者的容器，固定镜像 ID，再登记首次延迟三十秒、之后每次结束再延迟三十秒的回收任务。
+     * 初始化失败抛出 IOException。
+     *
+     * @throws IOException 本地 Docker、镜像协议、UID、缓存目录或孤儿恢复检查失败
+     */
     private void initialize() throws IOException {
         if (image != null)
             return;
@@ -314,7 +444,14 @@ public final class DockerRuntime implements AutoCloseable {
         sweeper.scheduleWithFixedDelay(this::reapQuietly, 30, 30, TimeUnit.SECONDS);
     }
 
-    /** ID 来自系统命令而非模型；禁止为写入方便修改宿主工作区属主或权限。 */
+    /**
+     * 调用系统 id 获取指定的 UID 或 GID，最多等待三秒，校验成功的数字输出后返回。
+     * 超时、非法输出或中断抛出 IOException，最终结束该查询进程。
+     *
+     * @param flag 传给系统 id 的选项，-u 读取 UID，-g 读取 GID
+     * @return 系统 id 返回的十进制 UID 或 GID
+     * @throws IOException 系统 id 超时、输出不是数字、退出失败或线程中断
+     */
     private static String localId(String flag) throws IOException {
         Process process = new ProcessBuilder("/usr/bin/id", flag).start();
         try {
@@ -333,7 +470,16 @@ public final class DockerRuntime implements AutoCloseable {
         }
     }
 
-    /** Docker --mount 的逗号有语法含义；首版明确拒绝，不能用 Shell 转义伪装为安全参数。 */
+    /**
+     * 把来源、目标和可写标记编码为 Docker bind mount 参数，设置私有传播及递归挂载策略；
+     * 路径含逗号或换行时抛出 IOException。
+     *
+     * @param source 容器挂载对应的宿主绝对路径
+     * @param target 容器内的目标绝对路径
+     * @param writable 该挂载是否允许写入宿主来源
+     * @return 编码完成的 Docker --mount 参数值
+     * @throws IOException 宿主或容器路径包含逗号或换行
+     */
     private static String mount(Path source, Path target, boolean writable) throws IOException {
         if (source.toString().contains(",") || target.toString().contains(",") || source.toString().contains("\n")
                 || target.toString().contains("\n"))
@@ -343,18 +489,26 @@ public final class DockerRuntime implements AutoCloseable {
                 : ",readonly,bind-propagation=rprivate,bind-recursive=readonly");
     }
 
+    /**
+     * 检查 Docker 命令退出码；非零时把操作名称和输出组成 IOException，交给当前创建、启动或维护流程处理。
+     *
+     * @param reply Docker CLI 返回的退出码和有界合并输出
+     * @param operation 本次 Docker 操作名，供失败说明定位创建、启动或维护步骤
+     * @throws IOException Docker 命令返回非零退出码
+     */
     private static void require(DockerCli.Reply reply, String operation) throws IOException {
         if (reply.exitCode() != 0)
             throw new IOException("Docker " + operation + " failed: " + reply.output().strip());
     }
 
     /**
-     * 显式删除工作区时清理 Docker 遗留的空挂载占位，不能用于模型工具执行。
-     * 宿主 HOME 若也叫 /home/jade，嵌套挂载会在私有缓存中留下 root 所属目录，
-     * 普通用户不能删除其子项。维护容器只绑定一个已核验的缓存子目录，以 UID 0
-     * 操作自身所属的空目录/零字节占位；断网、只读系统根、cap-drop ALL，不接受 Shell。
-     * 非空文件和符号链接不被维护命令删除；后续普通删除失败时仍明确报错，不假装清理完成。
-     * 调用方须先确认该工作区无存活会话/容器，并持有工作区独占屏障。
+     * 在调用方持有工作区独占屏障且确认所属执行已停止后，清理私有缓存中的 Docker 空挂载占位。扫描 root 所属子目录，
+     * 用固定镜像的 UID 0 断网维护容器运行 find，只删除空目录和 root 零字节文件；最后按确定名称删除维护容器。
+     * 目录、镜像、执行或清理异常以 IOException 返回。
+     *
+     * @param cache 此工作区专用的容器工具链缓存目录
+     * @param settings 本次容器的镜像、资源上限与闲置回收设置
+     * @throws IOException 缓存来源、镜像、清理命令或维护容器回收未确认
      */
     public static void cleanEmptyCacheMountpoints(Path cache, SandboxSettings settings) throws IOException {
         if (Files.notExists(cache, LinkOption.NOFOLLOW_LINKS))
@@ -412,7 +566,13 @@ public final class DockerRuntime implements AutoCloseable {
         }
     }
 
-    /** 只解释 cgroup 指标，不将程序输出关键字当成沙箱扩权依据。 */
+    /**
+     * 从 cgroup memory.events 文本读取 oom_kill 计数，字段缺失或数值格式错误时返回 -1，
+     * 供 Worker 异常退出后判断本次 OOM。
+     *
+     * @param events 从 cgroup memory.events 读取的文本
+     * @return cgroup 的 oom_kill 次数；缺失或无法解析时为 -1
+     */
     private static long oomKills(String events) {
         for (String line : events.split("\n"))
             if (line.startsWith("oom_kill "))
@@ -424,6 +584,12 @@ public final class DockerRuntime implements AutoCloseable {
         return -1;
     }
 
+    /**
+     * 释放一次容器引用，并用单调时间更新最后使用时刻。一次性、已退休或关闭中的实例交给 remove 删除；
+     * 可复用实例进入闲置淘汰检查。调用方在执行或服务使用结束后调用。
+     *
+     * @param instance 本运行时登记的容器实例，包含引用数、退休状态和可写范围句柄
+     */
     private synchronized void release(Instance instance) {
         instance.references--;
         instance.lastUsed = System.nanoTime();
@@ -433,12 +599,24 @@ public final class DockerRuntime implements AutoCloseable {
             evictIdle();
     }
 
+    /**
+     * 把实例标为退休，立即调用 remove 终止并删除容器，供执行异常、OOM 或后代清理失败时收尾。
+     * 删除未确认的实例由登记表保留。
+     *
+     * @param instance 本运行时登记的容器实例，包含引用数、退休状态和可写范围句柄
+     */
     private synchronized void retire(Instance instance) {
         instance.retired = true;
         remove(instance);
     }
 
-    /** 任务结束撤销新入口；已启动后台持有租约直到完成，额外挂载随后删除，基线可继续闲置。 */
+    /**
+     * 登记 actor/run 已结束，将该身份及子身份中绑定此轮次的实例标为退休，无引用时删除。
+     * 已接纳后台资格由 acquire 单独消费；跨轮次基线实例的 run 为空，继续参与复用。
+     *
+     * @param actor 产生此操作的 Agent 身份，用于事件展示、用量归属和资源回收
+     * @param run 任务轮次 ID；基线实例归属使用空串
+     */
     public synchronized void endTask(String actor, String run) {
         ended.add(actor + "/" + run);
         for (var instance : List.copyOf(instances.values()))
@@ -450,7 +628,11 @@ public final class DockerRuntime implements AutoCloseable {
             }
     }
 
-    /** 关闭会话/队友是主动取消，也停止该身份仍在执行的实例。 */
+    /**
+     * 撤销指定 Agent 及子身份尚未消费的后台资格，并退休删除其全部实例，供会话或队友关闭时主动终止执行。
+     *
+     * @param actor 产生此操作的 Agent 身份，用于事件展示、用量归属和资源回收
+     */
     public synchronized void endActor(String actor) {
         acceptedBackground.removeIf(plan -> plan.actor().equals(actor) || plan.actor().startsWith(actor + "/"));
         for (var instance : List.copyOf(instances.values()))
@@ -460,7 +642,18 @@ public final class DockerRuntime implements AutoCloseable {
             }
     }
 
-    /** 只有 references=0 才做空闲淘汰；长时间测试或后台服务不会因没有新调用而被误杀。 */
+    /**
+     * 按引用、数量和最后释放时间回收当前运行时的闲置容器。
+     *
+     * <p>处理过程：</p>
+     * <ol>
+     * <li>先重试 references 为零的退休登记，使先前删除失败的容器重新获得清理机会。</li>
+     * <li>选择无引用且尚未退休的实例，按 lastUsed 从旧到新排列。</li>
+     * <li>剩余候选数超过 maxIdle，或当前实例闲置达到 idleSeconds 时调用 remove；其他实例继续供复用。</li>
+     * </ol>
+     *
+     * <p>此方法与领取、释放共用运行时监视器。主动取消和关闭走各自入口，空闲淘汰只选 references 为零的实例。</p>
+     */
     private synchronized void evictIdle() {
         for (var failed : List.copyOf(instances.values()))
             if (failed.retired && failed.references == 0)
@@ -474,6 +667,9 @@ public final class DockerRuntime implements AutoCloseable {
                 remove(idle.get(n));
     }
 
+    /**
+     * 执行一次定时闲置扫描；扫描发生运行时异常时发出诊断，让后续固定延迟的扫描继续获得执行机会。
+     */
     private void reapQuietly() {
         try {
             evictIdle();
@@ -482,12 +678,19 @@ public final class DockerRuntime implements AutoCloseable {
         }
     }
 
-    /** 同一回收入口用于定向验证；生产由固定周期调用，不能驱逐有租约的实例。 */
+    /**
+     * 直接运行一次闲置淘汰，供同包验证驱动与周期任务相同的回收逻辑。
+     */
     void reapIdle() {
         evictIdle();
     }
 
-    /** rm -f 同时结束容器内进程；失败保留登记，下一次清理会重试。 */
+    /**
+     * 先标记实例退休，再调用 docker rm --force。退出码为零或容器已不存在时，释放可写范围并移除登记；
+     * 删除或范围释放未确认时发送诊断并保留登记，供后续扫描重试。
+     *
+     * @param instance 本运行时登记的容器实例，包含引用数、退休状态和可写范围句柄
+     */
     private synchronized void remove(Instance instance) {
         instance.retired = true;
         try {
@@ -506,7 +709,12 @@ public final class DockerRuntime implements AutoCloseable {
         }
     }
 
-    /** 只回收带 Jade 标记且所属进程已经结束的实例，PID 重用通过启动时间区分。 */
+    /**
+     * 查询带 JadeCode 标签且 UID 匹配的容器，解析所有者 PID 和启动时间。原进程已退出或 PID 被复用时删除容器；
+     * 匹配的存活进程及启动时间未知的存活进程继续保留。查询失败抛出 IOException，删除未确认发送诊断。
+     *
+     * @throws IOException 无法查询本用户 JadeCode 容器的归属资料
+     */
     private void recoverOrphans() throws IOException {
         var result = cli.call(List.of("ps", "-a", "--filter", "label=io.jadecode.sandbox=1", "--filter",
                 "label=io.jadecode.uid=" + uid.split(":")[0], "--format", "{{.ID}} {{.Label \"io.jadecode.owner\"}}"),
@@ -530,21 +738,45 @@ public final class DockerRuntime implements AutoCloseable {
         }
     }
 
-    /** 只读计数供验证，不把宿主路径和模型输入暴露给展示端。 */
+    /**
+     * 返回本运行时登记的容器数量，包括删除尚未确认的退休实例，供容量查询和验证使用。
+     *
+     * @return 当前登记的实例数，包含删除尚未确认的退休实例
+     */
     public synchronized int containerCount() {
         return instances.size();
     }
 
     /**
-     * 服务有自己的容器和引用，SDK 持有 stdio；关闭 SDK 后显式删除服务容器。
-     * 不把服务所需网络授权带给普通工具。command/args 来自可信 MCP 配置。
+     * 为可信 MCP 命令打开专用 stdio 容器，使用只读工作区、指定网络策略和空额外限制列表，返回持有容器引用的 Service。
+     * 调用方启动其 ProcessBuilder，并在连接关闭时归还服务。
+     *
+     * @param actor 产生此操作的 Agent 身份，用于事件展示、用量归属和资源回收
+     * @param name 可信配置中要启动的 MCP 服务名
+     * @param workspace 会话绑定的真实工作区目录
+     * @param command 可信 MCP 配置确定的程序名和参数列表
+     * @param network 该次计划或服务是否需要容器桥接网络
+     * @return 持有专用容器引用及 stdio 启动入口的服务句柄
+     * @throws IOException 服务工作区不符合挂载规则、容器无法取得或启动参数构造失败
      */
     public Service openService(String actor, String name, Path workspace, List<String> command, boolean network)
             throws IOException {
         return openService(actor, name, workspace, command, network, List.of());
     }
 
-    /** 服务启动时固定路径保护；权限变化由所有者关闭服务后重新连接，不能修改已运行容器的视图。 */
+    /**
+     * 校验项目目录并建立 MCP 服务专用的一次性执行计划，固定只读工作区、网络和路径限制。
+     * 领取容器后构造 docker exec 的 stdio 进程入口，返回 Service；构造失败时退休实例并释放引用。
+     *
+     * @param actor 产生此操作的 Agent 身份，用于事件展示、用量归属和资源回收
+     * @param name 可信配置中要启动的 MCP 服务名
+     * @param workspace 会话绑定的真实工作区目录
+     * @param command 可信 MCP 配置确定的程序名和参数列表
+     * @param network 该次计划或服务是否需要容器桥接网络
+     * @param restrictions 需要覆盖为隐藏或只读的路径限制列表
+     * @return 持有专用容器引用及 stdio 启动入口的服务句柄
+     * @throws IOException 服务工作区不符合挂载规则、容器无法取得或启动参数构造失败
+     */
     public Service openService(String actor, String name, Path workspace, List<String> command, boolean network,
             List<ExecutionPlan.Restriction> restrictions) throws IOException {
         workspace = workspace.toAbsolutePath().normalize();
@@ -568,21 +800,37 @@ public final class DockerRuntime implements AutoCloseable {
         }
     }
 
-    /** stdio 的租约不能被闲置回收；重复 close 只释放一次引用。 */
+    /**
+     * 持有 MCP stdio 服务专用容器的引用和启动入口，从打开到关闭期间保持引用，关闭时退休容器并归还引用。
+     */
     public final class Service implements AutoCloseable {
         private final Instance instance;
         private final ProcessBuilder builder;
         private boolean released;
 
+        /**
+         * 绑定服务独占的容器引用与 docker exec 进程构造器，由 MCP 连接负责启动进程，并在关闭时归还引用。
+         *
+         * @param instance 本运行时登记的容器实例，包含引用数、退休状态和可写范围句柄
+         * @param builder 已准备好 docker exec 参数的服务进程构造器
+         */
         private Service(Instance instance, ProcessBuilder builder) {
             this.instance = instance;
             this.builder = builder;
         }
 
+        /**
+         * 返回启动本服务容器内 stdio 命令的 ProcessBuilder，供 MCP 客户端建立进程通道。
+         *
+         * @return 用于启动容器内 MCP stdio 命令的进程构造器
+         */
         public ProcessBuilder builder() {
             return builder;
         }
 
+        /**
+         * 首次关闭时将服务容器退休并删除，再释放服务持有的引用；released 标记使重复关闭只释放一次。
+         */
         @Override
         public synchronized void close() {
             if (!released) {
@@ -593,7 +841,12 @@ public final class DockerRuntime implements AutoCloseable {
         }
     }
 
-    /** 关闭只删除自有容器；缓存/镜像/工作区不属于临时资源。 */
+    /**
+     * 标记运行时关闭，撤销后台资格并停止回收调度，逐个删除登记容器。全部删除后清理临时遮蔽文件；
+     * 仍有未确认实例时抛出 IllegalStateException，并保留其可写范围占用。
+     *
+     * @throws IllegalStateException 仍有未确认删除的容器，可写范围占用继续保留
+     */
     @Override
     public synchronized void close() {
         if (closed)
@@ -618,11 +871,19 @@ public final class DockerRuntime implements AutoCloseable {
             throw new IllegalStateException("Sandbox cleanup is incomplete; writable scopes remain held");
     }
 
-    /** 服务回收必须确认所有所属容器已删除；清理失败时不能释放工作区。 */
+    /**
+     * 返回运行时已关闭且容器登记为空的状态，供服务确认清理完成后释放工作区。
+     *
+     * @return 运行时已关闭且容器登记为空时为 true
+     */
     public synchronized boolean cleanupConfirmed() {
         return closed && instances.isEmpty();
     }
 
+    /**
+     * 登记一个容器的归属、复用策略、串行执行锁、引用数和最近释放时间，同时持有可写范围占用；
+     * 退休实例等待删除确认后才从登记表移除。
+     */
     private static final class Instance {
         final String name, key, actor, run;
         final boolean reusable;
@@ -633,6 +894,17 @@ public final class DockerRuntime implements AutoCloseable {
         long oomCount;
         volatile boolean retired;
 
+        /**
+         * 登记确定的容器名、复用键、Agent 和轮次归属，并接管已经领取的可写范围占用。
+         * 创建启动成功后由 acquire 建立首个引用。
+         *
+         * @param name 预先生成的确定容器名，用于启动失败后仍能按名清理
+         * @param key 完整复用策略键，包含归属、挂载、保护点和网络策略
+         * @param actor 产生此操作的 Agent 身份，用于事件展示、用量归属和资源回收
+         * @param run 实例归属轮次；跨轮次基线实例使用空串
+         * @param reusable 该实例是否可以按相同策略复用
+         * @param permit 容器创建前取得的可写范围占用句柄
+         */
         Instance(String name, String key, String actor, String run, boolean reusable, AutoCloseable permit) {
             this.writePermit = permit;
             this.name = name;

@@ -10,6 +10,9 @@ import com.jadecode.execution.ExecutionContext;
  * 生产者只排队，消费线程独占历史写入；本类不请求模型、不写磁盘，也不识别业务目标。
  * 普通项最多 64 个；后台/Team 结果使用预留通道，生产端各限制 32 项未交付工作。
  * 队列、缓冲升级和完成检查共用本对象的锁；退出后队列不恢复。
+ *
+ * @see SessionRuntime
+ * @see SessionEvent
  */
 final class SessionInbox {
     private static final int CAPACITY = 64;
@@ -22,8 +25,19 @@ final class SessionInbox {
     /**
      * 排队载体只保存请求或通知，不额外复制后台/Team 的完整记录。
      * result 为调用者的完成句柄；普通通知可为 null，只有需要回执的请求才分配 Future。
+     *
+     * @param event 入队的独立 Request 或插入消息 Incoming
+     * @param result 向原提交者交付整轮最终回答的 Future；普通通知可为 null
      */
     record Entry(SessionEvent event, CompletableFuture<String> result) {
+        /**
+         * 检查入队事件是独立 Request 或插入消息 Incoming，并要求独立 Request 携带结果 Future。
+         * 类型或结果句柄不匹配时抛出 IllegalArgumentException。
+         *
+         * @param event 入队的独立 Request 或插入消息 Incoming
+         * @param result 向原提交者交付整轮最终回答的 Future；普通通知可为 null
+         * @throws IllegalArgumentException 事件不是 Request 或 Incoming，或 Request 缺少结果 Future
+         */
         Entry {
             if (!(event instanceof SessionEvent.Request || event instanceof SessionEvent.Incoming))
                 throw new IllegalArgumentException("Only requests and incoming messages can be queued");
@@ -31,19 +45,31 @@ final class SessionInbox {
                 throw new IllegalArgumentException("A request needs a result future");
         }
 
-        /** 只有 pollRequest 返回的独立工作才调用；通知不会走执行入口。 */
+        /**
+         * 只有 pollRequest 返回的独立工作才调用；通知不会走执行入口。
+         *
+         * @return 当前 Entry 中保存的独立 Request
+         */
         SessionEvent.Request request() {
             return (SessionEvent.Request) event;
         }
 
-        /** 完成队列调用者，普通通知没有执行回执，不制造虚假的任务 Future。 */
+        /**
+         * 完成队列调用者，普通通知没有执行回执，不制造虚假的任务 Future。
+         *
+         * @param failure 已经发生的 IO、模型或执行异常，供原任务收尾与回执使用
+         */
         void fail(Throwable failure) {
             if (result != null)
                 result.completeExceptionally(failure);
         }
     }
 
-    /** 查看业务缓冲；只构造显示快照，不消费或升级它。 */
+    /**
+     * 查看业务缓冲；只构造显示快照，不消费或升级它。
+     *
+     * @return 当前缓冲的展示副本；尚无用户缓冲时为 null
+     */
     synchronized SessionEvent.Incoming bufferedView() {
         if (buffered == null)
             return null;
@@ -54,12 +80,21 @@ final class SessionInbox {
                 "user", request.prompt(), null, false);
     }
 
-    /** 包含停放的通知；切换会话必须确认所有信息均已处理。 */
+    /**
+     * 包含停放的通知；切换会话必须确认所有信息均已处理。
+     *
+     * @return 独立请求与停放通知均为空时为 true
+     */
     synchronized boolean isEmpty() {
         return requests.isEmpty();
     }
 
-    /** 按来源分配预留槽；这里只按可信 kind 分类容量，不限制消息的跨轮次采用。 */
+    /**
+     * 按来源分配预留槽；这里只按可信 kind 分类容量，不限制消息的跨轮次采用。
+     *
+     * @param entry 本次需要入队、投影或发送的完整条目
+     * @return background、team 或 ordinary 容量通道名
+     */
     private static String slot(Entry entry) {
         if (entry.event() instanceof SessionEvent.Incoming incoming) {
             if (incoming.kind().equals("background"))
@@ -73,6 +108,9 @@ final class SessionInbox {
     /**
      * 非阻塞入队；重复通知 ID 只保留一项，满队列/关闭返回 false 供生产者明确报告失败。
      * 相同锁内登记和发出变更信号，消费者不会在看到旧版本后遗漏一次已到达通知。
+     *
+     * @param entry 本次需要入队、投影或发送的完整条目
+     * @return 入队成功或相同通知已在队列中时为 true；关闭或普通槽满为 false
      */
     synchronized boolean offer(Entry entry) {
         if (closed)
@@ -92,7 +130,11 @@ final class SessionInbox {
         return true;
     }
 
-    /** 空闲时只取独立工作，跳过停放的通知；通知不会自动创建模型轮次。 */
+    /**
+     * 空闲时只取独立工作，跳过停放的通知；通知不会自动创建模型轮次。
+     *
+     * @return 队列中最早的独立 Request 条目；没有独立请求为 null
+     */
     synchronized Entry pollRequest() {
         var iterator = requests.iterator();
         while (iterator.hasNext()) {
@@ -110,6 +152,8 @@ final class SessionInbox {
     /**
      * 在安全边界按入队顺序取走全部插入项；不接收 owner 或执行阶段，不检查业务归属。
      * 只移除选中项，其他请求/缓冲保持原位。返回不可变列表，之后由消费线程在锁外写历史。
+     *
+     * @return 按入队顺序取出的全部插入消息不可变列表
      */
     synchronized List<Entry> drainInsertions() {
         List<Entry> selected = new ArrayList<>();
@@ -126,7 +170,11 @@ final class SessionInbox {
         return List.copyOf(selected);
     }
 
-    /** 最终完成与入队共用锁；已经到达的补充必须再交给模型，不能提前结束。 */
+    /**
+     * 最终完成与入队共用锁；已经到达的补充必须再交给模型，不能提前结束。
+     *
+     * @return 当前队列存在可以插入本轮的 Incoming 时为 true
+     */
     synchronized boolean hasInsertions() {
         return requests.stream()
                 .anyMatch(e -> e.event() instanceof SessionEvent.Incoming incoming && incoming.allowInsertion());
@@ -135,6 +183,10 @@ final class SessionInbox {
     /**
      * 忙时追加用户缓冲；首次建立可排队的 Request，升级后则追加到同一 Incoming。
      * 保留最初 Future 和编号，不修改历史；容量不足或关闭返回 null。
+     *
+     * @param text 本次处理的完整文本，按该入口执行编码、脱敏、显示或组装
+     * @param context 当前轮次的来源、身份、审批通道、派工范围和取消检查
+     * @return 原缓冲批次共用的最终结果 Future；无法接纳时为 null
      */
     synchronized CompletableFuture<String> buffer(String text, ExecutionContext context) {
         if (closed)
@@ -161,7 +213,11 @@ final class SessionInbox {
         return buffered.result();
     }
 
-    /** 空回车将原缓冲升级成插入通知；不复制任务，采用后再升级返回 false。 */
+    /**
+     * 空回车将原缓冲升级成插入通知；不复制任务，采用后再升级返回 false。
+     *
+     * @return 原用户缓冲首次成功升级为 Incoming 时为 true
+     */
     synchronized boolean promote() {
         if (closed || buffered == null)
             return false;
@@ -177,24 +233,37 @@ final class SessionInbox {
         return true;
     }
 
-    /** 只读变更版本，用于检查后等待，避免通知恰好落在二者之间时丢失信号。 */
+    /**
+     * 只读变更版本，用于检查后等待，避免通知恰好落在二者之间时丢失信号。
+     *
+     * @return 最近一次队列变化发布的版本号
+     */
     synchronized long revision() {
         return revision;
     }
 
-    /** 没有变更才等待；唤起仅表示重新检查，不意味着执行队首任务。 */
+    /**
+     * 没有变更才等待；唤起仅表示重新检查，不意味着执行队首任务。
+     *
+     * @param observed 消费者检查队列前读取的变更版本
+     * @throws InterruptedException 消费线程等待队列变化时被取消或关闭流程中断
+     */
     synchronized void awaitChange(long observed) throws InterruptedException {
         while (!closed && revision == observed)
             wait();
     }
 
-    /** 线程通知继续原消费流程，不具有空闲时新建业务轮次的语义。 */
+    /**
+     * 线程通知继续原消费流程，不具有空闲时新建业务轮次的语义。
+     */
     synchronized void wake() {
         revision++;
         notifyAll();
     }
 
-    /** 关闭后拒绝新消息；先清队列再在锁外完成失败回执，避免用户回调占住队列锁。 */
+    /**
+     * 关闭后拒绝新消息；先清队列再在锁外完成失败回执，避免用户回调占住队列锁。
+     */
     void close() {
         List<Entry> abandoned;
         synchronized (this) {

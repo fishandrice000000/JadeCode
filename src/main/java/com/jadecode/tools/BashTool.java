@@ -11,9 +11,8 @@ import com.jadecode.process.BackgroundManager;
 import com.jadecode.process.ShellCommand;
 
 /**
- * 权限检查之后的 Shell 工具：同步返回最终结果，后台立即返回启动回执并由 Inbox 交付最终文本。
- * 后台结果始终允许插入，只有启动它的大轮次正常结束前必须等待；取消轮次不终止已接纳命令。
- * 本类不写历史、不请求模型、不重新审批；子代理没有结果接收端时只提供同步模式。
+ * 将模型的 bash 调用接到会话 Shell 服务。同步模式返回最终执行结果，后台模式返回启动编号，
+ * 并由会话通知链交付最终输出。已接入 BackgroundManager 的会话支持两种模式，独立子代理入口使用同步模式。
  */
 public class BashTool implements Tool {
     private final Path cwd;
@@ -21,32 +20,62 @@ public class BashTool implements Tool {
     private final BackgroundManager background;
     private final ShellCommand.Runner runner;
 
-    /** 当前目录的同步 Shell，默认 120 秒；构造不执行命令。 */
+    /**
+     * 建立当前工作目录的同步 Shell 工具，默认每条命令超时 120 秒。
+     */
     public BashTool() {
         this(120);
     }
 
-    /** 当前目录的同步 Shell；非正数超时在构造时失败。 */
+    /**
+     * 建立当前工作目录的同步 Shell 工具，使用指定的正数超时。
+     *
+     * @param timeoutSeconds 每次命令或容器操作的正数等待上限，单位秒
+     */
     public BashTool(long timeoutSeconds) {
         this(Path.of(""), timeoutSeconds, null, null);
     }
 
-    /** 指定每次调用的初始目录；命令中的 cd 不影响后续调用。 */
+    /**
+     * 建立指定工作目录的同步 Shell 工具，每次调用以该目录为起点，默认超时 120 秒。
+     *
+     * @param cwd 本次操作起始工作目录，相对路径以此为基准
+     */
     public BashTool(Path cwd) {
         this(cwd, 120, null, null);
     }
 
-    /** 子代理注入受限后端；执行许可从每次上下文取得，不跨调用复用。 */
+    /**
+     * 为指定工作目录绑定同步受限执行后端，供子代理沿本次上下文执行已授权计划。
+     *
+     * @param cwd 本次操作起始工作目录，相对路径以此为基准
+     * @param runner Shell 执行后端；null 时使用本地进程入口
+     * @throws NullPointerException runner 为 null
+     */
     public BashTool(Path cwd, ShellCommand.Runner runner) {
         this(cwd, 120, null, Objects.requireNonNull(runner));
     }
 
-    /** 会话和工具必须共用管理器，保证启动记录、通知交付和关闭资源对应。 */
+    /**
+     * 绑定会话共用的 BackgroundManager，供模型选择前台同步或后台执行，并由同一会话采用后台结果。
+     *
+     * @param background 会话共用的后台命令管理器，负责编号、交付和停止
+     * @throws NullPointerException background 为 null
+     */
     public BashTool(BackgroundManager background) {
         this(Path.of(""), 120, Objects.requireNonNull(background), null);
     }
 
-    /** 保存不可变依赖；仅明确装配的宿主/离线入口允许 runner=null。 */
+    /**
+     * 校验正数超时并保存工作目录、可选后台管理器和可选 runner。后续 executeOutcome 按已装配能力选择执行入口。
+     *
+     * @param cwd 本次操作起始工作目录，相对路径以此为基准
+     * @param timeoutSeconds 每次命令或容器操作的正数等待上限，单位秒
+     * @param background 会话共用的后台命令管理器，负责编号、交付和停止
+     * @param runner Shell 执行后端；null 时使用本地进程入口
+     * @throws IllegalArgumentException 每条命令的 timeoutSeconds 不是正数
+     * @throws NullPointerException cwd 为 null
+     */
     private BashTool(Path cwd, long timeoutSeconds, BackgroundManager background, ShellCommand.Runner runner) {
         if (timeoutSeconds <= 0)
             throw new IllegalArgumentException("timeoutSeconds must be positive");
@@ -56,13 +85,21 @@ public class BashTool implements Tool {
         this.runner = runner;
     }
 
-    /** 工具名也是权限规则匹配键，同步和后台共用同一入口。 */
+    /**
+     * 工具名也是权限规则匹配键，同步和后台共用同一入口。
+     *
+     * @return 该工具的稳定注册名
+     */
     @Override
     public String name() {
         return "bash";
     }
 
-    /** 按本实例实际是否有结果接收端，向模型说明可用执行模式。 */
+    /**
+     * 按本实例实际是否有结果接收端，向模型说明可用执行模式。
+     *
+     * @return 根据当前已装配能力生成的模型可见说明
+     */
     @Override
     public String description() {
         return background == null ? "Run a shell command synchronously."
@@ -71,26 +108,35 @@ public class BashTool implements Tool {
                         + " Interrupting the turn releases its wait but leaves accepted commands running; closing the session stops them.";
     }
 
-    /** 只暴露真实支持的模式参数；沙箱额外字段由外层包装器添加。 */
+    /**
+     * 根据是否装配后台管理器返回 command 字符串定义及可选 run_in_background 布尔定义，供 schema 与输入校验使用。
+     *
+     * @return 当前工具支持的参数名到 JSON 类型的映射
+     */
 
     private Map<String, String> properties() {
         return background == null ? Map.of("command", "string")
                 : Map.of("command", "string", "run_in_background", "boolean");
     }
 
-    /** command 必填，省略后台模式保持同步默认。 */
+    /**
+     * 返回必填参数 command；省略 run_in_background 时按同步执行处理。
+     *
+     * @return 该工具要求提供的参数名列表
+     */
 
     private List<String> required() {
         return List.of("command");
     }
 
     /**
-     * 完整校验后执行一次；不修改输入，旧策略参数或未知字段在任何命令启动前明确拒绝。
-     * network_access/access_paths 由外层沙箱解释，本层允许传递但不自行授予权限。
-     * 后台返回启动说明，不用同一个 tool_use_id 再返回第二份 tool_result；最终输出交给通知链。
-     * @param input 非 null，command 为非空白文本；run_in_background 如提供必须是真正 boolean
-     * @param context 正式身份和取消条件；同步离线入口可为 null，后台必须提供
-     * @return 执行结果（content 保留原输出，isError 由本方法失败分支给定）：同步最终输出/状态，或后台启动回执；校验失败没有执行副作用
+     * 校验非空 command、支持字段和布尔后台标记。后台模式要求管理器及执行上下文，start 成功后返回启动 ID 回执；
+     * 同步模式调用共享前台 Shell 或本次独立 Shell，按实际退出码构造结果。参数和启动错误返回 isError=true，
+     * 网络与额外路径由外层沙箱计划解释。
+     *
+     * @param input 本次工具参数 JSON 对象，包含该工具 schema 约定的字段
+     * @param context 当前轮次的来源、身份、审批通道、派工范围和取消检查
+     * @return 同步执行的最终结果，或后台接纳回执；失败分支的 isError 为 true
      */
     @Override
     public ToolOutcome executeOutcome(ObjectNode input, ExecutionContext context) {
@@ -132,17 +178,31 @@ public class BashTool implements Tool {
         }
     }
 
-    /** 缺失退出码也属于失败；保留真实的工具输出。 */
+    /**
+     * 将 Shell 文本与实际退出码转为 ToolOutcome：退出码为 0 时成功，非零或缺失时标为错误。
+     *
+     * @param result Shell 实际执行后的有界输出、退出码和截断标记
+     * @return 按实际退出码确定错误标记的工具结果
+     */
     private static ToolOutcome outcome(ShellCommand.Result result) {
         return new ToolOutcome(result.text(), result.exitCode() == null || result.exitCode() != 0);
     }
 
-    /** 参数错误发生在执行之前，沿用工具错误格式。 */
+    /**
+     * 将参数或启动错误加上 Error 前缀，返回错误 ToolOutcome 供执行器配对调用 ID。
+     *
+     * @param message 需要返回给调用者的结果或错误说明
+     * @return 带 Error 前缀且 isError 为 true 的工具结果
+     */
     private static ToolOutcome error(String message) {
         return new ToolOutcome("Error: " + message, true);
     }
 
-    /** 提供完整参数结构；标量构造器只负责组装 Schema，不授予执行权限。 */
+    /**
+     * 根据此实例实际支持的参数和必填项生成完整 object schema，供模型工具目录使用。
+     *
+     * @return 完整的 object 参数 schema，含字段类型与必填声明
+     */
     @Override
     public com.fasterxml.jackson.databind.node.ObjectNode inputSchema() {
         return com.jadecode.tools.ToolSchema.objectSchema(properties(), required());

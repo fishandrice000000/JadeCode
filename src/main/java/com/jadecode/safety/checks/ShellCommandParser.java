@@ -10,28 +10,76 @@ import java.nio.file.Path;
  * 不展开变量、不运行 shell，也不把复杂结构强行解释成安全命令；不确定性会交回审批策略。
  */
 public final class ShellCommandParser {
+    /**
+     * 保存一项重定向的操作符和目标，供权限分析区分读取、写入及文件描述符转接。
+     *
+     * @param operator Shell 重定向操作符
+     * @param target 重定向的目标文本，随后按所在命令段目录解析
+     */
     public record Redirect(String operator, String target) {
     }
 
+    /**
+     * 保存一段 Shell 命令的参数、重定向和后继连接符，供权限分析逐段判断工作目录和资源。
+     *
+     * @param argv 解析后保留参数边界的命令参数列表
+     * @param redirects 此命令段的重定向操作列表
+     * @param follows 本段后面的命令连接符，用于判断 cd 与后续命令关系
+     */
     public record Segment(List<String> argv, List<Redirect> redirects, String follows) {
+        /**
+         * 将命令参数和重定向列表复制为不可变集合，固定解析后的一个命令段。
+         *
+         * @param argv 解析后保留参数边界的命令参数列表
+         * @param redirects 此命令段的重定向操作列表
+         * @param follows 本段后面的命令连接符，用于判断 cd 与后续命令关系
+         */
         public Segment {
             argv = List.copyOf(argv);
             redirects = List.copyOf(redirects);
         }
     }
 
-    /** reasons 只包含程序生成的语法说明，不带脚本正文或变量值。 */
+    /**
+     * reasons 只包含程序生成的语法说明，不带脚本正文或变量值。
+     *
+     * @param segments 按原顺序解析出的 Shell 命令段
+     * @param uncertain 命令是否包含当前分析器无法确定资源的语法
+     * @param error 本次操作产生的错误说明
+     * @param reasons 导致命令分析不确定的具体原因列表
+     */
     public record Parsed(List<Segment> segments, boolean uncertain, String error, List<String> reasons) {
+        /**
+         * 复制命令段和不确定原因列表，形成包含解析错误及不确定标记的完整解析结果。
+         *
+         * @param segments 按原顺序解析出的 Shell 命令段
+         * @param uncertain 命令是否包含当前分析器无法确定资源的语法
+         * @param error 本次操作产生的错误说明
+         * @param reasons 导致命令分析不确定的具体原因列表
+         */
         public Parsed {
             segments = List.copyOf(segments);
             reasons = List.copyOf(reasons);
         }
 
+        /**
+         * 用命令段、不确定标记和错误说明创建解析结果，缺省的不确定原因列表设为空。
+         *
+         * @param segments 按原顺序解析出的 Shell 命令段
+         * @param uncertain 命令是否包含当前分析器无法确定资源的语法
+         * @param error 本次操作产生的错误说明
+         */
         public Parsed(List<Segment> segments, boolean uncertain, String error) {
             this(segments, uncertain, error, List.of());
         }
     }
 
+    /**
+     * 保存词法分析中的文本及其是否为 Shell 操作符，供 parse 组装参数、命令连接和重定向。
+     *
+     * @param value 扫描出的一个参数文本或 Shell 操作符
+     * @param operator Shell 重定向操作符
+     */
     private record Token(String value, boolean operator) {
     }
 
@@ -40,6 +88,9 @@ public final class ShellCommandParser {
      * 引号内的空格、分号是参数内容，不能简单按空格或分号 split。
      * 先扫描成带“操作符/参数”区别的 token，再把 token 组成各段；变量、循环等保留为
      * uncertain，而非法引号/缺少重定向目标返回 error。策略层再决定询问还是拒绝。
+     *
+     * @param text 本次处理的完整文本，按该入口执行编码、脱敏、显示或组装
+     * @return 按原顺序解析的命令段、重定向、不确定原因与可选错误
      */
     public Parsed parse(String text) {
         // 1. quote 记录当前是否在引号里；started 用来区分空字符串参数与没有参数。

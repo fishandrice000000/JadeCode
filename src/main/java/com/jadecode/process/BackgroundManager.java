@@ -11,10 +11,9 @@ import com.jadecode.execution.ExecutionNotice;
 import com.jadecode.execution.ExecutionObserver;
 
 /**
- * 会话拥有的 Shell 服务：后台命令立即返回编号，完成后只投递一次结果，不请求模型或写历史。
- * 每条命令属于启动它的 run，只有该轮正常完成前需要等待；结果可被任意后续轮次采用。
- * 大轮次取消不停止已接纳命令，会话关闭/显式停止/超时仍停止；所有记录只在本进程保存。
- * jobs 包含运行中和结果尚未采用的命令，最多 32 项；历史正式采用结果后释放记录。
+ * 管理会话的前台 Shell 和最多 32 项未交付后台命令。后台 start 先登记 Job 并立即返回编号，
+ * 工作线程完成后向 Inbox 投递 Completion，正式采用结果后移除 Job。后台保留启动轮次身份，原轮次等待该结果，
+ * 取消原轮次后结果可由后续轮次采用。
  */
 public final class BackgroundManager implements AutoCloseable {
     private static final int MAX_PENDING = 32;
@@ -29,17 +28,34 @@ public final class BackgroundManager implements AutoCloseable {
     private long counter;
     private volatile boolean closed;
 
-    /** 保存工作目录和默认超时，不执行命令。 */
+    /**
+     * 绑定工作目录，以默认 120 秒作为每条命令的超时，建立会话 Shell 服务。
+     *
+     * @param cwd 本次操作起始工作目录，相对路径以此为基准
+     */
     public BackgroundManager(Path cwd) {
         this(cwd, 120);
     }
 
-    /** 保存正数超时，宿主执行仅用于明确装配的宿主/离线路径。 */
+    /**
+     * 绑定工作目录和正数超时，使用本地 Shell 入口建立前台与后台执行服务。
+     *
+     * @param cwd 本次操作起始工作目录，相对路径以此为基准
+     * @param timeoutSeconds 每次命令或容器操作的正数等待上限，单位秒
+     */
     public BackgroundManager(Path cwd, long timeoutSeconds) {
         this(cwd, timeoutSeconds, null);
     }
 
-    /** 每个后台命令有独立 Shell；共享可信 runner，许可来自每次调用的上下文快照。 */
+    /**
+     * 校验工作目录和正数超时，保存共享执行后端并创建前台 Shell；每个后续后台 Job 使用独立 Shell 实例和调用上下文。
+     *
+     * @param cwd 本次操作起始工作目录，相对路径以此为基准
+     * @param timeoutSeconds 每次命令或容器操作的正数等待上限，单位秒
+     * @param runner Shell 执行后端；null 时使用本地进程入口
+     * @throws IllegalArgumentException 每条命令的 timeoutSeconds 不是正数
+     * @throws NullPointerException cwd 为 null
+     */
     public BackgroundManager(Path cwd, long timeoutSeconds, ShellCommand.Runner runner) {
         this.cwd = Objects.requireNonNull(cwd);
         if (timeoutSeconds <= 0)
@@ -49,35 +65,61 @@ public final class BackgroundManager implements AutoCloseable {
         foreground = new ShellCommand(cwd, timeoutSeconds, runner);
     }
 
-    /** 安装非阻塞显示端；不影响结果交付端。 */
+    /**
+     * 绑定后台状态观察器，供命令接纳、停止和完成时向界面发送执行事件。
+     *
+     * @param value 需要在后台接纳、停止和完成时接收执行事实的观察器
+     * @throws NullPointerException value 为 null
+     */
     public void observe(ExecutionObserver value) {
         observer = Objects.requireNonNull(value);
     }
 
-    /** 安装只负责 Inbox 投递的函数；在启动任何命令之前由会话装配。 */
+    /**
+     * 在启动命令前绑定结果接收者，供工作线程将 Completion 交给会话 Inbox。
+     *
+     * @param listener 结果交付给会话 Inbox 的接收者
+     * @throws NullPointerException listener 为 null
+     */
     public synchronized void onResult(Consumer<Completion> listener) {
         resultListener = Objects.requireNonNull(listener);
     }
 
-    /** 用于切换/回收检查；已完成但未采用的通知仍属于当前会话。 */
+    /**
+     * 返回当前是否仍有运行中或结果尚未采用的 Job，供会话切换和闲置回收判断。
+     *
+     * @return 存在运行中或结果尚未采用的后台 Job 时为 true
+     */
     public synchronized boolean hasPending() {
         return !jobs.isEmpty();
     }
 
-    /** 压缩快照保留工作编号，不读取命令输出或声称命令成功。 */
+    /**
+     * 返回当前仍在登记表中的后台 ID 快照，供压缩重建状态保留待交付工作。
+     *
+     * @return 所有运行中或结果未采用的后台 ID 快照
+     */
     public synchronized List<String> pendingIds() {
         return List.copyOf(jobs.keySet());
     }
 
-    /** 只判断本轮发出的命令，不把以前轮次遗留命令变成新轮次的等待义务。 */
+    /**
+     * 返回是否仍有归属于 runId 的未交付 Job，供启动它的轮次在正常结束前等待结果采用。
+     *
+     * @param runId 当前轮次 ID，用于关联取消、后台命令和任务收尾
+     * @return 指定 runId 仍有未采用结果的后台 Job 时为 true
+     */
     public synchronized boolean hasPending(String runId) {
         return jobs.values().stream().anyMatch(job -> job.context().id().equals(runId));
     }
 
     /**
-     * 在权限检查后接纳后台命令；登记先于启动虚拟线程，极快结果也能找到对应 Job。
-     * 只在接纳前检查本轮取消；接纳后替换取消条件为管理器关闭，保留身份和不可变执行许可。
-     * 返回 bg_id 只表示启动成功，不代表命令完成。线程启动失败会撤销登记并关闭资源。
+     * 校验命令、上下文、关闭状态及容量，派生以管理器关闭为取消条件的后台上下文。先建立 Job 与独立 Shell 并登记，
+     * 再发启动事件并启动虚拟线程，返回后台 ID；线程启动失败时撤销登记并关闭 Shell。
+     *
+     * @param command 本次要执行的完整 Shell 命令文本
+     * @param origin 启动后台操作的原始轮次上下文
+     * @return 新接纳命令的后台 ID；命令结果另由 Completion 交付
      */
     public String start(String command, ExecutionContext origin) {
         if (command == null || command.isBlank())
@@ -108,14 +150,22 @@ public final class BackgroundManager implements AutoCloseable {
         return job.id();
     }
 
-    /** 同步调用直接等待，不产生通知，沿用调用方的取消信号。 */
+    /**
+     * 同步调用共享前台 Shell，沿用本次上下文的取消条件，直接返回最终结果。
+     *
+     * @param command 本次要执行的完整 Shell 命令文本
+     * @param context 当前轮次的来源、身份、审批通道、派工范围和取消检查
+     * @return 同步 Shell 的实际退出码、有界输出和截断状态
+     */
     public ShellCommand.Result runForegroundResult(String command, ExecutionContext context) {
         return foreground.run(command, context);
     }
 
     /**
-     * 执行一次命令，保留实际退出状态和有界输出，异常也形成终态结果；绝不自动重跑。
-     * Job 在正式历史采用前保留，保证进程退出与结果入队之间不会提前解除等待。
+     * 执行一个 Job 并转成 completed 或 failed 的 Completion，运行异常也生成失败结果。
+     * 确认管理器仍接纳该 Job 后发状态通知并投递完成事实；Job 保留至会话采用结果后移除。
+     *
+     * @param job 已经登记的后台命令及其独立 Shell 和执行上下文
      */
     private void run(Job job) {
         Completion result;
@@ -142,14 +192,19 @@ public final class BackgroundManager implements AutoCloseable {
         }
     }
 
-    /** 结果已正式写入历史后释放记录；按可信通知 ID 查找，不重跑命令，不限制采用轮次。 */
+    /**
+     * 按后台 ID 移除已经正式写入历史的 Job，释放等待记录与后台容量。
+     *
+     * @param id 后台命令 ID，格式为 bg_ 加递增编号
+     */
     public synchronized void adopted(String id) {
         jobs.remove(id);
     }
 
     /**
-     * 显式停止一条命令。保持 Job 到执行线程返回终态，等待中的原轮次仍能收到通知。
-     * 大轮次取消不调用本方法；调用方需要按命令 ID 明确选择停止对象。
+     * 按 ID 查找并关闭指定 Job 的 Shell，发送 STOPPING 事件；执行线程随后仍提交实际终态结果，Job 由采用流程移除。
+     *
+     * @param id 后台命令 ID，格式为 bg_ 加递增编号
      */
     public void stop(String id) {
         Job job;
@@ -162,21 +217,46 @@ public final class BackgroundManager implements AutoCloseable {
         }
     }
 
-    /** Job 只持身份、命令和资源；不携带可选投递策略，也不重复保存一份结果队列。 */
+    /**
+     * 保存一条后台命令的 ID、命令文本、独立 Shell 和执行上下文，供工作线程与停止入口共同管理。
+     *
+     * @param id 后台命令 ID，格式为 bg_ 加递增编号
+     * @param command 本次要执行的完整 Shell 命令文本
+     * @param shell 此 Job 独占的 Shell 实例
+     * @param context 当前轮次的来源、身份、审批通道、派工范围和取消检查
+     */
     private record Job(String id, String command, ShellCommand shell, ExecutionContext context) {
     }
 
-    /** 完成事实只保存来源编号与执行结果；无需把审批函数/执行上下文送进 Inbox。 */
+    /**
+     * 保存后台命令的最终执行事实，包括后台 ID、所属轮次、命令、状态、退出码、有界输出和截断标记，供 Inbox 投递。
+     *
+     * @param id 后台命令 ID，格式为 bg_ 加递增编号
+     * @param owner 启动本项工作并承担交付等待的原轮次 ID
+     * @param command 本次要执行的完整 Shell 命令文本
+     * @param status 本次业务或展示条目的明确状态
+     * @param exitCode 实际进程退出码；null 表示未取得正常退出状态
+     * @param output 命令有界输出或子代理最终结果正文
+     * @param truncated 返回的输出是否因保留预算而截断
+     */
     public record Completion(String id, String owner, String command, String status,
             Integer exitCode, String output, boolean truncated) {
     }
 
-    /** 后台状态只是展示事实，结果仍由独立 Inbox 路径交付。 */
+    /**
+     * 将后台编号、状态和说明封装成 BACKGROUND 执行通知，交给观察器更新前端卡片。
+     *
+     * @param id 后台命令 ID，格式为 bg_ 加递增编号
+     * @param state 要发送给界面的后台状态
+     * @param detail 供后台状态卡片展示的简短说明
+     */
     private void display(String id, String state, String detail) {
         observer.publish(ExecutionNotice.event(ExecutionNotice.Kind.BACKGROUND, id, "bash", detail, state));
     }
 
-    /** 会话关闭时取出全部资源后锁外终止；重复关闭安全，禁止新工作与迟到结果发布。 */
+    /**
+     * 在锁内标记关闭并取出、清空 Job 登记，在锁外关闭前台与全部后台 Shell，供会话退出时终止所属命令。
+     */
     @Override
     public void close() {
         List<Job> active;

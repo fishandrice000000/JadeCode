@@ -9,23 +9,38 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
- * 同一个文件库的短期读写互斥，不把“模型正在思考”也锁住。
- * JVM 内先使用普通锁，避免两个线程争抢 FileLock 时抛 OverlappingFileLockException；
- * 随后持有文件锁，保证多个 JadeCode 进程的扫描、记录写入和索引发布不会互相穿插。
- * 不限制外部编辑器或任意 shell，也不声称提供操作系统沙箱。
+ * 协调同一记忆库的短期文件读写。先取得 JVM 内普通锁，再取得 .store.lock 文件锁，
+ * 供同进程线程和多个 JadeCode 进程依次读取快照、写作业或发布知识。
  */
 final class MemoryLibraryLock {
     private static final ConcurrentHashMap<Path, ReentrantLock> LOCAL = new ConcurrentHashMap<>();
 
+    /**
+     * 一次在记忆库短锁内完成的文件读写操作，可以返回结果并向调用方报告 IOException。
+     *
+     * @param <T> 本次操作返回值的类型
+     */
     @FunctionalInterface
     interface Operation<T> {
+        /**
+         * 执行本次记忆库读写并返回结果；文件操作失败以 IOException 交给取得库锁的调用方处理。
+         *
+         * @return 本次库内文件操作取得的结果
+         * @throws IOException 本次库内文件操作失败
+         */
         T run() throws IOException;
     }
 
     /**
-     * 在已经核验的真实库目录内执行一次操作，异常原样传播，锁始终释放。
-     * 锁文件不截断、不删除且不跟随符号链接，避免不同进程锁住不同 inode。
-     * 调用方不得在锁内等待模型；本方法只用于文件库本身的短期操作。
+     * 在指定库根的 JVM 锁和文件锁内执行一次文件操作，返回 operation 的结果，结束时释放两层锁。
+     * 等待本地锁被中断时恢复中断标记并抛出 InterruptedIOException；文件或操作异常向上传递。
+     * 维护模型请求由外层维护锁协调。
+     *
+     * @param <T> 本次操作返回值的类型
+     * @param root 经过目录核验的记忆库根，用于定位 .store.lock
+     * @param operation 在已取得记忆库短锁后执行的本地读写操作
+     * @return operation 在两层锁内执行后返回的结果
+     * @throws IOException 等待锁被中断、锁文件无法打开或 operation 文件操作失败
      */
     static <T> T run(Path root, Operation<T> operation) throws IOException {
         ReentrantLock local = LOCAL.computeIfAbsent(root, ignored -> new ReentrantLock());
@@ -43,6 +58,9 @@ final class MemoryLibraryLock {
         }
     }
 
+    /**
+     * 汇集记忆库短期读写锁的静态执行入口。
+     */
     private MemoryLibraryLock() {
     }
 }

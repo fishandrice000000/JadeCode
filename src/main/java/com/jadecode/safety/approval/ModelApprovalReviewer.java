@@ -12,12 +12,20 @@ import com.jadecode.util.Json;
  * 严格 JSON、拒绝或失败都会产生真实结果；超时取消等待，晚到回复不能批准后续操作。
  */
 public final class ModelApprovalReviewer {
+    /**
+     * 表示辅助审批模型的三种选择：允许、拒绝或交回人工判断，供审批协调器选择后续通道。
+     */
     public enum Result {
         ALLOW, DENY, ESCALATE
     }
 
     private final LlmClient client;
 
+    /**
+     * 绑定用于辅助审批的模型客户端，由 review 在需要时发送审查请求。
+     *
+     * @param client 用于请求模型的客户端，由装配方确定具体后端
+     */
     public ModelApprovalReviewer(LlmClient client) {
         this.client = client;
     }
@@ -26,6 +34,10 @@ public final class ModelApprovalReviewer {
      * 发一次无工具的辅助请求，核对当前目标是否授权这次操作，不把答案写入聊天历史。
      * 返回 ALLOW 只批准此操作，DENY 明确拒绝，格式不合法/调用失败/20 秒未答则 ESCALATE，
      * 由协调器尝试人工通道。中断按拒绝处理；取消等待不能保证远端网络请求也已停止。
+     *
+     * @param request 固定本次工具、输入、真实身份和权限版本的审批请求
+     * @param goal 本轮真实任务说明，供辅助审批核对操作用途
+     * @return 辅助模型给出的 ALLOW、DENY 或转交人工的结果
      */
     public Result review(ApprovalRequest request, String goal) {
         // JSON 只传必要资料，避免把整个主历史中的不可信指令再次交给审批模型。

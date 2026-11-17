@@ -18,15 +18,8 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jadecode.util.Json;
 
 /**
- * 内部协议 v1 的 UTF-8 / NDJSON 编解码与结构校验。
- *
- * <p>职责边界：本类只负责“字节 ↔ 一条消息”。它不执行命令、不拥有会话，也不知道 UI 语义。
- * 这样 socket 读取线程不会因为业务错误而卡住，业务层也能独立测试。</p>
- *
- * <p>分帧规则：一行一个 JSON 对象，以 {@code \n} 结束。read 可能把一帧拆成任意多段，也可能
- * 一次返回多帧，所以必须按字节累积到换行，不能假设“一次 read 就是一帧”。单帧上限
- * {@link #MAX_FRAME_BYTES}，超限明确失败而不是截断后继续。JSON 字符串里的原始换行一律被
- * 编码器转义，因此按 {@code \n} 切分不会把正文劈开。</p>
+ * 处理内部协议 v1 的 UTF-8 NDJSON 编解码与结构校验。一行一条 JSON，以换行符结束；读取时持续累积字节至完整帧，
+ * 检查单帧字节上限，再解析消息身份、序号、类型与载荷。JSON 字符串换行由编码器转义。
  */
 public final class WireCodec {
     /** 协议版本；JAR 与前端必须一致。 */
@@ -56,6 +49,9 @@ public final class WireCodec {
             "task.failed", "approval.requested", "approval.removed", "settings.saved", "settings.failed",
             "diagnostic", "server.stopped", "payload.begin", "payload.chunk", "payload.end");
 
+    /**
+     * 汇集协议帧的 JSON 编码、解码和有界读取方法。
+     */
     private WireCodec() {
     }
 
@@ -63,7 +59,9 @@ public final class WireCodec {
      * 把一条消息编码成“JSON + LF”的 UTF-8 字节。
      *
      * @param message 待发送消息；调用方负责先递增 seq
+     * @return 以换行结尾的一帧完整 UTF-8 字节
      * @throws ProtocolException 编码后超过单帧上限
+     * @throws IOException 协议消息序列化为 JSON 失败
      */
     public static byte[] encode(WireMessage message) throws IOException, ProtocolException {
         ObjectNode envelope = Json.mapper().createObjectNode();
@@ -98,8 +96,11 @@ public final class WireCodec {
     /**
      * 从流中读取恰好一帧（不含换行）并解析成消息。
      *
+     * @param input 承载 NDJSON 帧的连接输入流
      * @return 解析后的消息；流在帧开始时已结束则返回 null
      * @throws EOFException 读到半帧就遇到流结束
+     * @throws IOException 连接读取失败或只收到半帧就遇到 EOF
+     * @throws ProtocolException 入站帧超过上限、UTF-8 非法或消息字段校验失败
      */
     public static WireMessage readFrame(InputStream input) throws IOException, ProtocolException {
         ByteArrayOutputStream buffer = new ByteArrayOutputStream(256);
@@ -126,6 +127,10 @@ public final class WireCodec {
      *
      * <p>校验顺序：JSON 结构 → 版本 → 类型白名单 → envelope 字段类型。任何一步失败都抛
      * {@link ProtocolException}，且不会执行任何命令。</p>
+     *
+     * @param line 一条尚未解析的完整 NDJSON 文本
+     * @return 通过版本、类型和字段检查的 WireMessage
+     * @throws ProtocolException JSON 格式、协议版本、消息类型、字段类型或整数格式错误
      */
     public static WireMessage parse(String line) throws ProtocolException {
         JsonNode root;
@@ -157,7 +162,15 @@ public final class WireCodec {
         return new WireMessage(version, connectionId, seq, type, commandId, sessionId, generation, objectPayload);
     }
 
-    /** 必填/可空文本字段；类型不对时明确失败，不做隐式字符串化。 */
+    /**
+     * 必填/可空文本字段；类型不对时明确失败，不做隐式字符串化。
+     *
+     * @param root 待检查字段所属的协议帧 JSON 对象
+     * @param field 本次读取或写入的 JSON 字段名
+     * @param nullable 该字段是否允许缺失或 JSON null
+     * @return 字段的原始字符串；允许空缺且字段缺失时为 null
+     * @throws ProtocolException 必填字段缺失或已有值不是字符串
+     */
     private static String text(JsonNode root, String field, boolean nullable) throws ProtocolException {
         JsonNode node = root.path(field);
         if (node.isMissingNode() || node.isNull()) {
@@ -170,7 +183,15 @@ public final class WireCodec {
         return node.textValue();
     }
 
-    /** 十进制字符串形式的 Java long；JS 不会因此丢失精度。 */
+    /**
+     * 十进制字符串形式的 Java long；JS 不会因此丢失精度。
+     *
+     * @param root 待检查字段所属的协议帧 JSON 对象
+     * @param field 本次读取或写入的 JSON 字段名
+     * @param nullable 该字段是否允许缺失或 JSON null
+     * @return 十进制文本表示的 long 值
+     * @throws ProtocolException 字段缺失或不是可解析为 long 的十进制字符串
+     */
     private static long longText(JsonNode root, String field, boolean nullable) throws ProtocolException {
         String value = text(root, field, nullable);
         if (value == null)
@@ -183,7 +204,13 @@ public final class WireCodec {
         }
     }
 
-    /** 严格 UTF-8 解码：非法字节是协议错误，不能用替换字符掩盖。 */
+    /**
+     * 严格 UTF-8 解码：非法字节是协议错误，不能用替换字符掩盖。
+     *
+     * @param bytes 单帧 UTF-8 字节，尚未进行文本解码
+     * @return 严格解码后的 UTF-8 文本
+     * @throws ProtocolException 字节包含不合法或无法映射的 UTF-8 序列
+     */
     private static String decodeUtf8(byte[] bytes) throws ProtocolException {
         CharsetDecoder decoder = StandardCharsets.UTF_8.newDecoder()
                 .onMalformedInput(CodingErrorAction.REPORT)

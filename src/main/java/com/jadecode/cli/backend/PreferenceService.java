@@ -14,24 +14,38 @@ import com.jadecode.config.JadeSettings;
 import com.jadecode.safety.PermissionProfile;
 
 /**
- * 统一 {@code config.json} 的唯一进程内写者：设置白名单 patch、默认权限、revision 与退出等待。
- *
- * <p>Node 不写配置文件，只发送“这组白名单字段 + 我看到的 configRevision”。这里串行执行：
- * 每批基于最新文件合并（{@link JadeConfigFile#saveTui} 保留未知字段），写成功后才发布新
- * revision 与设置快照；写失败返回真实错误并保留可重试状态。连续快速切换时后一批等待前一批
- * 落盘，不会因为旧 revision 被误报成冲突。</p>
- *
- * <p>退出最多等 2 秒（沿用既有预算）；超时如实报告未保存，不声称已落盘。</p>
+ * 串行保存 config.json 的白名单设置补丁与默认权限。按客户端所见版本检查修改，再基于最新文件合并；
+ * 写入成功发布新的设置快照与 revision，失败经回调返回。退出时通过 awaitWrites 等待已提交保存。
  */
 public final class PreferenceService implements AutoCloseable {
-    /** 保存结果回调：成功给出新设置与 revision，失败给出真实异常。 */
+    /**
+     * 保存结果回调：成功给出新设置与 revision，失败给出真实异常。
+     */
     public interface Callback {
+        /**
+         * 配置写入成功后接收已发布设置、新版本和本次补丁，供后端向界面确认保存结果。
+         *
+         * @param settings 本次装配或保存的应用设置快照
+         * @param revision 本次操作依据的版本号，用于读取后修改时核对状态
+         * @param patch 本次需要保存的白名单字段与新值
+         */
         void saved(JadeSettings settings, long revision, Map<String, Object> patch);
 
+        /**
+         * 配置写入失败后接收 IO 异常和本次补丁，供后端显示错误并保留待重试修改。
+         *
+         * @param failure 已经发生的 IO、模型或执行异常，供原任务收尾与回执使用
+         * @param patch 本次需要保存的白名单字段与新值
+         */
         void failed(IOException failure, Map<String, Object> patch);
     }
 
-    /** 一次设置的“已保存基线”：Node 用它校验 patch 是否基于当前版本。 */
+    /**
+     * 一次设置的“已保存基线”：Node 用它校验 patch 是否基于当前版本。
+     *
+     * @param settings 本次装配或保存的应用设置快照
+     * @param revision 本次操作依据的版本号，用于读取后修改时核对状态
+     */
     public record State(JadeSettings settings, long revision) {
     }
 
@@ -45,14 +59,21 @@ public final class PreferenceService implements AutoCloseable {
     private long revision;
 
     /**
+     * 绑定统一配置文件，读取初始设置并建立串行保存队列，供终端设置与默认权限共用。
+     *
      * @param path 统一配置文件路径（生产为 {@code ~/.jadecode/config/config.json}）
+     * @throws IOException 配置目录或初始设置文件读取失败
      */
     public PreferenceService(Path path) throws IOException {
         this.file = new JadeConfigFile(path);
         this.settings = file.load();
     }
 
-    /** @return 当前已保存快照；调用方不得修改返回对象。 */
+    /**
+     * 读取最近成功保存后发布的设置与版本，形成调用方可并发读取的状态快照。
+     *
+     * @return 当前已保存快照；调用方不得修改返回对象。
+     */
     public synchronized State state() {
         return new State(settings, revision);
     }
@@ -60,8 +81,9 @@ public final class PreferenceService implements AutoCloseable {
     /**
      * 排队保存一个 TUI 白名单 patch。
      *
+     * @param patch 本次需要保存的白名单字段与新值
      * @param expectedRevision Node 看到的当前版本；不等于最新版本时明确拒绝
-     * @param callback         结果回调（在写线程执行，调用方负责转成事件）
+     * @param callback 结果回调（在写线程执行，调用方负责转成事件）
      */
     public void apply(Map<String, Object> patch, long expectedRevision, Callback callback) {
         Map<String, Object> copy = Map.copyOf(patch == null ? Map.of() : patch);
@@ -88,7 +110,13 @@ public final class PreferenceService implements AutoCloseable {
         });
     }
 
-    /** 保存用户显式选择的启动默认权限；与临时选择分开，失败不改变内存档位。 */
+    /**
+     * 保存用户显式选择的启动默认权限；与临时选择分开，失败不改变内存档位。
+     *
+     * @param profile 当前选择的权限档位
+     * @param expectedRevision 调用方看到的旧版本，用于确认本次修改依据仍有效
+     * @param callback 配置保存完成或失败后的结果回调
+     */
     public void saveDefaultPermission(PermissionProfile profile, long expectedRevision, Callback callback) {
         writes.execute(() -> {
             synchronized (this) {
@@ -113,7 +141,11 @@ public final class PreferenceService implements AutoCloseable {
         });
     }
 
-    /** 退出时等待已排队的写入（最多 2 秒）；超时抛出真实错误。 */
+    /**
+     * 退出时等待已排队的写入（最多 2 秒）；超时抛出真实错误。
+     *
+     * @throws IOException 已有保存任务失败、等待中断或超出退出等待预算
+     */
     public void awaitWrites() throws IOException {
         CompletableFuture<Void> done = new CompletableFuture<>();
         writes.execute(() -> done.complete(null));
@@ -127,6 +159,9 @@ public final class PreferenceService implements AutoCloseable {
         }
     }
 
+    /**
+     * 停止接收配置写入任务，最多等待两秒完成队列中已有的保存；等待中断时恢复线程中断标记。
+     */
     @Override
     public void close() {
         writes.shutdown();
@@ -137,7 +172,13 @@ public final class PreferenceService implements AutoCloseable {
         }
     }
 
-    /** 供测试/诊断：把一次设置变化转成快照更新（不写文件）。 */
+    /**
+     * 供测试/诊断：把一次设置变化转成快照更新（不写文件）。
+     *
+     * @param listener 配置成功保存后接收新设置与版本的通知函数
+     * @param settings 本次装配或保存的应用设置快照
+     * @param revision 本次操作依据的版本号，用于读取后修改时核对状态
+     */
     static void notifyChange(BiConsumer<JadeSettings, Long> listener, JadeSettings settings, long revision) {
         listener.accept(settings, revision);
     }

@@ -14,14 +14,8 @@ import com.jadecode.safety.PermissionState;
 import com.jadecode.session.SessionRuntime;
 
 /**
- * 两种运行方式共用的会话装配：交互后端与 headless 只决定注入谁，不复制工厂。
- *
- * <p>为什么需要它：{@link JadeCodeFactory} 已有完整装配（工具、权限、Team、MCP、Memory），
- * 但它的多个重载会自行读取用户配置。这里固定使用“同一份设置快照 + 同一份权限状态”，
- * 保证 TUI 保存的设置与压缩器/提示词使用同一版本，也保证 headless 不会因为另一次读盘而
- * 悄悄换了权限档位。</p>
- *
- * <p>不承担：不创建终端、不启动 Node、不写配置文件、不执行模型请求。</p>
+ * 使用同一份设置、权限状态和模型配置创建会话运行时。服务先绑定工作区和范围领取器；create 准备模型元数据与客户端，
+ * 再将显式依赖交给 JadeCodeFactory，供交互和 headless 共用装配。
  */
 public final class RuntimeFactory {
     private final JadeSettings settings;
@@ -36,7 +30,13 @@ public final class RuntimeFactory {
     private com.jadecode.sandbox.DockerRuntime.WriteScopes writeScopes;
     private com.jadecode.workspace.ManagedWorkspace managed;
 
-    /** 只在运行时装配前绑定独立工作区，/new 和 /resume 继续沿用同一资源身份。 */
+    /**
+     * 在创建运行时前绑定受管工作区并返回工厂自身，供服务继续接线；工厂已使用时抛出 IllegalStateException。
+     *
+     * @param value 此工厂后续运行时共用的受管工作区
+     * @return 当前工厂，供继续链式接线
+     * @throws IllegalStateException 已经创建运行时，受管工作区接线已固定
+     */
     public RuntimeFactory managed(com.jadecode.workspace.ManagedWorkspace value) {
         if (created)
             throw new IllegalStateException("Runtime factory is already fixed");
@@ -44,12 +44,20 @@ public final class RuntimeFactory {
         return this;
     }
 
+    /**
+     * 返回此工厂绑定的受管工作区，普通项目会话返回 null。
+     *
+     * @return 已绑定的受管工作区；普通项目为 null
+     */
     public com.jadecode.workspace.ManagedWorkspace managed() {
         return managed;
     }
 
     /**
      * 一次启动固定模型配置，恢复/切换会话不重新混入项目文件；不联网，不改变工作区。
+     *
+     * @param settings 本次装配或保存的应用设置快照
+     * @param permissions 会话与工具检查器共用的权限状态
      * @param selectedModelConfig 显式选择的 JSON 路径，null 选全局默认；缺少全局文件时仅用进程环境
      * @throws IllegalStateException 配置缺失、损坏或无效；诊断不包含凭据原文
      */
@@ -59,7 +67,14 @@ public final class RuntimeFactory {
         this.modelConfig = ModelConfigLoader.load(selectedModelConfig);
     }
 
-    /** 服务在装配前绑定真实工作区与同组占用入口；此方法不更改进程工作目录。 */
+    /**
+     * 在创建运行时前绑定真实工作区和可写范围领取器，返回工厂自身；已创建运行时后抛出 IllegalStateException。
+     *
+     * @param path 本次读取、授权或校验的路径，按方法说明解析到实际目标
+     * @param scopes 为容器可写挂载领取范围占用的服务接口
+     * @return 当前工厂，供继续链式接线
+     * @throws IllegalStateException 已经创建运行时，目录与可写范围入口已固定
+     */
     public RuntimeFactory workspace(Path path, com.jadecode.sandbox.DockerRuntime.WriteScopes scopes) {
         if (created)
             throw new IllegalStateException("Runtime factory workspace is already fixed");
@@ -72,6 +87,10 @@ public final class RuntimeFactory {
      * 仅为明确请求预算的调用方设置每轮累计用量软上限，默认不调用此入口。
      * 正整数包含同组 Agent 和辅助请求；/new、/resume 沿用显式策略。
      * 不修改用户配置、不发模型请求；工厂装配后或非正数输入立即失败。
+     *
+     * @param value 每轮累计用量的正数软上限，单位 token
+     * @return 保存正数轮次 token 软上限后的当前工厂
+     * @throws IllegalArgumentException 额度不是正数或运行时工厂已经使用
      */
     public RuntimeFactory tokenBudget(long value) {
         if (created || value < 1)
@@ -80,15 +99,33 @@ public final class RuntimeFactory {
         return this;
     }
 
+    /**
+     * 返回此工厂创建会话时使用的工作区目录。
+     *
+     * @return 后续会话实际使用的工作目录
+     */
     public Path workspace() {
         return workspace;
     }
 
+    /**
+     * 返回当前执行机器的用户数据布局，供会话存储、缓存和服务接线使用。
+     *
+     * @return 本执行机器的用户数据布局
+     */
     public com.jadecode.config.JadePaths paths() {
         return paths;
     }
 
-    /** 离线验证注入客户端和数据根，不读取真实认证或联网查询模型目录。 */
+    /**
+     * 离线验证注入客户端和数据根，不读取真实认证或联网查询模型目录。
+     *
+     * @param settings 本次装配或保存的应用设置快照
+     * @param permissions 会话与工具检查器共用的权限状态
+     * @param config 已解析的模型运行配置，提供模型名、端点和请求额度
+     * @param client 用于请求模型的客户端，由装配方确定具体后端
+     * @param paths 执行机器用户数据根与配置、缓存布局
+     */
     public RuntimeFactory(JadeSettings settings, PermissionState permissions, AppConfig config,
             com.jadecode.llm.LlmClient client, com.jadecode.config.JadePaths paths) {
         this.settings = settings;
@@ -98,23 +135,32 @@ public final class RuntimeFactory {
         this.paths = paths;
     }
 
-    /** @return 本会话共享的设置快照（只读）。 */
+    /**
+     * 读取工厂后续创建会话时共用的应用设置快照。
+     *
+     * @return 本会话共享的设置快照（只读）。
+     */
     public JadeSettings settings() {
         return settings;
     }
 
-    /** @return 本会话共享的权限状态；TUI 与 headless 都必须用这一份。 */
+    /**
+     * 读取工厂与终端操作共用的权限状态，供新建与恢复会话沿用。
+     *
+     * @return 本会话共享的权限状态；TUI 与 headless 都必须用这一份。
+     */
     public PermissionState permissions() {
         return permissions;
     }
 
     /**
-     * 装配一个尚未 start 的会话。
+     * 首次创建时固定工厂，使用注入客户端或按模型配置解析元数据并建立 SDK 客户端，发送模型资料事件。
+     * 将工作区、设置、权限、显示与压缩依赖交给 JadeCodeFactory，应用显式轮次预算，返回待启动运行时。
      *
-     * @param output   程序整条输出（最终回答、通知）；实现必须立即返回
-     * @param errors   真实错误输出
-     * @param streams  Leader 每个正式请求的流式出口
-     * @param observer 只读运行观察（工具/计时/后台）
+     * @param messages 会话消息接收者
+     * @param streams 每次正式 Leader 请求的流式出口工厂
+     * @param observer 工具、轮次、用量与后台状态观察器
+     * @return 已完成装配、等待宿主恢复和启动的会话
      */
     public SessionRuntime create(Consumer<com.jadecode.execution.RuntimeMessage> messages,
             Supplier<ResponseStream> streams, ExecutionObserver observer) {

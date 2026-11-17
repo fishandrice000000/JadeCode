@@ -2,21 +2,41 @@ package com.jadecode.safety.approval;
 
 import com.jadecode.safety.*;
 
-/** 处理已经确定需要审批的请求，不解释 shell。来源资格由 Gate 判断，这里不依赖执行上下文。 */
+/**
+ * 为已经判定需要审批的操作选择用户或辅助模型通道，结合权限版本变化返回允许、拒绝或重新检查的结果。
+ */
 public final class ApprovalCoordinator {
-    /** 答复与拒绝原因一起返回，避免把“无人可审批”说成已由用户拒绝。 */
+    /**
+     * 答复与拒绝原因一起返回，避免把“无人可审批”说成已由用户拒绝。
+     *
+     * @param answer 本次审批的允许、拒绝或重新检查结果
+     * @param reason 当前事件来源或失败的业务原因
+     */
     public record Outcome(ApprovalAnswer answer, String reason) {
     }
 
     private final ModelApprovalReviewer reviewer;
 
+    /**
+     * 绑定辅助审批模型，供 Approve for Me 档位审查普通询问；需要人工判断的操作沿人工通道处理。
+     *
+     * @param reviewer 辅助审批模型入口，用于普通操作的自动审查
+     */
     public ApprovalCoordinator(ModelApprovalReviewer reviewer) {
         this.reviewer = reviewer;
     }
 
     /**
-     * never 直接拒绝。普通询问可交辅助模型；强制人工、不确定或审查失败则使用可用人工通道。
-     * 配置变化只要求 Gate 重判，不把变化本身解释为用户同意。
+     * 先核对请求权限版本和档位审批策略。普通询问在 Approve for Me 下交给辅助模型，明确允许或拒绝直接返回；
+     * 需要人工或模型无法确认时转交用户。等待期间订阅权限变化，版本变化返回 RECHECK；
+     * 无人工通道或审批异常返回带原因的 DENY。
+     *
+     * @param request 固定本次工具、输入、真实身份和权限版本的审批请求
+     * @param decision 权限门已经作出的询问决定，包含原因及是否要求人工
+     * @param state 当前运行组共享的权限档位、规则和版本状态
+     * @param human 本次操作可用的人工审批通道；null 表示无法交给用户作答
+     * @param goal 本轮真实任务说明，供辅助审批核对操作用途
+     * @return 允许、拒绝或 RECHECK 结果，以及相应的业务原因
      */
     public Outcome request(ApprovalRequest request, PermissionDecision decision, PermissionState state, Approval human,
             String goal) {

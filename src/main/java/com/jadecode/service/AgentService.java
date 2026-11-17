@@ -15,13 +15,24 @@ import com.jadecode.safety.*;
 import com.jadecode.util.Json;
 
 /**
- * 同一用户的常驻 Agent 服务。它拥有会话和配置写者，UDS 连接只是可替换的控制入口。
- * 每个工作区至多一个打开的顶层运行组，Team/子代理仍由原工厂装配和关闭。
- * 服务崩溃后的记录只标记中断，不自动创建运行时或重放旧操作。
+ * 持有一个用户数据根内的运行会话、共享配置写者、工作区占用和维护调度。
+ * 打开请求复用已有会话或领取范围后创建新运行组；控制连接可更换，显式关闭或闲置维护释放会话，
+ * 启动时从旧清单核对中断资源。
  */
 public final class AgentService implements AutoCloseable {
+    /**
+     * 常驻服务创建 RuntimeFactory 的入口，使生产配置与隔离测试各自提供会话运行时的装配方式。
+     */
     @FunctionalInterface
     public interface Factories {
+        /**
+         * 按工作区、会话权限状态和指定模型配置创建运行时工厂，供常驻服务为新会话装配模型与工具依赖。
+         *
+         * @param workspace 会话绑定的真实工作区目录
+         * @param permissions 会话与工具检查器共用的权限状态
+         * @param modelConfig 本次选择的模型配置文件路径
+         * @return 已选择模型配置、等待绑定工作区资源的运行时工厂
+         */
         RuntimeFactory create(Path workspace, PermissionState permissions, Path modelConfig);
     }
 
@@ -36,7 +47,11 @@ public final class AgentService implements AutoCloseable {
     private final com.jadecode.workspace.ManagedWorkspaceStore workspaces;
     private final String executionHost = hostname();
 
-    /** 主机名仅供确认执行目标；不作为认证或权限依据。 */
+    /**
+     * 主机名仅供确认执行目标；不作为认证或权限依据。
+     *
+     * @return 执行机器主机名；读取失败时为 unknown
+     */
     private static String hostname() {
         try {
             return Files.readString(Path.of("/etc/hostname")).strip();
@@ -47,7 +62,14 @@ public final class AgentService implements AutoCloseable {
 
     private volatile boolean closed;
 
-    /** 生产只读装配配置，不启动模型；测试通过 factories 注入假客户端与临时数据根。 */
+    /**
+     * 生产只读装配配置，不启动模型；测试通过 factories 注入假客户端与临时数据根。
+     *
+     * @param paths 此服务使用的用户数据布局
+     * @param buildId 当前成套服务产物的构建身份
+     * @param factories 按工作区、权限和模型配置创建运行时工厂的入口
+     * @throws IOException 服务目录、配置、旧会话清单或中断资源恢复失败
+     */
     public AgentService(JadePaths paths, String buildId, Factories factories) throws IOException {
         this.paths = paths;
         this.buildId = buildId;
@@ -75,7 +97,24 @@ public final class AgentService implements AutoCloseable {
         reaper.scheduleWithFixedDelay(this::maintain, 1, 1, TimeUnit.SECONDS);
     }
 
-    /** 真实目录解析后批量检查占用；失败不留下半初始化的会话或租约。 */
+    /**
+     * 复用或创建一个由服务持有的顶层会话运行组。
+     *
+     * <p>处理过程：</p>
+     * <ol>
+     * <li>显式 attach 直接查找已有服务 ID 或持久会话 ID。</li>
+     * <li>新打开意图解析普通目录、独立工作区或受管 ID，核对真实路径与数据根边界。</li>
+     * <li>同工作区已有可复用会话时返回该组，否则检查冲突和八组容量上限。</li>
+     * <li>领取工作区可写占用，从已保存配置创建独立权限状态，应用显式档位和模型路径，装配 Managed。</li>
+     * <li>登记运行组并原子保存服务清单；失败关闭候选资源，确认停止后才释放占用。</li>
+     * </ol>
+     *
+     * <p>本方法持服务锁协调登记；模型与消费线程在控制连接完成快照 ready 后启动。</p>
+     *
+     * @param request service.open 的完整载荷，声明工作区、恢复、attach、权限和首轮意图
+     * @return 复用或新建的顶层运行组，模型循环等待客户端 ready
+     * @throws IOException 服务关闭、工作区或权限选择非法、已有范围冲突，或装配登记失败
+     */
     public synchronized Managed open(ObjectNode request) throws IOException {
         if (closed)
             throw new IOException("Agent service is stopping");
@@ -157,7 +196,12 @@ public final class AgentService implements AutoCloseable {
         }
     }
 
-    /** 列表仅含安全的身份和运行资料，不返回配置对象或审批参数。 */
+    /**
+     * 构造当前主机与服务所有者身份及会话清单，列出工作区、连接、审批数、运行状态、模型和权限；
+     * 关闭中的会话按清理结果显示 CLOSED 或 CLEANUP_PENDING。
+     *
+     * @return 服务身份与当前会话状态组成的 JSON 清单
+     */
     public synchronized ObjectNode list() {
         var result = Json.mapper().createObjectNode().put("host", executionHost).put("owner",
                 ProcessHandle.current().pid() + "@" +
@@ -182,7 +226,13 @@ public final class AgentService implements AutoCloseable {
         return result;
     }
 
-    /** 管理命令通过私有服务连接到达；工作区占用只在确切资源停止后释放。 */
+    /**
+     * 按服务 ID 或持久会话 ID 找到运行组并关闭后端，确认停止后关闭审计、归还工作区占用、移除登记并保存清单，
+     * 再发送最终关闭回执。清理失败保留登记并标为 cleanupPending。
+     *
+     * @param id 服务运行组 ID 或持久会话 ID，用于找到唯一运行组
+     * @throws IOException 会话不存在、所属资源尚未停止、审计关闭或清单保存失败
+     */
     public synchronized void closeSession(String id) throws IOException {
         Managed managed = sessions.get(id);
         if (managed == null)
@@ -205,7 +255,12 @@ public final class AgentService implements AutoCloseable {
         managed.backend.publishClosed(null);
     }
 
-    /** 同用户管理连接的明确停止请求；窗口是否正在审批不影响这个取消入口。 */
+    /**
+     * 按会话 ID 找到运行组，将当前轮次取消请求交给后端串行线程，并最多等待二十秒；查找或取消失败以 IOException 返回。
+     *
+     * @param id 服务运行组 ID 或持久会话 ID，用于找到唯一运行组
+     * @throws IOException 会话不存在或取消请求未在等待上限内完成
+     */
     public synchronized void stopSession(String id) throws IOException {
         Managed managed = sessions.get(id);
         if (managed == null)
@@ -219,11 +274,23 @@ public final class AgentService implements AutoCloseable {
         }
     }
 
+    /**
+     * 在服务锁内把当前会话清单原子写入 service/sessions.json，供管理查询和后续启动恢复登记状态使用；
+     * 写入失败抛出 IOException。
+     *
+     * @throws IOException 服务会话清单原子写入失败
+     */
     private synchronized void persist() throws IOException {
         JadePaths.atomicWrite(directory.resolve("sessions.json"), list().toString());
     }
 
-    /** 用户管理入口与模型工具分开；删除前检查顶层占用，不因会话窗口关闭而删工作文件。 */
+    /**
+     * 用户管理入口与模型工具分开；删除前检查顶层占用，不因会话窗口关闭而删工作文件。
+     *
+     * @param input 工作区管理命令载荷，包含操作种类及其资源字段
+     * @return 本次工作区管理或传输操作的 JSON 回执
+     * @throws IOException 工作区管理或传输参数不合法，范围冲突或对应文件操作失败
+     */
     public synchronized ObjectNode workspaceCommand(ObjectNode input) throws IOException {
         if (closed)
             throw new IOException("Agent service is stopping");
@@ -240,6 +307,9 @@ public final class AgentService implements AutoCloseable {
     /**
      * 崩溃恢复先确认旧进程死亡，再回收其确切标签容器；失败保留原清单，不能放行工作区。
      * 曾执行 Full Access/非沙箱工具的旧会话无法仅凭 Docker 确认清理，要求操作者先检查现场。
+     *
+     * @param index 当前条目或协议选项的下标
+     * @throws IOException 旧清单或进程归属无法确认、所属容器清理未确认
      */
     private void recoverInterrupted(Path index) throws IOException {
         var saved = Json.mapper().readTree(Files.readString(index));
@@ -293,7 +363,10 @@ public final class AgentService implements AutoCloseable {
             }
     }
 
-    /** 定向取消超长执行；等待审批有自己的期限。无连接且真正闲置才按半小时回收。 */
+    /**
+     * 每次维护检查运行会话，按执行时长策略取消超长任务；
+     * 无控制连接、无待审批且运行时真正闲置超过半小时的会话进入关闭回收。
+     */
     private synchronized void maintain() {
         if (closed)
             return;
@@ -333,6 +406,10 @@ public final class AgentService implements AutoCloseable {
         }
     }
 
+    /**
+     * 标记服务关闭，停止会话维护调度，并逐个关闭当前登记的会话。单个会话清理失败时输出诊断后继续处理其余会话，
+     * 最后关闭共享配置服务。
+     */
     @Override
     public synchronized void close() {
         closed = true;
@@ -346,7 +423,9 @@ public final class AgentService implements AutoCloseable {
         preferences.close();
     }
 
-    /** 顶层运行组；持有后端、输出、审计和工作区租约，不持有某个终端窗口。 */
+    /**
+     * 顶层运行组；持有后端、输出、审计和工作区租约，不持有某个终端窗口。
+     */
     public final class Managed {
         public final String id;
         public final Path workspace;
@@ -361,6 +440,17 @@ public final class AgentService implements AutoCloseable {
         volatile boolean hostExecution;
         volatile boolean cleanupPending;
 
+        /**
+         * 接管会话的工作区占用，创建私有审计日志和展示通道，按打开请求生成启动意图并装配持久后端。随后打开或恢复首个会话；
+         * 失败时关闭后端与日志，并以 IOException 返回。消费线程由握手 ready 阶段启动。
+         *
+         * @param id 此顶层运行组的服务登记 ID
+         * @param workspace 会话绑定的真实工作区目录
+         * @param lease 当前顶层会话已经领取的工作区可写范围句柄
+         * @param factory 根据会话代次创建完整运行时的工厂
+         * @param request 打开会话时固定的工作区、启动模式和初始任务意图
+         * @throws IOException 审计日志创建、会话恢复或运行时打开失败
+         */
         Managed(String id, Path workspace, WorkspaceClaims.Lease lease, RuntimeFactory factory, ObjectNode request)
                 throws IOException {
             this.id = id;
@@ -394,13 +484,30 @@ public final class AgentService implements AutoCloseable {
             }
         }
 
-        /** 为一次控制连接创建协议实例；凭据仅经同用户 UDS/SSH 传给连接者。 */
+        /**
+         * 为一次控制连接创建协议实例；凭据仅经同用户 UDS/SSH 传给连接者。
+         *
+         * @param output 命令有界输出或子代理最终结果正文
+         * @param credential 本次连接握手需要的一次性凭据
+         * @param disconnected 控制连接断开时的回调
+         * @return 绑定本次控制连接与生命周期回调的协议状态机
+         * @throws IOException 此运行组无法接纳本次控制连接或协议接线失败
+         */
         public ProtocolSession protocol(OutputStream output, String credential, Runnable disconnected)
                 throws IOException {
             return protocol(output, credential, disconnected, Json.mapper().createObjectNode());
         }
 
-        /** 新 CLI 可连接已有会话并提交新一轮；ready 重复不重复提交启动意图。 */
+        /**
+         * 新 CLI 可连接已有会话并提交新一轮；ready 重复不重复提交启动意图。
+         *
+         * @param output 命令有界输出或子代理最终结果正文
+         * @param credential 本次连接握手需要的一次性凭据
+         * @param disconnected 控制连接断开时的回调
+         * @param intent 本次重连是否另外携带新一轮用户提交意图
+         * @return 绑定本次控制连接与生命周期回调的协议状态机
+         * @throws IOException 此运行组无法接纳本次控制连接或协议接线失败
+         */
         public ProtocolSession protocol(OutputStream output, String credential, Runnable disconnected,
                 ObjectNode intent) throws IOException {
             // 新连接使用新身份与一次性凭据；旧窗口的输入证据和命令答复不能迁移。
@@ -455,7 +562,12 @@ public final class AgentService implements AutoCloseable {
 
         private final PayloadTransfer.Assembler inbound = new PayloadTransfer.Assembler();
 
-        /** 入站分块必须完整校验后才交给后端；普通命令仍经过其会话/代次检查。 */
+        /**
+         * 入站分块必须完整校验后才交给后端；普通命令仍经过其会话/代次检查。
+         *
+         * @param original 原执行上下文或原始资源，供派生对象沿用身份
+         * @param connectionId 本次控制连接的唯一身份
+         */
         private void dispatch(WireMessage original, String connectionId) {
             WireMessage command = new WireMessage(original.version(), original.connectionId(), original.seq(),
                     original.type(),

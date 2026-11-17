@@ -15,6 +15,11 @@ public final class ShellPermissionCheck implements ToolPermissionCheck {
     private static final Set<String> QUERY = Set.of("pwd", "echo", "printf", "true", "false", "ls", "cat", "head",
             "tail", "wc", "stat", "readlink");
 
+    /**
+     * 绑定工作区路径解析器，供Shell 分析按各命令段的工作目录解析读写目标。
+     *
+     * @param resolver 绑定真实工作区的路径解析器，用于定位相对路径和链接目标
+     */
     public ShellPermissionCheck(PathResolver resolver) {
         this.resolver = resolver;
     }
@@ -23,6 +28,10 @@ public final class ShellPermissionCheck implements ToolPermissionCheck {
      * 为 bash 工具提取可识别读写目标、各段 argv 和工作目录，供规则层匹配。
      * 解析器不执行变量/脚本；无法知道一般程序的内部行为时不把它标成只读。
      * 参数错误与复杂语法分别保存在 error/uncertain；调用方不会因结果为空就视为安全。
+     *
+     * @param tool 模型调用的工具注册名
+     * @param input 本次工具参数 JSON 对象，包含该工具 schema 约定的字段
+     * @return 本次工具的真实工作目录、资源、读写与不确定属性；输入错误保存在 error
      */
     @Override
     public Analysis analyze(String tool, ObjectNode input) {
@@ -118,11 +127,25 @@ public final class ShellPermissionCheck implements ToolPermissionCheck {
                 String.join("; ", reasons));
     }
 
+    /**
+     * 先按当前命令段的工作目录拼接路径，再用共享解析器取得真实目标，供 cd、文件参数和重定向分析使用。
+     *
+     * @param cwd 本次操作起始工作目录，相对路径以此为基准
+     * @param text 本次处理的完整文本，按该入口执行编码、脱敏、显示或组装
+     * @return 按此命令段工作目录解析后的真实目标
+     */
     private Path resolve(Path cwd, String text) {
         return resolver.resolve(cwd.resolve(text));
     }
 
-    /** 原始路径和链接目标都保留，后面的 deny/ask 任一命中即成立。 */
+    /**
+     * 原始路径和链接目标都保留，后面的 deny/ask 任一命中即成立。
+     *
+     * @param resources 本次 Shell 分析累计的资源列表，方法向其中追加原始路径和真实目标
+     * @param cwd 本次操作起始工作目录，相对路径以此为基准
+     * @param text 本次处理的完整文本，按该入口执行编码、脱敏、显示或组装
+     * @param operation 在已取得记忆库短锁后执行的本地读写操作
+     */
     private void addResource(List<Resource> resources, Path cwd, String text, String operation) {
         Path original = cwd.resolve(text).normalize(), real = resolve(cwd, text);
         resources.add(new Resource(real, operation));
@@ -130,7 +153,12 @@ public final class ShellPermissionCheck implements ToolPermissionCheck {
             resources.add(new Resource(original, operation));
     }
 
-    /** 仅识别实际 argv[0]，而不是从整段输入搜索 sudo/shutdown 等片段。 */
+    /**
+     * 从 argv[0] 的最后一个斜杠后提取可执行文件名，供命令读写分类及危险命令匹配使用。
+     *
+     * @param value 命令 argv 的第一个元素，可包含可执行文件路径
+     * @return argv[0] 最后一个斜杠后的程序名
+     */
     public static String executable(String value) {
         int slash = value.lastIndexOf('/');
         return value.substring(slash + 1);

@@ -12,14 +12,8 @@ import com.jadecode.execution.ToolIdentity;
 import com.jadecode.util.Json;
 
 /**
- * 把真实 {@link ExecutionNotice} 转成可信的界面事件，并维护快照需要的运行事实。
- *
- * <p>可信边界：actor 来自工厂绑定，{@link ToolIdentity} 来自宿主注册；模型参数里的文字
- * 只能成为 detail/参数预览，不能赋予工具身份或权限。本类不渲染、不读终端、不猜测成功：
- * {@code RETURNED} 保持中性，错误/阻止/未执行各有真实状态。</p>
- *
- * <p>它同时推进 {@link DisplayClock}（轮次计时）并维护 Team/后台/缓冲的轻量状态；快照刷新
- * 只做节流请求，不会让 UI 每帧从 Java 拉全历史。</p>
+ * 将执行器和会话发布的 ExecutionNotice 转为 execution.notice，携带 Agent 身份、宿主工具身份、状态、耗时和用量。
+ * 与此同时推进 DisplayClock，维护队友、后台和用户缓冲的轻量状态，并请求节流快照刷新。
  */
 public final class BackendObserver implements ExecutionObserver {
     /** detail 超过这个长度时改用 blob，避免单帧过大。 */
@@ -35,6 +29,10 @@ public final class BackendObserver implements ExecutionObserver {
     private volatile String bufferState = "";
 
     /**
+     * 绑定执行事实出口、轮次时钟与状态刷新回调。会话运行时发布通知后，观察器先更新时钟，再发送结构事件并刷新轻量状态。
+     *
+     * @param wire 当前会话代次的事件出口与身份上下文
+     * @param clock 按 Agent 记录轮次显示耗时的时钟
      * @param snapshotRefresh 需要刷新后端快照时调用（内部已节流）；不得在观察线程等渲染
      */
     public BackendObserver(WireContext wire, DisplayClock clock, Consumer<Void> snapshotRefresh) {
@@ -43,6 +41,12 @@ public final class BackendObserver implements ExecutionObserver {
         this.snapshotRefresh = snapshotRefresh;
     }
 
+    /**
+     * 收到执行事实后先更新轮次时钟，再编码事件身份、状态、用量、耗时和宿主工具身份，发送 execution.notice。
+     * 随后更新 Team、后台和缓冲状态，并按事件类型请求状态快照。
+     *
+     * @param notice 当前执行事实，包含 Agent、事件种类、状态、工具身份与用量
+     */
     @Override
     public void accept(ExecutionNotice notice) {
         // 计时先更新：即使下面的展示事件失败，业务状态也不会被显示端裁决。
@@ -74,6 +78,11 @@ public final class BackendObserver implements ExecutionObserver {
         maybeRefreshSnapshot(notice.kind());
     }
 
+    /**
+     * 按轮次开始、暂停、恢复、停止展示计时和结束事件推进对应 Agent 的显示时钟；其他事件维持现有时钟状态。
+     *
+     * @param notice 当前执行事实，包含 Agent、事件种类、状态、工具身份与用量
+     */
     private void clockNotice(ExecutionNotice notice) {
         String actor = notice.actor();
         switch (notice.kind()) {
@@ -88,6 +97,12 @@ public final class BackendObserver implements ExecutionObserver {
         }
     }
 
+    /**
+     * 把会话、用户缓冲和后台通知更新到快照缓存。关闭的 Agent 和完成的后台项从缓存移除；Leader 关闭时重置时钟，
+     * 单个队友关闭时结束该队友时钟。
+     *
+     * @param notice 当前执行事实，包含 Agent、事件种类、状态、工具身份与用量
+     */
     private void trackState(ExecutionNotice notice) {
         switch (notice.kind()) {
             case SESSION -> {
@@ -123,7 +138,11 @@ public final class BackendObserver implements ExecutionObserver {
         }
     }
 
-    /** 常规事件按 250ms 节流刷新 footer；Team 与会话状态变化立即请求快照，不轮询。 */
+    /**
+     * 常规事件按 250ms 节流刷新 footer；Team 与会话状态变化立即请求快照，不轮询。
+     *
+     * @param kind 本次执行通知种类，用于决定快照刷新策略
+     */
     private void maybeRefreshSnapshot(ExecutionNotice.Kind kind) {
         boolean interesting = switch (kind) {
             case USAGE, TOOL_END, TURN_END, SESSION, MODEL, BUFFER, BACKGROUND, COMPACT, WORKFLOW, GOAL, TEAM -> true;
@@ -140,27 +159,45 @@ public final class BackendObserver implements ExecutionObserver {
         snapshotRefresh.accept(null);
     }
 
-    /** @return 真实 Actor → 状态快照；Node 用它显示 Team 身份。 */
+    /**
+     * 读取当前已登记的 Agent 状态，形成供 Team 面板使用的不可变映射。
+     *
+     * @return 真实 Actor → 状态快照；Node 用它显示 Team 身份。
+     */
     public Map<String, String> actors() {
         return Map.copyOf(actors);
     }
 
-    /** @return 后台任务键 → 状态。 */
+    /**
+     * 读取当前尚在展示的后台命令状态，形成界面快照副本。
+     *
+     * @return 后台任务键 → 状态。
+     */
     public Map<String, String> background() {
         return Map.copyOf(background);
     }
 
-    /** @return 最近一次业务缓冲摘要；空串表示没有缓冲。 */
+    /**
+     * 读取最近一次 BUFFER 事实中的用户缓冲摘要。
+     *
+     * @return 最近一次业务缓冲摘要；空串表示没有缓冲。
+     */
     public String bufferSummary() {
         return bufferSummary;
     }
 
-    /** @return 缓冲状态（QUEUED/INSERTION）。 */
+    /**
+     * 读取用户缓冲当前的排队或插入状态。
+     *
+     * @return 缓冲状态（QUEUED/INSERTION）。
+     */
     public String bufferState() {
         return bufferState;
     }
 
-    /** 新会话代次：清空旧事实，避免快照混入上一会话的 Team/后台状态。 */
+    /**
+     * 新会话代次：清空旧事实，避免快照混入上一会话的 Team/后台状态。
+     */
     public void reset() {
         actors.clear();
         background.clear();

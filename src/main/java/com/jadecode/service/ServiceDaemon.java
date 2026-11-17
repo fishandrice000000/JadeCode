@@ -14,14 +14,23 @@ import com.jadecode.config.*;
 import com.jadecode.util.Json;
 
 /**
- * 每个用户数据根唯一的常驻进程入口。启动锁保护注册表，私有 UDS 支持多会话和顺序重连；
- * 控制连接 EOF 仅移除订阅，只有明确的管理命令才关闭会话或服务。
+ * 为每个用户数据根运行一个常驻 Java 服务。持有启动文件锁，发布私有 Unix socket 端点，
+ * 接纳客户端身份探测、管理与会话连接；会话由 AgentService 持有，连接结束时释放该连接的控制资源。
  */
 public final class ServiceDaemon {
+    /**
+     * 汇集常驻服务启动、连接处理和端点回收入口。
+     */
     private ServiceDaemon() {
     }
 
-    /** 阻塞运行服务；全部配置/凭据留在本执行机器，不写入端点发现文件。 */
+    /**
+     * 取得数据根下 daemon 锁，核验旧端点并创建私有 Unix socket，发布进程和构建身份。接纳最多 32 个连接，
+     * 以独立虚拟线程和首帧十秒期限处理请求；停止时关闭服务、执行器和端点文件。成功或已有服务持锁返回 0，
+     * 启动或清理异常返回 1。
+     *
+     * @return 正常停止或已有服务持锁时为 0，启动或清理失败时为 1
+     */
     public static int run() {
         JadePaths paths = JadePaths.defaults();
         Path root = paths.root().resolve("service");
@@ -115,7 +124,25 @@ public final class ServiceDaemon {
         }
     }
 
-    /** 先处理可选的身份探测，再选择管理操作或会话；会话握手仍沿用同一连接，前导不触发模型执行。 */
+    /**
+     * 在一条 Unix socket 上处理服务前导，再接入管理、传输或会话协议。
+     *
+     * <p>处理过程：</p>
+     * <ol>
+     * <li>读取首帧，可先回应 service.identity，并继续在同一输入流读取后续命令。</li>
+     * <li>工作区传输在该连接上逐块往返；list、cancel、close 和 stop 分派到服务管理入口。</li>
+     * <li>service.open 选择运行组并生成随机一次性凭据，先回复打开结果，再把后续帧送到本连接 ProtocolSession。</li>
+     * <li>接收帧直至 EOF；协议错误按 recoverable 决定继续或结束连接。外层服务操作错误尝试返回 service.result。</li>
+     * </ol>
+     *
+     * <p>连接关闭后释放本控制连接资源，运行组仍由 AgentService 持有。</p>
+     *
+     * @param service 当前连接所属的常驻 Agent 服务
+     * @param peer 本次接入的 Unix socket 客户端连接
+     * @param stop 关闭监听 socket、唤醒服务 accept 的回调
+     * @param deadline 首帧等待期限对应的调度任务，前导完成后取消
+     * @throws Exception 服务前导、管理操作或会话协议连接无法完成，且错误答复也未成功写出
+     */
     static void serve(AgentService service, SocketChannel peer, Runnable stop, ScheduledFuture<?> deadline)
             throws Exception {
         InputStream in = ChannelStreams.input(peer);
@@ -203,13 +230,24 @@ public final class ServiceDaemon {
         }
     }
 
+    /**
+     * 生成 32 字节安全随机数，供 service.open 创建本连接的一次性握手凭据。
+     *
+     * @return 用于生成本连接一次性凭据的 32 字节随机数
+     */
     private static byte[] randomBytes() {
         byte[] bytes = new byte[32];
         new java.security.SecureRandom().nextBytes(bytes);
         return bytes;
     }
 
-    /** 只清理私有发现文件登记的旧 UDS；不遍历或 prune 系统临时目录。 */
+    /**
+     * 读取旧端点并比较 PID 与启动时间，旧所有者存活时报错；确认已退出后，核对临时 socket 所在的固定目录布局，
+     * 清理该 socket 与发现文件。
+     *
+     * @param root 当前用户数据根下的 service 目录
+     * @throws IOException 旧端点格式或文件类型非法、旧所有者仍存活，或残留 socket 清理失败
+     */
     private static void cleanupOldEndpoint(Path root) throws IOException {
         Path metadata = root.resolve("endpoint.json");
         if (!Files.exists(metadata, LinkOption.NOFOLLOW_LINKS))
@@ -233,6 +271,13 @@ public final class ServiceDaemon {
         Files.delete(metadata);
     }
 
+    /**
+     * 将服务操作载荷编码为一条 service.result 帧，写入当前连接并立即刷新；编码或写入失败交给连接处理流程。
+     *
+     * @param out 当前连接的输出流
+     * @param p 服务前导或管理操作的 JSON 结果载荷
+     * @throws Exception service.result 序列化、写入或刷新失败
+     */
     private static void reply(OutputStream out, ObjectNode p) throws Exception {
         out.write(WireCodec.encode(WireMessage.event(1, "", "service.result", null, null, p)));
         out.flush();

@@ -13,11 +13,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 /**
- * Linux shell 执行器：同步 bash 与后台命令共用超时、输出和清理语义。
- *
- * <p>权限由调用方在启动前检查。setsid 为每条命令建立独立进程组，退出时清理组内进程；
- * 这不是沙箱，自行另开 session 的程序可能逃离该组。不写输出文件。
- * 实例拥有启动的进程，必须 close；JVM 正常关闭另有兜底，SIGKILL/断电无法兜底。</p>
+ * 同步执行一条 Shell 命令，统一收集退出码、有界输出、超时与取消结果。注入 runner 时交给受限后端；
+ * 本地入口使用 setsid /bin/sh -c，并在收尾时清理原进程组。实例管理其启动的进程，由会话或一次调用的资源块关闭。
  */
 public final class ShellCommand implements AutoCloseable {
     private static final int MAX_OUTPUT = 50_000;
@@ -26,9 +23,21 @@ public final class ShellCommand implements AutoCloseable {
     /** 注入的执行后端；null 仅供明确的宿主/离线入口使用。 */
     private final Runner runner;
 
-    /** 同步/后台共用的执行契约，必须保留超时、取消和失败状态。 */
+    /**
+     * 同步/后台共用的执行契约，必须保留超时、取消和失败状态。
+     */
     @FunctionalInterface
     public interface Runner {
+        /**
+         * 使用给定命令、超时时间和取消条件执行 Shell，返回退出码、输出及截断状态。生产环境可注入 Docker runner，
+         * 容器内使用本地 runner。
+         *
+         * @param command 本次需要执行或解析的完整 Shell 命令文本
+         * @param cwd 本次操作起始工作目录，相对路径以此为基准
+         * @param timeoutSeconds 每次命令或容器操作的正数等待上限，单位秒
+         * @param context 当前轮次的来源、身份、审批通道、派工范围和取消检查
+         * @return 本次执行的退出码、有界输出和截断状态
+         */
         Result run(String command, Path cwd, long timeoutSeconds, com.jadecode.execution.ExecutionContext context);
     }
 
@@ -39,15 +48,24 @@ public final class ShellCommand implements AutoCloseable {
     private volatile boolean closed;
 
     /**
-     * 绑定工作区和超时，不创建线程/进程、不注册 hook。
-     * @param cwd shell 初始目录；内部 cd 不改变其他命令目录
-     * @param timeoutSeconds 正数，每条命令独立计时
+     * 绑定命令初始目录和每条命令的正数超时，使用本地进程执行入口。调用 run 时启动命令，内部 cd 只影响该次 Shell。
+     *
+     * @param cwd 本次操作起始工作目录，相对路径以此为基准
+     * @param timeoutSeconds 每次命令或容器操作的正数等待上限，单位秒
      */
     public ShellCommand(Path cwd, long timeoutSeconds) {
         this(cwd, timeoutSeconds, null);
     }
 
-    /** 保存可信后端；构造不启动程序，Docker 失败不会自动使用宿主。 */
+    /**
+     * 规范化工作目录、校验正数超时并保存可选 runner；传入后端时由后端执行，runner 为 null 时使用本地进程。
+     * 非法超时抛出 IllegalArgumentException。
+     *
+     * @param cwd 本次操作起始工作目录，相对路径以此为基准
+     * @param timeoutSeconds 每次命令或容器操作的正数等待上限，单位秒
+     * @param runner Shell 执行后端；null 时使用本地进程入口
+     * @throws IllegalArgumentException 每条命令的 timeoutSeconds 不是正数
+     */
     public ShellCommand(Path cwd, long timeoutSeconds, Runner runner) {
         if (timeoutSeconds <= 0) {
             throw new IllegalArgumentException("timeoutSeconds must be positive");
@@ -57,9 +75,19 @@ public final class ShellCommand implements AutoCloseable {
         this.runner = runner;
     }
 
-    /** 最终结果：exitCode=null 表示超时/IO/中断；output 有界，truncated 表示不完整。 */
+    /**
+     * 最终结果：exitCode=null 表示超时/IO/中断；output 有界，truncated 表示不完整。
+     *
+     * @param output 命令有界输出或子代理最终结果正文
+     * @param exitCode 实际进程退出码；null 表示未取得正常退出状态
+     * @param truncated 返回的输出是否因保留预算而截断
+     */
     public record Result(String output, Integer exitCode, boolean truncated) {
-        /** 工具协议文本：非零退出明确失败，不能仅把错误命令的 stdout 当作成功结果。 */
+        /**
+         * 将命令结果转换为工具文本：空输出显示 no output，非零退出码在原输出前加状态说明，其余情况返回输出正文。
+         *
+         * @return 原始有界输出；空输出显示占位，非零退出附带状态说明
+         */
         public String text() {
             String body = output.isEmpty() ? "(no output)" : output;
             return exitCode != null && exitCode != 0
@@ -69,20 +97,26 @@ public final class ShellCommand implements AutoCloseable {
     }
 
     /**
-     * 阻塞执行已获准的非空命令，普通系统失败作为 Result 返回，不重试、不回滚副作用。
+     * 以当前工作目录和默认超时同步执行命令，使用空上下文调用完整入口。返回带退出码、有界输出和截断状态的 Result。
      *
-     * <p>等待线程负责超时，读线程同时排空 stdout/stderr。截断只限制保留内容，不停止读取，
-     * 否则子进程写满管道仍会卡住。最多保留 50,000 个 Java 字符。</p>
-     * @param command 已校验的 shell 文本
-     * @return 只有 exitCode=0 才算成功，失败保留原因
+     * @param command 本次需要执行或解析的完整 Shell 命令文本
+     * @return 命令结果，正常退出保留实际退出码，超时或执行故障的退出码为 null
      */
     public Result run(String command) {
         return run(command, null);
     }
 
     /**
-     * 工具/后台入口传入可信快照。已注入后端时由后端核验调用级许可并进入容器；
-     * 没有后端的明确宿主/离线路径才创建下面的本地进程。两者均不在此重新审批。
+     * 执行命令并等待实际结果，返回退出码、合并输出和截断标记。
+     *
+     * <p>存在 runner 时为上下文追加 Shell 关闭的取消条件，再交给后端；本地执行时在进程表锁内核对状态，
+     * 注册退出清理并启动 setsid /bin/sh -c。关闭子进程 stdin，虚拟线程持续排空合并输出，主线程检查超时与取消。</p>
+     * <p>进程退出后清理原进程组，取得最多 50000 个 Java 字符的输出。超时、中断、启动或采集失败返回
+     * exitCode 为 null 的错误结果；正常退出保留实际退出码。finally 停止进程、取消采集并移除登记。</p>
+     *
+     * @param command 本次需要执行或解析的完整 Shell 命令文本
+     * @param context 当前轮次的来源、身份、审批通道、派工范围和取消检查
+     * @return 命令结果，正常退出保留实际退出码，超时或执行故障的退出码为 null
      */
     public Result run(String command, com.jadecode.execution.ExecutionContext context) {
         if (runner != null) {
@@ -161,7 +195,14 @@ public final class ShellCommand implements AutoCloseable {
         }
     }
 
-    /** 有界保留、持续排空；大量输出不会持续扩大 StringBuilder。 */
+    /**
+     * 以 UTF-8 持续读取进程合并输出，最多保留 MAX_OUTPUT 个 Java 字符；超过保留量后继续读取并标为 truncated，
+     * 直到 EOF 返回采集结果。
+     *
+     * @param process 本执行器已经启动的命令进程
+     * @return 保留预算内的文本和是否发生截断的标记
+     * @throws IOException 命令合并输出流读取失败
+     */
     private static Captured readOutput(Process process) throws IOException {
         try (var reader = new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8)) {
             StringBuilder text = new StringBuilder();
@@ -177,25 +218,34 @@ public final class ShellCommand implements AutoCloseable {
         }
     }
 
-    /** 读线程自己的不可变结果，不向其他线程暴露可变 buffer。 */
+    /**
+     * 保存输出线程收集的文本及截断状态，供主线程取得结果后构造 Shell 执行结果。
+     *
+     * @param text 本次处理的完整文本，按该入口执行编码、脱敏、显示或组装
+     * @param truncated 返回的输出是否因保留预算而截断
+     */
     private record Captured(String text, boolean truncated) {
     }
 
     /**
-     * 一条正在运行的命令。正常收尾、finally 和关闭流程都可能调用 stop，
-     * 这里保证只发一次停止信号，不向可能已被系统回收的旧进程号重复发。
-     * 用每条命令自己的锁，不在整个 processes 锁里等 kill，其他命令还能继续登记或收尾。
+     * 管理一条本地命令进程的一次性停止状态，正常收尾、finally 和关闭调用共享同一把实例锁。
      */
     private static final class Running {
         private final Process process;
         private boolean stopped;
 
-        /** 只封装新创建的进程，不启动额外线程。 */
+        /**
+         * 保存已经启动的命令进程，供执行收尾与并发关闭共同停止该进程组。
+         *
+         * @param process 本执行器已经启动的命令进程
+         */
         Running(Process process) {
             this.process = process;
         }
 
-        /** 首次调用清理原进程组，之后立即返回，不向可能已复用的旧 PID 重复发信号。 */
+        /**
+         * 首次调用标记 stopped 并清理原进程组；后续调用读取同一标记后返回。
+         */
         synchronized void stop() {
             if (!stopped) {
                 stopped = true;
@@ -205,8 +255,10 @@ public final class ShellCommand implements AutoCloseable {
     }
 
     /**
-     * 仅终止本执行器创建的原进程组，再兜底终止直接进程。
-     * 负 ID 由 Java Process.pid 产生，模型不能注入 kill 参数；不是文件系统沙箱。
+     * 向该进程 PID 对应的原进程组发送 KILL，最多等待一秒；最终仍存活的直接子进程使用 Java API 强制结束。
+     * IO 异常结束本次信号尝试，中断恢复线程标记。
+     *
+     * @param process 本执行器已经启动的命令进程
      */
     private static void stopGroup(Process process) {
         try {
@@ -227,7 +279,10 @@ public final class ShellCommand implements AutoCloseable {
         }
     }
 
-    /** 重复调用也没问题：先禁止新启动并取一份快照，再在锁外停止；正常关闭时移除 JVM 钩子。 */
+    /**
+     * 在进程表锁内设置关闭标记并取得活动进程快照，再在锁外逐个停止进程，最后移除已注册的 JVM 关闭 Hook。
+     * 重复关闭直接返回。
+     */
     @Override
     public void close() {
         List<Running> active;

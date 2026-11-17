@@ -5,15 +5,27 @@ import java.util.List;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.jadecode.util.PathResolver;
 
-/** 文件工具共用读写语义与真实路径解析；输出资料只给规则层，不产生读写副作用。 */
+/**
+ * 文件工具共用读写语义与真实路径解析；输出资料只给规则层，不产生读写副作用。
+ */
 public final class FilePermissionCheck implements ToolPermissionCheck {
     private final PathResolver resolver;
 
+    /**
+     * 绑定工作区路径解析器，供文件工具把原始路径和真实目标转成读写资源。
+     *
+     * @param resolver 绑定真实工作区的路径解析器，用于定位相对路径和链接目标
+     */
     public FilePermissionCheck(PathResolver resolver) {
         this.resolver = resolver;
     }
 
-    /** Glob 的 root 也是读取资源，不能因为是搜索工具就漏掉外部目录或路径规则。 */
+    /**
+     * Glob 的 root 也是读取资源，不能因为是搜索工具就漏掉外部目录或路径规则。
+     *
+     * @param input 本次工具参数 JSON 对象，包含该工具 schema 约定的字段
+     * @return 将 root 作为读取资源的 Glob 分析结果
+     */
     public Analysis analyzeGlob(ObjectNode input) {
         if (input.has("root") && !input.path("root").isTextual())
             return new Analysis("glob", resolver.workspaceReal(), List.of(), List.of(), false, true, false,
@@ -25,6 +37,15 @@ public final class FilePermissionCheck implements ToolPermissionCheck {
         return new Analysis("glob", resolver.workspaceReal(), resources, List.of(), false, true, false, "", "");
     }
 
+    /**
+     * 读取文件工具的 path，以 read_file 标记 READ，其余文件工具标记 WRITE；
+     * 将原始路径和解析后的真实目标都纳入资源列表，返回规则匹配所需的 Analysis。
+     * path 缺失或空白时返回带错误说明的分析结果。
+     *
+     * @param tool 模型调用的工具注册名
+     * @param input 本次工具参数 JSON 对象，包含该工具 schema 约定的字段
+     * @return 本次工具的真实工作目录、资源、读写与不确定属性；输入错误保存在 error
+     */
     @Override
     public Analysis analyze(String tool, ObjectNode input) {
         Path cwd = resolver.workspaceReal();
