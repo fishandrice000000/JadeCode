@@ -196,7 +196,10 @@ class Case:
         config = self.home / ".jadecode/config"
         config.mkdir(parents=True)
         (config / "config.json").write_text(json.dumps({"version": 1, "modelMetadata": {"autoDiscover": False}, "tui": {"quietStartup": True}, "mcp": {"servers": {}}}))
-        self.target = self.directory / "outside.txt"
+        # 外部项目目录不能包含 Harness 数据根；否则应当在范围审批前被拒绝。
+        external = self.directory / "external-project"
+        external.mkdir()
+        self.target = external / "outside.txt"
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Endpoint)
         self.server.target = self.target
         self.server.calls = []
@@ -244,6 +247,8 @@ class Case:
         self.drain(.4)
         assert b"[jade] Node frontend" not in self.output, "startup PID diagnostic leaked to the product terminal"
         self.owned_node_pid = self.node_pid()
+        if not shell:
+            assert self.owned_node_pid == self.process.pid, "a local Java client or extra Node frontend still owns the entry"
 
     def send(self, value):
         os.write(self.master, value.encode() if isinstance(value, str) else value)
@@ -271,7 +276,7 @@ class Case:
         fcntl.ioctl(self.slave, termios.TIOCSWINSZ, struct.pack("HHHH", rows, columns, 0, 0))
 
     def node_pid(self):
-        # 只沿本夹具拥有的 Java/bash 子树定位 Node，不依赖向产品终端打印测试 PID。
+        # 只沿本夹具拥有的 Node/bash 子树定位客户端，不依赖向产品终端打印测试 PID。
         pending = [self.process.pid]
         seen = set()
         while pending:
@@ -310,7 +315,7 @@ class Case:
             assert "Resume: jade --resume=" in text, "missing executable resume syntax"
 
     def close(self):
-        # Java 提前退出时 Node 可能尚在收尾；只回收本次启动时记录的子进程。
+        # 服务故障或客户端提前退出时，只回收本次夹具拥有的进程。
         # /proc 的命令仍指向本次临时发行包才允许发信号，避免 PID 已复用后伤及其它进程。
         pid = self.owned_node_pid
         try:
@@ -335,6 +340,17 @@ class Case:
                 if str(pid_file).encode() in Path(f"/proc/{pid}/cmdline").read_bytes():
                     os.kill(pid, signal.SIGTERM)
             except (FileNotFoundError, ProcessLookupError): pass
+        endpoint = self.home / ".jadecode/service/endpoint.json"
+        if endpoint.exists():
+            subprocess.run([str(self.release / "jade"), "--service-stop"], cwd=self.workspace, env=self.env,
+                           stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
+            if endpoint.exists():
+                owner = json.loads(endpoint.read_text())["pid"]
+                try:
+                    command = Path(f"/proc/{owner}/cmdline").read_bytes()
+                    if str(self.home).encode() in command and str(self.release).encode() in command:
+                        os.kill(owner, signal.SIGKILL)
+                except (FileNotFoundError, ProcessLookupError): pass
         self.server.shutdown()
         self.server.server_close()
 
@@ -431,19 +447,24 @@ def verify(case, name):
         case.finish()
         formal = [call for call in case.server.calls if call.get("tools")]
         assert len(formal) == 2 and all(call["model"] == "verify-json" and call["max_tokens"] == 8192 for call in formal)
+        # UI 退出仅解绑；显式停止本夹具服务，避免旧会话占用让下面的配置失败断言假通过。
+        stopped = subprocess.run([str(case.release / "jade"), "--service-stop"], cwd=case.workspace,
+                                 env=case.env, capture_output=True, timeout=20)
+        assert stopped.returncode == 0, stopped.stderr.decode()
         # 指定文件损坏时明确失败，不向项目 .env/另一份 JSON 回退，stderr 不得泄漏 JSON。
         secret = "DO_NOT_ECHO_JSON_FIXTURE_KEY"
         selected.write_text('{"apiKey":"' + secret + '",')
         failed = subprocess.run([str(case.release / "jade"), *headless_options, "--headless", "JADE_VERIFY_TEXT"],
                                 cwd=case.workspace, env=case.env, stdin=subprocess.DEVNULL, capture_output=True, timeout=20)
         assert failed.returncode == 1 and secret not in failed.stderr.decode() and not failed.stdout
+        assert "model configuration" in failed.stderr.decode().lower(), "configuration failure was masked by another error"
         assert len(case.server.calls) == 2, "invalid configuration made a model request"
         selected.unlink()
         absent = subprocess.run([str(case.release / "jade"), *headless_options, "--headless", "JADE_VERIFY_TEXT"],
                                 cwd=case.workspace, env=case.env, stdin=subprocess.DEVNULL, capture_output=True, timeout=20)
         assert absent.returncode == 1 and not absent.stdout
         expected = "Cannot read model configuration JSON" if name.endswith("explicit") else "Missing apiKey"
-        assert expected in absent.stderr.decode(), "missing JSON unexpectedly used the project .env"
+        assert expected in absent.stderr.decode(), "missing JSON produced an unexpected error: " + absent.stderr.decode()
         assert len(case.server.calls) == 2
         return {"exit": 0, "source": "explicit JSON" if name.endswith("explicit") else "global JSON", "formalRequests": 2,
                 "headlessAndTui": True, "projectEnvIgnored": True, "badConfigFailedWithoutRequest": True,
@@ -460,24 +481,85 @@ def verify(case, name):
         journal = next((case.home / ".jadecode/workspaces").rglob("events.jsonl")).read_text()
         assert '"status":"ACHIEVED"' in journal and '"purpose":"GOAL"' in journal
         return {"exit": 0, "formalRequests": 3, "goalRequests": 2, "stdout": "final answer only"}
-    if name == "java-only":
-        directory = case.directory / "no-node-bin"
-        directory.mkdir()
-        (directory / "dirname").symlink_to(shutil.which("dirname"))
-        env = {**case.env, "PATH": str(directory)}
-        frontend = case.release / "lib/frontend"
-        hidden = case.release / "lib/frontend-unused"
-        frontend.rename(hidden)
+    if name == "client-runtime":
+        # Node 统一入口不需要本地 Java 来打印帮助/版本；缺 Node 的所有客户端模式都失败。
+        env = {**case.env, "JAVA21_HOME": str(case.directory / "missing-jdk")}
+        pi = case.release / "lib/frontend/node_modules/@earendil-works/pi-tui"
+        hidden = pi.with_name("pi-tui-hidden")
+        pi.rename(hidden)
         try:
             for option in ("--help", "--version"):
-                completed = subprocess.run([str(case.release / "jade"), option], cwd=case.workspace, env=env,
-                                           stdin=subprocess.DEVNULL, capture_output=True, timeout=10)
-                assert completed.returncode == 0, completed.stderr.decode()
-            answer = subprocess.run([str(case.release / "jade"), "--headless", "JADE_VERIFY_TEXT"], cwd=case.workspace,
-                                    env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=20)
-            assert answer.returncode == 0 and answer.stdout.decode().strip() == "JADE_VERIFY_DONE"
-        finally: hidden.rename(frontend)
-        return {"exit": 0, "nodeOnPath": False, "frontendPresent": False, "helpVersionHeadless": True}
+                result = subprocess.run([str(case.release / "jade"), option], cwd=case.workspace, env=env,
+                                        capture_output=True, timeout=10)
+                assert result.returncode == 0, result.stderr.decode()
+            answer = subprocess.run([str(case.release / "jade"), "--headless", "JADE_VERIFY_TEXT"],
+                                    cwd=case.workspace, env=case.env, capture_output=True, timeout=25)
+            assert answer.returncode == 0 and answer.stdout.decode().strip() == "JADE_VERIFY_DONE", answer.stderr.decode()
+        finally:
+            hidden.rename(pi)
+        env["JADE_NODE"] = str(case.directory / "missing-node")
+        result = subprocess.run([str(case.release / "jade"), "--headless", "unused"], cwd=case.workspace,
+                                env=env, capture_output=True, timeout=10)
+        assert result.returncode == 2
+        return {"helpVersionWithoutJava": True, "headlessRequiresNode": True, "headlessWithoutTui": True}
+    if name == "remote":
+        bin_dir = case.directory / "bin"
+        bin_dir.mkdir()
+        record = case.directory / "ssh-arguments.txt"
+        ssh = bin_dir / "ssh"
+        ssh.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\" > " + shlex.quote(str(record))
+                       + "\nexec " + shlex.quote(str(case.release / "jade-server")) + " --service-relay\n")
+        ssh.chmod(0o700)
+        env = {**case.env, "PATH": str(bin_dir) + ":" + case.env["PATH"]}
+        result = subprocess.run([str(case.release / "jade"), "--remote", "fixture-host", "--workspace",
+                                 str(case.workspace), "--headless", "JADE_VERIFY_TEXT"],
+                                cwd=case.workspace, env=env, capture_output=True, timeout=25)
+        assert result.returncode == 0, result.stderr.decode()
+        assert result.stdout.decode().strip() == "JADE_VERIFY_DONE"
+        arguments = record.read_text().splitlines()
+        assert arguments[-1] == "jade-server --service-relay"
+        assert "BatchMode=yes" in arguments
+        return {"fixedSshCommand": True, "headlessOverRemoteRelay": True}
+    if name == "workspace-transfer":
+        def cli(*args):
+            result = subprocess.run([str(case.release / "jade"), *args], cwd=case.workspace, env=case.env,
+                                    capture_output=True, timeout=25)
+            assert result.returncode == 0, result.stderr.decode()
+            return json.loads(result.stdout) if result.stdout.strip() else None
+        created = cli("--create-workspace")
+        source = case.directory / "input"
+        source.mkdir()
+        (source / "hello.txt").write_text("upload fixture\n")
+        (source / ".env").write_text("excluded test fixture")
+        state = cli("--workspace-id", created["workspaceId"], "--upload-snapshot", str(source))
+        assert state["state"] == "READY", state
+        repeated = cli("--workspace-id", created["workspaceId"], "--upload-snapshot", str(source))
+        assert repeated["id"] == state["id"], "identical snapshots did not resume the same upload"
+        cli("--service-stop")
+        retained = cli("--managed-workspaces")["workspaces"]
+        assert len(retained) == 1
+        cli("--service-stop")
+        java = str(Path("/usr/lib/jvm/java-21-openjdk-amd64/bin/java"))
+        fixture = subprocess.run([java, "-cp", str(REPO / "target/test-classes") + os.pathsep + str(case.release / "lib/jadecode.jar"),
+                                  "com.jadecode.workspace.PublishedFileFixture", str(case.home), created["workspaceId"]],
+                                 cwd=case.workspace, env=case.env, capture_output=True, text=True, timeout=20)
+        assert fixture.returncode == 0, fixture.stderr
+        artifact = fixture.stdout.strip()
+        listed = cli("--workspace-id", created["workspaceId"], "--artifacts")["artifacts"]
+        assert len(listed) == 1 and listed[0]["artifactId"] == artifact
+        expected = bytes(i % 251 for i in range(180000))
+        target = case.directory / "download.bin"
+        part = target.with_name(target.name + ".jade-" + artifact + ".part")
+        part.write_bytes(expected[:23000])
+        cli("--workspace-id", created["workspaceId"], "--download-artifact", artifact, "--output", str(target))
+        assert target.read_bytes() == expected and not part.exists()
+        refused = subprocess.run([str(case.release / "jade"), "--workspace-id", created["workspaceId"],
+                                  "--download-artifact", artifact, "--output", str(target)],
+                                 cwd=case.workspace, env=case.env, capture_output=True, timeout=20)
+        assert refused.returncode != 0 and target.read_bytes() == expected
+        cli("--workspace-id", created["workspaceId"], "--delete-workspace")
+        return {"managedWorkspaceUpload": True, "nodeOwnedTransfer": True, "resumedBinaryDownloadAfterRestart": True,
+                "destinationPreserved": True, "deterministicUpload": True}
     if name == "team-headless":
         answer = subprocess.run([str(case.release / "jade"), "--headless", "--permission=workspace", "JADE_VERIFY_TEAM"],
                                 cwd=case.workspace, env=case.env, stdin=subprocess.DEVNULL, capture_output=True, timeout=20)
@@ -739,17 +821,17 @@ def verify(case, name):
         assert case.target.read_text() == "APPROVAL_OK"
         case.finish()
         return {"exit": 0, "fullAccessGate": "confirmed", "approvedWrite": True}
-    if name in ("sighup", "sigint", "sigterm", "java-exit"):
+    if name in ("sighup", "sigint", "sigterm", "server-exit"):
         sig = signal.SIGHUP if name == "sighup" else signal.SIGINT if name == "sigint" else signal.SIGTERM
-        target = case.node_pid() if name != "java-exit" else case.process.pid
-        os.kill(target, sig if name != "java-exit" else signal.SIGKILL)
+        target = case.node_pid() if name != "server-exit" else json.loads((case.home / ".jadecode/service/endpoint.json").read_text())["pid"]
+        os.kill(target, sig if name != "server-exit" else signal.SIGKILL)
         end = time.monotonic() + 12
         while case.process.poll() is None and time.monotonic() < end: case.drain(.04)
         assert case.process.poll() is not None, "peer remained alive after process failure"
-        # Java 已退出不等于 Node 已收尾；继续读取它继承的 PTY，等待终端恢复。
+        # 信号/服务故障后继续读取 PTY，等待 Node 完成终端恢复。
         deadline = time.monotonic() + 3
         while b"\x1b[?1049l" not in case.output and time.monotonic() < deadline: case.drain(.05)
-        expected = 129 if name == "sighup" else 130 if name == "sigint" else 143 if name == "sigterm" else -9
+        expected = 129 if name == "sighup" else 130 if name == "sigint" else 143 if name == "sigterm" else 1
         assert case.process.returncode == expected, f"signal exit {case.process.returncode}, expected {expected}"
         assert b"\x1b[?1049l" in case.output, "Node did not restore alternate screen"
         assert termios.tcgetattr(case.slave) == case.original, "terminal attributes not restored"
@@ -882,7 +964,7 @@ def verify(case, name):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--release", type=Path, default=REPO / "dist/jadecode")
-    parser.add_argument("--scenario", action="append", choices=["opencode-go", "model-config", "model-config-explicit", "java-only", "smoke", "input-routing", "commands", "regular", "regular-approval", "copy", "retry", "model-error", "output-limit", "headless", "headless-read-only", "headless-full-access", "headless-workspace", "headless-auto-review", "memory-delay", "mcp", "team", "team-headless", "workflow", "code-review", "workflow-limit", "goal", "goal-error", "goal-headless", "resume", "long-output", "approval-resize", "approval-small", "approval-mouse", "approval-suspend", "approval-deny", "full-access", "sighup", "sigint", "sigterm", "java-exit", "node-exit"])
+    parser.add_argument("--scenario", action="append", choices=["opencode-go", "model-config", "model-config-explicit", "client-runtime", "remote", "workspace-transfer", "smoke", "input-routing", "commands", "regular", "regular-approval", "copy", "retry", "model-error", "output-limit", "headless", "headless-read-only", "headless-full-access", "headless-workspace", "headless-auto-review", "memory-delay", "mcp", "team", "team-headless", "workflow", "code-review", "workflow-limit", "goal", "goal-error", "goal-headless", "resume", "long-output", "approval-resize", "approval-small", "approval-mouse", "approval-suspend", "approval-deny", "full-access", "sighup", "sigint", "sigterm", "server-exit", "node-exit"])
     parser.add_argument("--report", type=Path, default=REPO / "target/tui-release-verification.json")
     options = parser.parse_args()
     release = options.release.resolve()
@@ -895,17 +977,17 @@ def main():
         assert hashlib.sha256((frontend / "assets" / item["path"]).read_bytes()).hexdigest() == item["sha256"], "asset hash drift"
     for item in manifest["native"]:
         assert hashlib.sha256((frontend / item["path"]).read_bytes()).hexdigest() == item["sha256"], "native hash drift"
-    assert len(manifest["licenses"]) == 5, "missing production licenses in manifest"
+    assert len(manifest["licenses"]) == 6, "missing production licenses in manifest"
     for relative in manifest["licenses"]:
         assert (frontend / relative).is_file(), "missing frontend license: " + relative
-    assert len(list((release / "licenses").glob("*.txt"))) == 5, "incomplete release licenses"
+    assert len(list((release / "licenses").glob("*.txt"))) == 6, "incomplete release licenses"
     with zipfile.ZipFile(release / "lib/jadecode.jar") as jar:
         assert manifest["buildId"] in jar.read("META-INF/jade-build.properties").decode(), "unpaired release"
     report = {"buildId": manifest["buildId"], "jarSha256": hashlib.sha256((release / "lib/jadecode.jar").read_bytes()).hexdigest(), "cases": []}
     with tempfile.TemporaryDirectory(prefix="jade-release-verify-") as directory:
         root = Path(directory)
         shutil.copytree(release, root / "release", symlinks=True)
-        for name in options.scenario or ["opencode-go", "model-config", "model-config-explicit", "java-only", "smoke", "input-routing", "commands", "regular", "regular-approval", "copy", "retry", "model-error", "output-limit", "headless", "headless-read-only", "headless-full-access", "headless-workspace", "headless-auto-review", "memory-delay", "mcp", "team", "team-headless", "workflow", "code-review", "workflow-limit", "goal", "goal-error", "goal-headless", "resume", "long-output", "approval-resize", "approval-small", "approval-mouse", "approval-suspend", "approval-deny", "full-access", "sighup", "sigint", "sigterm", "java-exit", "node-exit"]:
+        for name in options.scenario or ["opencode-go", "model-config", "model-config-explicit", "client-runtime", "remote", "workspace-transfer", "smoke", "input-routing", "commands", "regular", "regular-approval", "copy", "retry", "model-error", "output-limit", "headless", "headless-read-only", "headless-full-access", "headless-workspace", "headless-auto-review", "memory-delay", "mcp", "team", "team-headless", "workflow", "code-review", "workflow-limit", "goal", "goal-error", "goal-headless", "resume", "long-output", "approval-resize", "approval-small", "approval-mouse", "approval-suspend", "approval-deny", "full-access", "sighup", "sigint", "sigterm", "server-exit", "node-exit"]:
             case = Case(root, root / "release", shutil.which("node"), name)
             try:
                 result = {"name": name, "status": "pass", **verify(case, name)}
