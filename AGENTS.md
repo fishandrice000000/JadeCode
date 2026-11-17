@@ -13,7 +13,7 @@
 ## 2. 技术基线
 
 - Java 21；Maven 单模块。
-- Java 后端负责 Agent 与常驻服务，Node/Pi 前端负责交互终端；交互模式要求 Node >= 22.19.0，CI 使用 Node 24。
+- Java 后端负责 Agent 与常驻服务；Node 统一负责 CLI、headless、管理命令和 Pi 终端，本地直接连接 Java Server，远程由 Node 管理 SSH 并连接服务端 Java relay。所有客户端模式要求 Node >= 22.19.0，CI 使用 Node 24；远端服务不要求 Node。
 - Anthropic Messages 格式；LLM 后端由项目配置决定，可使用兼容 Anthropic endpoint 的服务。开发工作流的调整不改变 JadeCode 的模型后端配置。
 - Maven Toolchains 隔离 JDK。
 - 依赖版本、构建产物、命令和当前能力必须从实际 `pom.xml`、脚本、源码与 `README.md` 核实。
@@ -28,7 +28,7 @@ sh scripts/build-sandbox.sh
 ./jade --headless "任务"
 ```
 
-`mvn -q package` 只构建 Java，不能代替交互模式所需的成套构建。成套脚本使用 Maven 离线模式，首次使用须先准备 Toolchain 和依赖；配置见 `README.md`。运行哪些验证，以当前任务与用户最新指示为准。
+`mvn -q package` 只构建服务 JAR，不能代替所有客户端模式所需的成套构建。成套脚本使用 Maven 离线模式，首次使用须先准备 Toolchain 和依赖；配置见 `README.md`。运行哪些验证，以当前任务与用户最新指示为准。
 
 ## 3. 事实来源与启动核对
 

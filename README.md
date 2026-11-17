@@ -6,7 +6,7 @@
 
 **基于 Java 21 的终端 coding agent，支持工具执行、多 Agent 协作与本地／远程会话。**
 
-JadeCode 将模型的决策连接到文件、Shell、权限审批与任务状态：模型决定下一步行动，Harness 负责执行、约束和记录。Java 后端持有会话与 Agent，基于 Pi 的 Node 前端提供交互终端。
+JadeCode 将模型的决策连接到文件、Shell、权限审批与任务状态：模型决定下一步行动，Harness 负责执行、约束和记录。Java 常驻服务持有会话与 Agent；Node 统一承担 CLI 与 Pi 交互终端，本地直接连接服务，远程通过 SSH 连接服务端 relay。
 
 这是一个从 [learn-claude-code](https://github.com/shareAI-lab/learn-claude-code) s01–s17 课程出发的个人学习项目，当前源码版本为 **1.1.0**。功能与平台边界见下文。
 
@@ -44,7 +44,7 @@ Workflow 使用 `workflow-runner-v2` 缓存身份；旧缓存不能恢复，需�
 当前默认运行路径面向 **Linux**，需要：
 
 - **JDK 21、Maven**：后端构建与运行；Maven Toolchains 必须登记 JDK 21。
-- **Node ≥ 22.19.0、npm**：构建及运行交互前端；CI 使用 Node 24。
+- **Node ≥ 22.19.0、npm**：构建及运行所有客户端模式（交互、headless 和管理命令）；CI 使用 Node 24。
 - **Docker Engine**：默认沙箱使用本机 Unix socket，要求当前用户有访问权限；构建镜像需要网络。
 - **Git**：获取源码；远程连接另外需要系统 SSH 和已配置的非交互认证。
 
@@ -87,9 +87,9 @@ node scripts/build-release.mjs
 sh scripts/build-sandbox.sh
 ```
 
-交互模式要求 JAR 与前端来自同一次成套构建。单独执行 `mvn package` 会重新生成未配对 JAR；之后需要再次运行成套构建。`--help`、`--version` 和 headless 模式不依赖前端。
+所有客户端模式使用 Node CLI；执行任务前会核对服务与客户端的构建身份。单独执行 `mvn package` 只生成未配对服务 JAR，不能代替成套构建。`--help`、`--version` 不启动 Java 或终端界面；headless 也不初始化 TUI。
 
-成套产物位于 `dist/jadecode/`，包含启动脚本、JAR、前端及第三方许可证。移动整个目录后可使用其中的 `jade`；执行机器仍需 Java、交互模式所需的 Node，以及对应 Docker 镜像。需要从任意目录调用时，将发行目录加入 `PATH`。
+成套产物位于 `dist/jadecode/`，包含 `jade`、`jade-server`、服务 JAR、Node 客户端及第三方许可证。`jade` 直接启动一个 Node 进程，本地连接不存在时按需启动独立 Java daemon；`jade-server` 只用于 daemon 或 SSH 远端 relay，不依赖 Node。移动整个目录后仍可运行；客户端需要 Node，本地执行需要 Java 21 和对应 Docker 镜像，纯远程客户端不需要本地 Java。将发行目录加入 `PATH` 后可从任意目录调用；可用 `JADE_NODE`、`JAVA21_HOME` 分别指定 Node 和服务 JDK。
 
 ### 3. 配置模型
 
@@ -147,6 +147,8 @@ Go 的此模型采用与 DeepSeek 官方相同的限额。默认使用 [DeepSeek
 | 新会话／历史恢复       | `/new`、`/resume`                                       |
 | 断开界面／关闭会话     | `/quit`／`/close`                                       |
 
+Node 入口统一解析全部用户命令，`java -jar jadecode.jar` 不再接受交互或 headless 客户端参数。客户端自然继承调用环境；不读取模型 JSON 正文、不记录凭据，模型配置与认证仍在执行机器的 Java 服务中解析。既有服务遇到构建不匹配时明确失败，不自动停止或回退。
+
 **退出界面只断开客户端。** 会话中的模型、队友和后台命令继续由常驻服务持有；`/close` 才关闭会话及所属资源。headless 执行取得结果后关闭其专属会话，stdout 只输出最终回答；默认权限为 Approve for Me，仍需人工授权时拒绝，不读取 stdin。
 
 后台命令启动后，Agent 可以继续同一轮次中的其他工作，正常结束前必须采用结果。停止当前轮次会解除该轮等待，已接纳的后台命令仍可继续；其结果会在后续轮次的安全边界加入上下文，不会在空闲时自动发起模型请求。`/close` 会停止所属命令。忙时输入先缓冲，空回车可将原缓冲升级为当前轮次的补充。
@@ -189,9 +191,10 @@ Team 派工均等待成功、失败或受阻报告；通信与报告在安全边
 
 ## 远程与独立工作区
 
-远端需准备相同成套构建版本的 `jade`、模型配置和 Docker 镜像，并让 SSH 非交互会话能找到 `jade`。连接使用系统 SSH 的认证与主机校验，模型凭据留在执行机器。
+远端需准备相同成套构建版本的 `jade-server` 与服务 JAR、模型配置和 Docker 镜像，并让 SSH 非交互会话能找到 `jade-server`。连接使用系统 SSH 的认证与主机校验，模型凭据留在执行机器。
 
 ```sh
+# 远端须将同一套发行包的 jade-server 加入 PATH；保留 SSH 主机密钥检查与非交互认证。
 ./jade --remote user@server --workspace /srv/project
 ./jade --remote user@server --sessions
 ./jade --remote user@server --attach <id>
@@ -254,7 +257,7 @@ GitHub Actions 分别检查 Java 与前端，不调用真实模型，也不自�
 
 ## 执行与扩展契约
 
-CLI 的交互与 headless 模式都通过常驻服务创建会话。会话负责历史、队列与 Todo 提醒；每次子任务创建自己的 AgentExecutor，复用模型请求、工具执行和压缩步骤，保留独立历史、思考快照与 30 轮上限。正式请求和摘要用量按实际 Agent 归属统计。
+Node CLI 的交互与 headless 模式直接通过常驻服务创建会话，本地没有 Java Client 转发层。会话负责历史、队列与 Todo 提醒；每次子任务创建自己的 AgentExecutor，复用模型请求、工具执行和压缩步骤，保留独立历史、思考快照与 30 轮上限。正式请求和摘要用量按实际 Agent 归属统计。
 
 自定义工具提供完整 `inputSchema()`，通过 `executeOutcome(input, context)` 返回正文和明确的错误标志。模型客户端统一使用 `complete(request, stream)`；无需展示时传 `ResponseStream.NONE`。运行消息分别携带身份、标签、正文与错误状态，正文中的标签文字不参与身份解析。
 
