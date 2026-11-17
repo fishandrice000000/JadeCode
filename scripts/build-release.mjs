@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * 成套构建：固定依赖 → 编译 Pi vendor 与 Jade 前端 → 计算 buildId → 构建 JAR → 装配 target/frontend
- * 与 dist/jadecode。Java-only `mvn package` 仍是 unpaired，交互启动会明确拒绝。
+ * 与 dist/jadecode。单独 Maven 构建仅提供 unpaired 服务 JAR，用户 CLI 需要成套 Node 产物。
  *
  * 产物身份来自前端源/vendor 补丁/lock/tsconfig/协议/主题品牌资产的内容哈希；同一脚本同时写入
  * frontend-manifest.json 与 Maven 资源，因此 JAR 与前端必须来自同一次构建。
@@ -97,7 +97,7 @@ copyDirectory(path.join(frontend, "assets"), path.join(targetFrontend, "assets")
 const vendorDist = path.join(frontend, "vendor/pi-tui");
 copySelected(vendorDist, path.join(targetFrontend, "vendor/pi-tui"),
 	["dist", "package.json", "LICENSE", "README.md", "native"]);
-const productionDependencies = ["marked", "get-east-asian-width", "grok-mermaid", "highlight.js"];
+const productionDependencies = ["marked", "get-east-asian-width", "grok-mermaid", "highlight.js", "fflate"];
 /** npm 包的许可文件大小写并不统一；缺少许可必须阻断装配，不能静默漏发。 */
 function dependencyLicense(name) {
 	const directory = path.join(frontend, "node_modules", name);
@@ -153,11 +153,19 @@ for (const dependency of productionDependencies) {
 	fs.copyFileSync(file, path.join(dist, "licenses", `${dependency}.txt`));
 }
 fs.writeFileSync(path.join(dist, "jade"), `#!/bin/sh
-# JadeCode 成套发行入口：相对自身位置定位 JAR，不依赖 cwd 或源码目录。
+# Node 统一 CLI，运行目录不参与产物定位。
 DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-JAVA_HOME="\${JAVA21_HOME:-/usr/lib/jvm/java-21-openjdk-amd64}"
-export JAVA_HOME
-exec "$JAVA_HOME/bin/java" -jar "$DIR/lib/jadecode.jar" "$@"
+if ! command -v "\${JADE_NODE:-node}" >/dev/null 2>&1; then
+  echo 'JadeCode requires Node >=22.19.0 for all client modes' >&2
+  exit 2
+fi
+exec "\${JADE_NODE:-node}" "$DIR/lib/frontend/dist/main.js" "$@"
+`);
+fs.writeFileSync(path.join(dist, "jade-server"), `#!/bin/sh
+# SSH 远端服务入口，不依赖 Node。
+DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec "\${JAVA21_HOME:-/usr/lib/jvm/java-21-openjdk-amd64}/bin/java" -jar "$DIR/lib/jadecode.jar" "$@"
 `);
 fs.chmodSync(path.join(dist, "jade"), 0o755);
+fs.chmodSync(path.join(dist, "jade-server"), 0o755);
 console.log(JSON.stringify({ buildId: id, targetFrontend, dist, builtAt }, null, 2));
